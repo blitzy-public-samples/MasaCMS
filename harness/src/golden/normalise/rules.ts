@@ -257,6 +257,12 @@ const urlsSchema = z.strictObject({
     order: z.literal('by-name'),
     percentEncodedValues: z.boolean(),
   }),
+  currentUrl: z.strictObject({
+    id: ruleId,
+    match: z.literal('path'),
+    paths: z.array(z.string().startsWith('/', 'must start with /')).min(1),
+    order: z.literal('by-name'),
+  }),
 });
 /** Signed and download URLs, and the rules applied to every other URL. */
 export type UrlRules = z.infer<typeof urlsSchema>;
@@ -395,6 +401,7 @@ const exportsSchema = z.strictObject({
   zip: z.strictObject({
     parser: z.literal('jszip'),
     compare: z.array(z.enum(['entries', 'contentType', 'contentDispositionFilename'])).min(1),
+    recordsetRows: z.strictObject({ entries: pattern, order: z.literal('row-alone-then-raw') }),
   }),
   file: z.strictObject({ compare: z.array(z.enum(['sha256', 'contentType', 'contentDispositionFilename'])).min(1) }),
   neverCompareBytes: z.array(z.enum(['csv', 'xlsx', 'pdf', 'zip'])),

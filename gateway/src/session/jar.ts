@@ -3,7 +3,7 @@ import {
   LEGACY_SESSION_COOKIE_NAMES,
   parseCookieHeader,
   parseSetCookie,
-  setCookieLegacy,
+  sessionCookieStrings,
 } from '@opt2/platform/legacy-compat';
 import { withMetadata, type MetadataTx, type TenantDb } from '@opt2/platform/tenancy';
 import type { SessionMode } from './mode.js';
@@ -213,8 +213,17 @@ export function legacySetCookiesFrom(jarCookies: JarCookies): string[] {
 }
 
 /**
+ * The attributes legacy writes session cookie `name` with at `now`: setSessionCookies under Masa's default cookie
+ * settings, `sessionCookiesExpires=never` (core/mura/utility.cfc:708-735; core/mura/configBean.cfc:212-216).
+ */
+function sessionCookieAttributes(name: LegacySessionCookieName, now: Date): string {
+  const written = sessionCookieStrings(name === 'JSESSIONID' ? { jsessionid: '' } : { CFID: '', CFTOKEN: '' }, {}, now);
+  return attributeTail(written.find((setCookie) => parseSetCookie(setCookie).name === name) ?? '');
+}
+
+/**
  * Jar cookies for the legacy session cookies of a request `Cookie` header.
- * Name and attributes come from the live `observed` entry of the same cookie, else from setCookieLegacy defaults.
+ * Name and attributes come from the live `observed` entry of the same cookie, else from those legacy writes it with.
  */
 export function requestSessionCookies(
   cookieHeader: string | undefined,
@@ -231,7 +240,7 @@ export function requestSessionCookies(
     out[name] =
       seen !== undefined && !isDeletedJarCookie(seen, now)
         ? { name: seen.name, value, attributes: seen.attributes }
-        : { name, value, attributes: attributeTail(setCookieLegacy({ name, value: '' })) };
+        : { name, value, attributes: sessionCookieAttributes(name, now) };
   }
   return out;
 }

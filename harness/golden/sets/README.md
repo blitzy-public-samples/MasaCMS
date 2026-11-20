@@ -6,18 +6,19 @@ Outputs captured from legacy Masa that parity replay compares against. This READ
 
 ## Writer and readers
 
-- `harness/src/golden/capture.ts` (`npm run golden:capture` in `harness/`) writes the sets during `harness/repro/test-all.sh` stage 5. It captures against legacy directly (`LEGACY_ORIGIN`, else `http://127.0.0.1:${PORT}`), after `opt2-ops drain-and-suspend` has suspended background work.
-- Sets are committed after a capture run and never hand-edited. To change one, re-run the capture (`npm run golden:capture -- --only <scenario-id>`).
-- `harness/src/golden/replay.ts` replays the same step scripts through the gateway (`OPT2_GATEWAY_URL`, else `http://127.0.0.1:8100`) in capture order: the other scenarios in catalogue order with `v0002` in stage 7, then the GS-PE-RH sets in catalogue order with `v0003` (`--rehearsal`) in stage 8.
-- `harness/src/golden/compare.ts` compares each set with its replay output and writes `opt2/reports/parity.{json,md}`.
+- `harness/src/golden/capture.ts` (`npm run golden:capture` in `harness/`) writes the sets during `harness/repro/test-all.sh` stage 5. It captures against legacy directly (`LEGACY_ORIGIN`, else `http://127.0.0.1:${PORT}`), after `opt2-ops drain-and-suspend` has suspended background work: first every scenario but the GS-PE-RH ones, then, after the browser captures, `golden:capture -- --rehearsal`.
+- Sets are committed after a capture run and never hand-edited. To change one, re-run the capture (`npm run golden:capture -- --only <scenario-id>`, with `--rehearsal` for a rehearsal crossing's set).
+- `harness/src/golden/replay.ts` replays the same step scripts through the gateway (`OPT2_GATEWAY_URL`, else `http://127.0.0.1:8100`) in capture order: the other scenarios in catalogue order with `v0002` in stage 7, then in stage 8 (`--rehearsal`) GS-ID-09's rehearsal crossing across the `v0003` activation and the GS-PE-RH sets in catalogue order with `v0003`.
+- `harness/src/golden/compare.ts` compares each set with its replay output and writes `opt2/reports/parity.{json,md}`; a rehearsal crossing is compared with its own set under `rehearsal/` and fails on any unlisted difference.
 - `harness/src/reporting/check-pin.ts` checks `sourceSha` in every file under this folder, and the `Source SHA:` line above.
 
 ## Files
 
 - One file per scenario, `<scenario-id>.json`, where `<scenario-id>` is an `id` from `harness/golden/catalogue.yaml` matching `^GS-[A-Z]+(-RH)?-\d{2}$`. The GS-PE-RH sets are captured in the same pass, after all the others, as replay runs them.
-- Readers open `<scenario-id>.json` for catalogue ids only, so no other file here is read as a set.
+- `rehearsal/<scenario-id>.json`: a rehearsal crossing's set. Each non-rehearsal HTTP scenario declaring `acrossTransition` (GS-ID-09) is captured a second time, after every other scenario and the browser flows and just before the GS-PE-RH sets, so the legacy state it sees is the one its stage 8 replay across `v0003` sees. Same shape as a scenario set.
+- Readers open `<scenario-id>.json` and `rehearsal/<scenario-id>.json` for catalogue ids only, so no other file here is read as a set.
 - Browser scenarios (GS-UI-*) are skipped by `capture.ts`. `harness/e2e/ui/interactions.e2e.ts` captures them (`OPT2_UI_PHASE=capture`) and writes each set here when it matches the set shape, else to `${OPT2_STATE_DIR}/golden/browser/<scenario-id>.legacy.json`. Its replay (`OPT2_UI_PHASE=replay`) writes `${OPT2_STATE_DIR}/golden/browser/<scenario-id>.json`, the record `compare.ts` classifies.
-- The un-normalised exchanges of a capture go to `${OPT2_STATE_DIR}/golden/raw/<scenario-id>.json`, never here.
+- The un-normalised exchanges of a capture go to `${OPT2_STATE_DIR}/golden/raw/<scenario-id>.json` (a crossing's to `golden/raw/rehearsal/`), never here.
 
 ## Set shape
 

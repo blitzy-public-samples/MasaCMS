@@ -51,6 +51,7 @@ const TASK_STATUS_TEXT: Readonly<Record<(typeof surveyTasks)[number]['status'], 
   failed: 'Failed',
   cancelled: 'Cancelled',
   superseded: 'Superseded',
+  expired: 'Expired',
 };
 const NOT_FOUND_ENVELOPE = {
   apiversion: 'v1',

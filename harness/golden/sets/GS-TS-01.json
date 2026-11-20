@@ -1,10 +1,10 @@
 {
-  "capturedAt": "2026-11-18T14:25:58.826Z",
+  "capturedAt": "2026-11-20T03:03:56.709Z",
   "fixtures": {
     "available": true,
     "reason": "fixtures loaded"
   },
-  "generatedAt": "2026-11-18T14:26:01.918Z",
+  "generatedAt": "2026-11-20T03:03:59.978Z",
   "generatedBy": "harness/src/golden/capture.ts",
   "origin": "legacy",
   "scenarioId": "GS-TS-01",
@@ -1283,7 +1283,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "5c73142363534b6715d2c640aa08c6e1eaf3513a5b854d2c577de5c1c80945b9",
+        "rawSha256": "0f9976976e687e2882a58397836e9fb44be6d997504a5774ca3cb72bbdfd16d1",
         "status": 404
       },
       "routeKey": "opt2:/opt2/admin/timesheets/sheets"
@@ -1435,7 +1435,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "e6c986c9f4b5953c5b18c04c42ef8041a2ee0ae7430ef3de1a4fb63589f8d00e",
+        "rawSha256": "e59d30fd130217f7bfba20d0e4d87a5c76850867b69ed44d1cc338f6fcd20b80",
         "status": 404
       },
       "routeKey": "opt2:/opt2/admin-actions/timesheets/day-action"

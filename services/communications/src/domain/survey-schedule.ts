@@ -65,12 +65,14 @@ function newScheduledTask(task: PlannedSurveyTask, serviceUrls: Record<string, s
     targetRoute: taskTarget(task.queue, serviceUrls).route,
     scheduleVersion: task.scheduleVersion,
     origin: EVENT_ORIGIN,
+    ...(task.expired === true ? { expired: true } : {}),
   };
 }
 
 /**
  * Effect of the seam 2 consumer in the destination transaction: supersedes the survey's earlier still-scheduled tasks,
- * inserts this version's launch and reminder rows, and creates and deletes their queue tasks once that commits.
+ * inserts this version's launch and reminder rows, and creates and deletes their queue tasks once that commits; an
+ * `expired` row gets no queue task.
  */
 export function applySurveyScheduled(deps: SurveyScheduleDeps): ConsumerDefinition<SurveyScheduledPayload>['apply'] {
   return async (tx, envelope) => {
@@ -101,7 +103,7 @@ export function applySurveyScheduled(deps: SurveyScheduleDeps): ConsumerDefiniti
     const { tenantId } = tx;
     // Both calls log and keep each failed row for recovery, so the callback needs no error handler of its own.
     tx.onCommit(async () => {
-      await enqueueScheduledTasks(deps, tenantId, inserted, { siteId: payload.siteId });
+      await enqueueScheduledTasks(deps, tenantId, inserted.filter((row) => row.status === 'scheduled'), { siteId: payload.siteId });
       await dequeueScheduledTasks(deps, tenantId, superseded);
     });
   };

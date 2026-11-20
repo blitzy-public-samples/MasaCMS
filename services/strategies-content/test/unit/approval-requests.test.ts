@@ -1,9 +1,12 @@
 /** Approval request primitives over a throwaway `content` schema: request loads, the approval requirement, request and action saves, cancelation and the action mail decision. */
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { cfDateAdd } from '@opt2/platform/legacy-compat';
 import { closeGates, ensureUnitGates, openGates } from '@opt2/platform/migration-kit';
-import { withTenant, type TenantTx } from '@opt2/platform/tenancy';
+import { tenantIdForSite, withTenant, type TenantTx } from '@opt2/platform/tenancy';
 import { TENANT_A, createThrowawaySchema, fixedClock, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
+import { approvalAction } from '../../src/domain/approvals.js';
+import { ContentSaveDataError } from '../../src/domain/content.js';
 import {
   PENDING_STATUS,
   UndefinedLegacyVariableError,
@@ -15,7 +18,7 @@ import {
   writeAction,
   type ApprovalRequestValues,
 } from '../../src/domain/approval-requests.js';
-import type { Actor, SiteContentSettings } from '../../src/domain/context.js';
+import { CONTENT_CONFIG_DEFAULTS, type Actor, type SiteContentSettings } from '../../src/domain/context.js';
 import { createContentRepository, type ContentRepository } from '../../src/repo/repository.js';
 import { CONTENT_UNITS } from '../../src/repo/tables.js';
 
@@ -24,6 +27,7 @@ const NOW = new Date(2026, 5, 30, 10, 15, 42, 123);
 const EARLIER = new Date(2026, 4, 1, 8, 0, 0, 0);
 const SITE_ID = TENANT_A.siteId;
 const KINDS = ['Approved', 'Rejected', 'Canceled', 'Pending'] as const;
+const CF_UUID = /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16}$/;
 
 const ACTOR: Actor = {
   userId: cfId('U', 1),
@@ -196,6 +200,17 @@ describe.skipIf(!(await pgAvailable()))('domain/approval-requests', () => {
       expect(byVersion.isNew).toBe(true);
       expect(byVersion.values).toMatchObject({ contenthistid: cfId('H', 11), chainid: chainId, siteid: SITE_ID, status: 'Pending', groupid: '', created: null });
       expect(byVersion.values.requestid).toMatch(/^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16}$/);
+    });
+
+    it.each([
+      ['an unknown id, keeping it', cfId('R', 12), cfId('R', 12)],
+      ['an empty id, keeping the bean\u2019s new id', '', expect.stringMatching(CF_UUID)],
+    ])('gives a new bean loaded by %s, the site getBean set', async (_label, requestId, expectedId) => {
+      const loaded = await inA((tx) => loadRequest(tx, repo, { requestId, siteId: SITE_ID }));
+      expect(loaded).toEqual({
+        isNew: true,
+        values: { requestid: expectedId, contenthistid: '', chainid: '', siteid: SITE_ID, userid: '', groupid: '', status: 'Pending', created: null },
+      });
     });
   });
 
@@ -385,6 +400,104 @@ describe.skipIf(!(await pgAvailable()))('domain/approval-requests', () => {
       expect(writes.error).toBeInstanceOf(UndefinedLegacyVariableError);
       expect(writes.request?.status).toBe('Canceled');
       expect(writes.actions.map((row) => row.actiontype)).toEqual(['Cancelation']);
+    });
+  });
+
+  // A new request saved without a version: its NULL contenthistid empties the site's later draft lists (NOT IN over a NULL).
+  describe('approvalAction on an unstored request', () => {
+    const SITE_MANAGER = '00000000000000000000000000000000000';
+    const UNSTORED = [
+      ['an empty request id', ''],
+      ['an unknown request id', cfId('R', 50)],
+    ] as const;
+    let sites = 0;
+
+    /** A new site in its own tenant holding the Site Manager module and one unpublished page ACTOR saved. */
+    async function draftSite(): Promise<{ actor: Actor; site: SiteContentSettings; inSite: <T>(fn: (tx: TenantTx) => Promise<T>) => Promise<T> }> {
+      sites += 1;
+      const siteId = `approval-unstored-${sites}`;
+      const tenantId = tenantIdForSite(siteId);
+      const inSite = <T>(fn: (tx: TenantTx) => Promise<T>): Promise<T> => withTenant(handle.app, tenantId, fn);
+      const page = { siteid: siteId, moduleid: SITE_MANAGER, active: 1, display: 1, lastupdate: EARLIER, lastupdatebyid: ACTOR.userId };
+      await inSite(async (tx) => {
+        for (const row of [
+          { ...page, contentid: SITE_MANAGER, contenthistid: cfId('M', sites), type: 'Module', title: 'Site Manager', approved: 1 },
+          { ...page, contentid: cfId('C', sites), contenthistid: cfId('H', 50 + sites), type: 'Page', title: 'Draft', approved: 0 },
+        ]) {
+          const names = Object.keys(row);
+          await tx.query(
+            `INSERT INTO ${handle.schema}.content (tenant_id, ${names.join(', ')}) VALUES ($1, ${names.map((_, i) => `$${i + 2}`).join(', ')})`,
+            [tx.tenantId, ...Object.values(row)],
+          );
+        }
+      });
+      return { actor: { ...ACTOR, siteId, tenantId }, site: { ...SITE, siteId, urls: { ...SITE.urls, siteId, filePoolId: siteId } }, inSite };
+    }
+
+    /** The site's request and action rows and its header counts (getMyDraftsCount over the last three months). */
+    function storedState(inSite: <T>(fn: (tx: TenantTx) => Promise<T>) => Promise<T>, siteId: string) {
+      return inSite(async (tx) => ({
+        requests: (await tx.query(`SELECT requestid, siteid, contenthistid, chainid, groupid, userid, status, created FROM ${handle.schema}.approval_request`)).rows,
+        actions: (
+          await tx.query(`SELECT actiontid, siteid, actiontype, comments, userid, groupid, requestid, parentid, chainid, created FROM ${handle.schema}.approval_action`)
+        ).rows,
+        drafts: await repo.content.draftCount(tx, { siteId, userId: ACTOR.userId, startDate: cfDateAdd('m', -3, NOW) }),
+        submissions: await repo.content.submissionsCount(tx, { siteId, userId: ACTOR.userId }),
+        approvals: await repo.content.approvalsCount(tx, { siteId, groupIds: null }),
+      }));
+    }
+
+    /** The request and action legacy stores for `status` and `actionType`, NULL in every column the new bean leaves empty. */
+    function expectedRows(siteId: string, requestId: string, status: string, actionType: string) {
+      const requestid = requestId === '' ? expect.stringMatching(CF_UUID) : requestId;
+      return {
+        requests: [{ requestid, siteid: siteId, contenthistid: null, chainid: null, groupid: null, userid: null, status, created: NOW }],
+        actions: [
+          {
+            actiontid: expect.stringMatching(CF_UUID),
+            siteid: siteId,
+            actiontype: actionType,
+            comments: 'GS-ID-09',
+            userid: ACTOR.userId,
+            groupid: null,
+            requestid,
+            parentid: null,
+            chainid: null,
+            created: NOW,
+          },
+        ],
+        drafts: 0,
+        submissions: 0,
+        approvals: 0,
+      };
+    }
+
+    const deps = () => ({ db: handle.app, repository: repo, clock: fixedClock(NOW), config: CONTENT_CONFIG_DEFAULTS });
+
+    const DECISIONS = [
+      ['reject', 'Rejection', 'Rejected'],
+      ['cancel', 'Cancelation', 'Canceled'],
+    ] as const;
+
+    it.each(DECISIONS.flatMap((decision) => UNSTORED.map(([label, requestId]) => [...decision, label, requestId] as const)))(
+      '%s records a %s and a %s request for %s, answering no version and emptying the site\u2019s drafts',
+      async (action, actionType, status, _label, requestId) => {
+        const { actor, site, inSite } = await draftSite();
+        expect((await storedState(inSite, site.siteId)).drafts).toBe(1);
+        const result = await approvalAction(deps(), actor, site, { requestId, action, comment: 'GS-ID-09' });
+        expect(result.value).toEqual({ contenthistid: '', previewurl: '/?previewid=' });
+        const stored = await storedState(inSite, site.siteId);
+        expect(stored).toEqual(expectedRows(site.siteId, requestId, status, actionType));
+        expect(stored.actions[0]?.requestid).toBe(stored.requests[0]?.requestid);
+      },
+    );
+
+    it.each(UNSTORED)('approve for %s commits the Approval and the Approved request before the version save fails', async (_label, requestId) => {
+      const { actor, site, inSite } = await draftSite();
+      const outcome = approvalAction(deps(), actor, site, { requestId, action: 'approve', comment: 'GS-ID-09' });
+      await expect(outcome).rejects.toBeInstanceOf(ContentSaveDataError);
+      await expect(outcome).rejects.toThrow("The attribute 'PARENTID' is required when saving content.");
+      expect(await storedState(inSite, site.siteId)).toEqual(expectedRows(site.siteId, requestId, 'Approved', 'Approval'));
     });
   });
 });

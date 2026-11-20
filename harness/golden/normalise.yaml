@@ -84,6 +84,14 @@ timestamps:
     - name: file-stamp-date
       format: "yyyy_mm_dd"
       pattern: "\\d{4}_\\d{2}_\\d{2}"
+    # Stamps matched only inside their Content-Disposition filenames: carch/downloaddata.cfm:97 (<title>_mmddyy.csv),
+    # cextend/download.cfm:78 (yyyymmddHHMMSS-config.xml.cfm).
+    - name: file-stamp-mmddyy
+      format: "mmddyy"
+      pattern: "(?<=_)(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\\d|3[01])\\d{2}(?=\\.csv(?![0-9A-Za-z]))"
+    - name: file-stamp-second
+      format: "yyyymmddHHMMSS"
+      pattern: "\\d{4}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\\d|3[01])(?:[01]\\d|2[0-3])[0-5]\\d[0-5]\\d(?=-config\\.xml\\.cfm(?![0-9A-Za-z]))"
     - name: iso-date
       format: "yyyy-mm-dd"
       pattern: "\\d{4}-\\d{2}-\\d{2}"
@@ -95,6 +103,15 @@ timestamps:
     - name: admin-date
       format: "MM/DD/YYYY"
       pattern: "\\d{1,2}/\\d{1,3}/\\d{4}"
+    # The comment list's date cell (ccomments/loadcomments.cfm:266).
+    - name: admin-date-yymmdd
+      format: "yy/mm/dd"
+      pattern: "\\d{2}/(?:0[1-9]|1[0-2])/(?:0[1-9]|[12]\\d|3[01])"
+      scope: whole-value
+    # LSTimeFormat "medium" (cwebservice/list.cfm:133, cchain/list.cfm:125).
+    - name: admin-time-seconds
+      format: "h:mm:ss a"
+      pattern: "\\d{1,2}:\\d{2}:\\d{2} [AP]M"
     - name: admin-time
       format: "h:mm a"
       pattern: "\\d{1,2}:\\d{2} [AP]M"
@@ -160,7 +177,7 @@ urls:
       whenContains: ["/opt2/files/", "storage.googleapis.com"]
   downloadFieldMatch: case-insensitive
   otherwise:
-    apply: [token, origin, cf-uuid, uuid-rfc4122, url-scope-query]
+    apply: [token, origin, cf-uuid, uuid-rfc4122, url-scope-query, current-url-query]
     sortQuery: false
   # `?&name=value…` with distinct names is a CFML url-scope walk, whose order varies per request, so it is sorted by name.
   urlScope:
@@ -168,6 +185,14 @@ urls:
     match: query-starting-with-ampersand
     order: by-name
     percentEncodedValues: true
+  # getCurrentURL walks the url scope into `?name=value&…` (core/mura/content/contentRendererUtility.cfc:439-453); its
+  # 301 to the 404 page on a wrong host (standardEventsHandler.cfc:99-108) is sorted by name when its names are distinct.
+  # Matched on the path as written, after scheme and authority; every other path keeps its order.
+  currentUrl:
+    id: current-url-query
+    match: path
+    paths: ["/404/"]
+    order: by-name
 
 headers:
   id: drop-headers
@@ -198,7 +223,7 @@ headers:
     id: location
     header: Location
     normalise: as-body-url
-    apply: [signed-url, token, origin, cf-uuid, uuid-rfc4122, url-scope-query]
+    apply: [signed-url, token, origin, cf-uuid, uuid-rfc4122, url-scope-query, current-url-query]
   compare:
     id: compare-case
     names: lower-case
@@ -251,7 +276,9 @@ dom:
   id: dom-model
   parser: cheerio
   screenshots: review-only
-  exclude: [script, style, noscript, "comment()"]
+  # li#admin-nav-opt2: web's OPT-2 nav group of the synthetic-module screens (web/src/shell/nav.ts opt2Group), shown
+  # to synthetic-role users only; legacy's nav.cfm has no counterpart.
+  exclude: [script, style, noscript, "comment()", "li#admin-nav-opt2"]
   whitespace: collapse-and-trim
   apply: [signed-url, token, origin, cf-uuid, uuid-rfc4122, mailpit-id, timestamp]
   extract:
@@ -325,6 +352,11 @@ exports:
     parser: jszip
     # Entry name, SHA-256 and size, text normalised: Masa stamps entry times, nests archives, has ids and times in WDDX.
     compare: [entries, contentType, contentDispositionFilename]
+    # Masa's bundle recordset queries other than rsthierarchy carry no ORDER BY (settingsBundle.cfc), so SQL Server picks
+    # their row order; the rows of each matching WDDX recordset entry are sorted before its text is normalised.
+    recordsetRows:
+      entries: "^wddx_(?!rsthierarchy\\.xml$)rs[a-z]+\\.xml$"
+      order: row-alone-then-raw
   file:
     compare: [sha256, contentType, contentDispositionFilename]
   neverCompareBytes: [xlsx, pdf, zip]

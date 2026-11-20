@@ -43,6 +43,7 @@ import {
 import {
   EquivalenceImpossible,
   GoldenConfigError,
+  REHEARSAL_CROSSING_DIR,
   haltEvidence,
   haltedExceptionEntry,
   isEquivalenceImpossible,
@@ -127,7 +128,7 @@ export interface ReplayError {
   step?: string;
 }
 
-/** One scenario replayed through the gateway, `<stateDir>/golden/replay/<id>.json`. */
+/** One scenario replayed through the gateway, `<stateDir>/golden/replay/[rehearsal/]<id>.json`. */
 export interface ReplayOutput {
   sourceSha: string;
   scenarioId: string;
@@ -192,14 +193,24 @@ export const replayOutputSchema: z.ZodType<ReplayOutput> = replayFieldsSchema.tr
   return { ...output, steps: parsed.data.steps, sideEffects: parsed.data.sideEffects };
 });
 
-/** Path of scenario `id`'s replay output, `<stateDir>/golden/replay/<id>.json`, outside the checkout. */
-export function replayOutputPath(id: string, env: EnvLike = process.env): string {
-  return path.join(stateDir(env), 'golden', 'replay', `${id}.json`);
+function crossingSegments(crossing: boolean): string[] {
+  return crossing ? [REHEARSAL_CROSSING_DIR] : [];
 }
 
-/** Path of scenario `id`'s sessions saved at a transition, `<stateDir>/golden/sessions/<id>.json` (mode 0600). */
-export function sessionStatePath(id: string, env: EnvLike = process.env): string {
-  return path.join(stateDir(env), 'golden', 'sessions', `${id}.json`);
+/**
+ * Path of scenario `id`'s replay output, `<stateDir>/golden/replay/<id>.json`, outside the checkout; with `crossing`,
+ * its rehearsal crossing's, `<stateDir>/golden/replay/rehearsal/<id>.json`.
+ */
+export function replayOutputPath(id: string, env: EnvLike = process.env, crossing = false): string {
+  return path.join(stateDir(env), 'golden', 'replay', ...crossingSegments(crossing), `${id}.json`);
+}
+
+/**
+ * Path of scenario `id`'s sessions saved at a transition, `<stateDir>/golden/sessions/<id>.json` (mode 0600); with
+ * `crossing`, its rehearsal crossing's, `<stateDir>/golden/sessions/rehearsal/<id>.json`.
+ */
+export function sessionStatePath(id: string, env: EnvLike = process.env, crossing = false): string {
+  return path.join(stateDir(env), 'golden', 'sessions', ...crossingSegments(crossing), `${id}.json`);
 }
 
 /** Cookie jars, bindings and exchanges of a scenario paused before a cut-over transition. */
@@ -236,9 +247,16 @@ const sessionStateSchema: z.ZodType<SessionState> = z.strictObject({
   records: z.array(z.custom<StepRecord>(isPlainObject, 'must be a step record')),
 });
 
-/** Saved sessions of scenario `id`, or `undefined` when none are saved; throws when the file is unreadable or off-schema. */
-export async function readSessionState(id: string, env: EnvLike = process.env): Promise<SessionState | undefined> {
-  const file = sessionStatePath(id, env);
+/**
+ * Saved sessions of scenario `id`, or of its rehearsal crossing when `crossing`; `undefined` when none are saved.
+ * Throws when the file is unreadable or off-schema.
+ */
+export async function readSessionState(
+  id: string,
+  env: EnvLike = process.env,
+  crossing = false,
+): Promise<SessionState | undefined> {
+  const file = sessionStatePath(id, env, crossing);
   try {
     await access(file);
   } catch (err) {
@@ -466,8 +484,13 @@ function goldenSteps(golden: GoldenSet): Map<string, GoldenStep> {
  * Halts declared before any request: a golden step without a deterministic legacy trigger (`gap`), and a step that
  * declares `expected: halted` under an exceptions entry, which the gateway serves from legacy.
  */
-function declaredHalts(scenarioId: string, records: readonly StepRecord[], golden: Map<string, GoldenStep>): Halt[] {
-  const evidence = haltEvidence(scenarioId);
+function declaredHalts(
+  scenarioId: string,
+  records: readonly StepRecord[],
+  golden: Map<string, GoldenStep>,
+  crossing: boolean,
+): Halt[] {
+  const evidence = haltEvidence(scenarioId, crossing);
   const halts: Halt[] = [];
   records.forEach((record, index) => {
     const captured = golden.get(stepKey(record.name, record.matrixKey));
@@ -566,7 +589,7 @@ function unavailableRecord(
 
 /** Collaborators of {@link unavailableHalt}: operator access, the active version, the service map and the list writer. */
 type UnavailableDeps = OperatorDeps &
-  Pick<ReplayDeps, 'tableVersion' | 'sourceSha' | 'exceptions'> & { config: SideEffectConfig };
+  Pick<ReplayDeps, 'tableVersion' | 'sourceSha' | 'exceptions' | 'rehearsal'> & { config: SideEffectConfig };
 
 /**
  * Raises `EquivalenceImpossible` for `answer` when an import-pending write window holds a unit of its route's cut-over
@@ -581,7 +604,7 @@ async function unavailableHalt(scenarioId: string, answer: Unavailable, deps: Un
       scenario: scenarioId,
       routeKey: answer.routeKey,
       reason,
-      evidence: haltEvidence(scenarioId),
+      evidence: haltEvidence(scenarioId, isCrossing(scenarioId, deps)),
       difference: `the gateway answered the legacy-shaped 503 where legacy answered ${answer.legacyStatus}`,
     });
   const cause = await importPendingCause(deps, units);
@@ -674,6 +697,13 @@ export interface ReplayDeps extends OperatorDeps {
   routeKeyOptions?: StepRunOptions['routeKeyOptions'];
   /** Default {@link readGoldenSet}. */
   readGolden?: (id: string) => Promise<GoldenSet>;
+  /** Run with `--rehearsal`: a non-rehearsal scenario replays as its rehearsal crossing. */
+  rehearsal?: boolean;
+}
+
+/** Whether this run replays `scenarioId` as its rehearsal crossing, with outputs and sessions of its own. */
+function isCrossing(scenarioId: string, deps: Pick<ReplayDeps, 'rehearsal'>): boolean {
+  return deps.rehearsal === true && !isRehearsalScenario(scenarioId);
 }
 
 /** What replaying one scenario produced: an output, a pause at a transition, or nothing to write. */
@@ -717,27 +747,29 @@ function transitionBoundaries(scenario: Scenario): number[] {
 /**
  * Steps this invocation replays. `pre-transition` runs up to the first boundary, discarding older saved sessions;
  * otherwise a scenario with boundaries resumes its saved sessions up to the next boundary or the end, which needs a
- * transition since they were saved.
+ * transition since they were saved. A rehearsal crossing (`crossing`) uses its own saved sessions.
  */
 async function stepRange(
   scenario: Scenario,
   phase: RunPhase,
   tableVersion: string,
   env: EnvLike,
+  crossing: boolean,
 ): Promise<StepRange | 'resumed-earlier'> {
   const boundaries = transitionBoundaries(scenario);
   const first = boundaries[0];
-  const file = sessionStatePath(scenario.id, env);
+  const file = sessionStatePath(scenario.id, env, crossing);
   if (phase === 'pre-transition') {
     if (first === undefined) throw new GoldenConfigError(`${scenario.id} declares no acrossTransition`);
     await rm(file, { force: true });
     return { start: 0, end: first };
   }
   if (first === undefined) return { start: 0, end: scenario.steps.length };
-  const state = await readSessionState(scenario.id, env);
+  const state = await readSessionState(scenario.id, env, crossing);
   if (state === undefined) {
+    const pre = `--phase pre-transition${crossing ? ' --rehearsal' : ''}`;
     throw new GoldenConfigError(
-      `${scenario.id}: no sessions saved before its transition at ${file}; run --phase pre-transition before the transition`,
+      `${scenario.id}: no sessions saved before its transition at ${file}; run ${pre} before the transition`,
     );
   }
   if (state.completed) return 'resumed-earlier';
@@ -756,7 +788,7 @@ async function saveSessions(
   ctx: ScenarioContext,
   records: readonly StepRecord[],
   nextIndex: number,
-  deps: Pick<ReplayDeps, 'sourceSha' | 'tableVersion'>,
+  deps: Pick<ReplayDeps, 'sourceSha' | 'tableVersion' | 'rehearsal'>,
   savedAt: string,
 ): Promise<string> {
   const jars: Record<string, SerializedCookieJar> = {};
@@ -772,7 +804,7 @@ async function saveSessions(
     bindings: [...ctx.bindings].filter(([key]) => !key.startsWith('matrix.')),
     records: redactReloadKey(redact([...records], secretValues(ctx)), configuredAppReloadKey(ctx.env)),
   };
-  const file = sessionStatePath(ctx.scenarioId, ctx.env);
+  const file = sessionStatePath(ctx.scenarioId, ctx.env, isCrossing(ctx.scenarioId, deps));
   await writePrivateJson(file, state);
   return file;
 }
@@ -883,11 +915,11 @@ async function replayRun(
       `${scenario.id}: golden set ${goldenSetPath(scenario.id)} was captured ${golden.skipped}; capture it again`,
     );
   }
-  const range = await stepRange(scenario, phase, deps.tableVersion, env);
+  const crossing = isCrossing(scenario.id, deps);
+  const range = await stepRange(scenario, phase, deps.tableVersion, env, crossing);
   if (range === 'resumed-earlier') {
-    logger.info(
-      safeDiagnostic(`${scenario.id}: already resumed after its transition; ${replayOutputPath(scenario.id, env)} stands`, env),
-    );
+    const output = replayOutputPath(scenario.id, env, crossing);
+    logger.info(safeDiagnostic(`${scenario.id}: already resumed after its transition; ${output} stands`, env));
     return { status: 'resumed-earlier' };
   }
   const config = deps.sideEffects?.config ?? resolveSideEffectConfig(env);
@@ -931,7 +963,8 @@ async function replayRun(
   } catch (err) {
     error ??= { message: describeError(err, secretValues(ctx)) };
   }
-  const halts = [...declaredHalts(scenario.id, records, goldenSteps(golden)), ...(run.stop === undefined ? [] : [run.stop])];
+  const declared = declaredHalts(scenario.id, records, goldenSteps(golden), crossing);
+  const halts = [...declared, ...(run.stop === undefined ? [] : [run.stop])];
   const { halted, ids } = await recordHalts(halts, deps);
   for (const halt of halted) {
     logger.warn(safeDiagnostic(`${scenario.id} step ${halt.step}: halted (${halt.reason}); ${halt.exceptionId}`, env));
@@ -950,7 +983,7 @@ async function replayRun(
   const body = scrub<OutputBody>({ steps, sideEffects, halted, ...(error === undefined ? {} : { error }) });
   const result = await io.write(error === undefined ? 'replayed' : 'error', body);
   if (range.state !== undefined) {
-    await writePrivateJson(sessionStatePath(scenario.id, env), { ...range.state, completed: true });
+    await writePrivateJson(sessionStatePath(scenario.id, env, crossing), { ...range.state, completed: true });
   }
   const outcome = error === undefined ? 'replayed' : `failed${error.step === undefined ? '' : ` at ${error.step}`}`;
   const line = safeDiagnostic(`${scenario.id}: ${outcome}, ${steps.length} exchanges, ${halted.length} halted`, env);
@@ -980,7 +1013,7 @@ export async function replayScenario(scenario: Scenario, deps: ReplayDeps, phase
       tableVersion: deps.tableVersion,
       ...body,
     };
-    const file = replayOutputPath(scenario.id, env);
+    const file = replayOutputPath(scenario.id, env, isCrossing(scenario.id, deps));
     await writeJsonReport(file, { ...output }, { generatedBy: GENERATED_BY });
     return { status, output, path: file };
   };
@@ -1011,11 +1044,14 @@ const HELP = [
   '',
   'Replays the captured scenarios through the gateway in catalogue order and writes',
   '${OPT2_STATE_DIR}/golden/replay/<id>.json for golden:compare. The gateway must have v0002 active, or v0003 with',
-  '--rehearsal, which without --only replays only the rollback-rehearsal scenarios.',
+  '--rehearsal, which without --only replays only the rollback-rehearsal scenarios. With --rehearsal, another',
+  'acrossTransition scenario replays as its rehearsal crossing, under golden/replay/rehearsal/ and',
+  'golden/sessions/rehearsal/, leaving its v0002 output and sessions as they stand.',
   '',
   '--phase pre-transition  replays the steps of acrossTransition scenarios before their boundary under any version',
   '                        and saves their sessions to ${OPT2_STATE_DIR}/golden/sessions/<id>.json',
   '--phase resume          restores those sessions after the transition and replays the remaining steps',
+  '                        (pass --rehearsal to both phases of a rehearsal crossing)',
   '',
   'Exit: 0 every scenario replayed, 1 the active version is wrong or a scenario failed, 2 usage error.',
 ].join('\n');
@@ -1123,6 +1159,7 @@ export async function main(argv: string[], env: EnvLike = process.env, deps: Mai
     seed: deps.seed ?? loadSeedStore(env),
     sideEffects: { ...deps.sideEffects, config: deps.sideEffects?.config ?? resolveSideEffectConfig(env) },
     logger: deps.logger ?? createHarnessLogger('harness-golden-replay', env),
+    rehearsal,
   };
   const counts = { replayed: 0, skipped: 0, paused: 0 };
   const halted: { id: string; step: string; exceptionId: string }[] = [];

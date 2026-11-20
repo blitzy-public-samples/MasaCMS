@@ -431,7 +431,10 @@ describe('timestamps', () => {
     ['260630100000123', 'csrf_token_expires', 'csrf-expires'],
     ['260630100000123', 'X-csrf_token_expires', 'csrf-expires'],
     ['10/302/2026', undefined, 'admin-date'],
+    ['03/64/2026', undefined, 'admin-date'],
+    ['26/11/19', undefined, 'admin-date-yymmdd'],
     ['9:05 AM', undefined, 'admin-time'],
+    ['1:43:43 PM', undefined, 'admin-time-seconds'],
     [String(EPOCH_MS), 'createdAt', 'epoch-ms'],
     [String(EPOCH_MS), 'lastLoginTime', 'epoch-ms'],
   ])('classifies %s under key %s as %s', (value, key, cls) => {
@@ -446,6 +449,9 @@ describe('timestamps', () => {
     ['40001324,19750248', 'formfield1234567892'],
     ['2026-06-30T10:00:00 trailing', undefined],
     ['not a date', undefined],
+    ['11/19/26', undefined],
+    ['111926', undefined],
+    ['20261119134516', undefined],
   ])('leaves %s under key %s unclassified and unchanged', (value, key) => {
     expect(timestampClassOf(value, rules, key)).toBeUndefined();
     expect(normaliseTimestamp(value, rules, key)).toBe(value);
@@ -583,11 +589,28 @@ describe('normaliseText', () => {
       'on 10/302/2026 at 9:05 AM',
       'on <ts:admin-date> at <ts:admin-time>',
     ],
+    [
+      'replaces a whole time with seconds, after a date or a lifted date',
+      '11/323/2026 1:43:43 PM; <known-issue:date-mask> 10:28:10 AM',
+      '<ts:admin-date> <ts:admin-time-seconds>; <known-issue:date-mask> <ts:admin-time-seconds>',
+    ],
     ['replaces a whole-value timestamp with its class', '2026-06-30', '<ts:iso-date>'],
     [
       'keeps whole-value and key-bound classes literal inside text',
       'due 2026-06-30 at 260630100000123',
       'due 2026-06-30 at 260630100000123',
+    ],
+    ['replaces a whole comment-list date', '26/11/19', '<ts:admin-date-yymmdd>'],
+    ['keeps a yy/mm/dd run inside text or a path literal', 'on 26/11/19 at /a/26/11/19', 'on 26/11/19 at /a/26/11/19'],
+    [
+      'replaces the stamps of the form-data and class-extension download filenames',
+      'filename=OPT-2-Seed-Contact-Form_111926.csv; filename=20261119134516-config.xml.cfm',
+      'filename=OPT-2-Seed-Contact-Form_<ts:file-stamp-mmddyy>.csv; filename=<ts:file-stamp-second>-config.xml.cfm',
+    ],
+    [
+      'keeps six and fourteen digits outside those filenames literal',
+      'F_111926.csvx F-111926.csv F_131926.csv (2023,0,26,331018) x_20261119134516-config.xml 20261119134516.csv',
+      'F_111926.csvx F-111926.csv F_131926.csv (2023,0,26,331018) x_20261119134516-config.xml 20261119134516.csv',
     ],
     [
       'masks token parameters after &amp; and keeps empty ones',

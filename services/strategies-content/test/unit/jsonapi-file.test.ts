@@ -817,7 +817,7 @@ describe.skipIf(!(await pgAvailable()))('routes/jsonapi/file', () => {
       expect(item).toMatchObject({ metaid: id, fileid: '', siteid: '', caption: '', remotepubdate: '', directimages: true, isnew: 0, entityname: 'fileMetaData' });
     });
 
-    it('save updates the stored row with the posted values only, ignoring remotePubDate', async () => {
+    it('save writes the stored bean with the posted values over it, ignoring a posted remotePubDate', async () => {
       const result = await handlerOf(fileMetaDataHandler, 'save')(ctx, call({ method: 'save', id: META_ID, params: { caption: ' Changed ', remotepubdate: '2026-01-01' } }).call);
       expect(dataOf(result)).toMatchObject({ metaid: META_ID, caption: 'Changed', remotepubdate: '', isnew: 0, saveErrors: false, errors: {} });
     });
@@ -832,6 +832,101 @@ describe.skipIf(!(await pgAvailable()))('routes/jsonapi/file', () => {
       const data = dataOf(await handlerOf(fileMetaDataHandler, 'save')(ctx, call({ method: 'save', params }).call));
       expect(data).toMatchObject({ isnew: 0, contenthistid: cfId('H', 2), alttext: 'Alt', filename: 'meta.pdf', siteid: TENANT_B.siteId });
       expect(await metaRow(String(data['metaid']))).not.toBeNull();
+    });
+
+    describe('save as beanORM.save', () => {
+      const POOLED = { ...TENANT_A, filePoolId: TENANT_UMBRELLA.siteId };
+      // Keys of the legacy oracle's answer to the GS-CO-17 metadata-save step (ACF 2023), which the serializer lower-cases.
+      const SAVED_META_KEYS = [
+        'alttext', 'caption', 'contenthistid', 'contentid', 'contentsubtype', 'contenttype', 'created', 'credits', 'directimages', 'entityname',
+        'errors', 'exif', 'fileext', 'fileid', 'filename', 'filesize', 'id', 'isnew', 'links', 'metaid', 'remoteid', 'remotepubdate',
+        'remotesource', 'remotesourceurl', 'remoteurl', 'saveerrors', 'siteid',
+      ];
+      const SAVED_META_LINKS = ['activecontent', 'all', 'content', 'entities', 'file', 'permissions', 'properties', 'self', 'site'];
+
+      /** `struct`'s keys, lower-cased and sorted. */
+      const keysOf = (struct: unknown): string[] => Object.keys(struct as Struct).map((key) => key.toLowerCase()).sort();
+
+      /** The `content.file_metadata` row keyed `metaId` in `tenantId`, of any site, or null. */
+      const keyedRow = (tenantId: string, metaId: string): Promise<unknown> => withTenant(handle.app, tenantId, (tx) => repo.files.findFileMetadataByKey(tx, metaId));
+
+      /** The number of `content.file_metadata` rows of `tenantId`. */
+      const metaCount = (tenantId: string): Promise<number> =>
+        withTenant(handle.app, tenantId, async (tx) => Number((await tx.query<{ n: string }>(`SELECT count(*) AS n FROM ${handle.schema}.file_metadata`)).rows[0]?.n));
+
+      it("inserts a pooled site's new bean under the posted key and site, taking the pool file's columns, as legacy answers it", async () => {
+        const fileId = cfId('C17', 1);
+        const metaId = cfId('C17', 2);
+        await insertFile(UMBRELLA, fileId, {
+          siteid: TENANT_UMBRELLA.siteId, filename: 'gs-document.pdf', fileext: 'pdf', filesize: 595, contenttype: 'application', contentsubtype: 'pdf', caption: 'File caption', exif: '{}',
+        });
+        const before = await metaCount(UMBRELLA);
+        const params = {
+          method: 'save', entityname: 'fileMetaData', siteid: TENANT_A.siteId, id: metaId, metaid: metaId, fileid: fileId, contentid: CONTENT_ID,
+          contenthistid: HIST_ID, alttext: 'GS-CO-17 PDF', caption: 'GS-CO-17 caption', credits: '',
+        };
+        const result = await handlerOf(fileMetaDataHandler, 'save')(ctx, call({ method: 'save', id: metaId, site: POOLED, actor: actorOf(TENANT_A), params }).call);
+        const data = dataOf(result);
+        expect(result).toMatchObject({ status: 200, serializerEntity: 'fileMetaData' });
+        expect(keysOf(data)).toEqual(SAVED_META_KEYS);
+        expect(keysOf(data['links'])).toEqual(SAVED_META_LINKS);
+        const links = Object.fromEntries(Object.entries(data['links'] as Struct).map(([key, value]) => [key.toLowerCase(), value]));
+        expect(links).toMatchObject({
+          activecontent: expect.stringMatching(new RegExp(`/_api/json/v1/${TENANT_A.siteId}/content/${CONTENT_ID}$`)),
+          content: expect.stringMatching(new RegExp(`/_api/json/v1/${TENANT_A.siteId}/content/\\?contenthistid=${HIST_ID}$`)),
+          file: expect.stringMatching(new RegExp(`/_api/json/v1/${TENANT_A.siteId}/file/${fileId}$`)),
+          self: expect.stringMatching(new RegExp(`/_api/json/v1/${TENANT_A.siteId}/fileMetaData/${metaId}$`)),
+        });
+        expect(data).toMatchObject({
+          id: metaId, metaid: metaId, fileid: fileId, contentid: CONTENT_ID, contenthistid: HIST_ID, alttext: 'GS-CO-17 PDF', caption: 'GS-CO-17 caption',
+          credits: '', exif: '{}', filename: 'gs-document.pdf', fileext: 'pdf', filesize: 595, contenttype: 'application', contentsubtype: 'pdf',
+          remotepubdate: '', siteid: TENANT_A.siteId, isnew: 0, directimages: true, entityname: 'fileMetaData', saveErrors: false, errors: {},
+        });
+        expect(await keyedRow(TENANT_A.tenantId, metaId)).toMatchObject({
+          metaid: metaId, siteid: TENANT_A.siteId, fileid: fileId, contentid: CONTENT_ID, contenthistid: HIST_ID, alttext: 'GS-CO-17 PDF',
+          caption: 'GS-CO-17 caption', credits: null, exif: '{}', remotepubdate: null,
+        });
+        expect(await metaCount(UMBRELLA)).toBe(before);
+      });
+
+      it("updates the row a lower-cased key names with the posted values over the stored bean's, binding remotePubDate's ''", async () => {
+        const metaId = cfId('BEE', 1);
+        await gated(TENANT_B.tenantId, (tx) =>
+          repo.files.insertFileMetadata(tx, {
+            metaid: metaId, contentid: CONTENT_ID, contenthistid: HIST_ID, fileid: cfId('M', 1), siteid: TENANT_B.siteId, alttext: 'Stored alt',
+            caption: 'Stored caption', remoteid: 'rid', remotepubdate: new Date(2025, 0, 2, 3, 4, 5),
+          }),
+        );
+        const before = await metaCount(TENANT_B.tenantId);
+        const data = dataOf(await handlerOf(fileMetaDataHandler, 'save')(ctx, call({ method: 'save', id: metaId.toLowerCase(), params: { caption: 'Posted caption' } }).call));
+        expect(data).toMatchObject({ metaid: metaId, alttext: 'Stored alt', caption: 'Posted caption', remoteid: 'rid', filename: 'meta.pdf', isnew: 0 });
+        expect(await keyedRow(TENANT_B.tenantId, metaId)).toMatchObject({ alttext: 'Stored alt', caption: 'Posted caption', remoteid: 'rid', remotepubdate: null, exif: '{}' });
+        expect(await metaCount(TENANT_B.tenantId)).toBe(before);
+      });
+
+      it('keeps a bean failing validation unwritten, answering the new bean with the posted values and its error', async () => {
+        const metaId = cfId('ABC', 1);
+        const params = { metaid: metaId, fileid: cfId('M', 1), contentid: 'x'.repeat(36), caption: 'Unsaved' };
+        const result = await handlerOf(fileMetaDataHandler, 'save')(ctx, call({ method: 'save', params }).call);
+        expect(result).toMatchObject({ status: 403, serializerEntity: 'fileMetaData' });
+        expect(dataOf(result)).toMatchObject({
+          metaid: metaId, fileid: cfId('M', 1), contentid: 'x'.repeat(36), caption: 'Unsaved', filename: '', isnew: 1, returnformat: 'self',
+          saveErrors: false, errors: { contentid: "The property named 'contentid' is not valid" },
+        });
+        expect(await keyedRow(TENANT_B.tenantId, metaId)).toBeNull();
+      });
+
+      it.each<[string, Struct, boolean, Struct | (new (...args: never[]) => Error)]>([
+        ['a complex value', { caption: { text: 'x' } }, true, LegacyServiceUnavailableError],
+        ['a complex remotePubDate, before the tokens', { remotepubdate: ['2026'] }, false, { name: 'LegacyApiError', type: 'server_error' }],
+      ])('fails as legacy does for %s, writing nothing', async (_name, params, csrf, error) => {
+        const before = await metaCount(TENANT_B.tenantId);
+        const { call: failing, csrfCalls } = call({ method: 'save', params: { fileid: cfId('M', 1), ...params }, csrf });
+        const outcome = expect(handlerOf(fileMetaDataHandler, 'save')(ctx, failing)).rejects;
+        await (typeof error === 'function' ? outcome.toBeInstanceOf(error) : outcome.toMatchObject(error));
+        expect(csrfCalls()).toBe(csrf ? 1 : 0);
+        expect(await metaCount(TENANT_B.tenantId)).toBe(before);
+      });
     });
 
     it.each([

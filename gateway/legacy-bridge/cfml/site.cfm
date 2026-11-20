@@ -1,6 +1,6 @@
 <cfscript>
 // Masa's in-memory site registry: lists its site ids and domain bindings, reads the first-touch path getters admin pages print, and rebuilds it from tsettings after a reverse-projected tsettings batch;
-// also reports the server facts the admin Version menu prints, and whether a static path runs CFML.
+// also reports the server facts the admin Version menu prints, the installed plugins the Global Settings Plugins tab lists, and whether a static path runs CFML.
 app = request.opt2BridgeApp;
 try {
 	if (compare(url.op, "versionMenu") == 0) {
@@ -82,6 +82,26 @@ try {
 		if (structKeyExists(url, "initSite")) {
 			body["initThemeAssetPath"] = application.settingsManager.getSite(url.initSite).getThemeAssetPath(complete = 1);
 		}
+	} else if (compare(url.op, "plugins") == 0) {
+		if (compare(cgi.request_method, "GET") != 0) {
+			app.raise(400, "badRequest", "GET required");
+		}
+		// The rows csettings.cfc list() reads for the Global Settings Plugins tab: pluginManager.getAllPlugins(), by name.
+		rsPlugins = application.serviceFactory.getBean("pluginManager").getAllPlugins();
+		plugins = [];
+		for (i = 1; i <= rsPlugins.recordCount; i++) {
+			arrayAppend(plugins, {
+				"moduleId": javaCast("string", rsPlugins.moduleID[i]),
+				"name": javaCast("string", rsPlugins.name[i]),
+				"directory": javaCast("string", rsPlugins.directory[i]),
+				"category": javaCast("string", rsPlugins.category[i]),
+				"version": javaCast("string", rsPlugins.version[i]),
+				"provider": javaCast("string", rsPlugins.provider[i]),
+				"providerUrl": javaCast("string", rsPlugins.providerURL[i]),
+				"pluginId": javaCast("string", rsPlugins.pluginID[i])
+			});
+		}
+		body = {"plugins": plugins};
 	} else if (compare(url.op, "static") == 0) {
 		if (compare(cgi.request_method, "POST") != 0) {
 			app.raise(400, "badRequest", "POST required");

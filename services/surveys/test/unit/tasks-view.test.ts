@@ -96,6 +96,7 @@ describe('toFixtureTasks in the fixture task order', () => {
     ['failed', 'listed'],
     ['cancelled', 'deleted'],
     ['superseded', 'deleted'],
+    ['expired', 'listed'],
   ] as const)('treats a %s task as %s in ACF', (status, state) => {
     expect(FIXTURE_TASK_STATUS[status]).toBe(state);
     expect(toFixtureTaskList([record(null, { status })], recorded)).toHaveLength(state === 'listed' ? 1 : 0);

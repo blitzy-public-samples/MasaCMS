@@ -1,10 +1,10 @@
 {
-  "capturedAt": "2026-11-18T14:27:21.120Z",
+  "capturedAt": "2026-11-20T03:05:14.806Z",
   "fixtures": {
     "available": true,
     "reason": "fixtures loaded"
   },
-  "generatedAt": "2026-11-18T14:27:22.658Z",
+  "generatedAt": "2026-11-20T03:05:16.436Z",
   "generatedBy": "harness/src/golden/capture.ts",
   "origin": "legacy",
   "scenarioId": "GS-PE-07",
@@ -233,7 +233,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "6554c2671373f4045fc1b602a30cba4d7f15c00655119faf5ad6771495b8040b",
+        "rawSha256": "20be9099cd1664aad1e71e63306c1bfbd1636e7036da0819328b55dbe6804435",
         "status": 200
       },
       "routeKey": "cfm:/core/modules/v1/favorites/ajax/savefavorite.cfm"
@@ -455,7 +455,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "104030445fd31c306402f5e2d1e17414e7e684ab5727290431b49bb07d678988",
+        "rawSha256": "da1c3492b5688c057e9c1ffc33c583ddcef4eb32b454b0666a58e5d2258bc203",
         "status": 200
       },
       "routeKey": "cfm:/core/modules/v1/favorites/ajax/savefavorite.cfm"
@@ -685,7 +685,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "298374df138b48474b6c5d225dd3ef57a9c15906a62a800546e39cd8117d7e8c",
+        "rawSha256": "b7e882eb80a4e8cb196c1aa630d7cb4bc0080e0d934f80cafbb68c1285d68637",
         "status": 500
       },
       "routeKey": "cfm:/core/modules/v1/favorites/ajax/savefavorite.cfm"
@@ -807,7 +807,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "ad96d44274b9041d6a9d4093bfe69c37370585ce752b89d5d659074a53c2b755",
+        "rawSha256": "823a2148e142acebe7f4f17a61481c28161cc2c4e14749ccd2207b689e7f3c04",
         "status": 200
       },
       "routeKey": "cfm:/core/modules/v1/favorites/ajax/savefavorite.cfm"
@@ -1033,7 +1033,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "8b8b36e04cb88f369eee25e05d346406b0f9780ebbdb540957a09548cc609b0b",
+        "rawSha256": "5d97effdf25e3f54ab60774630703409b1a78c443d65c637c1824d30a2e703e2",
         "status": 200
       },
       "routeKey": "cfm:/core/modules/v1/favorites/ajax/savefavorite.cfm"
@@ -1259,7 +1259,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "b03fa500decc4077e99ae2ca45dbd22d7393cdbc5badd5776fcc2d84eb963736",
+        "rawSha256": "5a44f230fe32953703720b07781c554493507bf3418410f45f10d2ffc719786a",
         "status": 200
       },
       "routeKey": "cfm:/core/modules/v1/favorites/ajax/savefavorite.cfm"
@@ -1455,7 +1455,7 @@
           ],
           "redirectTargets": [
             {
-              "location": "<origin>/404/?favoriteName=GS-PE-07-case&favoriteLocation=<id:1>&favoriteType=internal_content&userID=<id:2>",
+              "location": "<origin>/404/?favoriteLocation=<id:1>&favoriteName=GS-PE-07-case&favoriteType=internal_content&userID=<id:2>",
               "status": 301
             }
           ],
@@ -1732,7 +1732,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "2e73a3a457998ac802db548d716df6f50c27f541e0571d3016e4fa6a4b5a15ee",
+        "rawSha256": "09bd371a6bcaac9f7c53ccfac4f8205b81552d31a60f8ccfba80e2cf7ee8e959",
         "status": 404
       },
       "routeKey": "cfm:/core/modules/v1/favorites/ajax/savefavorite.cfm"

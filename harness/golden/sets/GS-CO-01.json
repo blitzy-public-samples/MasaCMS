@@ -1,10 +1,10 @@
 {
-  "capturedAt": "2026-11-18T14:23:09.204Z",
+  "capturedAt": "2026-11-20T03:01:02.542Z",
   "fixtures": {
     "available": true,
     "reason": "fixtures loaded"
   },
-  "generatedAt": "2026-11-18T14:23:12.511Z",
+  "generatedAt": "2026-11-20T03:01:06.106Z",
   "generatedBy": "harness/src/golden/capture.ts",
   "origin": "legacy",
   "scenarioId": "GS-CO-01",
@@ -13,7 +13,7 @@
     "mail": [],
     "rows": {
       "content.content": {
-        "checksum": "667a1b0f784fc2f794d3bd647a28bf1f4686756d89d214175b9d61405b3e8dc9",
+        "checksum": "dacfc7cac446100d6678875497bc70ae0c047a2b7678e055f9c4b93c23817156",
         "columns": [
           {
             "name": "tcontent_ID",
@@ -315,11 +315,11 @@
         "entries": [
           {
             "count": 1,
-            "encoding": "i5:11050s8:tenant-as35:00000000000000000000000000000000000s35:00000000000000000000000000000000001s7:<id:47>s7:<id:52>NNNNNNNNs4:Pages7:Defaulti1:1i1:1s13:GS-CO-01 Pages13:GS-CO-01 PageNs13:gs-co-01-pageNNs20:<p>GS-CO-01 Page</p>s14:<ts:iso-local>s10:Admin Users7:<id:53>NNi1:1i1:0i1:1i1:0Ns5:_selfNi1:0NNNNi1:0Ns7:Inheriti1:0Ni1:0i2:10s7:ordernos3:ascNNi1:0NNi1:0s43:00000000000000000000000000000000001,<id:47>Ni1:1s13:gs-co-01-pages13:GS-CO-01 Pages14:<ts:iso-local>i1:0Ns5:smalls4:AUTOs4:AUTONi1:0i1:0Ns5:Dailys2:{}"
+            "encoding": "i5:11041s8:tenant-as35:00000000000000000000000000000000000s35:00000000000000000000000000000000001s7:<id:47>s7:<id:52>NNNNNNNNs4:Pages7:Defaulti1:1i1:1s13:GS-CO-01 Pages13:GS-CO-01 PageNs13:gs-co-01-pageNNs20:<p>GS-CO-01 Page</p>s14:<ts:iso-local>s10:Admin Users7:<id:53>NNi1:1i1:0i1:1i1:0Ns5:_selfNi1:0NNNNi1:0Ns7:Inheriti1:0Ni1:0i2:10s7:ordernos3:ascNNi1:0NNi1:0s43:00000000000000000000000000000000001,<id:47>Ni1:1s13:gs-co-01-pages13:GS-CO-01 Pages14:<ts:iso-local>i1:0Ns5:smalls4:AUTOs4:AUTONi1:0i1:0Ns5:Dailys2:{}"
           },
           {
             "count": 1,
-            "encoding": "i5:11051s7:defaults35:00000000000000000000000000000000000s35:00000000000000000000000000000000001s7:<id:50>s7:<id:54>NNNNNNNNs4:Pages7:Defaulti1:1i1:1s20:GS-CO-01 Editor Pages20:GS-CO-01 Editor PageNs20:gs-co-01-editor-pageNNs27:<p>GS-CO-01 Editor Page</p>s14:<ts:iso-local>s9:QA Editors7:<id:55>NNi1:1i1:0i1:1i1:0Ns5:_selfNi1:0NNNNi1:0Ns7:Inheriti1:0Ni1:0i2:10s7:ordernos3:ascNNi1:0NNi1:0s43:00000000000000000000000000000000001,<id:50>Ni1:1s20:gs-co-01-editor-pages20:GS-CO-01 Editor Pages14:<ts:iso-local>i1:0Ns5:smalls4:AUTOs4:AUTONi1:0i1:0Ns5:Dailys2:{}"
+            "encoding": "i5:11042s7:defaults35:00000000000000000000000000000000000s35:00000000000000000000000000000000001s7:<id:50>s7:<id:54>NNNNNNNNs4:Pages7:Defaulti1:1i1:1s20:GS-CO-01 Editor Pages20:GS-CO-01 Editor PageNs20:gs-co-01-editor-pageNNs27:<p>GS-CO-01 Editor Page</p>s14:<ts:iso-local>s9:QA Editors7:<id:55>NNi1:1i1:0i1:1i1:0Ns5:_selfNi1:0NNNNi1:0Ns7:Inheriti1:0Ni1:0i2:10s7:ordernos3:ascNNi1:0NNi1:0s43:00000000000000000000000000000000001,<id:50>Ni1:1s20:gs-co-01-editor-pages20:GS-CO-01 Editor Pages14:<ts:iso-local>i1:0Ns5:smalls4:AUTOs4:AUTONi1:0i1:0Ns5:Dailys2:{}"
           }
         ],
         "legacyTable": "tcontent",
@@ -1572,7 +1572,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "653849e932692205c213fac2f0e93bcf1a45a848b3b1a46a63282f57827985ff",
+        "rawSha256": "b600ae34e47d4df485ac57399c8bb6ac813d60511a20b48528bc19fe9ff84f80",
         "status": 200
       },
       "routeKey": "admin:carch.list"
@@ -3912,7 +3912,7 @@
               "form": 1,
               "name": "displayIntervalTZ",
               "type": "hidden",
-              "value": "UTC"
+              "value": "Etc/UTC"
             },
             {
               "disabled": false,
@@ -9576,7 +9576,7 @@
               "form": 1,
               "name": "displayIntervalTZ",
               "type": "hidden",
-              "value": "UTC"
+              "value": "Etc/UTC"
             },
             {
               "disabled": false,
@@ -12907,7 +12907,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "6d5534bd0f872d7303c744fce465eaff6db13b6f351963a4b4b9be2ba3029f77",
+        "rawSha256": "627904be2119d0ed002e0988eb74f105f50b8de8e5c6c433ee3695c0e3b3c6b8",
         "status": 200
       },
       "routeKey": "admin:carch.edit"
@@ -13547,8 +13547,8 @@
             "action": "add",
             "approved": "0",
             "body": "<p>GS-CO-01 Page</p>",
-            "contenthistid": "5666E8AE-C7B8-2656-5CF4A5D1E4A94354",
-            "contentid": "5666E6C9-C824-D973-6051F5264D862DEE",
+            "contenthistid": "A501380E-C4E8-2ED2-C4340ECDA4C432C9",
+            "contentid": "A501361E-B78D-CFC4-08E1027B2E26B01B",
             "csrf_token": "<token>",
             "csrf_token_expires": "<token>",
             "display": "1",
@@ -14182,7 +14182,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "5f4a879a611d9b70b37db8049710d9b4e8274a4437b95bcc954ba4ba2848f4ae",
+        "rawSha256": "9c08d8e1bd0f79cecc507c242e3adecca2272f3c0c1a38acf2d9c4f0e69db76d",
         "status": 200
       },
       "routeKey": "admin:carch.update"
@@ -16509,7 +16509,7 @@
               "form": 1,
               "name": "displayIntervalTZ",
               "type": "hidden",
-              "value": "UTC"
+              "value": "Etc/UTC"
             },
             {
               "disabled": false,
@@ -20647,7 +20647,7 @@
               "form": 1,
               "name": "displayIntervalTZ",
               "type": "hidden",
-              "value": "UTC"
+              "value": "Etc/UTC"
             },
             {
               "disabled": false,
@@ -22465,7 +22465,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "32c1c7cbc458912de575c084f2fbba916c4f515635211e20fd3c615d500081ec",
+        "rawSha256": "986c928764c6b211eb1e9dba82a370ab3b789a70db4b997cb6632a2f583ceb55",
         "status": 200
       },
       "routeKey": "admin:carch.edit"
@@ -22694,14 +22694,14 @@
             "changesetname": "",
             "closeCompactDisplay": "false",
             "compactDisplay": "false",
-            "contenthistid": "5666FC74-F8CF-82B6-CA18C21DDF34ACDA",
-            "contentid": "5666FBB8-9837-1FFF-E937D050C2370866",
+            "contenthistid": "A5014BC3-00C9-990D-921DF263159E0E2C",
+            "contentid": "A5014AF8-C5BC-7E6E-6D30B6F8B13282DD",
             "convertDisplayTimeZone": "true",
             "csrf_token": "<token>",
             "csrf_token_expires": "<token>",
             "display": "1",
             "displayInterval": "Daily",
-            "displayIntervalTZ": "UTC",
+            "displayIntervalTZ": "Etc/UTC",
             "displayIntervalllDay": "0",
             "displayStart": "",
             "displayStop": "",
@@ -22943,7 +22943,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "c6e60ccdc35e0a6456630ba78712b9096b824392179dbf2a71a84d3ead4811cf",
+        "rawSha256": "7b433f8c4c3fef36f7826d30bae872f1a8048154e95b1328b2724b82bee0614e",
         "status": 200
       },
       "routeKey": "admin:carch.update"

@@ -27,7 +27,7 @@
   "jvm": {
     "javaHome": "/usr/lib/jvm/java-17-openjdk-amd64",
     "heapSize": 2048,
-    "args": "@JVM_ARGS@ -Djava.io.tmpdir=@LEGACY_TMP_DIR@"
+    "args": "@JVM_ARGS@ -Dcom.sun.media.imageio.disableCodecLib=true -Djava.io.tmpdir=@LEGACY_TMP_DIR@"
   },
   "env": {
     "MURA_PORT": "@GATEWAY_PORT@",

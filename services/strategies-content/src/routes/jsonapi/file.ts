@@ -26,6 +26,7 @@ import { withTenant, type TenantTx } from '@opt2/platform/tenancy';
 import { writeContextFor } from '../../domain/context.js';
 import {
   FILE_BEAN_COLUMNS,
+  FILE_METADATA_BEAN_COLUMNS,
   ImageUploadHaltedError,
   deleteFileEntity,
   deleteFileMetaDataEntity,
@@ -33,10 +34,11 @@ import {
   isImageUploadExt,
   requestHasRestrictedFiles,
   saveFileEntity,
-  saveFileMetaDataEntity,
+  saveFileMetaDataBean,
+  serializedExif,
   storeUploadedFile,
   type FileBeanColumns,
-  type FileMetaDataValues,
+  type FileMetaDataBeanColumns,
 } from '../../domain/files.js';
 import { withPoolTenant } from '../../domain/pools.js';
 import type { FeedTableSpec } from '../../repo/bean-feed-sql.js';
@@ -51,7 +53,7 @@ import {
   urlParam,
   type ApiEntityView,
 } from '../../legacy/jsonapi-serializers.js';
-import { BEAN_MODELS } from './bean-metadata.js';
+import { BEAN_MODELS, type BeanModel } from './bean-metadata.js';
 import { errorsObject, possiblyUrl, validateBeanRules, type ValidatedBean } from './bean-validator.js';
 import { CfStruct, cfValueOf, type CfValue } from './cfml-values.js';
 import {
@@ -164,20 +166,6 @@ const META_PROPERTY_NAMES: readonly string[] = [
 /** `tfiles` columns the fileMetaData load joins in (contentFileMetaDataBean.cfc:132-136). */
 const JOINED_FILE_COLUMNS = ['filename', 'filesize', 'contenttype', 'contentsubtype', 'fileext', 'created'] as const satisfies readonly (keyof ReadFileMetaRow)[];
 
-// remotePubDate is left out: contentFileMetaDataBean.setRemotePubDate assigns variables.remotepubdate, not the instance
-// value, so a posted value is never saved (contentFileMetaDataBean.cfc:200-203).
-/** `fileMetaData` columns a posted value is saved to. */
-const META_POSTED_COLUMNS = [
-  'alttext',
-  'caption',
-  'credits',
-  'remoteid',
-  'remoteurl',
-  'remotesource',
-  'remotesourceurl',
-  'exif',
-] as const satisfies readonly (keyof FileMetaDataValues)[];
-
 const T_DATE_TIME = /\d\d\d\d-\d\d-\d\dT\d\d:\d\d:\d\d/;
 const SPACE_DATE_TIME = /\d\d\d\d-\d\d-\d\d\s\d\d:\d\d:\d\d/;
 
@@ -246,22 +234,18 @@ function requiredId(call: JsonApiCall): string {
   return call.id;
 }
 
-/** save's key (jsonApiUtility.cfc:1957-1967): a posted uuid or home id under `pk`, else `id`; `new` takes a fresh uuid. */
-function saveKey(call: JsonApiCall, pk: string): string {
-  const posted = call.params.string(pk);
-  const id = isLegacyFindOneId(posted) ? posted : (call.id ?? 'new');
-  return id === 'new' ? cfUuid() : id;
-}
-
-/** A file save's load key and the id its bean is saved under. */
-interface FileSaveKeys {
+/** A save's load key and the id its bean is saved under. */
+interface SaveKeys {
   loadId: string;
   savedId: string;
 }
 
-/** A file save's keys (jsonApiUtility.cfc:1957-1967): {@link saveKey}'s load key; saved under it, a new key's fresh id or a non-empty posted `fileid`, trimmed. */
-function fileSaveKeys(call: JsonApiCall): FileSaveKeys {
-  const posted = call.params.string(FILE_CONFIG.primaryKey);
+/**
+ * save's keys (jsonApiUtility.cfc:1957-1967): the load key is a posted uuid or home id under `pk`, else `id`, `new`
+ * becoming a fresh uuid; the bean is saved under it, a new key's fresh id, or a non-empty posted `pk`, trimmed.
+ */
+function saveKeys(call: JsonApiCall, pk: string): SaveKeys {
+  const posted = call.params.string(pk);
   const loadId = isLegacyFindOneId(posted) ? posted : (call.id ?? 'new');
   if (cfEq(loadId, 'new')) {
     const id = cfUuid();
@@ -599,14 +583,19 @@ function isSimpleValue(value: unknown): value is string | number | boolean {
   return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean';
 }
 
-/** set(event)'s failures, which save raises before it checks the tokens (jsonApiUtility.cfc:1940): int() of a fileSize, parseDateArg of a complex date. */
-function assertSettable(call: JsonApiCall): void {
-  const size = call.params.get('filesize');
-  if (size !== undefined && size !== null && !(isSimpleValue(size) && cfIsNumeric(text(size)))) throw new LegacyApiError('server_error');
+/** set(event)'s parseDateArg of a complex date, which save raises before it checks the tokens (jsonApiUtility.cfc:1940). */
+function assertDatesSettable(call: JsonApiCall): void {
   for (const name of DATE_PROPERTIES) {
     const date = call.params.get(name);
     if (date !== undefined && date !== null && !isSimpleValue(date)) throw new LegacyApiError('server_error');
   }
+}
+
+/** A file bean's set(event) failures before the tokens: int() of a fileSize, then {@link assertDatesSettable}. */
+function assertSettable(call: JsonApiCall): void {
+  const size = call.params.get('filesize');
+  if (size !== undefined && size !== null && !(isSimpleValue(size) && cfIsNumeric(text(size)))) throw new LegacyApiError('server_error');
+  assertDatesSettable(call);
 }
 
 /** bean.setValue of a simple value (bean.cfc:417-440): setFileSize's int(), setFileField's raw text, a datetime parsed, else trimmed. */
@@ -630,13 +619,23 @@ function beanWithEvent(call: JsonApiCall, loaded: Struct, savedId: string): Stru
   return bean;
 }
 
-/** The reloaded bean with each event value of a key it holds set on it (jsonApiUtility.cfc:2041-2049), as an unwritten save answers. */
-function withEventValues(call: JsonApiCall, values: Struct, savedId: string): Struct {
+/**
+ * The reloaded bean with each event value of a key it holds set on it (jsonApiUtility.cfc:2041-2049), as an unwritten save
+ * answers; the event holds `savedId` under `pk`. `setValue` answers undefined for a value its setter keeps off the instance.
+ */
+function withEventValues(
+  call: JsonApiCall,
+  values: Struct,
+  pk: string,
+  savedId: string,
+  setValue: (name: string, value: string | number | boolean) => unknown = setValueOf,
+): Struct {
   const overlaid: Struct = { ...values };
   for (const key of Object.keys(values)) {
-    const value = key === 'fileid' ? savedId : key === 'siteid' ? call.siteId : call.params.get(key);
+    const value = key === pk ? savedId : key === 'siteid' ? call.siteId : call.params.get(key);
     if (value === undefined || value === null) continue;
-    overlaid[key] = isSimpleValue(value) ? setValueOf(key, value) : value;
+    const set = isSimpleValue(value) ? setValue(key, value) : value;
+    if (set !== undefined) overlaid[key] = set;
   }
   return overlaid;
 }
@@ -646,13 +645,13 @@ function validatedValue(value: unknown): CfValue {
   return value instanceof Date ? cfTimestampText(value) : (cfValueOf(value) ?? '');
 }
 
-/** beanORM.validate's generated property rules over a file bean (bean.cfc:487-507; beanORM.cfc:368-377); a save posts no validation context. */
-function fileBeanErrors(bean: Struct): Struct {
+/** beanORM.validate's generated property rules of `model` over a bean (bean.cfc:487-507; beanORM.cfc:368-377); a save posts no validation context. */
+function beanErrors(model: BeanModel, bean: Struct): Struct {
   const validated: ValidatedBean = {
     value: (property) => validatedValue(bean[property.toLowerCase()]),
-    hasProperty: (property) => BEAN_MODELS.file.hasProperty(property),
+    hasProperty: (property) => model.hasProperty(property),
   };
-  return errorsObject(validateBeanRules(validated, BEAN_MODELS.file.validations, { data: new CfStruct(), isPostedFile: () => false }, undefined));
+  return errorsObject(validateBeanRules(validated, model.validations, { data: new CfStruct(), isPostedFile: () => false }, undefined));
 }
 
 // The scan's verdict hangs on ACF's struct order and its parts array, so a part or a URL that could restrict halts.
@@ -676,10 +675,10 @@ async function assertUnrestricted(ctx: RouteContext, call: JsonApiCall, bean: Re
   }
 }
 
-/** beanORM.addQueryParam of each persistent column (beanORM.cfc:329-366): '' and `null` as NULL, an int column as int(). */
-function boundColumns(bean: Readonly<Struct>): FileBeanColumns {
+/** beanORM.addQueryParam of each of the persistent `persisted` columns (beanORM.cfc:329-366): '' and `null` as NULL, an int column as int(). */
+function boundColumns(bean: Readonly<Struct>, persisted: readonly string[]): Struct {
   const columns: Struct = {};
-  for (const column of FILE_BEAN_COLUMNS) {
+  for (const column of persisted) {
     const value = bean[column];
     const raw = text(value);
     if (value instanceof Date) columns[column] = value;
@@ -688,11 +687,11 @@ function boundColumns(bean: Readonly<Struct>): FileBeanColumns {
     else if (cfIsNumeric(raw)) columns[column] = Math.floor(cfToNumber(raw));
     else throw new LegacyApiError('server_error');
   }
-  return columns as FileBeanColumns;
+  return columns;
 }
 
 /** fileBean.save without a part under `fileField` (fileBean.cfc:77-161): emulateUpload of a `fileField` value halts; else beanORM.save, unless validation keeps it unwritten. */
-async function saveFileBean(ctx: RouteContext, call: JsonApiCall, keys: FileSaveKeys, fileField: string): Promise<JsonApiResult> {
+async function saveFileBean(ctx: RouteContext, call: JsonApiCall, keys: SaveKeys, fileField: string): Promise<JsonApiResult> {
   const stored = await loadFileRow(ctx, call, keys.loadId);
   const now = ctx.domain.clock.now();
   const loaded = stored === null ? { ...fileBeanDefaults(keys.loadId, call.siteId, now), ...NOT_FOUND_ARGUMENTS } : storedFileValues(stored, now);
@@ -706,12 +705,12 @@ async function saveFileBean(ctx: RouteContext, call: JsonApiCall, keys: FileSave
   }
   const bean = beanWithEvent(call, loaded, keys.savedId);
   Object.assign(bean, fileBeanSaveValues(text(bean['exif']), text(bean['filename'])));
-  const errors = fileBeanErrors(bean);
+  const errors = beanErrors(BEAN_MODELS.file, bean);
   await assertUnrestricted(ctx, call, bean);
   if (Object.keys(errors).length > 0 && !saveErrorsOf(call)) {
-    return saveResult(FILE, ctx, call, keys.savedId, { errors, overlay: (values) => withEventValues(call, values, keys.savedId) });
+    return saveResult(FILE, ctx, call, keys.savedId, { errors, overlay: (values) => withEventValues(call, values, FILE_CONFIG.primaryKey, keys.savedId) });
   }
-  await saveFileEntity(ctx.domain, call.actor, keys.savedId, boundColumns(bean));
+  await saveFileEntity(ctx.domain, call.actor, keys.savedId, boundColumns(bean, FILE_BEAN_COLUMNS) as FileBeanColumns);
   return saveResult(FILE, ctx, call, keys.savedId, { errors });
 }
 
@@ -721,7 +720,7 @@ async function saveFileBean(ctx: RouteContext, call: JsonApiCall, keys: FileSave
  */
 async function saveFile(ctx: RouteContext, call: JsonApiCall): Promise<JsonApiResult> {
   assertSettable(call);
-  const keys = fileSaveKeys(call);
+  const keys = saveKeys(call, FILE_CONFIG.primaryKey);
   if (!(await call.validateCsrf())) return { error: 'invalidTokens' };
   if (!entityActionAllowed(call.actor, FILE_CONFIG)) return authorizationDenied();
   const fileField = (postedText(call, 'filefield') ?? 'newfile').toLowerCase();
@@ -765,32 +764,59 @@ async function deleteFile(ctx: RouteContext, call: JsonApiCall): Promise<JsonApi
   return jsonApiResultOf('');
 }
 
+/** contentFileMetaDataBean's setValue of a simple value (bean.cfc:417-440): `created` parsed, else trimmed; undefined for `remotePubDate`, whose setter keeps it off the instance (contentFileMetaDataBean.cfc:200-203). */
+function metaSetValueOf(name: string, value: string | number | boolean): unknown {
+  if (name === 'remotepubdate') return undefined;
+  const raw = text(value);
+  return name === 'created' ? (remotePubDateOf(raw) ?? '') : javaTrim(raw);
+}
+
 /**
- * JSON API save of a `fileMetaData` (jsonApiUtility.cfc:1903-2074, contentFileMetaDataBean.cfc:205-222) through
- * `saveFileMetaData`, which finds the row by version, file and content item, applying only the posted values.
+ * The bean a fileMetaData save writes (jsonApiUtility.cfc:1940-2015): loadBy's stored bean, else a new one under the load
+ * key that takes the posted file's `tfiles` columns from the file pool site (contentFileMetaDataBean.cfc:113-129), then
+ * set(event) of each persistent column, the event holding the request site and `metaId`. `remotePubDate` keeps the init
+ * '', as setRemotePubDate never sets the instance; a complex value halts.
+ */
+async function metaBeanWithEvent(ctx: RouteContext, call: JsonApiCall, loadId: string, metaId: string): Promise<Struct> {
+  let loaded = (await loadMetaRecord(ctx, call, loadId))?.values;
+  if (loaded === undefined) {
+    loaded = { ...META.fresh(ctx, call, loadId, call.siteId), ...NOT_FOUND_ARGUMENTS };
+    const fileId = postedText(call, 'fileid') ?? '';
+    const file = fileId === '' ? null : await loadFileRow(ctx, call, fileId, call.site.urls.filePoolId);
+    if (file !== null) loaded = { ...loaded, ...beanColumns(file), isnew: 0 };
+  }
+  const bean: Struct = { ...loaded, metaid: metaId, siteid: call.siteId, remotepubdate: '' };
+  for (const column of FILE_METADATA_BEAN_COLUMNS) {
+    const value = column === 'siteid' ? undefined : call.params.get(column);
+    if (value === undefined || value === null) continue;
+    if (!isSimpleValue(value)) throw unservedFileSave(`A file metadata save posting a complex ${column}`, 'file-metadata-save-complex-value');
+    const set = metaSetValueOf(column, value);
+    if (set !== undefined) bean[column] = set;
+  }
+  return bean;
+}
+
+/**
+ * JSON API save of a `fileMetaData` (jsonApiUtility.cfc:1903-2074, contentFileMetaDataBean.cfc:205-247): serializeExif,
+ * then beanORM.save of the bean under its key unless validation keeps it unwritten; the answer reloads that key.
  */
 async function saveFileMetaDataCall(ctx: RouteContext, call: JsonApiCall): Promise<JsonApiResult> {
-  const id = saveKey(call, META_CONFIG.primaryKey);
+  assertDatesSettable(call);
+  const keys = saveKeys(call, META_CONFIG.primaryKey);
   if (!(await call.validateCsrf())) return { error: 'invalidTokens' };
   if (!entityActionAllowed(call.actor, META_CONFIG)) return authorizationDenied();
-  const loaded = (await loadMetaRecord(ctx, call, id))?.values;
-  const fileId = postedText(call, 'fileid') ?? text(loaded?.['fileid']);
-  // A new bean holding a posted fileid takes that file's columns, loaded under the file pool site (contentFileMetaDataBean.cfc:116-118).
-  const file = loaded === undefined && fileId !== '' ? await loadFileRow(ctx, call, fileId, call.site.urls.filePoolId) : null;
-  const contentId = postedText(call, 'contentid') ?? text(loaded?.['contentid'] ?? beanValue(file?.contentid));
-  const contentHistId = postedText(call, 'contenthistid') ?? text(loaded?.['contenthistid']);
-  const values: FileMetaDataValues = {};
-  for (const column of META_POSTED_COLUMNS) {
-    const posted = postedText(call, column);
-    if (posted !== undefined) values[column] = posted;
+  // set() skips an empty key, so the bean keeps the id its init generated.
+  const metaId = keys.savedId === '' ? cfUuid() : keys.savedId;
+  const bean = await metaBeanWithEvent(ctx, call, keys.loadId, metaId);
+  bean['exif'] = serializedExif(text(bean['exif']));
+  const errors = beanErrors(BEAN_MODELS.fileMetaData, bean);
+  if (Object.keys(errors).length > 0 && !saveErrorsOf(call)) {
+    const overlay = (values: Struct): Struct => withEventValues(call, values, META_CONFIG.primaryKey, metaId, metaSetValueOf);
+    return saveResult(META, ctx, call, metaId, { errors, overlay });
   }
-  const saved = await saveFileMetaDataEntity(
-    ctx.domain,
-    call.tenantId,
-    { contentId, contentHistId, siteId: call.siteId, fileId, values, setAsDefault: false },
-    writeContextFor(call.actor),
-  );
-  return saveResult(META, ctx, call, saved.metaid);
+  const columns = boundColumns(bean, FILE_METADATA_BEAN_COLUMNS) as FileMetaDataBeanColumns;
+  await saveFileMetaDataBean(ctx.domain, call.tenantId, metaId, columns, writeContextFor(call.actor));
+  return saveResult(META, ctx, call, metaId, { errors });
 }
 
 // A call without a tenant reaches no row, and no such caller holds the module permission a delete needs.

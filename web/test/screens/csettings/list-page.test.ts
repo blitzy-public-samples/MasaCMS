@@ -3,12 +3,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { components } from '@/generated/clients/programs-sites';
 import { createCsrfRenderer } from '@/lib/csrf';
 import { resetLegacySettingsForTests } from '@/lib/env';
-import { GatewayDenialError } from '@/lib/gateway-client';
+import { GatewayDenialError, LEGACY_PLUGINS_PATH } from '@/lib/gateway-client';
 import { isSafeHtml, toString } from '@/lib/html';
 import type { AdminRequest } from '@/lib/request-context';
 import { rbFor } from '@/lib/resource-bundles/rb';
 import { listScreen, renderLegacyErrors } from '@/screens/csettings/list';
 import type { ScreenContext } from '@/screens/registry';
+import { LEGACY_PLUGINS } from '../../fixtures/gateway/plugins';
 import { SITE_IDS, SITE_LIST, SITE_LIST_BY_ORDERNO, siteListItemById } from '../../fixtures/programs-sites/sites';
 import { adminS2Request, type AdminRequestPartial } from '../../helpers/admin-request';
 import { fragmentModel, type DomModel } from '../../helpers/dom-model';
@@ -16,12 +17,15 @@ import { useTestEnv } from '../../helpers/env';
 import { fakeGatewayClient, routeKey, type FakeGatewayClient } from '../../helpers/fake-gateway';
 
 type SiteListItem = components['schemas']['SiteListItem'];
+type LegacyPlugin = (typeof LEGACY_PLUGINS)[number];
 /** String fields: an rc, a set of `MURA_` variables or an errors struct. */
 type Fields = Readonly<Record<string, string>>;
 
 const LIST_ROUTE = routeKey('GET', 'programs-sites', '/v1/sites');
 const ORDER_ROUTE = routeKey('POST', 'programs-sites', '/v1/sites/order');
 const CSRF_ROUTE = routeKey('POST', 'identity', '/v1/csrf/tokens');
+const PLUGINS_ROUTE = routeKey('GET', 'gateway', LEGACY_PLUGINS_PATH);
+const NO_INSTALLED_PLUGINS = { status: 200, body: { plugins: [] } };
 const EXPIRES = '261112191044236';
 const TOKEN = 'F'.repeat(64);
 
@@ -77,10 +81,11 @@ async function renderList(
   sites: readonly SiteListItem[],
   rc: Fields = {},
   partial: AdminRequestPartial = {},
+  plugins: readonly LegacyPlugin[] = [],
 ): Promise<Rendered> {
   const gateway = csrfGateway();
   const ctx = contextFor(listRequest(rc, partial), gateway);
-  const view = await screen.render(ctx, { sites });
+  const view = await screen.render(ctx, { sites, plugins });
   expect(isSafeHtml(view.body)).toBe(true);
   const markup = toString(view.body);
   return { markup, model: fragmentModel(markup), gateway, req: ctx.req };
@@ -147,17 +152,27 @@ describe('csettings.list', () => {
       { rc: {}, sortBy: 'site' },
       { rc: { siteSortBy: 'orderno' }, sortBy: 'orderno' },
       { rc: { csrf_token: '', orderno: '2,1', orderid: 'tenant-a,default' }, sortBy: 'site' },
-    ])('lists sites by $sortBy without saving for rc $rc', async ({ rc, sortBy }) => {
-      const gateway = fakeGatewayClient({ [LIST_ROUTE]: { status: 200, body: SITE_LIST } });
+    ])('lists sites by $sortBy, then the installed plugins, without saving for rc $rc', async ({ rc, sortBy }) => {
+      const gateway = fakeGatewayClient({
+        [LIST_ROUTE]: { status: 200, body: SITE_LIST },
+        [PLUGINS_ROUTE]: { status: 200, body: { plugins: LEGACY_PLUGINS } },
+      });
 
-      await expect(screen.load(contextFor(listRequest(rc), gateway))).resolves.toEqual({ sites: SITE_LIST });
-      expect(gateway.calls).toEqual([{ service: 'programs-sites', method: 'GET', path: '/v1/sites', query: { sortBy } }]);
+      await expect(screen.load(contextFor(listRequest(rc), gateway))).resolves.toEqual({
+        sites: SITE_LIST,
+        plugins: LEGACY_PLUGINS,
+      });
+      expect(gateway.calls).toEqual([
+        { service: 'programs-sites', method: 'GET', path: '/v1/sites', query: { sortBy } },
+        { service: 'gateway', method: 'GET', path: LEGACY_PLUGINS_PATH },
+      ]);
     });
 
     it('saves the posted order and deploy flags under the posted token, then lists', async () => {
       const gateway = fakeGatewayClient({
         [ORDER_ROUTE]: { status: 200, body: { written: true, sites: SITE_LIST_BY_ORDERNO } },
         [LIST_ROUTE]: { status: 200, body: SITE_LIST_BY_ORDERNO },
+        [PLUGINS_ROUTE]: NO_INSTALLED_PLUGINS,
       });
       const rc = {
         siteSortBy: 'orderno',
@@ -168,10 +183,14 @@ describe('csettings.list', () => {
         csrf_token_expires: EXPIRES,
       };
 
-      await expect(screen.load(contextFor(listRequest(rc), gateway))).resolves.toEqual({ sites: SITE_LIST_BY_ORDERNO });
+      await expect(screen.load(contextFor(listRequest(rc), gateway))).resolves.toEqual({
+        sites: SITE_LIST_BY_ORDERNO,
+        plugins: [],
+      });
       expect(gateway.calls.map(({ method, path }) => `${method} ${path}`)).toEqual([
         'POST /v1/sites/order',
         'GET /v1/sites',
+        `GET ${LEGACY_PLUGINS_PATH}`,
       ]);
       expect(gateway.calls[0]).toMatchObject({
         service: 'programs-sites',
@@ -192,6 +211,7 @@ describe('csettings.list', () => {
       const gateway = fakeGatewayClient({
         [ORDER_ROUTE]: { status: 200, body: { written: false, sites: SITE_LIST } },
         [LIST_ROUTE]: { status: 200, body: SITE_LIST },
+        [PLUGINS_ROUTE]: NO_INSTALLED_PLUGINS,
       });
 
       await screen.load(contextFor(listRequest({ csrf_token: TOKEN }), gateway));
@@ -212,10 +232,13 @@ describe('csettings.list', () => {
       { failing: ORDER_ROUTE, status: 400, type: Error, operation: 'saveSiteOrder', calls: 1 },
       { failing: LIST_ROUTE, status: 401, type: GatewayDenialError, operation: 'listSites', calls: 2 },
       { failing: LIST_ROUTE, status: 500, type: Error, operation: 'listSites', calls: 2 },
+      { failing: PLUGINS_ROUTE, status: 403, type: GatewayDenialError, operation: 'getLegacyPlugins', calls: 3 },
+      { failing: PLUGINS_ROUTE, status: 500, type: Error, operation: 'getLegacyPlugins', calls: 3 },
     ])('rejects when $operation answers $status', async ({ failing, status, type, operation, calls }) => {
       const gateway = fakeGatewayClient({
         [ORDER_ROUTE]: { status: 200, body: { written: true, sites: SITE_LIST } },
         [LIST_ROUTE]: { status: 200, body: SITE_LIST },
+        [PLUGINS_ROUTE]: NO_INSTALLED_PLUGINS,
       });
       gateway.setRoute(failing, { status, body: {} });
 
@@ -270,6 +293,38 @@ describe('csettings.list', () => {
       expect(markup).not.toContain(JAVA_DISABLED);
       expect(model.alerts).toEqual([]);
       expect(csrfContexts(gateway)).toEqual([['updatesites', 'updatecore', 'newplugin', 'tenant-a', 'tenant-b', 'umbrella']]);
+    });
+
+    it("lists legacy's installed plugins under Current Plugins, each with tokens for its own Delete", async () => {
+      const [golden, other] = LEGACY_PLUGINS as [LegacyPlugin, LegacyPlugin];
+
+      const { markup, model, gateway } = await renderList(SITE_LIST, {}, {}, LEGACY_PLUGINS);
+
+      expect(model.headings).toEqual(['Global Settings', 'Current Sites', 'Plugins', 'Install Plugin', 'Current Plugins']);
+      expect(model.tables[1]).toEqual({
+        headers: ['', 'Name', 'Directory', 'Category', 'Version', 'Provider', 'Plugin ID'],
+        rows: [
+          ['Edit Delete', 'GS-PS-10 Plugin', '1', 'Utility', '1.0.0', 'OPT-2 golden harness', '1'],
+          ['Edit Delete', "O'Brien & <Co>", 'obrien', '', '2.0', 'A & B', '12'],
+        ],
+      });
+      expect(markup).toContain(
+        `<li class="edit"><a href="./?muraAction=cSettings.editPlugin&moduleID=${golden.moduleId}"><i class="mi-pencil"></i>Edit</a></li>`,
+      );
+      expect(markup).toContain(
+        `<li class="delete"><a href="#" onclick="confirmDialog('Delete \\x27GS\\x2DPS\\x2D10\\x20PLUGIN\\x27?',function(){actionModal('./?muraAction=cSettings.deletePlugin&moduleID=${golden.moduleId}&csrf_token=T-${golden.moduleId}&csrf_token_expires=${EXPIRES}')});return false;"><i class="mi-trash"></i>Delete</a></li>`,
+      );
+      expect(markup).toContain('<td class="var-width"><a class="alt" title="view" href="/plugins/1/">GS-PS-10 Plugin</a></td>');
+      expect(markup).toContain(
+        '<td><a class="alt" href="https%3A%2F%2Fopt2.invalid%2Fgolden-plugin" target="_blank">OPT-2 golden harness</a></td>',
+      );
+      expect(markup).toContain("confirmDialog('Delete \\x27O\\x27BRIEN\\x20\\x26\\x20\\x3CCO\\x3E\\x27?'");
+      expect(markup).toContain('title="view" href="/plugins/obrien/">O&#x27;Brien &amp; &lt;Co&gt;</a>');
+      expect(markup).toContain('<td><a class="alt" href="" target="_blank">A &amp; B</a></td>');
+      expect(markup).not.toContain(NO_PLUGINS);
+      expect(csrfContexts(gateway)).toEqual([
+        ['updatesites', 'updatecore', 'newplugin', 'tenant-a', 'tenant-b', 'umbrella', golden.moduleId, other.moduleId],
+      ]);
     });
 
     it.each(['orderno', 'OrderNo'])('renders the bind-order view for siteSortBy=%s', async (siteSortBy) => {

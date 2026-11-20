@@ -1,10 +1,10 @@
 {
-  "capturedAt": "2026-11-18T14:24:35.528Z",
+  "capturedAt": "2026-11-20T03:02:30.915Z",
   "fixtures": {
     "available": true,
     "reason": "fixtures loaded"
   },
-  "generatedAt": "2026-11-18T14:24:41.278Z",
+  "generatedAt": "2026-11-20T03:02:37.202Z",
   "generatedBy": "harness/src/golden/capture.ts",
   "origin": "legacy",
   "scenarioId": "GS-CO-14",
@@ -457,7 +457,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "3f4af9e83a19e0111f19274baf2ecb8edf0e3fcbe6447faf0fed1c9738455882",
+        "rawSha256": "9f2020aadce864b88782913ffcfc454ab738eab079bdc4be7a50d285f339ab9e",
         "status": 200
       },
       "routeKey": "api:content.findone"
@@ -496,7 +496,7 @@
           "value": {
             "approved": "0",
             "changesetid": "",
-            "contenthistid": "55E085AF-C947-AC24-3938372765E07A96",
+            "contenthistid": "A4B4FE98-E8AE-8FAB-227CC3FA312D40A1",
             "name": "OPT-2 Seed Contact Form",
             "object": "form",
             "objectid": "15714695-7491-46E1-B581F6F8E87A1BB8",
@@ -533,7 +533,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "1368874b71e178f1d2b9bc55bb14041bbefe4fed510b596ade0df0d00a207a8b",
+        "rawSha256": "c61e2c6d3fa3d6f398e7c21e7e9bba2c8b5a63e19a9f446daff213131c47fcd5",
         "status": 200
       },
       "routeKey": "admin:carch.updateobjectparams"
@@ -912,7 +912,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "8a0aa1d024ff4acde885cce28a3e234ba7bb9bf62eb8e90841a0115bf8f669fd",
+        "rawSha256": "9ea35d2fd1017dbcd048a2601acbb60931ffa1179e6db663464b55bb195ce245",
         "status": 200
       },
       "routeKey": "admin:cform.importform"
@@ -1565,7 +1565,7 @@
           }
         },
         "headers": {
-          "content-type": "multipart/form-data; boundary=----formdata-undici-080885525052"
+          "content-type": "multipart/form-data; boundary=----formdata-undici-059954577101"
         },
         "method": "POST",
         "url": "/admin/?muraAction=cForm.importForm"
@@ -2183,7 +2183,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "2cc70162ed4a32519148e696b584e48dc49d37ce34464f8877959d7170b1ff79",
+        "rawSha256": "5de99e0a5d31d7b1df411f4414bb561f5004c7358fc3dee198c9d9dad7d21f21",
         "status": 200
       },
       "routeKey": "admin:cform.importform{formzip}"
@@ -4523,7 +4523,7 @@
               "form": 1,
               "name": "displayIntervalTZ",
               "type": "hidden",
-              "value": "UTC"
+              "value": "Etc/UTC"
             },
             {
               "disabled": false,
@@ -7915,7 +7915,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/?muraAction=cArch.edit&siteid=tenant-a&moduleid=00000000000000000000000000000000000&parentid=00000000000000000000000000000000001&topid=00000000000000000000000000000000001&type=Page&contentid=F278DB5A-FD06-6A77-5CF528EB6D4E7DAD&contenthistid=55E085AF-C947-AC24-3938372765E07A96"
+        "url": "/admin/?muraAction=cArch.edit&siteid=tenant-a&moduleid=00000000000000000000000000000000000&parentid=00000000000000000000000000000000001&topid=00000000000000000000000000000000001&type=Page&contentid=F278DB5A-FD06-6A77-5CF528EB6D4E7DAD&contenthistid=A4B4FE98-E8AE-8FAB-227CC3FA312D40A1"
       },
       "response": {
         "domModel": {
@@ -10247,7 +10247,7 @@
               "form": 1,
               "name": "displayIntervalTZ",
               "type": "hidden",
-              "value": "UTC"
+              "value": "Etc/UTC"
             },
             {
               "disabled": false,
@@ -13625,7 +13625,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "56a967590f42927bbf86afc06c10b1774e29f677466c85d27e3acc873615d8c9",
+        "rawSha256": "e3e12277894b4db5e5a2995e895675f8dfc5176174e39094e9bba020c6348c96",
         "status": 200
       },
       "routeKey": "admin:carch.edit"
@@ -13703,7 +13703,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/_api/json/v1/tenant-a/content/F278DB5A-FD06-6A77-5CF528EB6D4E7DAD?contenthistid=5673E08D-B7FB-9FFE-82773589B527C091"
+        "url": "/_api/json/v1/tenant-a/content/F278DB5A-FD06-6A77-5CF528EB6D4E7DAD?contenthistid=A50E78E1-97AB-DF44-50B76231DEBD29CA"
       },
       "response": {
         "body": {
@@ -13763,7 +13763,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "1063038c2f862d319f95bb76ba8f228e5a98188b4f06b0b812356e44bf16980c",
+        "rawSha256": "0764cf2206455a031ad4871f7f2182b8fda755b0280efd674bc13da871aa9dfa",
         "status": 200
       },
       "routeKey": "api:content.findone"
@@ -14027,7 +14027,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "eeaa49e8137b2e48f7a613876ceabcea09f6a48f443e76b76b47ac230544e6e5",
+        "rawSha256": "a63ed80e5438d1a44f727ceb27853cce8313e9be51dc2a368a3a92b82487385f",
         "status": 200
       },
       "routeKey": "admin:cform.getfield"
@@ -14093,7 +14093,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "0ddb26f24a363c034daabeff1c3bbd240b524dc305be09d0d7436c868b42963f",
+        "rawSha256": "99bdbdc7be1e522bfc3cc9757d9b8674ecd751e3aca7df093a072af0c695e7cd",
         "status": 200
       },
       "routeKey": "admin:cform.getfieldtype"
@@ -14611,7 +14611,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "dbf314290d10acd6a43851cf28e1c7debe46c80af13ee19758010232401358b9",
+        "rawSha256": "c0af8c8a8c0b1e71ff425c19fdd17498894b2d0b37193dea6a33a9f74c9a34a2",
         "status": 200
       },
       "routeKey": "admin:cform.getdataset"
@@ -14673,7 +14673,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "8cca8b41902195087e678e2c5feddc73f9d9f556a4f6a1f59c4f0e9fb68b25a0",
+        "rawSha256": "0c66d9a51358edc07e61021f4cb02ec997364f09dcd2f850453ae028409fed71",
         "status": 200
       },
       "routeKey": "admin:cform.export"
@@ -15416,7 +15416,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "a2a2f556c18e1b8323e442be056c11abc0649862db4461099583c6ad91e106f9",
+        "rawSha256": "26b08a4e09b0465448516bc9cc7fa712c74b56e1e2f7e4a00157cf03f360df57",
         "status": 200
       },
       "routeKey": "admin:cform.importform"
@@ -18158,7 +18158,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "2afe740e7c81cec3315d277274ae7e6b67f165d3afd434d304b7254255954de7",
+        "rawSha256": "9e5f1d84e20323a1b94f4adc143e3607bcda42b4b1edd020deeef3ea4611eecd",
         "status": 200
       },
       "routeKey": "admin:carch.datamanager"
@@ -18708,7 +18708,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "7d9ea81cfae929181c3250a64c7b5281728c7b82d0c7e07f95214c34170a5c9f",
+        "rawSha256": "5e9f18fd14919a6048e12f6af826bd9c08da38afe687891e72bca53e167ff489",
         "status": 200
       },
       "routeKey": "admin:carch.datamanager"
@@ -22104,7 +22104,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "1c0ac8bbf05bfc7063e2333e45adc9c8b640510236df86476598ea8de00c2f79",
+        "rawSha256": "d40f6900a62a925895ffe991871eabb333a67b48ef04c380abdfe64faff852ce",
         "status": 200
       },
       "routeKey": "admin:carch.datamanager"
@@ -25462,7 +25462,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "d83572bf69ab677fe753a5a07da28e3e5085581cfb1fc1beca459f5eceb7f1ad",
+        "rawSha256": "c93c89c6f38fa59ab5c22afd500f9498056e84d6be3ee8c1d34a76e6f595b8e3",
         "status": 200
       },
       "routeKey": "admin:carch.datamanager"
@@ -26540,7 +26540,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "3841fc0f64cfe87572f004b055186ec08aaeeb6790962adc2d1c04602a11bc26",
+        "rawSha256": "a3a64c6a773a11e82281dee1ee6ac7a6cfa5c1c6967ea5aac2b1b7ed5ce80a30",
         "status": 200
       },
       "routeKey": "admin:carch.datamanager"
@@ -26551,12 +26551,12 @@
       "normalised": {
         "export": {
           "contentType": "application/msexcel; charset=UTF-8",
-          "filename": "OPT-2-Seed-Contact-Form_111826.csv",
+          "filename": "OPT-2-Seed-Contact-Form_<ts:file-stamp-mmddyy>.csv",
           "kind": "file",
           "sha256": "8d8d0acb56b9ff7a342f3c6704d1d8c0b9c4b0131faa1b41811afbb3e53463b5"
         },
         "headers": {
-          "content-disposition": "attachment;filename=OPT-2-Seed-Contact-Form_111826.csv",
+          "content-disposition": "attachment;filename=OPT-2-Seed-Contact-Form_<ts:file-stamp-mmddyy>.csv",
           "content-language": "en-US",
           "content-type": "application/msexcel; charset=UTF-8",
           "expires": "0",
@@ -26580,12 +26580,12 @@
       "response": {
         "export": {
           "contentType": "application/msexcel; charset=UTF-8",
-          "filename": "OPT-2-Seed-Contact-Form_111826.csv",
+          "filename": "OPT-2-Seed-Contact-Form_<ts:file-stamp-mmddyy>.csv",
           "kind": "file",
           "sha256": "8d8d0acb56b9ff7a342f3c6704d1d8c0b9c4b0131faa1b41811afbb3e53463b5"
         },
         "headers": {
-          "content-disposition": "attachment;filename=OPT-2-Seed-Contact-Form_111826.csv",
+          "content-disposition": "attachment;filename=OPT-2-Seed-Contact-Form_<ts:file-stamp-mmddyy>.csv",
           "content-language": "en-US",
           "content-type": "application/msexcel; charset=UTF-8",
           "expires": "0",

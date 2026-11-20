@@ -1,10 +1,10 @@
 {
-  "capturedAt": "2026-11-18T14:24:42.849Z",
+  "capturedAt": "2026-11-20T03:02:38.893Z",
   "fixtures": {
     "available": true,
     "reason": "fixtures loaded"
   },
-  "generatedAt": "2026-11-18T14:25:00.469Z",
+  "generatedAt": "2026-11-20T03:02:57.705Z",
   "generatedBy": "harness/src/golden/capture.ts",
   "origin": "legacy",
   "scenarioId": "GS-PUB-01",
@@ -7575,7 +7575,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "98bb901fc7c971b9397e0d3770ef48d5b9d70fbcfb0fa62d468fccee8d926bb1",
+        "rawSha256": "942459c98388b45c495ebef47adf71eaed81855a5afc3d12f1bf32326d4047a6",
         "status": 200
       },
       "routeKey": "page:render"
@@ -15123,7 +15123,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "480d8ccc21dc886827365dea457095f4ae5af88c68395829acc2ccdc8826015d",
+        "rawSha256": "bfa31d6405b2b19877ed17034d42947a6a0fc8d017e28be9fad6d19102c247d0",
         "status": 200
       },
       "routeKey": "page:login"
@@ -22648,7 +22648,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "f7e0e60c1ecb123af1608dae213443e095f15b3e430372db84637891b0679cba",
+        "rawSha256": "04d074b348175d69739cbde07dc6cd566cf5242e0885c7b882d663f5b6962b6e",
         "status": 200
       },
       "routeKey": "page:render"
@@ -29926,7 +29926,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "354d5d4bf76f0a8e2bb4760a86be5f137cf5e376c37455a51f9be7d5bdd4cc2d",
+        "rawSha256": "4e565fd2de260c73e830f262bf672381629eeee8a44530eae93a5f5c29dd4a56",
         "status": 200
       },
       "routeKey": "page:login"
@@ -37191,7 +37191,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "522f24640000282ccc25efdc5bc71293fd5d9481be4b8307a6ea62ae2d58162b",
+        "rawSha256": "11df5ff225f83227b45b85016e55c282532d7b9799babf3a97820219c8f500c0",
         "status": 200
       },
       "routeKey": "page:render"

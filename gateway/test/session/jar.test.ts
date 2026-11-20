@@ -214,10 +214,15 @@ describe('legacyCookieHeader and legacySetCookiesFrom', () => {
 });
 
 describe('requestSessionCookies', () => {
-  it('takes session cookies of any case from the Cookie header with setCookieLegacy default attributes', () => {
-    expect(requestSessionCookies('userid=9C1D7E2F; cfid=1001; CFTOKEN=12345678', {}, NOW)).toEqual({
-      CFID: { name: 'CFID', value: '1001', attributes: DEFAULT_TAIL },
-      CFTOKEN: { name: 'CFTOKEN', value: '12345678', attributes: DEFAULT_TAIL },
+  /** setSessionCookies' attributes at NOW under Masa's default `sessionCookiesExpires=never`. */
+  const WRITTEN_TAIL = tailOf(sessionCookieStrings({ CFID: '', CFTOKEN: '' }, {}, NOW)[0] ?? '');
+
+  it('takes session cookies of any case from the Cookie header with the attributes setSessionCookies writes', () => {
+    expect(WRITTEN_TAIL).toBe('expires=Fri, 30-Jun-2056 12:00:00 GMT;path=/;HttpOnly;');
+    expect(requestSessionCookies('userid=9C1D7E2F; cfid=1001; CFTOKEN=12345678; jsessionid=J1', {}, NOW)).toEqual({
+      CFID: { name: 'CFID', value: '1001', attributes: WRITTEN_TAIL },
+      CFTOKEN: { name: 'CFTOKEN', value: '12345678', attributes: WRITTEN_TAIL },
+      JSESSIONID: { name: 'JSESSIONID', value: 'J1', attributes: WRITTEN_TAIL },
     });
   });
 
@@ -229,11 +234,11 @@ describe('requestSessionCookies', () => {
     });
   });
 
-  it('falls back to default attributes when the observed cookie is a deletion', () => {
+  it('falls back to the written attributes when the observed cookie is a deletion', () => {
     const deletion = deleteCookieLegacy('cfid', { cookieDomain: 'example.com' }, NOW);
     const observed = absorbLegacySetCookies([deletion]).sessionCookies;
     expect(requestSessionCookies('CFID=1001', observed, NOW)).toEqual({
-      CFID: { name: 'CFID', value: '1001', attributes: DEFAULT_TAIL },
+      CFID: { name: 'CFID', value: '1001', attributes: WRITTEN_TAIL },
     });
   });
 

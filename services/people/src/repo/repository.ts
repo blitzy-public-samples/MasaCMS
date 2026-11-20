@@ -50,6 +50,7 @@ import {
   type TagRow,
   type TrashRow,
 } from './tables.js';
+import { sqlServerSortOrder } from './sqlserver-sort.js';
 
 /** Service name the people write positions carry. */
 export const OWNER = 'people' as const;
@@ -105,6 +106,11 @@ function cfTrim(value: string): string {
 /** A posted id the legacy `char(35)` column can hold; legacy swallows the insert error of any other [legacy: core/mura/user/userDAO.cfc:597-614]. */
 function storableId(value: string): boolean {
   return value !== '' && value.length <= ID_WIDTH;
+}
+
+/** SQL Server's `order by isPrimary desc` comparison; NULL sorts lowest, so last (stored values are 0 to 255). */
+function byPrimaryDesc(a: AddressRow, b: AddressRow): number {
+  return (b.isprimary ?? -1) - (a.isprimary ?? -1);
 }
 
 function isUniqueViolation(err: unknown, constraint: string): boolean {
@@ -546,6 +552,13 @@ export interface PeopleRepository extends Repository {
   personTombstoneVersion(tx: TenantTx, userId: string): Promise<string | null>;
   /** Stores `rowVersion` as the deleted person's last aggregate version. */
   recordPersonTombstone(tx: TenantTx, userId: string, rowVersion: string, ctx?: WriteContext): Promise<PersonTombstoneRow>;
+  /**
+   * Deletes the rows a deleted person leaves without an owner Type, and so in no unit: its addresses with their extended
+   * data, its interests, favorites, tags and extended data. Reads skip the unit gates, which a window's apply holds;
+   * returns the number of rows deleted.
+   */
+  deleteOwnerlessRows(tx: TenantTx, userId: string, ctx: WriteContext): Promise<number>;
+
   /** Persons of user-pool site `siteId`, optionally only `userIds`, by last then first name, NULLs first [legacy: core/mura/user/userGateway.cfc:712-713]. */
   listPersonsForSite(tx: TenantTx, siteId: string, opts?: { userIds?: readonly string[] }): Promise<PersonRow[]>;
   /** One keyset page of `listPersonsForSite`. */
@@ -565,7 +578,7 @@ export interface PeopleRepository extends Repository {
   /** Every person in `scope` as its search key, in one statement, in `pagePersonsInOrder` order: `orderBy`, then userid. */
   listPersonSearchKeys(tx: TenantTx, scope: PersonOrderScope, orderBy: readonly PersonSortKey[]): Promise<PersonSearchKey[]>;
 
-  /** The person's addresses, primary first [legacy: core/mura/user/userDAO.cfc:862-871]. */
+  /** The person's addresses as SQL Server returns `order by isPrimary desc`, ties included [legacy: core/mura/user/userDAO.cfc:862-871]. */
   listAddresses(tx: TenantTx, userId: string): Promise<AddressRow[]>;
   /** `listAddresses` of each of `userIds` in one statement, keyed by the id as given. */
   listAddressesOf(tx: TenantTx, userIds: readonly string[]): Promise<Map<string, AddressRow[]>>;
@@ -873,7 +886,8 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
     ` OR jobtitle ILIKE $3 ESCAPE '' OR ${idIn('userid', '$4')})` +
     ` AND ($5::bpchar[] IS NULL OR ${idIn('userid', '$5')})` +
     ' ORDER BY lower(lname) ASC NULLS FIRST, userid LIMIT $6';
-  const addressesSql = `SELECT * FROM ${address} WHERE tenant_id = $1 AND ${idEquals('userid', '$2')} ORDER BY isprimary DESC NULLS LAST, addressid`;
+  // tuseraddresses is clustered on addressID, the order getAddresses' Sort reads its rows in.
+  const addressesSql = `SELECT * FROM ${address} WHERE tenant_id = $1 AND ${idEquals('userid', '$2')} ORDER BY addressid COLLATE ${legacyCi}`;
   const lockOtherPrimariesSql =
     `SELECT addressid FROM ${address} WHERE tenant_id = $1 AND ${idEquals('userid', '$2')} AND addressid COLLATE ${legacyCi} <> $3::bpchar` +
     ' AND isprimary IS DISTINCT FROM 0 ORDER BY addressid FOR UPDATE';
@@ -908,11 +922,13 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
     `WITH found AS MATERIALIZED (SELECT * FROM ${table} WHERE tenant_id = $1 AND ${idIn(column, '$2')})` +
     ` SELECT u.n AS request_position, r.* FROM found AS r JOIN unnest($2::bpchar[]) WITH ORDINALITY AS u(v, n) ON ${idEquals(`r.${column}`, 'u.v')}` +
     ` ORDER BY u.n, ${order}`;
-  const addressesOfSql = requestedRowsSql(address, 'userid', 'r.isprimary DESC NULLS LAST, r.addressid');
+  const addressesOfSql = requestedRowsSql(address, 'userid', `r.addressid COLLATE ${legacyCi}`);
   const addressesByIdSql = requestedRowsSql(address, 'addressid', 'r.addressid');
   const interestsOfSql = requestedRowsSql(interest, 'userid', 'r.categoryid');
   const extendDataOfSql = requestedRowsSql(extendData, 'baseid', 'r.baseid, r.attributeid, r.dataid');
   const lockExtendByBaseSql = `SELECT dataid FROM ${extendData} WHERE tenant_id = $1 AND ${idEquals('baseid', '$2')} ORDER BY dataid FOR UPDATE`;
+  const lockOwnedAddressesSql = `SELECT addressid FROM ${address} WHERE tenant_id = $1 AND ${idEquals('userid', '$2')} ORDER BY addressid FOR UPDATE`;
+  const lockOwnedFavoritesSql = `SELECT favoriteid FROM ${favorite} WHERE tenant_id = $1 AND ${idEquals('userid', '$2')} ORDER BY favoriteid FOR UPDATE`;
   const lockExtendByAttributesSql =
     `SELECT dataid, attributeid FROM ${extendData} WHERE tenant_id = $1 AND ${idEquals('baseid', '$2')}` +
     ' AND attributeid = ANY($3::integer[]) ORDER BY dataid FOR UPDATE';
@@ -1072,6 +1088,19 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
     return base.upsert<PersonTombstoneRow>(tx, PERSON_TOMBSTONE.table, { userid: stored?.userid ?? userId, row_version: rowVersion }, ctx);
   }
 
+  async function deleteOwnerlessRows(tx: TenantTx, userId: string, ctx: WriteContext): Promise<number> {
+    const addresses = await select<{ addressid: string }>(tx, lockOwnedAddressesSql, [tx.tenantId, userId]);
+    let deleted = 0;
+    for (const baseId of [userId, ...addresses.map(({ addressid }) => addressid)]) {
+      deleted += await deleteKeys(tx, EXTEND_DATA.table, await select(tx, lockExtendByBaseSql, [tx.tenantId, baseId]), ctx);
+    }
+    deleted += await deleteKeys(tx, ADDRESS.table, addresses, ctx);
+    deleted += await deleteKeys(tx, INTEREST.table, await select(tx, lockInterestsSql, [tx.tenantId, userId, null]), ctx);
+    deleted += await deleteKeys(tx, FAVORITE.table, await select(tx, lockOwnedFavoritesSql, [tx.tenantId, userId]), ctx);
+    deleted += await deleteKeys(tx, TAG.table, await select(tx, lockTagsSql, [tx.tenantId, userId]), ctx);
+    return deleted;
+  }
+
   /** WHERE terms of the persons of user-pool site `siteId`, optionally only `userIds`, over their bound parameters. */
   function siteFilter(tx: TenantTx, siteId: string, userIds: readonly string[] | undefined): PersonFilter {
     const where = ['tenant_id = $1', siteEquals('siteid', '$2')];
@@ -1196,12 +1225,13 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
     return readUnits<PersonSearchKey>(tx, PERSON.unit, sql, filter.params);
   }
 
-  function listAddresses(tx: TenantTx, userId: string): Promise<AddressRow[]> {
-    return readUnits<AddressRow>(tx, ADDRESS.unit, addressesSql, [tx.tenantId, userId]);
+  async function listAddresses(tx: TenantTx, userId: string): Promise<AddressRow[]> {
+    return sqlServerSortOrder(await readUnits<AddressRow>(tx, ADDRESS.unit, addressesSql, [tx.tenantId, userId]), byPrimaryDesc);
   }
 
-  function listAddressesOf(tx: TenantTx, userIds: readonly string[]): Promise<Map<string, AddressRow[]>> {
-    return rowsByRequest<AddressRow>(tx, ADDRESS.unit, addressesOfSql, userIds);
+  async function listAddressesOf(tx: TenantTx, userIds: readonly string[]): Promise<Map<string, AddressRow[]>> {
+    const found = await rowsByRequest<AddressRow>(tx, ADDRESS.unit, addressesOfSql, userIds);
+    return new Map([...found].map(([userId, rows]) => [userId, sqlServerSortOrder(rows, byPrimaryDesc)]));
   }
 
   async function findAddress(tx: TenantTx, addressId: string): Promise<AddressRow | null> {
@@ -1688,6 +1718,7 @@ export function createPeopleRepository({ clock = systemClock, schema = SCHEMA }:
     updatePerson,
     personTombstoneVersion,
     recordPersonTombstone,
+    deleteOwnerlessRows,
     listPersonsForSite,
     pagePersonsForSite,
     searchPersons,

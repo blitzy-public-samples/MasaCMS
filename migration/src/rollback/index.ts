@@ -10,6 +10,7 @@ export {
   RECONCILIATION_REPORTS,
   REHEARSAL_SCENARIOS,
   SESSION_SCENARIO,
+  SESSION_GOLDEN_SET,
   renderRollbackReport,
   writeRollbackReport,
 } from './report.js';

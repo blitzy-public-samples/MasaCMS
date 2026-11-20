@@ -173,11 +173,11 @@ describe('server.json.template rendered by legacy-start.sh render_server_json', 
     expect(existsSync(broken.serverJson)).toBe(false);
   });
 
-  it('ends the JVM arguments with java.io.tmpdir set to the legacy temp directory', () => {
+  it('appends the JDK-only PNG codec pin and java.io.tmpdir, set to the legacy temp directory, to the JVM arguments', () => {
     const { result, serverJson, tmp } = render();
     expect(result.status, result.stderr).toBe(0);
     const doc = JSON.parse(readFileSync(serverJson, 'utf8')) as RenderedServer;
-    expect(doc.jvm?.args).toBe(`${CAPTURED_JVM_ARGS} -Djava.io.tmpdir=${tmp}`);
+    expect(doc.jvm?.args).toBe(`${CAPTURED_JVM_ARGS} -Dcom.sun.media.imageio.disableCodecLib=true -Djava.io.tmpdir=${tmp}`);
   });
 
   it.each([' ', '"', "'", '\\'])('refuses a legacy temp directory holding %j and writes no server.json', (char) => {

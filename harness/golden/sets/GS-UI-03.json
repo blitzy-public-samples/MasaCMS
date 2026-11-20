@@ -1,10 +1,10 @@
 {
-  "capturedAt": "2026-11-18T14:33:23.395Z",
+  "capturedAt": "2026-11-20T03:10:39.567Z",
   "fixtures": {
     "available": true,
     "reason": "fixtures loaded"
   },
-  "generatedAt": "2026-11-18T14:33:23.396Z",
+  "generatedAt": "2026-11-20T03:10:39.569Z",
   "generatedBy": "harness/e2e/ui/interactions.e2e.ts",
   "origin": "legacy",
   "scenarioId": "GS-UI-03",
@@ -81,7 +81,7 @@
           }
         },
         "headers": {
-          "content-type": "multipart/form-data; boundary=----WebKitFormBoundary84wTmN5njJzyAnRp"
+          "content-type": "multipart/form-data; boundary=----WebKitFormBoundaryaBITN5MwvCRIb43L"
         },
         "method": "POST",
         "url": "/admin/"
@@ -108,7 +108,7 @@
         "headers": {
           "content-type": "application/json;charset=utf-8"
         },
-        "rawSha256": "883c3805f274c044eceb2480fbc4ad6524b19b2b94c5ac7b58881cebaf4a2810",
+        "rawSha256": "1c23dfbbb738283865265c1c32a27383617b0fce385ff6c9a9c16f503fd51c22",
         "status": 200
       },
       "routeKey": "admin:carch.update{upload=image}"
@@ -177,7 +177,7 @@
           }
         },
         "headers": {
-          "content-type": "multipart/form-data; boundary=----WebKitFormBoundary6TEvji0nDVIjwHeB"
+          "content-type": "multipart/form-data; boundary=----WebKitFormBoundaryNQeeBSvuJVVKD7BA"
         },
         "method": "POST",
         "url": "/admin/"
@@ -203,7 +203,7 @@
         "headers": {
           "content-type": "application/json;charset=utf-8"
         },
-        "rawSha256": "788e543834faf54e41cbda72c1b45e42e9bcbd64d51bf89494105e5cc14b2b00",
+        "rawSha256": "4f8a3b2fd16082b9a28e2e15ad5b4066a99ac9e0bf07b86ed71bfcae54a84f2a",
         "status": 200
       },
       "routeKey": "admin:carch.update{approved=1}"
@@ -1277,7 +1277,7 @@
         "headers": {
           "content-type": "text/html;charset=UTF-8"
         },
-        "rawSha256": "818bbb043f92e4427f856caae7340d16e1a43baba4d5d1a2ea40e3a614e5928f",
+        "rawSha256": "fc0d4f87c37ed58671d4a64ae52e0b93b2831b3a429e103a0208a1fa473d0b06",
         "status": 200
       },
       "routeKey": "admin:carch.multifileupload"

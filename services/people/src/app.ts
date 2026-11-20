@@ -27,6 +27,7 @@ import { createPeopleEvents } from './events/publish.js';
 import { peoplePayloadValidators } from './events/topics.js';
 import { createIdentityClient, type IdentityClient } from './legacy/identity-client.js';
 import { PEOPLE_MAPPINGS } from './migration/mappings/index.js';
+import { dropOwnerlessRows } from './migration/ownerless-rows.js';
 import { SCHEMA, createPeopleRepository } from './repo/repository.js';
 import { PEOPLE_UNITS } from './repo/tables.js';
 import { favoritesSurfaceOf, favoritesTargetRefused, favoritesTemplateMissing } from './routes/favorites.js';
@@ -136,7 +137,11 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       mappings: PEOPLE_MAPPINGS,
       units: PEOPLE_UNITS,
       db,
-      emitStateEvents: events.emitStateEvents,
+      // The person's ownerless rows go first, so an event the platform withholds cannot skip them.
+      emitStateEvents: async (tx, change, write) => {
+        await dropOwnerlessRows(repository, tx, change, write);
+        await events.emitStateEvents(tx, change, write);
+      },
       targetOnlyColumns: events.targetOnlyColumns,
       operationStatus: rosterOperationStatus,
     });

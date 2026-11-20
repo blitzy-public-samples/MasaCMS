@@ -22,13 +22,14 @@ export interface ScheduledTaskViewItem {
   status: ScheduledTaskRecord['status'];
 }
 
-/** The fixture's ACF task state per communications status: a reschedule or cancellation deletes the ACF task, while run tasks stay listed. */
+/** The fixture's ACF task state per communications status: a reschedule or cancellation deletes the ACF task, while run and misfired tasks stay listed. */
 export const FIXTURE_TASK_STATUS: Readonly<Record<ScheduledTaskRecord['status'], 'listed' | 'deleted'>> = Object.freeze({
   scheduled: 'listed',
   done: 'listed',
   failed: 'listed',
   cancelled: 'deleted',
   superseded: 'deleted',
+  expired: 'listed',
 });
 
 /** The survey's own task names with their offsets, which give each listed task its offset as the fixture's rows do. */
@@ -69,7 +70,7 @@ export function toFixtureTask(
 
 /** The fixture items of the listed records whose names the survey recorded, in the records' order. */
 export function toFixtureTasks(records: readonly ScheduledTaskRecord[], opts: FixtureTaskListOptions): FixtureTaskItem[] {
-  // Offsets come from the survey's own rows, as in the fixture; communications moves a past scheduleTime to now.
+  // Offsets come from the survey's own rows, as in the fixture; communications moves a just-past scheduleTime to now.
   const items: FixtureTaskItem[] = [];
   for (const record of records) {
     if (FIXTURE_TASK_STATUS[record.status] === 'deleted') continue;

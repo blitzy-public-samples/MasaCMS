@@ -37,6 +37,8 @@ const ENCODED_AMPERSAND = '%26';
 const ENCODED_HASH = '%23';
 // Scheme and authority, or path, before the query of an absolute or relative URL.
 const URL_HEAD = /^(?:https?:\/\/[^\s/?#]+(?:\/[^\s?#]*)?|\.{0,2}\/[^\s?#]*)$/i;
+// Scheme and authority of an absolute or network-path URL, before its path.
+const URL_AUTHORITY = /^(?:[a-z][a-z0-9+.-]*:)?\/\/[^/?#]*/i;
 
 interface CompiledClass {
   readonly name: string;
@@ -397,10 +399,16 @@ function sortEncodedUrlScope(value: string): string {
   return `${beforeFragment.slice(0, queryAt)}${query}${value.slice(beforeFragment.length)}`;
 }
 
+// Whether `head`, a URL before its query, has a path `urls.currentUrl` names, as written after scheme and authority.
+function isCurrentUrlPath(head: string, rules: NormaliseRules): boolean {
+  const { currentUrl } = rules.urls;
+  return urlRuleApplies(currentUrl.id, rules) && currentUrl.paths.includes(head.replace(URL_AUTHORITY, ''));
+}
+
 // Raw `name=value` pairs are edited in place, so encoding, order and repeats stay as each side sent them; only a
-// url-scope query (`?&…`: admin/Application.cfc:319-331, jsonApiUtility.cfc:318-337) with distinct names is sorted,
-// as legacy's own order varies per request.
-function normaliseQuery(query: string, rules: NormaliseRules, compiled: Compiled): string {
+// url-scope query (`?&…`: admin/Application.cfc:319-331, jsonApiUtility.cfc:318-337), or a getCurrentURL query on a
+// `currentPath` URL, with distinct names is sorted, as legacy's own order varies per request.
+function normaliseQuery(query: string, rules: NormaliseRules, compiled: Compiled, currentPath: boolean): string {
   const maskTokens = urlRuleApplies(rules.tokens.id, rules);
   const { urlScope } = rules.urls;
   const scoped = urlRuleApplies(urlScope.id, rules);
@@ -424,7 +432,8 @@ function normaliseQuery(query: string, rules: NormaliseRules, compiled: Compiled
     }
     return { name, text };
   });
-  if (scoped && query.startsWith('&') && hasDistinctNames(all)) params.sort(byFoldedName);
+  const walked = currentPath || (scoped && query.startsWith('&'));
+  if (walked && hasDistinctNames(all)) params.sort(byFoldedName);
   else if (rules.urls.otherwise.sortQuery) params.sort((a, b) => codeUnitOrder(a.name, b.name));
   return params.map((param) => param.text).join('&');
 }
@@ -447,10 +456,11 @@ function normaliseParsedUrl(
   const hash = url.indexOf('#');
   const beforeFragment = hash < 0 ? url : url.slice(0, hash);
   const q = beforeFragment.indexOf('?');
+  const current = q >= 0 && isCurrentUrlPath(beforeFragment.slice(0, q), rules);
   let out =
     q < 0
       ? beforeFragment
-      : `${beforeFragment.slice(0, q + 1)}${normaliseQuery(beforeFragment.slice(q + 1), rules, compiled)}`;
+      : `${beforeFragment.slice(0, q + 1)}${normaliseQuery(beforeFragment.slice(q + 1), rules, compiled, current)}`;
   out += hash < 0 ? '' : url.slice(hash);
   if (urlRuleApplies(rules.origins.id, rules)) out = replaceOrigins(out, rules, compiled);
   const ids = urlRuleApplies(rules.ids.id, rules) || urlRuleApplies(rules.ids.rfc4122.id, rules);
@@ -500,7 +510,8 @@ function textOf(
  * names, become the token placeholder, `muraAction`/`fuseaction` values are
  * lower-cased, configured origins become the origin placeholder and ids become ordinals. Path, parameter order and
  * fragment are kept, except that url-scope queries (`?&…`) with distinct names, also percent-encoded in a parameter,
- * are sorted by name; unparseable input is normalised as text.
+ * and queries with distinct names on a `urls.currentUrl` path are sorted by name; unparseable input is normalised as
+ * text.
  */
 export function normaliseUrl(url: string, state: IdOrdinals, rules: NormaliseRules): string {
   const compiled = compile(rules);

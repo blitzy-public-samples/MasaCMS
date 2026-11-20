@@ -2864,6 +2864,9 @@ scenarios:
           siteid: tenant-a
           csrf_token: ${reject-tokens.csrfToken}
           csrf_token_expires: ${reject-tokens.csrfExpires}
+        # The read-after-write barrier holds only the writing session, and the admin session's next page is
+        # legacy-rendered, whose header counts the request's approval status from the legacy tables.
+        settle: projection:strategies-content
       - name: restore-perm-form
         method: GET
         route: /admin/?muraAction=cPerm.main&siteid=tenant-a&contentid=${page-form.contentid}&parentid=00000000000000000000000000000000001&topid=00000000000000000000000000000000001&moduleid=00000000000000000000000000000000000
@@ -6157,7 +6160,9 @@ scenarios:
         as: admin
         compare: []
     compare: [status, envelope, export]
-    normalisationOverrides: {}
+    normalisationOverrides:
+      # Job envelopes hash the export file's bytes (exports.neverCompareBytes); the download steps compare its content.
+      dropPaths: [data.output_sha256, 'data.items[*].output_sha256']
     covers:
       - fixture:reporting/exports@post
       - fixture:reporting/exports/{id}@get

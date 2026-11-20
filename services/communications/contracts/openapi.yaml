@@ -2392,12 +2392,14 @@ components:
           $ref: '#/components/schemas/LocalTimestamp'
         status:
           type: string
+          description: '`expired`: recorded 60 s or more after its run time, which ColdFusion''s scheduler misfires, so it never runs.'
           enum:
             - scheduled
             - done
             - failed
             - cancelled
             - superseded
+            - expired
         scheduleVersion:
           type: integer
           minimum: 1

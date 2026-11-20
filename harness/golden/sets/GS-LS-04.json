@@ -1,10 +1,10 @@
 {
-  "capturedAt": "2026-11-18T14:29:21.281Z",
+  "capturedAt": "2026-11-20T03:06:54.602Z",
   "fixtures": {
     "available": true,
     "reason": "fixtures loaded"
   },
-  "generatedAt": "2026-11-18T14:29:24.471Z",
+  "generatedAt": "2026-11-20T03:06:57.360Z",
   "generatedBy": "harness/src/golden/capture.ts",
   "origin": "legacy",
   "scenarioId": "GS-LS-04",
@@ -41,7 +41,7 @@
             "",
             "",
             "Admin User",
-            "2",
+            "",
             "Back to Site Settings",
             "Select Working Directory",
             "Create Bundle"
@@ -425,10 +425,6 @@
             {
               "href": "/admin/?muraAction=ceditprofile.edit",
               "text": "Admin User"
-            },
-            {
-              "href": "./?muraAction=carch.list&moduleid=00000000000000000000000000000000000&activeTab=1&report=mydrafts&siteID=tenant-b&reportSortby=lastupdate&reportSortDirection=desc&refreshFlatview=true",
-              "text": "2 Drafts"
             },
             {
               "href": "/admin/?muraAction=ceditprofile.edit",
@@ -480,7 +476,7 @@
             "",
             "",
             "Admin User",
-            "2",
+            "",
             "Back to Site Settings",
             "Select Working Directory",
             "Create Bundle"
@@ -866,10 +862,6 @@
               "text": "Admin User"
             },
             {
-              "href": "./?muraAction=carch.list&moduleid=00000000000000000000000000000000000&activeTab=1&report=mydrafts&siteID=tenant-b&reportSortby=lastupdate&reportSortDirection=desc&refreshFlatview=true",
-              "text": "2 Drafts"
-            },
-            {
               "href": "/admin/?muraAction=ceditprofile.edit",
               "text": "Edit Profile"
             },
@@ -894,7 +886,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "0e4584bc37fb0ab4c271cc4e6c9fcf1f1a11aab236f51a7dab19711bc1eadbf1",
+        "rawSha256": "eabdaf3094c789008661484945138fcd7fe24c3a15b4f11dcbe12eb0516f8278",
         "status": 200
       },
       "routeKey": "admin:csettings.selectbundleoptions"
@@ -929,7 +921,7 @@
             "",
             "",
             "Admin User",
-            "2",
+            "",
             "Back to Site Settings",
             "Select Working Directory",
             "Create Bundle"
@@ -1313,10 +1305,6 @@
             {
               "href": "/admin/?muraAction=ceditprofile.edit",
               "text": "Admin User"
-            },
-            {
-              "href": "./?muraAction=carch.list&moduleid=00000000000000000000000000000000000&activeTab=1&report=mydrafts&siteID=tenant-b&reportSortby=lastupdate&reportSortDirection=desc&refreshFlatview=true",
-              "text": "2 Drafts"
             },
             {
               "href": "/admin/?muraAction=ceditprofile.edit",
@@ -1375,7 +1363,7 @@
             "",
             "",
             "Admin User",
-            "2",
+            "",
             "Back to Site Settings",
             "Select Working Directory",
             "Create Bundle"
@@ -1761,10 +1749,6 @@
               "text": "Admin User"
             },
             {
-              "href": "./?muraAction=carch.list&moduleid=00000000000000000000000000000000000&activeTab=1&report=mydrafts&siteID=tenant-b&reportSortby=lastupdate&reportSortDirection=desc&refreshFlatview=true",
-              "text": "2 Drafts"
-            },
-            {
               "href": "/admin/?muraAction=ceditprofile.edit",
               "text": "Edit Profile"
             },
@@ -1789,7 +1773,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "78bdf8202e65376f9e7dc6fbd4b94aca707552c41c8d0f684ca9b5ab0c23d1b3",
+        "rawSha256": "7e2c8669456226e017ac600195b3bbcef8e0fcf16172d71b6cade6916ef943cb",
         "status": 200
       },
       "routeKey": "admin:csettings.createbundle"
@@ -1830,7 +1814,7 @@
             "",
             "",
             "Admin User",
-            "2",
+            "",
             "Update Core Files",
             "List Sites by Bind Order",
             "Via Upload",
@@ -2203,10 +2187,6 @@
             {
               "href": "/admin/?muraAction=ceditprofile.edit",
               "text": "Admin User"
-            },
-            {
-              "href": "./?muraAction=carch.list&moduleid=00000000000000000000000000000000000&activeTab=1&report=mydrafts&siteID=tenant-b&reportSortby=lastupdate&reportSortDirection=desc&refreshFlatview=true",
-              "text": "2 Drafts"
             },
             {
               "href": "/admin/?muraAction=ceditprofile.edit",
@@ -2360,7 +2340,7 @@
             "",
             "",
             "Admin User",
-            "2",
+            "",
             "Update Core Files",
             "List Sites by Bind Order",
             "Via Upload",
@@ -2733,10 +2713,6 @@
             {
               "href": "/admin/?muraAction=ceditprofile.edit",
               "text": "Admin User"
-            },
-            {
-              "href": "./?muraAction=carch.list&moduleid=00000000000000000000000000000000000&activeTab=1&report=mydrafts&siteID=tenant-b&reportSortby=lastupdate&reportSortDirection=desc&refreshFlatview=true",
-              "text": "2 Drafts"
             },
             {
               "href": "/admin/?muraAction=ceditprofile.edit",
@@ -2865,7 +2841,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "66408b1b3cf8b3aeee0cfd558b7debe6a38c3a5d0c8b508fe236e009e3520028",
+        "rawSha256": "a7252b089aad8ca86489fb571965d3bfa7976e4ab17a09aed875aee9c012b362",
         "status": 200
       },
       "routeKey": "admin:csettings.deleteplugin"
@@ -2906,7 +2882,7 @@
             "",
             "",
             "Admin User",
-            "2",
+            "",
             "Update Core Files",
             "List Sites by Bind Order",
             "Via Upload",
@@ -3279,10 +3255,6 @@
             {
               "href": "/admin/?muraAction=ceditprofile.edit",
               "text": "Admin User"
-            },
-            {
-              "href": "./?muraAction=carch.list&moduleid=00000000000000000000000000000000000&activeTab=1&report=mydrafts&siteID=tenant-b&reportSortby=lastupdate&reportSortDirection=desc&refreshFlatview=true",
-              "text": "2 Drafts"
             },
             {
               "href": "/admin/?muraAction=ceditprofile.edit",
@@ -3441,7 +3413,7 @@
             "",
             "",
             "Admin User",
-            "2",
+            "",
             "Update Core Files",
             "List Sites by Bind Order",
             "Via Upload",
@@ -3814,10 +3786,6 @@
             {
               "href": "/admin/?muraAction=ceditprofile.edit",
               "text": "Admin User"
-            },
-            {
-              "href": "./?muraAction=carch.list&moduleid=00000000000000000000000000000000000&activeTab=1&report=mydrafts&siteID=tenant-b&reportSortby=lastupdate&reportSortDirection=desc&refreshFlatview=true",
-              "text": "2 Drafts"
             },
             {
               "href": "/admin/?muraAction=ceditprofile.edit",
@@ -3946,7 +3914,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "7c9292aea95bffa5f5f09335497b610dabb6f3fd37873b2124b4c1d5316bd585",
+        "rawSha256": "ba1e62ccf2b459efb8d2fed7c70334cfffc1bd077287dc96b7b1059cb55b6191",
         "status": 200
       },
       "routeKey": "admin:csettings.deployplugin"
@@ -3987,7 +3955,7 @@
             "",
             "",
             "Admin User",
-            "2",
+            "",
             "Update Core Files",
             "List Sites by Bind Order",
             "Via Upload",
@@ -4360,10 +4328,6 @@
             {
               "href": "/admin/?muraAction=ceditprofile.edit",
               "text": "Admin User"
-            },
-            {
-              "href": "./?muraAction=carch.list&moduleid=00000000000000000000000000000000000&activeTab=1&report=mydrafts&siteID=tenant-b&reportSortby=lastupdate&reportSortDirection=desc&refreshFlatview=true",
-              "text": "2 Drafts"
             },
             {
               "href": "/admin/?muraAction=ceditprofile.edit",
@@ -4523,7 +4487,7 @@
             "",
             "",
             "Admin User",
-            "2",
+            "",
             "Update Core Files",
             "List Sites by Bind Order",
             "Via Upload",
@@ -4896,10 +4860,6 @@
             {
               "href": "/admin/?muraAction=ceditprofile.edit",
               "text": "Admin User"
-            },
-            {
-              "href": "./?muraAction=carch.list&moduleid=00000000000000000000000000000000000&activeTab=1&report=mydrafts&siteID=tenant-b&reportSortby=lastupdate&reportSortDirection=desc&refreshFlatview=true",
-              "text": "2 Drafts"
             },
             {
               "href": "/admin/?muraAction=ceditprofile.edit",
@@ -5028,7 +4988,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "e4dafbc578b14535f4861a3bb52711ec3fc5a18c001620d5bcdf254c228cfe35",
+        "rawSha256": "15abc61d8dee3463455904a0359af827c6f86019c9b26fa915928f5c84ad5bfb",
         "status": 200
       },
       "routeKey": "admin:csettings.updateplugin"
@@ -5065,7 +5025,7 @@
             "",
             "",
             "Admin User",
-            "2",
+            "",
             "Update Core Files",
             "List Sites by Bind Order",
             "Via Upload",
@@ -5438,10 +5398,6 @@
             {
               "href": "/admin/?muraAction=ceditprofile.edit",
               "text": "Admin User"
-            },
-            {
-              "href": "./?muraAction=carch.list&moduleid=00000000000000000000000000000000000&activeTab=1&report=mydrafts&siteID=tenant-b&reportSortby=lastupdate&reportSortDirection=desc&refreshFlatview=true",
-              "text": "2 Drafts"
             },
             {
               "href": "/admin/?muraAction=ceditprofile.edit",
@@ -5602,7 +5558,7 @@
             "",
             "",
             "Admin User",
-            "2",
+            "",
             "Update Core Files",
             "List Sites by Bind Order",
             "Via Upload",
@@ -5977,10 +5933,6 @@
               "text": "Admin User"
             },
             {
-              "href": "./?muraAction=carch.list&moduleid=00000000000000000000000000000000000&activeTab=1&report=mydrafts&siteID=tenant-b&reportSortby=lastupdate&reportSortDirection=desc&refreshFlatview=true",
-              "text": "2 Drafts"
-            },
-            {
               "href": "/admin/?muraAction=ceditprofile.edit",
               "text": "Edit Profile"
             },
@@ -6107,7 +6059,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "bc68ea8a95e5e2ac181b5507d1909f6e9500544f4f370447f1a81bd15922537e",
+        "rawSha256": "ba217f33fee170e1e30ed4da57deaad7508e41c84dab1e210a4c1c6d0506abec",
         "status": 200
       },
       "routeKey": "admin:csettings.updatesite{bundle}"

@@ -260,6 +260,20 @@ export async function findFileMetadata(tx: TenantTx, args: { siteId: string; met
   return rows.find((row) => ciKey(row.metaid) === key) ?? null;
 }
 
+/** beanORM.save's existence check (beanORM.cfc:424): the row whose `metaid` equals `metaId` ignoring case and trailing spaces, of any site; null when none. */
+export async function findFileMetadataByKey(tx: TenantTx, metaId: string): Promise<FileMetadataRow | null> {
+  if (!bindable(metaId)) {
+    return null;
+  }
+  await awaitReadable(tx, [UNIT_OF.file_metadata]);
+  const key = ciKey(metaId);
+  const { rows } = await tx.query<FileMetadataRow>(
+    `SELECT ${allColumns(FILE_METADATA)} FROM ${qualified(tx.schema, FILE_METADATA.table)} WHERE ${idEquals(tx, metaCol('metaid'), '$1')} ORDER BY ${metaCol('metaid')}`,
+    [key],
+  );
+  return rows.find((row) => ciKey(row.metaid) === key) ?? null;
+}
+
 /** The rows a site feed selects: one site's, only those whose key matches one of `ids` ignoring case and trailing spaces when given. */
 export interface SiteFeedScope {
   siteId: string;

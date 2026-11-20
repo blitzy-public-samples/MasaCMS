@@ -223,6 +223,34 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/LegacyUnavailable'
+  /internal/v1/legacy-server/plugins:
+    get:
+      operationId: getLegacyPlugins
+      summary: Reads the installed plugins the Global Settings Plugins tab lists, through the bridge's `site.cfm?op=plugins`.
+      x-opt2-transport: service
+      x-opt2-requires:
+        - 'service:web'
+      security:
+        - invocationCredential: []
+          userToken: []
+        - invocationCredential: []
+      responses:
+        '200':
+          description: Every installed plugin, in the order legacy lists them.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LegacyPlugins'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          description: The legacy bridge is unreachable or answered no plugin list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LegacyUnavailable'
   '/internal/v1/legacy-sessions/{sid}:mark-used':
     parameters:
       - name: sid
@@ -1144,6 +1172,55 @@ components:
           type:
             - string
             - 'null'
+    LegacyPlugins:
+      description: '`pluginManager.getAllPlugins()`, the rows `admin/core/views/csettings/list.cfm` 312-350 lists, ordered by name.'
+      type: object
+      additionalProperties: false
+      required:
+        - plugins
+      properties:
+        plugins:
+          type: array
+          items:
+            $ref: '#/components/schemas/LegacyPlugin'
+    LegacyPlugin:
+      description: 'One `tplugins` row; a NULL column is empty text, as a CFML query reads it.'
+      type: object
+      additionalProperties: false
+      required:
+        - moduleId
+        - name
+        - directory
+        - category
+        - version
+        - provider
+        - providerUrl
+        - pluginId
+      properties:
+        moduleId:
+          description: '`moduleID`.'
+          type: string
+        name:
+          description: '`name`.'
+          type: string
+        directory:
+          description: '`directory`, the folder under `/plugins/`.'
+          type: string
+        category:
+          description: '`category`.'
+          type: string
+        version:
+          description: '`version`.'
+          type: string
+        provider:
+          description: '`provider`.'
+          type: string
+        providerUrl:
+          description: '`providerURL`.'
+          type: string
+        pluginId:
+          description: '`pluginID`, as the view prints it.'
+          type: string
     LegacyError:
       type: object
       additionalProperties: false

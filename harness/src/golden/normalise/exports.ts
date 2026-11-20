@@ -372,16 +372,72 @@ function textContent(content: Buffer): string | undefined {
   }
 }
 
-function zipEntry(file: ZipFile, state: IdOrdinals, rules: NormaliseRules): ZipEntry {
+// cfwddx writes a query as one <field> per column, each listing that column's values in row order.
+const WDDX_RECORDSET_HEAD = /^<wddxPacket version='1\.0'><header\/><data><recordset rowCount='(\d+)' fieldNames='([^']*)'[^>]*>/;
+// cffile action="write" ends the file with a line separator.
+const WDDX_RECORDSET_TAIL = /<\/recordset><\/data><\/wddxPacket>(?:\r?\n)?$/;
+const WDDX_FIELD_OPEN = /<field name='[^']*'>/y;
+const WDDX_FIELD_CLOSE = '</field>';
+const WDDX_VALUE = /<(string|number|dateTime|boolean|binary|null)\b[^>]*?(?:\/>|>[\s\S]*?<\/\1>)/y;
+
+/** The values of one WDDX field body in order; undefined when the body is not a run of WDDX values. */
+function wddxValues(body: string): string[] | undefined {
+  const values: string[] = [];
+  WDDX_VALUE.lastIndex = 0;
+  while (WDDX_VALUE.lastIndex < body.length) {
+    const match = WDDX_VALUE.exec(body);
+    if (match === null) return undefined;
+    values.push(match[0]);
+  }
+  return values;
+}
+
+/**
+ * `text` with the rows of its WDDX recordset in `exports.zip.recordsetRows.order`: by the row normalised alone, then
+ * raw; any other text is returned unchanged.
+ */
+function sortedRecordsetRows(text: string, rules: NormaliseRules): string {
+  const head = WDDX_RECORDSET_HEAD.exec(text);
+  const tail = WDDX_RECORDSET_TAIL.exec(text);
+  if (head === null || tail === null || tail.index < head[0].length) return text;
+  const rowCount = Number(head[1]);
+  const columns = head[2] === '' ? 0 : (head[2] ?? '').split(',').length;
+  const body = text.slice(head[0].length, tail.index);
+  const fields: { open: string; values: string[] }[] = [];
+  for (let at = 0; at < body.length; ) {
+    WDDX_FIELD_OPEN.lastIndex = at;
+    const open = WDDX_FIELD_OPEN.exec(body);
+    const close = open === null ? -1 : body.indexOf(WDDX_FIELD_CLOSE, WDDX_FIELD_OPEN.lastIndex);
+    if (open === null || close < 0) return text;
+    const values = wddxValues(body.slice(WDDX_FIELD_OPEN.lastIndex, close));
+    if (values?.length !== rowCount) return text;
+    fields.push({ open: open[0], values });
+    at = close + WDDX_FIELD_CLOSE.length;
+  }
+  if (rowCount < 2 || fields.length !== columns) return text;
+  const rows = Array.from({ length: rowCount }, (_row, r) => {
+    const raw = fields.map((field) => field.values[r] ?? '').join('');
+    return { r, alone: normaliseString(raw, createIdOrdinals(), rules), raw };
+  });
+  rows.sort((a, b) => codeUnitOrder(a.alone, b.alone) || codeUnitOrder(a.raw, b.raw));
+  const sorted = fields.map(
+    (field) => `${field.open}${rows.map(({ r }) => field.values[r] ?? '').join('')}${WDDX_FIELD_CLOSE}`,
+  );
+  return `${head[0]}${sorted.join('')}${tail[0]}`;
+}
+
+function zipEntry(file: ZipFile, state: IdOrdinals, rules: NormaliseRules, recordsets: RegExp): ZipEntry {
   const name = normaliseString(file.name, state, rules);
-  const text = textContent(file.content);
+  const raw = textContent(file.content);
+  const text = raw !== undefined && recordsets.test(file.name) ? sortedRecordsetRows(raw, rules) : raw;
   const content = text === undefined ? file.content : Buffer.from(normaliseString(text, state, rules), 'utf8');
   return { name, sha256: sha256Hex(content), size: content.length };
 }
 
 /**
  * ZIP `bytes` as entries sorted by raw name, text content normalised before hashing; ids are numbered in that order,
- * name before content. Entry times and order are not compared. Undefined when not a ZIP; `contentType` kept verbatim.
+ * name before content. Entry times and order, and the row order of `exports.zip.recordsetRows` entries, are not
+ * compared. Undefined when not a ZIP; `contentType` kept verbatim.
  */
 export async function zipModel(
   bytes: Buffer,
@@ -392,7 +448,8 @@ export async function zipModel(
   const files = await zipEntries(bytes, '', 0);
   if (files === undefined) return undefined;
   files.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-  return { kind: 'zip', contentType, entries: files.map((file) => zipEntry(file, state, rules)) };
+  const recordsets = new RegExp(rules.exports.zip.recordsetRows.entries);
+  return { kind: 'zip', contentType, entries: files.map((file) => zipEntry(file, state, rules, recordsets)) };
 }
 
 /**

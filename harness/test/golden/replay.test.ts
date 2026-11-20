@@ -772,7 +772,7 @@ describe('main flags', () => {
       completed: false,
     },
     {
-      label: 'resumes the session saved under v0002 with --rehearsal --only',
+      label: 'resumes the session saved under v0002 with --rehearsal --only in both phases',
       flags: ['--rehearsal'],
       code: 0,
       summary: { replayed: 1 },
@@ -782,7 +782,7 @@ describe('main flags', () => {
   ])('GS-ID-09 after the v0003 activation: $label', async ({ flags, code, summary, steps, completed }) => {
     const invoker = await operatorInvoker();
     const only = ['--only', 'GS-ID-09', '--catalogue', catalogueFile];
-    const paused = await main(['--phase', 'pre-transition', ...only], env, mainDeps(fakeStack(), invoker));
+    const paused = await main([...flags, '--phase', 'pre-transition', ...only], env, mainDeps(fakeStack(), invoker));
     expect(paused).toEqual({ code: 0, summary: summaryOf({ paused: 1 }) });
     const after = fakeStack({ tableVersion: 'v0003' });
 
@@ -790,7 +790,56 @@ describe('main flags', () => {
 
     expect(resumed).toEqual({ code, summary: summaryOf({ ...summary, tableVersion: 'v0003' }) });
     expect(after.steps().map((s) => [s.url.search, s.headers.get('cookie')])).toEqual(steps);
-    expect((await readSessionState('GS-ID-09', env))?.completed).toBe(completed);
+    expect((await readSessionState('GS-ID-09', env, flags.length > 0))?.completed).toBe(completed);
+  });
+
+  /** Runs GS-ID-09 in `phase` with `flags` while the gateway serves `tableVersion`. */
+  async function crossGsId09(flags: string[], phase: string, tableVersion: string): ReturnType<typeof main> {
+    const argv = [...flags, '--phase', phase, '--only', 'GS-ID-09', '--catalogue', catalogueFile];
+    return main(argv, env, mainDeps(fakeStack({ tableVersion }), await operatorInvoker()));
+  }
+
+  it('keeps the rehearsal crossing of the v0003 activation apart, so the v0002 replay and its sessions stand', async () => {
+    await crossGsId09([], 'pre-transition', 'v0001');
+    await crossGsId09([], 'resume', 'v0002');
+    const parity = await readFile(replayOutputPath('GS-ID-09', env), 'utf8');
+    const sessions = await readFile(sessionStatePath('GS-ID-09', env), 'utf8');
+
+    const paused = await crossGsId09(['--rehearsal'], 'pre-transition', 'v0002');
+    const resumed = await crossGsId09(['--rehearsal'], 'resume', 'v0003');
+
+    expect([paused, resumed]).toEqual([
+      { code: 0, summary: summaryOf({ paused: 1 }) },
+      { code: 0, summary: summaryOf({ replayed: 1, tableVersion: 'v0003' }) },
+    ]);
+    expect(await readFile(replayOutputPath('GS-ID-09', env), 'utf8')).toBe(parity);
+    expect(await readFile(sessionStatePath('GS-ID-09', env), 'utf8')).toBe(sessions);
+    const crossingFile = replayOutputPath('GS-ID-09', env, true);
+    expect(crossingFile).toBe(path.join(root, 'state', 'golden', 'replay', 'rehearsal', 'GS-ID-09.json'));
+    const crossing = replayOutputSchema.parse(JSON.parse(await readFile(crossingFile, 'utf8')));
+    expect([(await readOutput('GS-ID-09')).tableVersion, crossing.tableVersion]).toEqual(['v0002', 'v0003']);
+    expect(crossing.steps.map((step) => [step.name, step.normalised.status])).toEqual([
+      ['opened', 200],
+      ['after', 200],
+    ]);
+    const crossingSessions = sessionStatePath('GS-ID-09', env, true);
+    expect(crossingSessions).toBe(path.join(root, 'state', 'golden', 'sessions', 'rehearsal', 'GS-ID-09.json'));
+    expect((await stat(crossingSessions)).mode & 0o777).toBe(0o600);
+    expect(await readSessionState('GS-ID-09', env, true)).toMatchObject({ tableVersion: 'v0002', completed: true });
+  });
+
+  it('fails a rehearsal resume with no crossing sessions saved, writing only the crossing output', async () => {
+    await crossGsId09([], 'pre-transition', 'v0001');
+    await crossGsId09([], 'resume', 'v0002');
+    const parity = await readFile(replayOutputPath('GS-ID-09', env), 'utf8');
+
+    const resumed = await crossGsId09(['--rehearsal'], 'resume', 'v0003');
+
+    const hint = 'run --phase pre-transition --rehearsal before the transition';
+    expect(resumed).toMatchObject({ code: 1, summary: { errors: [{ id: 'GS-ID-09', error: expect.stringContaining(hint) }] } });
+    expect(await readFile(replayOutputPath('GS-ID-09', env), 'utf8')).toBe(parity);
+    const crossing = replayOutputSchema.parse(JSON.parse(await readFile(replayOutputPath('GS-ID-09', env, true), 'utf8')));
+    expect(crossing).toMatchObject({ tableVersion: 'v0003', steps: [], error: { message: expect.stringContaining(hint) } });
   });
 
   it('masks a configured reload key in the admin reload link of the saved sessions and the replay output', async () => {

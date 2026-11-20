@@ -23,7 +23,7 @@ import {
   writeAction,
   type ApprovalRequestValues,
 } from './approval-requests.js';
-import { approveVersion, deleteVersionInTransaction, type ContentDeps, type ContentSaveSite } from './content.js';
+import { ContentSaveDataError, approveVersion, deleteVersionInTransaction, type ContentDeps, type ContentSaveSite } from './content.js';
 import { writeContextFor, type Actor, type DomainDeps, type DomainResult, type LegacyErrors, type MailNotice } from './context.js';
 import { sitePools } from './permissions.js';
 import { withPoolTenant, type PoolScope } from './pools.js';
@@ -578,7 +578,10 @@ async function activateVersion(scope: ActionScope, request: ApprovalRequestValue
   if ((version?.changesetid ?? '') !== '') {
     return request;
   }
-  const result = await approveVersion(tx, deps, actor, site, sourceId, { approvingChainRequest: true });
+  // contentManager.add's required-data throw follows the action and request saves, which legacy has committed.
+  const result = await approveVersion(tx, deps, actor, site, sourceId, { approvingChainRequest: true }).catch((err: unknown) => {
+    throw err instanceof ContentSaveDataError ? new ErrorAfterWrites(err) : err;
+  });
   scope.notices.push(...result.notices);
   if (result.afterCommitError !== undefined) {
     throw new ErrorAfterWrites(result.afterCommitError);
@@ -699,7 +702,7 @@ export async function approvalAction(
 ): Promise<DomainResult<ApprovalActionData>> {
   const outcome = await withGatedTenant(deps.db, actor.tenantId, async (tx): Promise<{ data: ApprovalActionData; notices: MailNotice[] } | { error: Error }> => {
     const scope: ActionScope = { tx, deps, actor, site, notices: [] };
-    const { values } = await loadRequest(tx, deps.repository, { requestId: input.requestId });
+    const { values } = await loadRequest(tx, deps.repository, { requestId: input.requestId, siteId: site.siteId });
     let request: ApprovalRequestValues;
     try {
       if (cfEq(input.action, 'approve')) {

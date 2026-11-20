@@ -681,6 +681,36 @@ describe('zipModel', () => {
     expect(isDeepStrictEqual(await model(replay), capture)).toBe(equal);
   });
 
+  it.each([
+    { label: 'rows in another order', name: 'wddx_rstcontentcategoryassign.xml', change: false, equal: true },
+    { label: 'rows in another order and one value', name: 'wddx_rstcontentcategoryassign.xml', change: true, equal: false },
+    { label: 'ordered rsthierarchy rows in another order', name: 'wddx_rsthierarchy.xml', change: false, equal: false },
+  ])('compares $name holding $label, equal is $equal', async ({ name, change, equal }) => {
+    const [category, other] = [cfUuid(), cfUuid()];
+    const rows: string[][] = [
+      [cfUuid(), category, '0.0'],
+      [cfUuid(), other, '0.0'],
+      [cfUuid(), category, '1.0'],
+    ];
+    // As cfwddx writes a query (one field per column) and cffile ends the file.
+    const packet = (ordered: readonly string[][]) => {
+      const field = (column: string, c: number, type: string) =>
+        `<field name='${column}'>${ordered.map((row) => `<${type}>${row[c]}</${type}>`).join('')}</field>`;
+      return (
+        "<wddxPacket version='1.0'><header/><data><recordset rowCount='3' fieldNames='CONTENTHISTID,CATEGORYID," +
+        `ISFEATURE' type='coldfusion.sql.QueryTable'>${field('CONTENTHISTID', 0, 'string')}` +
+        `${field('CATEGORYID', 1, 'string')}${field('ISFEATURE', 2, 'number')}</recordset></data></wddxPacket>\n`
+      );
+    };
+    const model = async (xml: string) =>
+      zipModel(await zipBytes([[name, xml]], ZIP_DATE_A), ZIP_TYPE, createIdOrdinals(), rules);
+    const replayRows = [...rows.slice(2), ...rows.slice(0, 2)].map((row, i) =>
+      change && i === 0 ? [...row.slice(0, 2), '0.0'] : row,
+    );
+
+    expect(isDeepStrictEqual(await model(packet(replayRows)), await model(packet(rows)))).toBe(equal);
+  });
+
   it('numbers ids in raw-name order, name before content, so entries sharing an id share its ordinal', async () => {
     const [shared, other, named] = [cfUuid(), cfUuid(), cfUuid()];
     const bytes = await zipBytes(

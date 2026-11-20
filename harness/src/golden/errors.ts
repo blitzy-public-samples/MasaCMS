@@ -10,9 +10,22 @@ export interface HaltEvidence {
 // Kept as a literal variable reference so exception entries written from it hold no machine path.
 const REPLAY_ROOT = '${OPT2_STATE_DIR}/golden/replay';
 
-/** Portable evidence paths of scenario `scenarioId`, the one place both halt producers (capture, replay) build them. */
-export function haltEvidence(scenarioId: string): HaltEvidence {
-  return { golden: `harness/golden/sets/${scenarioId}.json`, replay: `${REPLAY_ROOT}/${scenarioId}.json` };
+const SETS_ROOT = 'harness/golden/sets';
+
+/**
+ * Subdirectory of `golden/sets`, `golden/raw`, `golden/replay` and `golden/sessions` holding a rehearsal crossing: a
+ * non-rehearsal scenario captured again before the GS-PE-RH sets and replayed with `--rehearsal` across the v0003
+ * activation, kept apart so its own set and v0002 replay stand.
+ */
+export const REHEARSAL_CROSSING_DIR = 'rehearsal';
+
+/**
+ * Portable evidence paths of scenario `scenarioId`, or of its rehearsal crossing when `crossing`, the one place both
+ * halt producers (capture, replay) build them.
+ */
+export function haltEvidence(scenarioId: string, crossing = false): HaltEvidence {
+  const dir = (root: string): string => (crossing ? `${root}/${REHEARSAL_CROSSING_DIR}` : root);
+  return { golden: `${dir(SETS_ROOT)}/${scenarioId}.json`, replay: `${dir(REPLAY_ROOT)}/${scenarioId}.json` };
 }
 
 /** Fields of an {@link EquivalenceImpossible}. */

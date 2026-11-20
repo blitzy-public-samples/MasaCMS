@@ -1,10 +1,10 @@
 {
-  "capturedAt": "2026-11-18T14:26:30.469Z",
+  "capturedAt": "2026-11-20T03:04:26.196Z",
   "fixtures": {
     "available": true,
     "reason": "fixtures loaded"
   },
-  "generatedAt": "2026-11-18T14:26:36.501Z",
+  "generatedAt": "2026-11-20T03:04:32.172Z",
   "generatedBy": "harness/src/golden/capture.ts",
   "origin": "legacy",
   "scenarioId": "GS-RE-01",
@@ -31,7 +31,6 @@
             "finished_at": "",
             "format": "xlsx",
             "job_id": "<id:2>",
-            "output_sha256": "",
             "requested_by_id": "<id:3>",
             "siteid": "tenant-a",
             "started_at": "",
@@ -74,7 +73,6 @@
             "finished_at": "",
             "format": "xlsx",
             "job_id": "<id:2>",
-            "output_sha256": "",
             "requested_by_id": "<id:3>",
             "siteid": "tenant-a",
             "started_at": "",
@@ -88,7 +86,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "89816db3dc5d037775880fd0eaec9cc3d51f6e16a842f9def631b235a0e3c3c5",
+        "rawSha256": "b070654e6926175a25cd832d93ba181d15f8191bcc81308393c643c5584d7dfc",
         "status": 200
       },
       "routeKey": "fixture:reporting/exports@post"
@@ -108,7 +106,6 @@
             "finished_at": "<ts:serializer>",
             "format": "xlsx",
             "job_id": "<id:2>",
-            "output_sha256": "8ac02e236708006c8fbbc24381334d6971f2c3b4c23d8d6b34c8574a92ced0c2",
             "requested_by_id": "<id:3>",
             "siteid": "tenant-a",
             "started_at": "<ts:serializer>",
@@ -128,7 +125,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/legacy-fixtures/cfml/api.cfm/reporting/exports/56856E16-008F-601A-E2F97704648B4AA3?siteid=tenant-a"
+        "url": "/legacy-fixtures/cfml/api.cfm/reporting/exports/A52012FE-92DA-D9EE-CB40F8C02F36737A?siteid=tenant-a"
       },
       "response": {
         "body": {
@@ -142,7 +139,6 @@
             "finished_at": "<ts:serializer>",
             "format": "xlsx",
             "job_id": "<id:2>",
-            "output_sha256": "8ac02e236708006c8fbbc24381334d6971f2c3b4c23d8d6b34c8574a92ced0c2",
             "requested_by_id": "<id:3>",
             "siteid": "tenant-a",
             "started_at": "<ts:serializer>",
@@ -156,7 +152,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "433acd5467a282c0a62402584115f9d432dd7a46b6006d1f2703f5a9d740ce0a",
+        "rawSha256": "0bae0db3528c27c56fae6f4f2196bd927a7f627de8c56a1fc52779fb93bd6ef5",
         "status": 200
       },
       "routeKey": "fixture:reporting/exports/{id}@get"
@@ -7194,7 +7190,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/legacy-fixtures/cfml/api.cfm/reporting/exports/56856E16-008F-601A-E2F97704648B4AA3/download?siteid=tenant-a"
+        "url": "/legacy-fixtures/cfml/api.cfm/reporting/exports/A52012FE-92DA-D9EE-CB40F8C02F36737A/download?siteid=tenant-a"
       },
       "response": {
         "export": {
@@ -14221,7 +14217,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "8ac02e236708006c8fbbc24381334d6971f2c3b4c23d8d6b34c8574a92ced0c2",
+        "rawSha256": "088570fa1cda667a366d630531e8e9d870559e99fc9c633c6d29508d7434e649",
         "status": 200
       },
       "routeKey": "fixture:reporting/exports/{id}/download@get"
@@ -14241,7 +14237,6 @@
             "finished_at": "",
             "format": "csv",
             "job_id": "<id:1104>",
-            "output_sha256": "",
             "requested_by_id": "<id:3>",
             "siteid": "tenant-a",
             "started_at": "",
@@ -14284,7 +14279,6 @@
             "finished_at": "",
             "format": "csv",
             "job_id": "<id:1104>",
-            "output_sha256": "",
             "requested_by_id": "<id:3>",
             "siteid": "tenant-a",
             "started_at": "",
@@ -14298,7 +14292,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "8e5aaceaffca4d4501f28cda090bd6d19317f801b679c79aceb4675cf97736d7",
+        "rawSha256": "0f4a306a1b11a37a3763063efb349cf02adb1801803983fe695ec806d085110d",
         "status": 200
       },
       "routeKey": "fixture:reporting/exports@post"
@@ -14318,7 +14312,6 @@
             "finished_at": "<ts:serializer>",
             "format": "csv",
             "job_id": "<id:1104>",
-            "output_sha256": "87d8992cc0e57bf50bb8ced0274e538d00d65c25ec32b6ce9b1761e82b555cdc",
             "requested_by_id": "<id:3>",
             "siteid": "tenant-a",
             "started_at": "<ts:serializer>",
@@ -14338,7 +14331,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/legacy-fixtures/cfml/api.cfm/reporting/exports/5685A075-CE31-9EAA-6CBD372F38A5B25E?siteid=tenant-a"
+        "url": "/legacy-fixtures/cfml/api.cfm/reporting/exports/A5204500-00C0-D023-F1C7ECFFAE8178D3?siteid=tenant-a"
       },
       "response": {
         "body": {
@@ -14352,7 +14345,6 @@
             "finished_at": "<ts:serializer>",
             "format": "csv",
             "job_id": "<id:1104>",
-            "output_sha256": "87d8992cc0e57bf50bb8ced0274e538d00d65c25ec32b6ce9b1761e82b555cdc",
             "requested_by_id": "<id:3>",
             "siteid": "tenant-a",
             "started_at": "<ts:serializer>",
@@ -14366,7 +14358,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "fdde01db845229e2c885b65397b62b2f37b9132d218762b9ff9f47c7fca5501c",
+        "rawSha256": "ce7cb513bc528da299297f5761402521bfaad743fa9437568f8a6c1c99183729",
         "status": 200
       },
       "routeKey": "fixture:reporting/exports/{id}@get"
@@ -21399,7 +21391,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/legacy-fixtures/cfml/api.cfm/reporting/exports/5685A075-CE31-9EAA-6CBD372F38A5B25E/download?siteid=tenant-a"
+        "url": "/legacy-fixtures/cfml/api.cfm/reporting/exports/A5204500-00C0-D023-F1C7ECFFAE8178D3/download?siteid=tenant-a"
       },
       "response": {
         "export": {
@@ -28441,7 +28433,6 @@
             "finished_at": "",
             "format": "pdf",
             "job_id": "<id:1105>",
-            "output_sha256": "",
             "requested_by_id": "<id:3>",
             "siteid": "tenant-a",
             "started_at": "",
@@ -28484,7 +28475,6 @@
             "finished_at": "",
             "format": "pdf",
             "job_id": "<id:1105>",
-            "output_sha256": "",
             "requested_by_id": "<id:3>",
             "siteid": "tenant-a",
             "started_at": "",
@@ -28498,7 +28488,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "5c0c036ce92fe7ad2be65e8b108358cf8e964fbf823d68ec4db22d3b839d1071",
+        "rawSha256": "773f2809af164a699eda9276181de7be4d218996317a1d41e61127754b16b7c7",
         "status": 200
       },
       "routeKey": "fixture:reporting/exports@post"
@@ -28518,7 +28508,6 @@
             "finished_at": "<ts:serializer>",
             "format": "pdf",
             "job_id": "<id:1105>",
-            "output_sha256": "e1e063cbf4c2ad6a2c49d44a9518ea55c26640ce0566eda37d5fc1b8096d38d5",
             "requested_by_id": "<id:3>",
             "siteid": "tenant-a",
             "started_at": "<ts:serializer>",
@@ -28538,7 +28527,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/legacy-fixtures/cfml/api.cfm/reporting/exports/5685BE20-C254-A461-D79F2A8AD5972FA3?siteid=tenant-a"
+        "url": "/legacy-fixtures/cfml/api.cfm/reporting/exports/A5206185-9556-CE0A-6BE2D3B72A36778C?siteid=tenant-a"
       },
       "response": {
         "body": {
@@ -28552,7 +28541,6 @@
             "finished_at": "<ts:serializer>",
             "format": "pdf",
             "job_id": "<id:1105>",
-            "output_sha256": "e1e063cbf4c2ad6a2c49d44a9518ea55c26640ce0566eda37d5fc1b8096d38d5",
             "requested_by_id": "<id:3>",
             "siteid": "tenant-a",
             "started_at": "<ts:serializer>",
@@ -28566,7 +28554,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "bada321ebc86ff897ecf5f6a0816e019f18a8d9700c838ffd71560438b45034e",
+        "rawSha256": "237f9bdf4218e9e41804908282f21a569c7dae2b2d01336457cfc69f37acc9d2",
         "status": 200
       },
       "routeKey": "fixture:reporting/exports/{id}@get"
@@ -28608,7 +28596,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/legacy-fixtures/cfml/api.cfm/reporting/exports/5685BE20-C254-A461-D79F2A8AD5972FA3/download?siteid=tenant-a"
+        "url": "/legacy-fixtures/cfml/api.cfm/reporting/exports/A5206185-9556-CE0A-6BE2D3B72A36778C/download?siteid=tenant-a"
       },
       "response": {
         "export": {
@@ -28639,7 +28627,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "e1e063cbf4c2ad6a2c49d44a9518ea55c26640ce0566eda37d5fc1b8096d38d5",
+        "rawSha256": "bb7d3b2940b3b75ddba8d79c3a63fe73ec728104fb473383d223f50123f57342",
         "status": 200
       },
       "routeKey": "fixture:reporting/exports/{id}/download@get"
@@ -28662,7 +28650,6 @@
                 "finished_at": "<ts:serializer>",
                 "format": "xlsx",
                 "job_id": "<id:1107>",
-                "output_sha256": "429705ccf52d51d4018c5f9ec1251c30e029c24ef69e11d2ff734bc9c1f3068b",
                 "requested_by_id": "<id:1108>",
                 "siteid": "tenant-a",
                 "started_at": "<ts:serializer>",
@@ -28677,7 +28664,6 @@
                 "finished_at": "<ts:serializer>",
                 "format": "csv",
                 "job_id": "<id:1109>",
-                "output_sha256": "3c1e6fdefbdc699af448b5e90424db3f44d27ca123f1fcb8a7acb7112df4fb42",
                 "requested_by_id": "<id:1108>",
                 "siteid": "tenant-a",
                 "started_at": "<ts:serializer>",
@@ -28692,7 +28678,6 @@
                 "finished_at": "<ts:serializer>",
                 "format": "pdf",
                 "job_id": "<id:1111>",
-                "output_sha256": "c263adc64c29e58952a17e4ea1090b964045ec7c513464935b26db644a465635",
                 "requested_by_id": "<id:1112>",
                 "siteid": "tenant-a",
                 "started_at": "<ts:serializer>",
@@ -28707,7 +28692,6 @@
                 "finished_at": "<ts:serializer>",
                 "format": "xlsx",
                 "job_id": "<id:1114>",
-                "output_sha256": "231e0dad70139fcf5955c49c33445d164af6180302ab2503e4e11c340cc9cf55",
                 "requested_by_id": "<id:1115>",
                 "siteid": "tenant-a",
                 "started_at": "<ts:serializer>",
@@ -28722,7 +28706,6 @@
                 "finished_at": "<ts:serializer>",
                 "format": "csv",
                 "job_id": "<id:1116>",
-                "output_sha256": "396233a474617afec458b9d12c1f9721aaa90768c5c047f84633d2d8a6e62538",
                 "requested_by_id": "<id:1115>",
                 "siteid": "tenant-a",
                 "started_at": "<ts:serializer>",
@@ -28766,7 +28749,6 @@
                 "finished_at": "<ts:serializer>",
                 "format": "xlsx",
                 "job_id": "<id:1107>",
-                "output_sha256": "429705ccf52d51d4018c5f9ec1251c30e029c24ef69e11d2ff734bc9c1f3068b",
                 "requested_by_id": "<id:1108>",
                 "siteid": "tenant-a",
                 "started_at": "<ts:serializer>",
@@ -28781,7 +28763,6 @@
                 "finished_at": "<ts:serializer>",
                 "format": "csv",
                 "job_id": "<id:1109>",
-                "output_sha256": "3c1e6fdefbdc699af448b5e90424db3f44d27ca123f1fcb8a7acb7112df4fb42",
                 "requested_by_id": "<id:1108>",
                 "siteid": "tenant-a",
                 "started_at": "<ts:serializer>",
@@ -28796,7 +28777,6 @@
                 "finished_at": "<ts:serializer>",
                 "format": "pdf",
                 "job_id": "<id:1111>",
-                "output_sha256": "c263adc64c29e58952a17e4ea1090b964045ec7c513464935b26db644a465635",
                 "requested_by_id": "<id:1112>",
                 "siteid": "tenant-a",
                 "started_at": "<ts:serializer>",
@@ -28811,7 +28791,6 @@
                 "finished_at": "<ts:serializer>",
                 "format": "xlsx",
                 "job_id": "<id:1114>",
-                "output_sha256": "231e0dad70139fcf5955c49c33445d164af6180302ab2503e4e11c340cc9cf55",
                 "requested_by_id": "<id:1115>",
                 "siteid": "tenant-a",
                 "started_at": "<ts:serializer>",
@@ -28826,7 +28805,6 @@
                 "finished_at": "<ts:serializer>",
                 "format": "csv",
                 "job_id": "<id:1116>",
-                "output_sha256": "396233a474617afec458b9d12c1f9721aaa90768c5c047f84633d2d8a6e62538",
                 "requested_by_id": "<id:1115>",
                 "siteid": "tenant-a",
                 "started_at": "<ts:serializer>",
@@ -28999,7 +28977,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "2c7e906c7c6b26299863d961acbf0784556ed60f180d5ec66f7f34a0a022e35f",
+        "rawSha256": "48d13bd5d2f5409c3bc0939c6a4e8e8e05d57fddae73e7b79516ddfadb042380",
         "status": 404
       },
       "routeKey": "opt2:/opt2/admin/reporting/exports"
@@ -29151,7 +29129,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "5e8ee1bb190ef5a00b7805a4e26d94a064e5e783693465f61fa5e982b1814269",
+        "rawSha256": "f7804911a85c43e1697f00227f6aa1a367e74f02f5f838a7bf4fab080d6ee077",
         "status": 404
       },
       "routeKey": "opt2:/opt2/admin-actions/reporting/create-export"
@@ -29303,7 +29281,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "eedc37a14842314d7b4b1baf224112fe94454ff52827268a285d6e9a14e88997",
+        "rawSha256": "8b057a7dd834d5345d869d66982dd2a75d81b6b89e2ae8ecbcabe11e95806b85",
         "status": 404
       },
       "routeKey": "opt2:/opt2/files/reporting-exports/gs-unsigned"

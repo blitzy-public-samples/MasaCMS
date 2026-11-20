@@ -90,6 +90,8 @@ export interface OperationChangePoint {
 
 /** Fault points of a projector cycle and its batches; each defaults to a no-op, and a throw from any aborts the whole cycle. */
 export interface ProjectorHooks {
+  /** Runs once per cycle that reads streams, before it reads the live tenants, checkpoints or any change page. */
+  beforeFirstRead?(): Promise<void>;
   /** Runs once per cycle, before its first batch touches the legacy file store or database. */
   beforeFirstBatch?(): Promise<void>;
   /** Runs inside the batch's SQL Server transaction before each change carrying an operation id; a throw rolls the batch back. */
@@ -1181,7 +1183,10 @@ class ProjectorCycle {
     }
   }
 
-  /** Commits the parts with their checkpoints in one legacy transaction, counts `skipped`, releases and resumes; false when the batch failed. */
+  /**
+   * Commits the parts with their checkpoints in one legacy transaction, counts `skipped`, releases, and resumes each
+   * stream with the turn that parked it back; false when the batch failed.
+   */
   async #release(operationIds: readonly string[], parts: readonly BatchPart[], skipped: number): Promise<boolean> {
     try {
       await this.#project(parts);
@@ -1191,7 +1196,11 @@ class ProjectorCycle {
     }
     this.#result.skipped += skipped;
     for (const id of operationIds) this.#deps.tracker.release(id);
-    for (const part of parts) part.stream.parkedAt = undefined;
+    for (const part of parts) {
+      part.stream.parkedAt = undefined;
+      // The parking turn stopped at the hold; rows after the span, such as a participant's commit, project this cycle.
+      part.stream.turns -= 1;
+    }
     await this.#resume(parts.map((part) => part.stream));
     return true;
   }
@@ -1645,9 +1654,9 @@ function emptyResult(): CycleResult {
 /**
  * One projector cycle under the `migration`-schema advisory lock, held for the cycle: nothing runs unless some unit is
  * `target`-authoritative; then every (owner, tenant) stream resumes from its SQL Server checkpoint, in turns of one page,
- * up to the horizon of its first read and at most `projection.streamPagesPerCycle` turns, each owner's streams in a lane
- * beside the other owners', and the horizons a lane's pages advance without consuming a row commit together once its
- * turns end.
+ * up to the horizon of its first read and at most `projection.streamPagesPerCycle` turns, a release giving back the turn
+ * that parked the stream, each owner's streams in a lane beside the other owners', and the horizons a lane's pages
+ * advance without consuming a row commit together once its turns end.
  * Stream failures are returned in `errors`; a hook's throw rejects the cycle; an aborted `signal` ends it early.
  * @throws Opt2SyncUnavailableError when `opt2_sync.projector_checkpoint` is missing while a unit is `target`-authoritative.
  */
@@ -1663,6 +1672,7 @@ export async function runProjectorCycle(ctx: ProjectorContext, deps: CycleDeps):
       if (!(await opt2SyncReady(ctx.legacy))) {
         throw new Opt2SyncUnavailableError('opt2_sync.projector_checkpoint does not exist in the live legacy database', undefined);
       }
+      await callHook(() => deps.hooks?.beforeFirstRead?.());
       const tenantSites = await liveTenantSites(ctx.legacy);
       deps.onTenants?.([...tenantSites.keys()]);
       result.ran = true;

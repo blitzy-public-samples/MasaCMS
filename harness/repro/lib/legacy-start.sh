@@ -135,6 +135,8 @@ refuse_startup_writers() {
 }
 
 # Renders server.json.template by value into $SERVER_JSON; OPT2_CF_* overrides win over server-capture.json.
+# The template's disableCodecLib pins ImageIO to the JDK PNG codec: JAI's codecLib PNG plugins are unordered against
+# JDK 9+ ones, so each JVM start could pick another encoder and write other rendition bytes.
 render_server_json() {
   local home engine jvm
   [[ -f $CAPTURE_FILE ]] || die "$CAPTURE_FILE is missing: run up.sh to capture the legacy server"

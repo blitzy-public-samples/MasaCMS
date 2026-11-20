@@ -23,6 +23,7 @@ import {
   type ServiceClient,
 } from '@opt2/platform/service-kit';
 import type { TenantDb } from '@opt2/platform/tenancy';
+import { registerPluginsRoute } from './admin/plugins-route.js';
 import { createResponseModes } from './admin/response-modes.js';
 import { registerVersionMenuRoute } from './admin/version-menu-route.js';
 import { createInflightStore } from './cutover/inflight.js';
@@ -42,6 +43,7 @@ import { createWriteWindowClient } from './dispatcher/write-window.js';
 import { jarIdleLimitMs, sessionTimeoutMinutes, trackJarActivity } from './session/activity.js';
 import {
   createBridgeClient,
+  createPluginListClient,
   createSiteListClient,
   createSitePathsClient,
   createStaticFileClient,
@@ -293,6 +295,9 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   await registerSitePathsRoute(app, { sitePaths });
   await registerVersionMenuRoute(app, {
     versionMenu: createVersionMenuClient({ legacyOrigin, hmacKey: env.OPT2_BRIDGE_HMAC_KEY, clock }),
+  });
+  await registerPluginsRoute(app, {
+    plugins: createPluginListClient({ legacyOrigin, hmacKey: env.OPT2_BRIDGE_HMAC_KEY, clock }),
   });
   await registerRelayRoutes(app, relay);
 

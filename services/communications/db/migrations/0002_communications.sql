@@ -80,7 +80,7 @@ CREATE TABLE communications.scheduled_task (
   source_id char(35) NOT NULL,
   reminder_n integer NULL,
   schedule_time timestamp(3) without time zone NOT NULL,
-  status text NOT NULL CHECK (status IN ('scheduled','done','superseded','cancelled')),
+  status text NOT NULL CHECK (status IN ('scheduled','done','superseded','cancelled','expired')),
   target_route text NOT NULL,
   schedule_version integer NOT NULL,
   origin text NOT NULL,

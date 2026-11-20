@@ -1,10 +1,10 @@
 {
-  "capturedAt": "2026-11-18T14:33:30.037Z",
+  "capturedAt": "2026-11-20T03:10:44.884Z",
   "fixtures": {
     "available": true,
     "reason": "fixtures loaded"
   },
-  "generatedAt": "2026-11-18T14:33:30.037Z",
+  "generatedAt": "2026-11-20T03:10:44.884Z",
   "generatedBy": "harness/e2e/ui/interactions.e2e.ts",
   "origin": "legacy",
   "scenarioId": "GS-UI-04",
@@ -76,7 +76,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/index.cfm?muraAction=cArch.loaddiff&compactDisplay=true&siteid=tenant-a&contenthistid1=5667775A-92CF-BF0F-E01828971B89A81B&contenthistid2=5586BAC8-B92F-C554-D036F32A78343DE7&cacheid=0.5855480997921338"
+        "url": "/admin/index.cfm?muraAction=cArch.loaddiff&compactDisplay=true&siteid=tenant-a&contenthistid1=A501DD5C-B636-6BD9-77F0B1DFA7AD72CC&contenthistid2=A459198B-A111-B6F1-786CF83DF07E0EDC&cacheid=0.21296795794879564"
       },
       "response": {
         "domModel": {
@@ -1268,7 +1268,7 @@
         "headers": {
           "content-type": "text/html;charset=UTF-8"
         },
-        "rawSha256": "b262fda4259c79faae5f26188181af8a34aa6b454833612656642b9f54bc8beb",
+        "rawSha256": "e57dfc398531cfc62ba21070ebe02eeea20b14cfe6e940e0da56e48cfdff9070",
         "status": 200
       },
       "routeKey": "admin:carch.hist"

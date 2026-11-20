@@ -712,6 +712,18 @@ export interface IdentityRepository extends Repository {
   setStrike(tx: TenantTx, username: string, values: StrikeValues, ctx?: WriteContext): Promise<UserStrikeRow | null>;
   /** Adds one strike with `lastattempt = at` [legacy: core/mura/user/userstrikes.cfc:90-99]; null when absent. */
   addStrike(tx: TenantTx, username: string, at: Date, ctx?: WriteContext): Promise<UserStrikeRow | null>;
+  /** The strike row of `username` locked for update; a migration apply's `ctx` reads without the window-phase wait. Null when absent. */
+  lockStrikeRow(tx: TenantTx, username: string, ctx?: WriteContext): Promise<UserStrikeRow | null>;
+  /**
+   * Whether an active account or a group of this tenant with a non-blank site id has `username` as SQL Server compares it: the
+   * `tusers` rows a `tuserstrikes` row takes its tenant from. A migration apply's `ctx` reads without the window-phase wait.
+   */
+  hasUsernameOwner(tx: TenantTx, username: string, ctx?: WriteContext): Promise<boolean>;
+  /**
+   * Deletes the rows a deleted group leaves without an owner Type, and so in no unit: its addresses with their extended data, its
+   * interests, favorites, tags and extended data. Reads skip the unit gates, which a window's apply holds; returns the rows deleted.
+   */
+  deleteOwnerlessGroupRows(tx: TenantTx, groupId: string, ctx: WriteContext): Promise<number>;
 
   /** The session `sessionId` of this tenant; null when absent. */
   findSession(tx: TenantTx, sessionId: string): Promise<SessionRow | null>;
@@ -1116,6 +1128,15 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA,
     ' AND groupid = ANY($3::bpchar[]) ORDER BY contentid, groupid';
   const strikeSql = `SELECT * FROM ${strike} WHERE tenant_id = $1 AND (username::bpchar COLLATE ${legacyCi}) = $2::bpchar ORDER BY username LIMIT 1`;
   const lockStrikeSql = `${strikeSql} FOR UPDATE`;
+  // A tusers row with a NULL or blank SiteID resolves to no tenant, so it is no strike's parent.
+  const usernameOwnerSql =
+    `SELECT EXISTS (SELECT 1 FROM ${userAccount} WHERE tenant_id = $1 AND opt2_state = 'active'` +
+    ` AND (username::bpchar COLLATE ${legacyCi}) = $2::bpchar AND rtrim(siteid) <> '')` +
+    ` OR EXISTS (SELECT 1 FROM ${groupAccount} WHERE tenant_id = $1 AND (username::bpchar COLLATE ${legacyCi}) = $2::bpchar` +
+    " AND rtrim(siteid) <> '') AS held";
+  const lockOwnedAddressesSql = `SELECT addressid FROM ${address} WHERE tenant_id = $1 AND userid = $2 ORDER BY addressid FOR UPDATE`;
+  const lockOwnedFavoritesSql = `SELECT favoriteid FROM ${favorite} WHERE tenant_id = $1 AND userid = $2 ORDER BY favoriteid FOR UPDATE`;
+  const lockExtendByBaseSql = `SELECT dataid FROM ${extendData} WHERE tenant_id = $1 AND baseid = $2 ORDER BY dataid FOR UPDATE`;
   const remoteSessionByTokenSql = `SELECT * FROM ${remoteSession} WHERE tenant_id = $1 AND authtoken = $2 ORDER BY userid LIMIT 1`;
   const deviceSql =
     `SELECT * FROM ${device} WHERE tenant_id = $1 AND deviceid = $2 AND userid = $3 AND ($4::text IS NULL OR siteid = $4)` +
@@ -1983,6 +2004,30 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA,
     return base.update<UserStrikeRow>(tx, USER_STRIKE.table, { username: stored.username }, patch, ctx);
   }
 
+  async function lockStrikeRow(tx: TenantTx, username: string, ctx?: WriteContext): Promise<UserStrikeRow | null> {
+    return (await readAsWriter<UserStrikeRow>(tx, USER_STRIKE.unit, lockStrikeSql, [tx.tenantId, windows1252Text(username)], ctx))[0] ?? null;
+  }
+
+  async function hasUsernameOwner(tx: TenantTx, username: string, ctx?: WriteContext): Promise<boolean> {
+    const units = [USER_ACCOUNT.unit, GROUP_ACCOUNT.unit];
+    const rows = await readAsWriter<{ held: boolean }>(tx, units, usernameOwnerSql, [tx.tenantId, windows1252Text(username)], ctx);
+    return rows[0]?.held === true;
+  }
+
+  async function deleteOwnerlessGroupRows(tx: TenantTx, groupId: string, ctx: WriteContext): Promise<number> {
+    const addresses = await select<{ addressid: string }>(tx, lockOwnedAddressesSql, [tx.tenantId, groupId]);
+    let deleted = 0;
+    for (const baseId of [groupId, ...addresses.map(({ addressid }) => addressid)]) {
+      deleted += await deleteKeys(tx, GROUP_EXTEND_DATA.table, await select(tx, lockExtendByBaseSql, [tx.tenantId, baseId]), ctx);
+    }
+    deleted += await deleteKeys(tx, GROUP_ADDRESS.table, addresses, ctx);
+    const interests = await select<{ categoryid: string }>(tx, lockInterestsSql, [tx.tenantId, groupId, null]);
+    deleted += await deleteKeys(tx, GROUP_INTEREST.table, interests.map(({ categoryid }) => ({ userid: groupId, categoryid })), ctx);
+    deleted += await deleteKeys(tx, GROUP_FAVORITE.table, await select(tx, lockOwnedFavoritesSql, [tx.tenantId, groupId]), ctx);
+    deleted += await deleteKeys(tx, GROUP_TAG.table, await select(tx, lockTagsSql, [tx.tenantId, groupId]), ctx);
+    return deleted;
+  }
+
   function findSession(tx: TenantTx, sessionId: string): Promise<SessionRow | null> {
     return base.findByKey<SessionRow>(tx, SESSION.table, { session_id: sessionId });
   }
@@ -2366,6 +2411,9 @@ export function createIdentityRepository({ clock = systemClock, schema = SCHEMA,
     ensureStrike,
     setStrike,
     addStrike,
+    lockStrikeRow,
+    hasUsernameOwner,
+    deleteOwnerlessGroupRows,
     findSession,
     lockSession,
     insertSession,

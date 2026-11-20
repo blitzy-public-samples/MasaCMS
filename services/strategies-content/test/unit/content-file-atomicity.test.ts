@@ -1,6 +1,6 @@
 /** Content operations and their `content.file` writes commit or roll back as one transaction, pooled or not, with uploads' staged intents settled after it. */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { GateRaceError, acquireWriteGates, closeGates, openGates } from '@opt2/platform/migration-kit';
+import { GateRaceError, acquireWriteGates, closeGates, openGates, withGatedTenant } from '@opt2/platform/migration-kit';
 import type { StoragePort } from '@opt2/platform/storage';
 import type { TenantTx } from '@opt2/platform/tenancy';
 import { TENANT_A, TENANT_B, TENANT_UMBRELLA, pgAvailable } from '@opt2/platform/testing';
@@ -15,11 +15,12 @@ import {
   type ContentSaveSite,
 } from '../../src/domain/content.js';
 import type { Actor } from '../../src/domain/context.js';
-import { saveFileMetaDataEntity, storeUploadedFile, type UploadedFile } from '../../src/domain/files.js';
+import { saveFileMetaData, storeUploadedFile, type UploadedFile } from '../../src/domain/files.js';
 import { poolTenantTx } from '../../src/domain/pools.js';
 import { StartupPredicateViolationError } from '../../src/domain/startup-guard.js';
 import { CONTENT_FILES_BUCKET } from '../../src/migration/objects.js';
 import type { ContentRepository } from '../../src/repo/repository.js';
+import { UNIT_OF } from '../../src/repo/tables.js';
 import { ADMIN, END, HOME, SITE, cfId, createContentFixture, type ContentFixture } from '../helpers/content-fixture.js';
 import { uploadedFile } from '../helpers/uploads.js';
 
@@ -330,7 +331,7 @@ describe.skipIf(!(await pgAvailable()))('content file atomicity', () => {
     });
   });
 
-  describe('saveFileMetaDataEntity', () => {
+  describe('saveFileMetaData', () => {
     it.each(TENANCIES)('updates the version metadata row and, with setAsDefault, the file in one transaction for $name', async (t) => {
       const title = unique('Meta');
       const saved = await saveAs(t, fx.deps, { parentid: HOME, type: 'Page', title, approved: 1 }, [part(`${title}.pdf`, 'newfile')]);
@@ -341,7 +342,11 @@ describe.skipIf(!(await pgAvailable()))('content file atomicity', () => {
       );
       const mark = await changelogMark();
 
-      await saveFileMetaDataEntity(fx.deps, t.actor.tenantId, { ...ids, values: { alttext: 'New alt' }, setAsDefault: true });
+      await withGatedTenant(fx.deps.db, t.actor.tenantId, async (tx) =>
+        saveFileMetaData(tx, fx.repo, { ...ids, values: { alttext: 'New alt' }, setAsDefault: true }, {
+          fileTx: await poolTenantTx(tx, t.pool, [UNIT_OF.file_metadata, UNIT_OF.file]),
+        }),
+      );
 
       expect((await fx.inTenant((tx) => fx.repo.files.readFileAll(tx, ids.fileId), t.pool))?.alttext).toBe('New alt');
       const changes = await changesSince(mark);

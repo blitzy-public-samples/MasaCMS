@@ -34,6 +34,9 @@ export const REHEARSAL_SCENARIOS = ['GS-PE-RH-01', 'GS-PE-RH-02', 'GS-PE-RH-03']
 /** Scenario whose session step runs across the rollback version's activation. */
 export const SESSION_SCENARIO = 'GS-ID-09';
 
+/** Golden set of the session scenario's rehearsal crossing, captured again just before the rehearsal scenarios. */
+export const SESSION_GOLDEN_SET = `harness/golden/sets/rehearsal/${SESSION_SCENARIO}.json`;
+
 /** Rehearsal verdict; `incomplete` when evidence is missing and nothing failed. */
 export type RollbackResult = 'pass' | 'fail' | 'incomplete';
 
@@ -71,7 +74,7 @@ export interface FeedRun {
   finishedAt: string;
 }
 
-/** Parity outcome of one scenario; `result` is `not-run` when `parity.json` does not list it. */
+/** Parity outcome of one scenario or rehearsal crossing; `result` is `not-run` when `parity.json` does not list it. */
 export interface ScenarioOutcome {
   id: string;
   result: string;
@@ -106,6 +109,10 @@ export interface RollbackReportInput {
   /** Every recorded feed run. */
   feeds?: FeedRun[];
   scenarios: ScenarioOutcome[];
+  /**
+   * The session scenario's rehearsal crossing, from `parity.json` `rehearsalCrossings`, not its `v0002` result; its
+   * golden set defaults to {@link SESSION_GOLDEN_SET}.
+   */
   session: ScenarioOutcome;
   fixtures?: FixtureStatus;
 }
@@ -117,9 +124,17 @@ export interface WriteRollbackReportResult {
   exitCode: 0 | 1;
 }
 
-/** `parity.json` fields the report reads. */
+/** One `parity.json` row the report reads. */
+interface StoredOutcome {
+  id: string;
+  result: string;
+  evidence?: { golden?: string; replay?: string };
+}
+
+/** `parity.json` fields the report reads; `rehearsalCrossings` holds scenarios replayed across the `v0003` activation. */
 interface StoredParity {
-  scenarios?: { id: string; result: string; evidence?: { golden?: string; replay?: string } }[];
+  scenarios?: StoredOutcome[];
+  rehearsalCrossings?: StoredOutcome[];
 }
 
 /** Reconciliation report fields the report reads; the committed placeholders hold `null` until a run. */
@@ -444,11 +459,11 @@ function reconciliationSection({ before, after }: RollbackReportInput['reconcili
   ];
 }
 
-function replayRow(outcome: ScenarioOutcome): string {
+function replayRow(outcome: ScenarioOutcome, golden = `harness/golden/sets/${outcome.id}.json`): string {
   const label = SCENARIO_LABELS[outcome.id];
   return row([
     label === undefined ? outcome.id : `${outcome.id} (${label})`,
-    code(outcome.golden ?? `harness/golden/sets/${outcome.id}.json`),
+    code(outcome.golden ?? golden),
     outcome.replay === undefined ? NOT_RUN : code(outcome.replay),
     outcome.result,
   ]);
@@ -471,12 +486,16 @@ function replaySection(input: RollbackReportInput): string[] {
     '',
     '| Scenario | Golden set | Replay | Result |',
     '|---|---|---|---|',
-    ...[...input.scenarios, input.session].map(replayRow),
+    ...input.scenarios.map((outcome) => replayRow(outcome)),
+    replayRow(input.session, SESSION_GOLDEN_SET),
     '',
     'GS-PE-RH-01/02/03 golden sets are captured at `harness/repro/test-all.sh` stage 5 from the same seeded state, on the ' +
       'reserved rehearsal identities (`legacy-fixtures/seed/seed.config.json` `reserved.rehearsal`), which no other scenario ' +
       `may reference. ${SESSION_SCENARIO} is the session-continuity case: its session step runs across the ` +
-      `\`${ROLLBACK_VERSION}\` activation and uses no reserved identity.`,
+      `\`${ROLLBACK_VERSION}\` activation and uses no reserved identity. Its row is that rehearsal crossing, compared ` +
+      `under \`${ROLLBACK_VERSION}\` (\`parity.json\` \`rehearsalCrossings\`) with ${code(SESSION_GOLDEN_SET)}, captured ` +
+      'in the same pass just before the GS-PE-RH sets, where any unlisted difference fails it; its ' +
+      `\`${ROLLBACK_FROM_VERSION}\` parity result stays in \`scenarios\`.`,
     '',
     fixturesLine(input.fixtures),
   ];
@@ -521,8 +540,8 @@ async function readReconciliation(reportsDir: string, relPath: string): Promise<
   };
 }
 
-function scenarioOutcome(id: string, parity: StoredParity | undefined): ScenarioOutcome {
-  const found = parity?.scenarios?.find((scenario) => scenario.id === id);
+function scenarioOutcome(id: string, rows: readonly StoredOutcome[] | undefined): ScenarioOutcome {
+  const found = rows?.find((scenario) => scenario.id === id);
   if (found === undefined) return { id, result: NOT_RUN };
   return { id, result: found.result, golden: found.evidence?.golden, replay: found.evidence?.replay };
 }
@@ -616,8 +635,8 @@ export async function writeRollbackReport(
     },
     replays: await readReplays(stateDir),
     feeds: await readFeedRuns(target.reportsDir),
-    scenarios: REHEARSAL_SCENARIOS.map((id) => scenarioOutcome(id, parity)),
-    session: scenarioOutcome(SESSION_SCENARIO, parity),
+    scenarios: REHEARSAL_SCENARIOS.map((id) => scenarioOutcome(id, parity?.scenarios)),
+    session: scenarioOutcome(SESSION_SCENARIO, parity?.rehearsalCrossings),
     fixtures: await readFixtures(stateDir),
   });
   // writeMarkdownReport redacts the Markdown and ensures its Source SHA line from the same pin.

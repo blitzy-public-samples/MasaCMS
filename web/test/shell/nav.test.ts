@@ -506,6 +506,15 @@ describe('OPT-2 group', () => {
     ]);
   });
 
+  it('adds nothing outside li#admin-nav-opt2, the element the golden DOM comparison excludes', () => {
+    const navFor = (roles: string[]): cheerio.CheerioAPI =>
+      cheerio.load(render(shell(makeAdminRequest({ circuit: 'cArch', item: 'list', user: { roles } }, 'qaEditor'))), null, false);
+    const withGroup = navFor([Roles.systemUser, Roles.communicationsSender]);
+    expect(withGroup('li#admin-nav-opt2').length).toBe(1);
+    withGroup('li#admin-nav-opt2').remove();
+    expect(squash(withGroup.html())).toBe(squash(navFor([Roles.systemUser]).html()));
+  });
+
   it.each(OPT2_NAV_MODULES.flatMap((entry) => entry.roles.map((role) => [role, entry] as const)))(
     'gives %s one item, before Help',
     (role, entry) => {

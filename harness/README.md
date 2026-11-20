@@ -86,10 +86,10 @@ Needs the stack `up.sh` recorded. It exports the `cutoverDir` of `up.json` as `O
 | 2 Platform on stub | `npm test` in `platform`, `gateway` and `services/stub`; `test:e2e -- isolation/platform-proof` |
 | 3 Each service | `npm test` in identity, people, programs-sites, strategies-content, communications, reporting, surveys, timesheets, finance and e-signature, then `web`, `migration` and `harness` |
 | 4 Migration | Reconcile `after-backfill`; `golden:workload` through the gateway; feed and reconcile `after-feed-1`; each reconciling fault; snapshot `Sk`; `feed --snapshot` to `Sk` (reconciles `after-feed-<k>`); `opt2-ops drain-and-suspend`; checkpoint `Ck` |
-| 5 Capture | `golden:capture` against legacy directly, plus the browser captures; reset legacy and target to `Ck`, verify, `opt2-ops resume` |
+| 5 Capture | `golden:capture` against legacy directly, then the browser captures, then `golden:capture -- --rehearsal` (GS-ID-09 again as its rehearsal crossing, then the GS-PE-RH sets, as stage 8 replays them); reset legacy and target to `Ck`, verify, `opt2-ops resume` |
 | 6 Cut-over | `opt2-migrate transition --to v0002`, with GS-ID-09 crossing it; feed; reconcile `post-cutover` |
 | 7 Equivalence and cross-cutting | `golden:replay`, the browser replay, `golden:compare`, `golden:coverage`; e2e suites for tenant isolation, seams, dead-letter replay, trace, roster protocol, the gateway authorisation matrix and the synthetic modules' `/v1` writes; `security:scan`; `infra/terraform/plan.sh`; `opt2-migrate window report`, then `test:e2e -- performance/performance`; `report:isolation`, `report:events` |
-| 8 Rollback | People-roster rehearsal: `opt2-migrate rollback-set`, transition to `v0003`, `rollback rebaseline`, `golden:replay -- --rehearsal`, feed, reconcile `rollback-after`, `golden:compare`, `rollback report` |
+| 8 Rollback | People-roster rehearsal: `opt2-migrate rollback-set`, transition to `v0003` with GS-ID-09 crossing it (`--rehearsal`), `rollback rebaseline`, `golden:replay -- --rehearsal`, feed, reconcile `rollback-after`, `golden:compare`, `rollback report` |
 | 9 Reports | `opt2-migrate window report`, `report:speed`, `check:reviewability`, `check:deck -- --render`, the migration service's `windows.json` and `transitions.json` |
 
 ### `down.sh` and `clean-checkout-proof.sh`
@@ -143,7 +143,7 @@ Shared tooling: Pub/Sub emulator 8085, Mailpit SMTP 1025 and API 8025. The stack
 
 ### Native processes
 
-No Docker is used locally. `up.sh` starts every process natively; each package's `Dockerfile` is only its Cloud Run artefact. ColdFusion is started and restarted only through `repro/lib/legacy-start.sh`, with `MURA_PING=false`, `MURA_AUTODISCOVERPLUGINS=false`, `MURA_APPLYDBUPDATES=false`, `MURA_BROADCASTCLUSTERCOMMANDS=false`, `OPT2_BRIDGE_HMAC_KEY`, `OPT2_HARNESS_KEY`, `OPT2_GATEWAY_ORIGIN`, and `SMTP_HOST`, `SMTP_PORT` and `MAILPIT_API_URL` from the port file's Mailpit ports on the start command, so Masa never registers its site-monitor task itself, its start-up neither discovers plugins nor applies DB updates, it queues no cluster reload commands (the start-up guard on content units), and the communications fixture mails through the Mailpit target communications uses. Its `java.io.tmpdir`, Masa's `getTempDirectory()`, is `${OPT2_STATE_DIR}/legacy-tmp`, emptied before every start, never the host's shared `/tmp`.
+No Docker is used locally. `up.sh` starts every process natively; each package's `Dockerfile` is only its Cloud Run artefact. ColdFusion is started and restarted only through `repro/lib/legacy-start.sh`, with `MURA_PING=false`, `MURA_AUTODISCOVERPLUGINS=false`, `MURA_APPLYDBUPDATES=false`, `MURA_BROADCASTCLUSTERCOMMANDS=false`, `OPT2_BRIDGE_HMAC_KEY`, `OPT2_HARNESS_KEY`, `OPT2_GATEWAY_ORIGIN`, and `SMTP_HOST`, `SMTP_PORT` and `MAILPIT_API_URL` from the port file's Mailpit ports on the start command, so Masa never registers its site-monitor task itself, its start-up neither discovers plugins nor applies DB updates, it queues no cluster reload commands (the start-up guard on content units), and the communications fixture mails through the Mailpit target communications uses. Its `java.io.tmpdir`, Masa's `getTempDirectory()`, is `${OPT2_STATE_DIR}/legacy-tmp`, emptied before every start, never the host's shared `/tmp`. Its `-Dcom.sun.media.imageio.disableCodecLib=true` leaves ImageIO one PNG reader and writer, the JDK's: the engine's JAI Image I/O codecLib PNG plugins are unordered against them, so otherwise each start may encode image renditions with another codec, and a capture and a replay on either side of a restart write different bytes for the same pixels.
 
 ## Package
 
@@ -180,9 +180,9 @@ npm run test:e2e    # e2e/** only, serially; needs the stack up.sh started; call
 | `baseline:environment` | `src/baseline/environment.ts` (`--phase local\|services`) | `opt2/reports/environment.md` |
 | `baseline:run` | `src/baseline/run.ts` | Raw runner responses under `${OPT2_STATE_DIR}/baseline/` |
 | `baseline:compare` | `src/baseline/compare.ts` | `opt2/reports/baseline.{json,md}`, `/tmp/masa-baseline.json` |
-| `golden:capture` | `src/golden/capture.ts` | `golden/sets/<scenario-id>.json` |
-| `golden:replay` | `src/golden/replay.ts` | `${OPT2_STATE_DIR}/golden/replay/<scenario-id>.json` |
-| `golden:compare` | `src/golden/compare.ts` | `opt2/reports/parity.{json,md}`, `opt2/exceptions-list.md` |
+| `golden:capture` | `src/golden/capture.ts` | `golden/sets/<scenario-id>.json`; with `--rehearsal`, a rehearsal crossing's under `golden/sets/rehearsal/` and the GS-PE-RH sets |
+| `golden:replay` | `src/golden/replay.ts` | `${OPT2_STATE_DIR}/golden/replay/<scenario-id>.json`; with `--rehearsal`, a non-rehearsal scenario's crossing of `v0003` under `golden/replay/rehearsal/` |
+| `golden:compare` | `src/golden/compare.ts` | `opt2/reports/parity.{json,md}` (rehearsal crossings in `rehearsalCrossings`, outside `summary`), `opt2/exceptions-list.md` |
 | `golden:coverage` | `src/golden/coverage.ts` | `${OPT2_STATE_DIR}/golden/coverage.json` |
 | `golden:workload` | `src/golden/workload.ts` | `${OPT2_STATE_DIR}/golden/workload.json` |
 | `check:pin` | `src/reporting/check-pin.ts` | — (confirms the pin with `--confirm`; checks the SHA in every deliverable) |

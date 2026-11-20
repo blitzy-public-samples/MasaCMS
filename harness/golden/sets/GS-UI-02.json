@@ -1,10 +1,10 @@
 {
-  "capturedAt": "2026-11-18T14:33:17.806Z",
+  "capturedAt": "2026-11-20T03:10:31.948Z",
   "fixtures": {
     "available": true,
     "reason": "fixtures loaded"
   },
-  "generatedAt": "2026-11-18T14:33:17.807Z",
+  "generatedAt": "2026-11-20T03:10:31.949Z",
   "generatedBy": "harness/e2e/ui/interactions.e2e.ts",
   "origin": "legacy",
   "scenarioId": "GS-UI-02",
@@ -985,7 +985,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/?muraAction=cArch.loadSiteManager&siteid=tenant-a&topid=8CD47134-D973-A94C-5AB9190D375C6A60&moduleid=00000000000000000000000000000000000&sortby=orderno&sortdirection=asc&ptype=Page&startrow=1&cacheid=0.7513391263306473"
+        "url": "/admin/?muraAction=cArch.loadSiteManager&siteid=tenant-a&topid=8CD47134-D973-A94C-5AB9190D375C6A60&moduleid=00000000000000000000000000000000000&sortby=orderno&sortdirection=asc&ptype=Page&startrow=1&cacheid=0.059344592191627576"
       },
       "response": {
         "body": {
@@ -1887,7 +1887,7 @@
         "headers": {
           "content-type": "application/json;charset=utf-8"
         },
-        "rawSha256": "4af37f3d46a648f099e4bf8b976862735d0c16c951a59ce2886a60f14eabd8c0",
+        "rawSha256": "ed2fcd7d2c8b0b78c0a3aea47dc0afce4dd5c15818faab2a5de9aa566488e131",
         "status": 200
       },
       "routeKey": "admin:carch.loadsitemanager"
@@ -1939,7 +1939,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/_api/json/v1/tenant-a/?&entityname=Entity&method=findNew&siteid=tenant-a&_cacheid=0.8540229750780459"
+        "url": "/_api/json/v1/tenant-a/?&entityname=Entity&method=findNew&siteid=tenant-a&_cacheid=0.9322122028231468"
       },
       "response": {
         "body": {
@@ -1973,7 +1973,7 @@
         "headers": {
           "content-type": "application/json;charset=utf-8"
         },
-        "rawSha256": "60c2d8c0fb923399bd2ef4d977aa7024b4a30abc1ff33c2f061aad96a376235b",
+        "rawSha256": "19a44367ac0daefb1c5d95eb56e8506cad0347b910bdac5dd69a4be80d1e9961",
         "status": 200
       },
       "routeKey": "api:entity.findnew"
@@ -2245,7 +2245,7 @@
         "headers": {
           "content-type": "application/json;charset=utf-8"
         },
-        "rawSha256": "f06d807dc969ca188cc5d3e9198ab7ed609748899e688d275ff5ac4b6d828697",
+        "rawSha256": "cf4a5c78879626c95c51f2754dc446f888279b3d6fb02a0e431c10e7b4608c31",
         "status": 200
       },
       "routeKey": "api:entity.findproperties"
@@ -2289,7 +2289,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/_api/json/v1/tenant-a/entity/?_cacheid=0.012200601293757107&itemsPerPage=10&scaffold%5B0%5D=1&"
+        "url": "/_api/json/v1/tenant-a/entity/?_cacheid=0.4516992412515901&itemsPerPage=10&scaffold%5B0%5D=1&"
       },
       "response": {
         "body": {
@@ -2315,7 +2315,7 @@
         "headers": {
           "content-type": "application/json;charset=utf-8"
         },
-        "rawSha256": "39753c11146cfacb70c2baf8b1d22f48c740ba015e982782e9cac6c8fb15b1f7",
+        "rawSha256": "6b02a3fae04eb21a10a756c403d5671c3e3c1e7e7896df01229500b0da47b28a",
         "status": 200
       },
       "routeKey": "api:entity.findquery"
@@ -2359,7 +2359,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/_api/json/v1/tenant-a/entity/?_cacheid=0.012200601293757107&itemsPerPage=10&scaffold%5B0%5D=1&"
+        "url": "/_api/json/v1/tenant-a/entity/?_cacheid=0.4516992412515901&itemsPerPage=10&scaffold%5B0%5D=1&"
       },
       "response": {
         "body": {
@@ -2385,7 +2385,7 @@
         "headers": {
           "content-type": "application/json;charset=utf-8"
         },
-        "rawSha256": "39753c11146cfacb70c2baf8b1d22f48c740ba015e982782e9cac6c8fb15b1f7",
+        "rawSha256": "6b02a3fae04eb21a10a756c403d5671c3e3c1e7e7896df01229500b0da47b28a",
         "status": 200
       },
       "routeKey": "api:entity.findquery"
@@ -3270,7 +3270,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/?muraAction=cArch.loadSiteManager&siteid=tenant-a&topid=8CD47134-D973-A94C-5AB9190D375C6A60&moduleid=00000000000000000000000000000000000&sortby=&sortdirection=&ptype=Page&startrow=21&cacheid=0.9034403234120573"
+        "url": "/admin/?muraAction=cArch.loadSiteManager&siteid=tenant-a&topid=8CD47134-D973-A94C-5AB9190D375C6A60&moduleid=00000000000000000000000000000000000&sortby=&sortdirection=&ptype=Page&startrow=21&cacheid=0.345336115022828"
       },
       "response": {
         "body": {
@@ -4137,7 +4137,7 @@
         "headers": {
           "content-type": "application/json;charset=utf-8"
         },
-        "rawSha256": "a177c9208d4d9f16f43ef9c1f74e24b8c01ce0eb7c86c43caeddaf6cb19b0ebb",
+        "rawSha256": "13b4bd503ca396e682da24083179771df249841c463c92d582e4695f4d2bbcf0",
         "status": 200
       },
       "routeKey": "admin:carch.loadsitemanager"
@@ -4215,7 +4215,7 @@
                   [
                     "",
                     "Studio sophismata deleniti complectus tutamen tamquam",
-                    "<known-issue:date-mask> 1:<ts:admin-time>",
+                    "<known-issue:date-mask> <ts:admin-time-seconds>",
                     "Admin User"
                   ]
                 ]
@@ -4228,7 +4228,7 @@
                   [
                     "",
                     "Studio sophismata deleniti complectus tutamen tamquam",
-                    "<known-issue:date-mask> 2:<ts:admin-time>",
+                    "<known-issue:date-mask> <ts:admin-time-seconds>",
                     "Tasha Baumbach"
                   ]
                 ]
@@ -4241,7 +4241,7 @@
                   [
                     "",
                     "Studio sophismata deleniti complectus tutamen tamquam",
-                    "<known-issue:date-mask> 2:<ts:admin-time>",
+                    "<known-issue:date-mask> <ts:admin-time-seconds>",
                     "Tasha Baumbach"
                   ]
                 ]
@@ -4272,7 +4272,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/index.cfm?muraAction=carch.draftpromptdata&contentid=D7D23FC5-1202-1243-F7463F217E1A9CD2&siteid=tenant-a&targetversion=undefined&contenthistid=5586BD35-02BF-8B57-B95C1E1BDFD30A0E"
+        "url": "/admin/index.cfm?muraAction=carch.draftpromptdata&contentid=D7D23FC5-1202-1243-F7463F217E1A9CD2&siteid=tenant-a&targetversion=undefined&contenthistid=A4591BF5-D867-5268-7B55BD86E39785B4"
       },
       "response": {
         "body": {
@@ -4344,7 +4344,7 @@
                   [
                     "",
                     "Studio sophismata deleniti complectus tutamen tamquam",
-                    "<known-issue:date-mask> 1:<ts:admin-time>",
+                    "<known-issue:date-mask> <ts:admin-time-seconds>",
                     "Admin User"
                   ]
                 ]
@@ -4357,7 +4357,7 @@
                   [
                     "",
                     "Studio sophismata deleniti complectus tutamen tamquam",
-                    "<known-issue:date-mask> 2:<ts:admin-time>",
+                    "<known-issue:date-mask> <ts:admin-time-seconds>",
                     "Tasha Baumbach"
                   ]
                 ]
@@ -4370,7 +4370,7 @@
                   [
                     "",
                     "Studio sophismata deleniti complectus tutamen tamquam",
-                    "<known-issue:date-mask> 2:<ts:admin-time>",
+                    "<known-issue:date-mask> <ts:admin-time-seconds>",
                     "Tasha Baumbach"
                   ]
                 ]
@@ -4385,7 +4385,7 @@
         "headers": {
           "content-type": "application/json;charset=utf-8"
         },
-        "rawSha256": "97682b7a69b70129b248d54836e7d2907eeb9d89250c9572f12884f43eaa35f4",
+        "rawSha256": "64457e2c57e4333a58992100f2d05aba96fb3d34fe50cf0e2751d60b9aa98618",
         "status": 200
       },
       "routeKey": "admin:carch.draftpromptdata"
@@ -4440,7 +4440,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/?muraAction=cArch.loadSelectedRelatedContent&compactDisplay=true&contenthistid=56BF82D7-DF19-8F4A-FFF86BD3963E5BD1&type=Page&subtype=Default&siteid=tenant-a&relatedcontentsetid=&relateditems=%5B%5D&external=true&cacheid=0.8221673376433777"
+        "url": "/admin/?muraAction=cArch.loadSelectedRelatedContent&compactDisplay=true&contenthistid=A553FC51-CC12-C6AA-F56333E5916CA83D&type=Page&subtype=Default&siteid=tenant-a&relatedcontentsetid=&relateditems=%5B%5D&external=true&cacheid=0.6963114056995526"
       },
       "response": {
         "domModel": {
@@ -4539,7 +4539,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/?muraAction=cArch.loadExtendedAttributes&contentHistID=56BF82D7-DF19-8F4A-FFF86BD3963E5BD1&type=Page&subType=Default&siteID=tenant-a&tablist=tabbasic,tabsummary,tabassoc,tabpublishing,tabschedule,tablayoutobjects,tabcategorization,tabtags,tabrelatedcontent,tabremote&cacheid=0.892929330088372"
+        "url": "/admin/?muraAction=cArch.loadExtendedAttributes&contentHistID=A553FC51-CC12-C6AA-F56333E5916CA83D&type=Page&subType=Default&siteID=tenant-a&tablist=tabbasic,tabsummary,tabassoc,tabpublishing,tabschedule,tablayoutobjects,tabcategorization,tabtags,tabrelatedcontent,tabremote&cacheid=0.1308828132853722"
       },
       "response": {
         "body": {
@@ -4644,7 +4644,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/?muraAction=cArch.siteParents&compactDisplay=true&siteid=tenant-a&contentid=D7D23FC5-1202-1243-F7463F217E1A9CD2&parentid=8CD47134-D973-A94C-5AB9190D375C6A60&keywords=&isNew=1&cacheid=0.2998049541747033"
+        "url": "/admin/?muraAction=cArch.siteParents&compactDisplay=true&siteid=tenant-a&contentid=D7D23FC5-1202-1243-F7463F217E1A9CD2&parentid=8CD47134-D973-A94C-5AB9190D375C6A60&keywords=&isNew=1&cacheid=0.18526395403730234"
       },
       "response": {
         "domModel": {
@@ -4750,7 +4750,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/?muraAction=cArch.loadExpireNotify&compactDisplay=true&siteid=tenant-a&contenthistid=56BF82D7-DF19-8F4A-FFF86BD3963E5BD1&parentid=8CD47134-D973-A94C-5AB9190D375C6A60&cacheid=0.9990832787878741"
+        "url": "/admin/?muraAction=cArch.loadExpireNotify&compactDisplay=true&siteid=tenant-a&contenthistid=A553FC51-CC12-C6AA-F56333E5916CA83D&parentid=8CD47134-D973-A94C-5AB9190D375C6A60&cacheid=0.9209552516968533"
       },
       "response": {
         "domModel": {
@@ -4795,7 +4795,7 @@
         "headers": {
           "content-type": "text/html;charset=UTF-8"
         },
-        "rawSha256": "4d1c61e88736da6c4401f6d1b5ad6a3b5f8625734896f81a143a0925cfef1983",
+        "rawSha256": "f84a11788ae633d404a37be4afd3a8f2a56b057c37a18fdc230d32c3e4b5c71f",
         "status": 200
       },
       "routeKey": "admin:carch.loadexpirenotify"
@@ -5312,7 +5312,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/?muraAction=cArch.loadRelatedContent&compactDisplay=true&contentid=D7D23FC5-1202-1243-F7463F217E1A9CD2&siteid=tenant-a&external=true&isNew=1&relatedcontentsetid=&&entitytype=content&cacheid=0.4601770864115815"
+        "url": "/admin/?muraAction=cArch.loadRelatedContent&compactDisplay=true&contentid=D7D23FC5-1202-1243-F7463F217E1A9CD2&siteid=tenant-a&external=true&isNew=1&relatedcontentsetid=&&entitytype=content&cacheid=0.9236091056336436"
       },
       "response": {
         "domModel": {
@@ -5849,7 +5849,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/index.cfm?muraAction=cArch.statusmodal&compactDisplay=true&siteid=tenant-a&contenthistid=56BF82D7-DF19-8F4A-FFF86BD3963E5BD1&cacheid=0.1295036137485921"
+        "url": "/admin/index.cfm?muraAction=cArch.statusmodal&compactDisplay=true&siteid=tenant-a&contenthistid=A553FC51-CC12-C6AA-F56333E5916CA83D&cacheid=0.006551846818995344"
       },
       "response": {
         "domModel": {
@@ -5901,7 +5901,7 @@
         "headers": {
           "content-type": "text/html;charset=UTF-8"
         },
-        "rawSha256": "e114f611992b3089d4eca9018a3735eb3c854147037e50f23a5efe526c657c65",
+        "rawSha256": "6a3929a3ceb24e3e536164bd04b8a0ea47552d1b721b1f6b93cbb18912b7408b",
         "status": 200
       },
       "routeKey": "admin:carch.statusmodal"
@@ -5929,7 +5929,7 @@
             "csrf_token": "<token>",
             "csrf_token_expires": "<token>",
             "muraAction": "carch.approvalaction",
-            "requestid": "56BF832E-A199-EEFD-2C9782130018916A",
+            "requestid": "A553FCBA-B289-A5AF-1AF19504FE492BF3",
             "siteid": "tenant-a"
           }
         },
@@ -5999,7 +5999,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/?muraAction=cArch.loadSelectedRelatedContent&compactDisplay=true&contenthistid=56C2E941-BAC0-505D-09F0A852C323D447&type=Page&subtype=Default&siteid=tenant-a&relatedcontentsetid=&relateditems=%5B%5D&external=true&cacheid=0.6154941846597124"
+        "url": "/admin/?muraAction=cArch.loadSelectedRelatedContent&compactDisplay=true&contenthistid=A5573961-E5DD-5154-7431F4353177BB11&type=Page&subtype=Default&siteid=tenant-a&relatedcontentsetid=&relateditems=%5B%5D&external=true&cacheid=0.847038522020548"
       },
       "response": {
         "domModel": {
@@ -6098,7 +6098,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/?muraAction=cArch.loadExtendedAttributes&contentHistID=56C2E941-BAC0-505D-09F0A852C323D447&type=Page&subType=Default&siteID=tenant-a&tablist=tabbasic,tabsummary,tabassoc,tabpublishing,tabschedule,tablayoutobjects,tabcategorization,tabtags,tabrelatedcontent,tabremote&cacheid=0.8601964647679652"
+        "url": "/admin/?muraAction=cArch.loadExtendedAttributes&contentHistID=A5573961-E5DD-5154-7431F4353177BB11&type=Page&subType=Default&siteID=tenant-a&tablist=tabbasic,tabsummary,tabassoc,tabpublishing,tabschedule,tablayoutobjects,tabcategorization,tabtags,tabrelatedcontent,tabremote&cacheid=0.418328883388829"
       },
       "response": {
         "body": {
@@ -6203,7 +6203,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/?muraAction=cArch.siteParents&compactDisplay=true&siteid=tenant-a&contentid=D7D23FC5-1202-1243-F7463F217E1A9CD2&parentid=8CD47134-D973-A94C-5AB9190D375C6A60&keywords=&isNew=1&cacheid=0.8293955058321163"
+        "url": "/admin/?muraAction=cArch.siteParents&compactDisplay=true&siteid=tenant-a&contentid=D7D23FC5-1202-1243-F7463F217E1A9CD2&parentid=8CD47134-D973-A94C-5AB9190D375C6A60&keywords=&isNew=1&cacheid=0.40796480377524336"
       },
       "response": {
         "domModel": {
@@ -6309,7 +6309,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/?muraAction=cArch.loadExpireNotify&compactDisplay=true&siteid=tenant-a&contenthistid=56C2E941-BAC0-505D-09F0A852C323D447&parentid=8CD47134-D973-A94C-5AB9190D375C6A60&cacheid=0.647475603921489"
+        "url": "/admin/?muraAction=cArch.loadExpireNotify&compactDisplay=true&siteid=tenant-a&contenthistid=A5573961-E5DD-5154-7431F4353177BB11&parentid=8CD47134-D973-A94C-5AB9190D375C6A60&cacheid=0.6907426024232931"
       },
       "response": {
         "domModel": {
@@ -6354,7 +6354,7 @@
         "headers": {
           "content-type": "text/html;charset=UTF-8"
         },
-        "rawSha256": "4d1c61e88736da6c4401f6d1b5ad6a3b5f8625734896f81a143a0925cfef1983",
+        "rawSha256": "f84a11788ae633d404a37be4afd3a8f2a56b057c37a18fdc230d32c3e4b5c71f",
         "status": 200
       },
       "routeKey": "admin:carch.loadexpirenotify"
@@ -6871,7 +6871,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/?muraAction=cArch.loadRelatedContent&compactDisplay=true&contentid=D7D23FC5-1202-1243-F7463F217E1A9CD2&siteid=tenant-a&external=true&isNew=1&relatedcontentsetid=&&entitytype=content&cacheid=0.030970308919097023"
+        "url": "/admin/?muraAction=cArch.loadRelatedContent&compactDisplay=true&contentid=D7D23FC5-1202-1243-F7463F217E1A9CD2&siteid=tenant-a&external=true&isNew=1&relatedcontentsetid=&&entitytype=content&cacheid=0.45863524642635556"
       },
       "response": {
         "domModel": {
@@ -8590,7 +8590,7 @@
               "form": 1,
               "name": "body",
               "type": "textarea",
-              "value": "<p>Mollitia velut cogo. Tamdiu dignissimos alioqui necessitatibus absconditus. Cohibeo colo paulatim crustulum bene tutamen sperno aperiam.</p>\n<p>Ascit inventore contigo via officiis tum adhaero. Commemoro amiculum asper cupio. Creta cras velit agnitio aequus cattus creptio.</p>\n<p>Cibus conqueror arbustum acerbitas cervus acerbitas quam ars suasoria calamitas. Argumentum tepesco tenus vestigium vilis debeo spoliatio odio. Astrum accendo tertius.</p>"
+              "value": "<p>Mollitia velut cogo. Tamdiu dignissimos alioqui necessitatibus absconditus. Cohibeo colo paulatim crustulum bene tutamen sperno aperiam.</p>\n\n<p>Ascit inventore contigo via officiis tum adhaero. Commemoro amiculum asper cupio. Creta cras velit agnitio aequus cattus creptio.</p>\n\n<p>Cibus conqueror arbustum acerbitas cervus acerbitas quam ars suasoria calamitas. Argumentum tepesco tenus vestigium vilis debeo spoliatio odio. Astrum accendo tertius.</p>"
             },
             {
               "disabled": false,
@@ -10289,14 +10289,14 @@
               "form": 1,
               "name": "displayIntervalTZ",
               "type": "hidden",
-              "value": "UTC"
+              "value": "Etc/UTC"
             },
             {
               "disabled": false,
               "form": 1,
               "name": "displayInterval",
               "type": "hidden",
-              "value": "{\"repeats\":0,\"detectconflicts\":0,\"allday\":0,\"timezone\":\"UTC\",\"every\":\"1\",\"type\":\"daily\",\"end\":\"never\",\"endon\":\"\",\"endafter\":\"0\",\"daysofweek\":\"\"}"
+              "value": "{\"repeats\":0,\"detectconflicts\":0,\"allday\":0,\"timezone\":\"Etc/UTC\",\"every\":\"1\",\"type\":\"daily\",\"end\":\"never\",\"endon\":\"\",\"endafter\":\"0\",\"daysofweek\":\"\"}"
             },
             {
               "disabled": false,
@@ -14290,7 +14290,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/?muraAction=cArch.edit&contenthistid=56C2E941-BAC0-505D-09F0A852C323D447&locknode=false&contentid=D7D23FC5-1202-1243-F7463F217E1A9CD2&type=Page&parentid=8CD47134-D973-A94C-5AB9190D375C6A60&topid=8CD47134-D973-A94C-5AB9190D375C6A60&siteid=tenant-a&moduleid=00000000000000000000000000000000000&startrow=21"
+        "url": "/admin/?muraAction=cArch.edit&contenthistid=A5573961-E5DD-5154-7431F4353177BB11&locknode=false&contentid=D7D23FC5-1202-1243-F7463F217E1A9CD2&type=Page&parentid=8CD47134-D973-A94C-5AB9190D375C6A60&topid=8CD47134-D973-A94C-5AB9190D375C6A60&siteid=tenant-a&moduleid=00000000000000000000000000000000000&startrow=21"
       },
       "response": {
         "domModel": {
@@ -15535,7 +15535,7 @@
               "form": 1,
               "name": "body",
               "type": "textarea",
-              "value": "<p>Mollitia velut cogo. Tamdiu dignissimos alioqui necessitatibus absconditus. Cohibeo colo paulatim crustulum bene tutamen sperno aperiam.</p>\n<p>Ascit inventore contigo via officiis tum adhaero. Commemoro amiculum asper cupio. Creta cras velit agnitio aequus cattus creptio.</p>\n<p>Cibus conqueror arbustum acerbitas cervus acerbitas quam ars suasoria calamitas. Argumentum tepesco tenus vestigium vilis debeo spoliatio odio. Astrum accendo tertius.</p>"
+              "value": "<p>Mollitia velut cogo. Tamdiu dignissimos alioqui necessitatibus absconditus. Cohibeo colo paulatim crustulum bene tutamen sperno aperiam.</p>\n\n<p>Ascit inventore contigo via officiis tum adhaero. Commemoro amiculum asper cupio. Creta cras velit agnitio aequus cattus creptio.</p>\n\n<p>Cibus conqueror arbustum acerbitas cervus acerbitas quam ars suasoria calamitas. Argumentum tepesco tenus vestigium vilis debeo spoliatio odio. Astrum accendo tertius.</p>"
             },
             {
               "disabled": false,
@@ -17234,14 +17234,14 @@
               "form": 1,
               "name": "displayIntervalTZ",
               "type": "hidden",
-              "value": "UTC"
+              "value": "Etc/UTC"
             },
             {
               "disabled": false,
               "form": 1,
               "name": "displayInterval",
               "type": "hidden",
-              "value": "{\"repeats\":0,\"detectconflicts\":0,\"allday\":0,\"timezone\":\"UTC\",\"every\":\"1\",\"type\":\"daily\",\"end\":\"never\",\"endon\":\"\",\"endafter\":\"0\",\"daysofweek\":\"\"}"
+              "value": "{\"repeats\":0,\"detectconflicts\":0,\"allday\":0,\"timezone\":\"Etc/UTC\",\"every\":\"1\",\"type\":\"daily\",\"end\":\"never\",\"endon\":\"\",\"endafter\":\"0\",\"daysofweek\":\"\"}"
             },
             {
               "disabled": false,
@@ -21220,7 +21220,7 @@
         "headers": {
           "content-type": "text/html;charset=UTF-8"
         },
-        "rawSha256": "e677b6aa33841b2f3416ba978968a56ceacfa6fb131c0d7e604781eaffd31277",
+        "rawSha256": "202698c2bf2fa20eb3766d4045fbe82c063092c5b5d33e8f95fb81b8b6c25c2b",
         "status": 200
       },
       "routeKey": "admin:carch.edit"

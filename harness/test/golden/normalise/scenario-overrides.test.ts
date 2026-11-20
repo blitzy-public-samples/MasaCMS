@@ -1,4 +1,8 @@
+import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import ExcelJS from 'exceljs';
 import { cfHash } from '@opt2/platform/legacy-compat';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { loadCatalogue, scenarioById, scenarioSchema, type Scenario } from '../../../src/golden/catalogue.js';
@@ -21,18 +25,22 @@ const NEXT_PAGE = 'gs-co-09-approval-page1';
 let rules: NormaliseRules;
 let approvals: Scenario;
 let clients: Scenario;
+let exportJobs: Scenario;
+let tinyPdf: Buffer;
 
 beforeAll(async () => {
   rules = loadRules(undefined, { PORT: '8500' });
   const catalogue = await loadCatalogue();
   approvals = scenarioById(catalogue, 'GS-CO-09');
   clients = scenarioById(catalogue, 'GS-ID-08');
+  exportJobs = scenarioById(catalogue, 'GS-RE-01');
+  tinyPdf = readFileSync(fileURLToPath(new URL('../../fixtures/exports/tiny.pdf', import.meta.url)));
 });
 
 /** A step record of `name` as the step runner records a 200 response; a JSON body carries its legacy ETag. */
-function record(name: string, routeKey: string, contentType: string, text: string): StepRecord {
+function record(name: string, routeKey: string, contentType: string, body: string | Buffer): StepRecord {
   const headers: Record<string, string> = { 'content-type': contentType };
-  if (contentType === JSON_TYPE) headers.etag = cfHash(text);
+  if (contentType === JSON_TYPE && typeof body === 'string') headers.etag = cfHash(body);
   return {
     name,
     index: 0,
@@ -42,9 +50,9 @@ function record(name: string, routeKey: string, contentType: string, text: strin
       status: 200,
       headers,
       contentType,
-      sha256: createHash('sha256').update(text).digest('hex'),
+      sha256: createHash('sha256').update(body).digest('hex'),
       hops: [],
-      text,
+      ...(typeof body === 'string' ? { text: body } : { bytesBase64: body.toString('base64') }),
     },
     extracted: {},
   };
@@ -196,5 +204,101 @@ describe('GS-ID-08 domUnordered accounts', () => {
     ]);
     expect(step.domModel?.controls[0]?.value).toBe(rules.tokens.placeholder);
     expect(JSON.stringify(step)).not.toContain(SECRET);
+  });
+});
+
+describe('GS-RE-01 dropPaths export byte hashes', () => {
+  const TYPES = {
+    xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    csv: 'text/csv',
+    pdf: 'application/pdf',
+  } as const;
+  type Format = keyof typeof TYPES;
+  const FORMATS = Object.keys(TYPES) as Format[];
+  const JOB_IDS: Record<Format, string> = {
+    xlsx: '56856E16-008F-601A-E2F97704648B4AA3',
+    csv: '5A1F7C20-11B2-4C3D-8E9F0A1B2C3D4E5F',
+    pdf: '5B2E8D31-22C3-4D4E-9FA01B2C3D4E5F60',
+  };
+  const TIMESHEET_ID = '7EDFAD01-DC76-57C6-993CE5D531B1DBC7';
+
+  const fileHash = (side: string, format: Format): string =>
+    createHash('sha256').update(`${side} ${format} bytes`).digest('hex');
+
+  /** A done job of `format` whose file `side` produced, with `changes` over its fields. */
+  const job = (format: Format, side: string, changes: Record<string, unknown> = {}) => ({
+    job_id: JOB_IDS[format],
+    format,
+    state: 'done',
+    content_type: TYPES[format],
+    file_name: `export-${JOB_IDS[format]}.${format}`,
+    output_sha256: fileHash(side, format),
+    ...changes,
+  });
+
+  const envelope = (data: unknown): string => JSON.stringify({ apiversion: 'v1', method: 'reporting.exports', data });
+
+  const poll = (format: Format, side: string, changes?: Record<string, unknown>): StepRecord =>
+    record(`${format}-poll`, 'fixture:reporting/exports/{id}@get', JSON_TYPE, envelope(job(format, side, changes)));
+
+  /** The job list; `pdfChanges` apply to its PDF job. */
+  const list = (side: string, pdfChanges?: Record<string, unknown>): StepRecord =>
+    record(
+      'list',
+      'fixture:reporting/exports@get',
+      JSON_TYPE,
+      envelope({ endindex: 3, items: FORMATS.map((f) => job(f, side, f === 'pdf' ? pdfChanges : {})) }),
+    );
+
+  const download = (format: Format, body: string | Buffer): StepRecord =>
+    record(`${format}-download`, 'fixture:reporting/exports/{id}/download@get', TYPES[format], body);
+
+  const csv = (status: string): string => `timesheet_id,status\r\n${TIMESHEET_ID},${status}\r\n`;
+
+  const workbook = async (status: string): Promise<Buffer> => {
+    const book = new ExcelJS.Workbook();
+    book.addWorksheet('export').addRows([['timesheet_id', 'status'], [TIMESHEET_ID, status]]);
+    return Buffer.from(await book.xlsx.writeBuffer());
+  };
+
+  // Same-length text keeps tiny.pdf's stream length and xref offsets valid.
+  const pdf = (text: string): Buffer => Buffer.from(tinyPdf.toString('latin1').replace('page 1', text), 'latin1');
+
+  it.each<[string, () => Promise<[StepRecord, StepRecord]>, string[]]>([
+    ['xlsx-poll with another file hash', async () => [poll('xlsx', 'legacy'), poll('xlsx', 'target')], []],
+    ['csv-poll with another file hash', async () => [poll('csv', 'legacy'), poll('csv', 'target')], []],
+    ['pdf-poll with another file hash', async () => [poll('pdf', 'legacy'), poll('pdf', 'target')], []],
+    ['list with other file hashes', async () => [list('legacy'), list('target')], []],
+    [
+      'xlsx-poll with another state',
+      async () => [poll('xlsx', 'legacy'), poll('xlsx', 'target', { state: 'failed' })],
+      ['envelope.data.state'],
+    ],
+    [
+      'list with another PDF file name',
+      async () => [list('legacy'), list('target', { file_name: 'export.pdf' })],
+      ['envelope.data.items[2].file_name'],
+    ],
+    [
+      'csv-download with another cell',
+      async () => [download('csv', csv('APPROVED')), download('csv', csv('RETURNED'))],
+      ['export.rows[1][1]'],
+    ],
+    [
+      'xlsx-download with another cell',
+      async () => [download('xlsx', await workbook('APPROVED')), download('xlsx', await workbook('RETURNED'))],
+      ['export.sheets[0].rows[1][1]'],
+    ],
+    [
+      'pdf-download with other page text',
+      async () => [download('pdf', tinyPdf), download('pdf', pdf('page 2'))],
+      ['export.pages[0]'],
+    ],
+  ])('compares %s with differences at %j', async (_label, sides, paths) => {
+    const [golden, replay] = await sides();
+    const found = await differences(exportJobs, golden, replay);
+    expect(found.map((difference) => [difference.path, difference.classification])).toStrictEqual(
+      paths.map((path) => [path, 'difference']),
+    );
   });
 });

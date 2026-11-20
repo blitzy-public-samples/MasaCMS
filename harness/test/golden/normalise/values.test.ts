@@ -60,6 +60,8 @@ interface Envelope {
 interface TimestampSample {
   readonly instants: readonly [string, string];
   readonly key?: string;
+  /** Text before and after an instant of a class found only inside that rendering. */
+  readonly within?: readonly [string, string];
 }
 
 const FIXTURE_TEXT = readFileSync(
@@ -83,9 +85,19 @@ const TIMESTAMP_SAMPLES: Readonly<Record<TimestampClass, TimestampSample>> = {
   'cookie-expires': { instants: ['Wed, 30-Jun-2027 12:00:00 GMT', 'Fri, 15-Jan-2027 08:30:45 GMT'] },
   'file-stamp-minute': { instants: ['2026_11_16_23_43', '2027_01_15_08_30'] },
   'file-stamp-date': { instants: ['2026_16_11', '2027_01_15'] },
+  'file-stamp-mmddyy': {
+    instants: ['111926', '010527'],
+    within: ['attachment;filename=OPT-2-Seed-Contact-Form_', '.csv'],
+  },
+  'file-stamp-second': {
+    instants: ['20261119134516', '20270105083045'],
+    within: ['attachment;filename=', '-config.xml.cfm'],
+  },
   'iso-date': { instants: ['2026-06-30', '2027-01-15'] },
   'csrf-expires': { instants: ['260630131500000', '270115083045123'], key: CSRF_FIELD_EXPIRES },
   'admin-date': { instants: ['6/30/2026', '10/302/2026'] },
+  'admin-date-yymmdd': { instants: ['26/11/19', '27/01/05'] },
+  'admin-time-seconds': { instants: ['1:43:43 PM', '08:30:45 AM'] },
   'admin-time': { instants: ['12:00 PM', '8:30 AM'] },
   'epoch-ms': { instants: ['1782820800000', '1800000000000'], key: 'createdAt' },
   'cffp-blurred': { instants: ['40001324,19750248', '40010421,19976165'], key: 'formfield1234567893' },
@@ -98,6 +110,14 @@ beforeAll(() => {
 });
 
 const fixture = (): Envelope => JSON.parse(FIXTURE_TEXT) as Envelope;
+
+// `instant` normalised whole, or inside the sample's rendering with that text cut off again.
+function normalisedInstant({ key, within }: TimestampSample, instant: string): string {
+  if (within === undefined) return normaliseTimestamp(instant, rules, key);
+  const [before, after] = within;
+  const text = normaliseText(`${before}${instant}${after}`, createIdOrdinals(), rules);
+  return text.startsWith(before) && text.endsWith(after) ? text.slice(before.length, text.length - after.length) : text;
+}
 
 function at<T>(list: readonly T[], index: number): T {
   const found = list[index];
@@ -146,18 +166,19 @@ describe('timestamp classes', () => {
 
   it.each(Object.entries(TIMESTAMP_SAMPLES))(
     'classifies two instants of %s alike and gives both its class placeholder',
-    (name, { instants, key }) => {
-      const [first, second] = instants;
-      expect(timestampClassOf(first, rules, key)).toBe(name);
-      expect(timestampClassOf(second, rules, key)).toBe(name);
-      expect(normaliseTimestamp(first, rules, key)).toBe(`<ts:${name}>`);
-      expect(normaliseTimestamp(second, rules, key)).toBe(normaliseTimestamp(first, rules, key));
+    (name, sample) => {
+      const [first, second] = sample.instants;
+      const whole = sample.within === undefined ? name : undefined;
+      expect(timestampClassOf(first, rules, sample.key)).toBe(whole);
+      expect(timestampClassOf(second, rules, sample.key)).toBe(whole);
+      expect(normalisedInstant(sample, first)).toBe(`<ts:${name}>`);
+      expect(normalisedInstant(sample, second)).toBe(normalisedInstant(sample, first));
     },
   );
 
   it('gives every class its own placeholder, so a format change between sides still differs', () => {
-    const placeholders = Object.values(TIMESTAMP_SAMPLES).map(({ instants, key }) =>
-      normaliseTimestamp(instants[0], rules, key),
+    const placeholders = Object.values(TIMESTAMP_SAMPLES).map((sample) =>
+      normalisedInstant(sample, sample.instants[0]),
     );
     expect(new Set(placeholders).size).toBe(placeholders.length);
     expect(normaliseValue({ created: '2026-06-30T12:00:00' }, createIdOrdinals(), rules)).not.toStrictEqual(

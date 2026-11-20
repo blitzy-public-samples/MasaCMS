@@ -1,10 +1,10 @@
 {
-  "capturedAt": "2026-11-18T14:28:11.198Z",
+  "capturedAt": "2026-11-20T03:05:56.700Z",
   "fixtures": {
     "available": true,
     "reason": "fixtures loaded"
   },
-  "generatedAt": "2026-11-18T14:28:15.773Z",
+  "generatedAt": "2026-11-20T03:06:01.608Z",
   "generatedBy": "harness/src/golden/capture.ts",
   "origin": "legacy",
   "scenarioId": "GS-CO-20",
@@ -636,7 +636,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "a18b872d34aeecd0fd7258a587bc3eeff2dbcc45515515c0524f7ce827a9ceb7",
+        "rawSha256": "3ba7c96bc21aa00e22c036359b027f9874a082f16728cf46adad6dce111c9e80",
         "status": 200
       },
       "routeKey": "api:comment.findquery"
@@ -917,7 +917,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "36e78d5fa0c191eb5fc63638488c7fd850adc8281acc8c48eca95897cfb62020",
+        "rawSha256": "38ecf1e6c405cf3c4a4dff05b345cc19eebc9fcd0087264f5052ab4d34ecc970",
         "status": 200
       },
       "routeKey": "cfc:/core/modules/v1/comments/ajax/commentsproxy.cfc?method=get"
@@ -1643,7 +1643,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "3a1459f72fc39b28d11a07dbd55cdc8c4a91bac046f77ac8437197fa51faf2d3",
+        "rawSha256": "09f25447d1e239aa7b18940a8459c615d6dc24035ba2b28a0eeccde271f40443",
         "status": 200
       },
       "routeKey": "admin:ccomments.approve"
@@ -1741,7 +1741,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "9089970a87e1003af6c94475a032de7c21436d2d43b896b9af0c4fe771e5e2cf",
+        "rawSha256": "a276aff10d6f66f6de7b7d110192af433370fc4c77500c82312a0b8bd308a8a2",
         "status": 200
       },
       "routeKey": "api:comment.findone"
@@ -1968,7 +1968,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "e7ab75ab8cfec3dc566f54cb8026fc73ba2fe6470e46aae5fea6c88ad2135f05",
+        "rawSha256": "098bb879317e418ce7a76f3ccd4aae8099262cc5cfea147a02cab26e62044025",
         "status": 200
       },
       "routeKey": "api:comment.findone"
@@ -2081,7 +2081,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "58377831822eecf16436919c5c9e1483296a0ee1131ef02520aa88ab061519a5",
+        "rawSha256": "c6bc4662155413ea754a513aaedcb994c6ac9c94fa1e56224d83ced43d179c32",
         "status": 200
       },
       "routeKey": "api:comment.save"
@@ -2136,7 +2136,7 @@
         "body": {
           "kind": "form",
           "value": {
-            "commentid": "56952C6E-A6A2-AA7E-B028CEDEECEAB4DB",
+            "commentid": "A52E4580-BCC5-726C-90FA6EFB4724A93F",
             "name": "GS-CO-20 Visitor Renamed",
             "siteid": "tenant-a"
           }
@@ -2192,7 +2192,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "42b8f67025142806ed3101256db7264186e559814580648eeb98e861a44a7a9c",
+        "rawSha256": "c230c04906b600060a6130823866784c2bea29ae63c73169a598fbf638eb49b0",
         "status": 200
       },
       "routeKey": "api:comment.save"
@@ -2247,7 +2247,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/_api/json/v1/tenant-a/comment/56952C6E-A6A2-AA7E-B028CEDEECEAB4DB"
+        "url": "/_api/json/v1/tenant-a/comment/A52E4580-BCC5-726C-90FA6EFB4724A93F"
       },
       "response": {
         "body": {
@@ -2290,7 +2290,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "384be907778cf88ce0889218b4daf5851296b964cb92b099a58875013836fd27",
+        "rawSha256": "e9ea999697a6b35d3fde47baa9752caeef308d9abd251cd6e2ba329894fbd154",
         "status": 200
       },
       "routeKey": "api:comment.findone"
@@ -2322,7 +2322,7 @@
           "kind": "form",
           "value": {
             "bulkedit": "delete",
-            "ckUpdate": "56952C6E-A6A2-AA7E-B028CEDEECEAB4DB",
+            "ckUpdate": "A52E4580-BCC5-726C-90FA6EFB4724A93F",
             "siteid": "tenant-a"
           }
         },
@@ -3017,7 +3017,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "1f68a0d850feb439c7116a200789e34a1caaa9ff9f24a90e9404a571b2cdf219",
+        "rawSha256": "dfcc4e20b3d61db4d9e19eb37b746f087f71b8f1c6a831095e1959687d861c0c",
         "status": 200
       },
       "routeKey": "admin:ccomments.purgedeletedcomments"
@@ -3487,7 +3487,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "a18b872d34aeecd0fd7258a587bc3eeff2dbcc45515515c0524f7ce827a9ceb7",
+        "rawSha256": "3ba7c96bc21aa00e22c036359b027f9874a082f16728cf46adad6dce111c9e80",
         "status": 200
       },
       "routeKey": "api:comment.findquery"

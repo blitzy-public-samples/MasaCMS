@@ -76,6 +76,7 @@ const INDEX: RoutingIndex = buildRoutingIndex(
       entry('cfm:/core/modules/v1/favorites/ajax/deletefavorite.cfm', 'people', 'write'),
       entry('cfm:/core/modules/v1/favorites/ajax/deleterssfavorite.cfm', 'people', 'write'),
       entry('cfc:/core/modules/v1/comments/ajax/commentsproxy.cfc?method=flag', 'strategies-content', 'write'),
+      entry('rest:login', 'identity', 'write'),
     ],
   },
   { sourceSha: SHA, variants: [] },
@@ -94,6 +95,7 @@ interface Harness {
   people: HttpDouble;
   content: HttpDouble;
   surveys: HttpDouble;
+  identity: HttpDouble;
   legacy: HttpDouble;
   deps: DispatcherDeps;
 }
@@ -111,8 +113,9 @@ async function harness(sites?: DispatcherDeps['sites']): Promise<Harness> {
   const people = await startHttpDouble((_req, res) => sendBytes(res, 200, '{}', { 'content-type': 'application/json' }));
   const content = await startHttpDouble((_req, res) => sendBytes(res, 200, '{}', { 'content-type': 'text/html' }));
   const surveys = await startHttpDouble((_req, res) => sendBytes(res, 200, '{}', { 'content-type': 'application/json' }));
+  const identity = await startHttpDouble((_req, res) => sendBytes(res, 200, '{}', { 'content-type': 'application/json' }));
   const legacy = await startHttpDouble((_req, res) => sendBytes(res, 200, '{}', { 'content-type': 'application/json' }));
-  const urls = { web: web.url, stub: stub.url, people: people.url, 'strategies-content': content.url, surveys: surveys.url };
+  const urls = { web: web.url, stub: stub.url, people: people.url, 'strategies-content': content.url, surveys: surveys.url, identity: identity.url };
   const app = await createService({
     name: 'gateway',
     version: '1.0.0',
@@ -219,9 +222,9 @@ async function harness(sites?: DispatcherDeps['sites']): Promise<Harness> {
   await app.ready();
   closers.push(async () => {
     await app.opt2.shutdown();
-    await Promise.all([web.close(), stub.close(), people.close(), content.close(), surveys.close(), legacy.close()]);
+    await Promise.all([web.close(), stub.close(), people.close(), content.close(), surveys.close(), identity.close(), legacy.close()]);
   });
-  return { app, web, stub, people, content, surveys, legacy, deps };
+  return { app, web, stub, people, content, surveys, identity, legacy, deps };
 }
 
 /** Identity's snapshot of the session, its user's `siteID` as given. */
@@ -412,6 +415,25 @@ describe('fixture Authorization relay', () => {
     expect(h.surveys.requests).toHaveLength(0);
   });
 });
+
+describe('REST credential params', () => {
+  it('hands the resolver the params the credential block reads, without the method resolution set', async () => {
+    const h = await harness();
+    const authorization = `Basic ${Buffer.from('admin:pw', 'utf8').toString('base64')}`;
+    const res = await h.app.inject({
+      method: 'POST',
+      url: '/_api/rest/v1/default/login',
+      headers: { authorization, 'content-type': URLENCODED },
+      payload: 'username=admin&password=pw',
+    });
+    expect(res.statusCode).toBe(200);
+    const [input, options] = vi.mocked(h.deps.resolver.resolveSession).mock.calls[0] ?? [];
+    expect(options?.family).toBe('rest');
+    expect(input?.params).toMatchObject({ method: 'login', siteid: 'default' });
+    expect(input?.credentialParams).toEqual({ username: 'admin', password: 'pw' });
+  });
+});
+
 
 describe('template user token site', () => {
   const RATING = 'contentID=C&siteID=tenant-a&userID=U&rate=5';

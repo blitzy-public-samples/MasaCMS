@@ -37,6 +37,10 @@ const LEGACY_CFID = setCookieLegacy(
   {},
   NOW,
 );
+/** A resolver clock stopped at NOW. */
+const AT_NOW: Clock = { now: () => NOW };
+/** The attributes setSessionCookies writes at NOW, which a request cookie legacy set unseen takes. */
+const WRITTEN_TAIL = 'expires=Fri, 30-Jun-2056 12:00:00 GMT;path=/;HttpOnly;';
 
 /** Identity's state per session; `userId` defaults to `U1`. */
 type ActiveStates = Record<string, { state: 'active' | 'ended'; epoch: number; userId?: string }>;
@@ -317,6 +321,20 @@ describe('sessionless REST', () => {
     expect(s.calls).toEqual(['authenticate']);
   });
 
+  it('sends identity the params the credential block reads, without those method resolution set', async () => {
+    const s = setup();
+    await s.resolver.resolveSession(
+      request(undefined, {
+        httpMethod: 'POST',
+        path: '/_api/rest/v1/tenant-a/login',
+        params: { username: 'admin', method: 'login', siteid: 'tenant-a' },
+        credentialParams: { username: 'admin' },
+      }),
+      { family: 'rest', mode: 'target-primary', siteId: 'tenant-a' },
+    );
+    expect(s.authenticated[0]?.form).toEqual({ username: 'admin' });
+  });
+
   it("continues a request legacy's start-up scan fails on anonymously, never asking identity", async () => {
     const answer = { status: 401, headers: {}, body: '{"error":{}}' };
     const s = setup({ authenticate: () => ({ outcome: 'denied', sessionId: null, legacyResponse: answer }) });
@@ -537,18 +555,16 @@ describe('target-primary target-bound requests', () => {
     expect(resolution.setCookies.join('\n')).not.toMatch(/L-CFID|L-CFTOKEN|L-J/);
   });
 
-  it('emits no cookie legacy never set, carrying the session id in CFTOKEN where legacy set no JSESSIONID', async () => {
-    const s = setup();
+  it('emits no cookie legacy never set, under the attributes legacy writes, carrying the session id in CFTOKEN where legacy set no JSESSIONID', async () => {
+    const s = setup({ clock: AT_NOW });
     const resolution = asSession(
       await s.resolver.resolveSession(request('CFID=L-CFID; CFTOKEN=L-CFTOKEN'), {
         family: 'api',
         mode: 'target-primary',
       }),
     );
-    expect(resolution.setCookies).toEqual([
-      setCookieLegacy({ name: 'CFID', value: 'T-CFID' }),
-      setCookieLegacy({ name: 'CFTOKEN', value: ADOPTED_ID }),
-    ]);
+    // Persistent, as legacy's own CFID and CFTOKEN, which the browser held without the gateway seeing them set.
+    expect(resolution.setCookies).toEqual([`CFID=T-CFID;${WRITTEN_TAIL}`, `CFTOKEN=${ADOPTED_ID};${WRITTEN_TAIL}`]);
     const browser = resolution.setCookies.map((value) => `${parseSetCookie(value).name}=${parseSetCookie(value).value}`);
     expect(sessionIdFromTargetCookies(parseCookieHeader(browser.join('; ')))).toBe(ADOPTED_ID);
   });
@@ -573,21 +589,21 @@ describe('target-primary target-bound requests', () => {
     [
       'a stale JSESSIONID',
       'JSESSIONID=STALE; MXP=1',
-      cookie('JSESSIONID', 'STALE'),
+      cookie('JSESSIONID', 'STALE', WRITTEN_TAIL),
       ['check:STALE'],
       undefined,
-      reissued('T-CFTOKEN', [setCookieLegacy({ name: 'JSESSIONID', value: ADOPTED_ID })]),
+      reissued('T-CFTOKEN', [`JSESSIONID=${ADOPTED_ID};${WRITTEN_TAIL}`]),
     ],
     [
       'a stale CFID and CFTOKEN',
       'CFID=S-CFID; CFTOKEN=S-CFTOKEN',
-      { ...cookie('CFID', 'S-CFID'), ...cookie('CFTOKEN', 'S-CFTOKEN') },
+      { ...cookie('CFID', 'S-CFID', WRITTEN_TAIL), ...cookie('CFTOKEN', 'S-CFTOKEN', WRITTEN_TAIL) },
       ['check:S-CFTOKEN'],
       'tenant-a',
       reissued(ADOPTED_ID, []),
     ],
   ])('adopts the session ColdFusion opens for a request with %s', async (_label, header, sent, checks, siteId, emitted) => {
-    const s = setup({ describe: () => ({ body: describeBody('NEW'), setCookies: opened }) });
+    const s = setup({ describe: () => ({ body: describeBody('NEW'), setCookies: opened }), clock: AT_NOW });
     const resolution = asSession(
       await s.resolver.resolveSession(request(header), { family: 'admin', mode: 'target-primary', siteId }),
     );
@@ -1235,6 +1251,7 @@ describe('adoption of a legacy session another jar holds', () => {
         setCookies: [],
       }),
       rows: [jarRow('HOLDER', { mode, legacySessionId: 'LEG-1' })],
+      clock: AT_NOW,
     });
     const resolution = await s.resolver.resolveSession(request(LEGACY_REQUEST), {
       family: 'admin',
@@ -1243,7 +1260,7 @@ describe('adoption of a legacy session another jar holds', () => {
 
     expect(resolution).toMatchObject({ kind: 'session', sessionId: ADOPTED_ID, mode: 'legacy-primary' });
     expect(s.calls).toEqual(calls);
-    expect(s.described.map((call) => call.cookies)).toEqual(s.described.map(() => cookie('CFID', 'L-CFID')));
+    expect(s.described.map((call) => call.cookies)).toEqual(s.described.map(() => cookie('CFID', 'L-CFID', WRITTEN_TAIL)));
     expect(s.adopted.map((input) => input.describe.memberships)).toEqual([`describe-${String(describes)}`]);
     expect([...s.rows.keys()]).toEqual([ADOPTED_ID]);
   });

@@ -46,6 +46,8 @@ export interface SessionRequestInput {
   query: Record<string, string>;
   /** The route key's merged params: the scanned query, then the scanned form, then a JSON body as sent, as legacy merges them. */
   params: Record<string, unknown>;
+  /** REST only: those params as the credential block reads them, before method resolution; `params` stands in when absent. */
+  credentialParams?: Record<string, unknown>;
   /** Whether legacy's start-up scan fails on the url or form scope, which answers before any credential is read. */
   scanFailed?: boolean;
 }
@@ -134,7 +136,7 @@ export interface SessionResolverOptions {
   bridge: BridgeClient;
   jar: LegacyJar;
   state: SessionStateChecker;
-  /** Ages the memo of which legacy session cookies attach; defaults to the system clock. */
+  /** Ages the memo of which legacy session cookies attach and dates cookies legacy set unseen; defaults to the system clock. */
   clock?: Clock;
   /**
    * Idle time after which cookies are described again: legacy's session timeout, which no session they attach outlives
@@ -210,9 +212,9 @@ function liveCookies(cookies: JarCookies): JarCookies {
   return Object.fromEntries(Object.entries(cookies).filter(([, cookie]) => !isDeletedJarCookie(cookie)));
 }
 
-/** The request's session cookies with a value, named and attributed from `observed` where legacy set them. */
-function requestCookies(request: SessionRequestInput, observed?: JarCookies): JarCookies {
-  return liveCookies(requestSessionCookies(headerValue(request.headers, 'cookie'), observed));
+/** The request's session cookies with a value, named and attributed from `observed` where legacy set them, else as legacy writes them at `now`. */
+function requestCookies(request: SessionRequestInput, observed?: JarCookies, now?: Date): JarCookies {
+  return liveCookies(requestSessionCookies(headerValue(request.headers, 'cookie'), observed, now));
 }
 
 /** The values of the request's session cookies by upper-case name: in target-primary, the target values. */
@@ -308,6 +310,10 @@ export function createSessionResolver(opts: SessionResolverOptions): SessionReso
   const idleMs = opts.attachmentIdleMs ?? DEFAULT_SESSION_TIMEOUT_MINUTES * 60_000;
   // A use re-inserts the key, so the least recently used cookies sit at the head of the map.
   const attachments = new Map<string, Attachment>();
+
+  /** The request's session cookies as {@link requestCookies} reads them, dated by the resolver's clock. */
+  const cookiesOf = (request: SessionRequestInput, observed?: JarCookies): JarCookies =>
+    requestCookies(request, observed, clock.now());
 
   /** Removes cookies unused for the idle bound, whose legacy session may have timed out since. */
   function pruneAttachments(now: number): void {
@@ -442,10 +448,10 @@ export function createSessionResolver(opts: SessionResolverOptions): SessionReso
 
   /** Target-primary adoption of the live legacy session the request's cookies attach. */
   async function adoptIntoTarget(request: SessionRequestInput, siteId: string | undefined): Promise<SessionResolution> {
-    const sent = requestCookies(request);
+    const sent = cookiesOf(request);
     const attached = await describeAttached(request, sent);
     if (attached === undefined) return none();
-    const cookies = requestCookies(request, attached.observed);
+    const cookies = cookiesOf(request, attached.observed);
     const adoption = await adopt(request, sent, attached.describe, cookies, 'target-primary', siteId);
     if (adoption === undefined) return none();
     const { adopted, row } = adoption;
@@ -454,9 +460,9 @@ export function createSessionResolver(opts: SessionResolverOptions): SessionReso
 
   /** Target-primary adoption of the legacy session describe attaches, or opens when the cookies attach none. */
   async function openIntoTarget(request: SessionRequestInput, siteId: string | undefined): Promise<SessionResolution> {
-    const described = await describeSession(request, requestCookies(request));
+    const described = await describeSession(request, cookiesOf(request));
     const observed = absorbLegacySetCookies(described.setCookies).sessionCookies;
-    const cookies = { ...requestCookies(request, observed), ...observed };
+    const cookies = { ...cookiesOf(request, observed), ...observed };
     const adoption = await adopt(request, liveCookies(cookies), described.body, cookies, 'target-primary', siteId);
     if (adoption === undefined) return none();
     const { adopted, row } = adoption;
@@ -480,7 +486,7 @@ export function createSessionResolver(opts: SessionResolverOptions): SessionReso
       headers: presentHeaders(request.headers),
       query: request.query,
       // Merged params already hold the query and the JSON body, so identity's query-then-form merge reproduces them.
-      form: request.params,
+      form: request.credentialParams ?? request.params,
     });
     if (outcome.outcome === 'denied' || outcome.outcome === 'answered') return legacyAnswer(outcome);
     if (outcome.outcome === 'anonymous' || outcome.sessionId === null) return none();
@@ -601,10 +607,10 @@ export function createSessionResolver(opts: SessionResolverOptions): SessionReso
   async function legacyPrimarySession(request: SessionRequestInput, siteId: string | undefined) {
     const restored = await restoredSession(request, siteId);
     if (restored !== undefined) return restored;
-    const sent = requestCookies(request);
+    const sent = cookiesOf(request);
     const described = await describeNoted(request, sent);
     const absorbed = absorbLegacySetCookies(described.setCookies);
-    const cookies = { ...requestCookies(request, absorbed.sessionCookies), ...absorbed.sessionCookies };
+    const cookies = { ...cookiesOf(request, absorbed.sessionCookies), ...absorbed.sessionCookies };
     const adoption = await adopt(request, sent, described.body, cookies, 'legacy-primary', siteId);
     if (adoption === undefined) return none();
     const { adopted, row } = adoption;
@@ -656,7 +662,7 @@ export function createSessionResolver(opts: SessionResolverOptions): SessionReso
     absorbed: AbsorbedSetCookies,
     siteId: string | undefined,
   ): Promise<SessionResolution> {
-    const cookies = { ...requestCookies(request, absorbed.sessionCookies), ...absorbed.sessionCookies };
+    const cookies = { ...cookiesOf(request, absorbed.sessionCookies), ...absorbed.sessionCookies };
     const sent = liveCookies(cookies);
     const attached = await describeAttached(request, sent);
     const adoption =
@@ -689,7 +695,7 @@ export function createSessionResolver(opts: SessionResolverOptions): SessionReso
         if (found !== undefined) return session(found.sessionId, found.epoch, 'target-primary', found.row, []);
         return adoptUnmapped ? adoptIntoTarget(request, siteId) : none();
       }
-      const sent = requestCookies(request);
+      const sent = cookiesOf(request);
       // Cookies known to attach a legacy session are legacy's, so they map without a switch back or a describe;
       // only an adoption needs describe's answer.
       const known = knownAttachment(sent);
@@ -710,7 +716,7 @@ export function createSessionResolver(opts: SessionResolverOptions): SessionReso
       if (!adoptUnmapped) return none();
       const observed = absorbLegacySetCookies(described.setCookies).sessionCookies;
       if (!keptSession(sent, observed)) return none();
-      const cookies = requestCookies(request, observed);
+      const cookies = cookiesOf(request, observed);
       const adoption = await adopt(request, sent, described.body, cookies, 'legacy-primary', siteId);
       if (adoption === undefined) return none();
       return session(adoption.adopted.sessionId, adoption.adopted.epoch, 'legacy-primary', adoption.row, []);

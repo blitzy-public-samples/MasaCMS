@@ -1,10 +1,10 @@
 {
-  "capturedAt": "2026-11-18T14:26:07.516Z",
+  "capturedAt": "2026-11-20T03:04:05.360Z",
   "fixtures": {
     "available": true,
     "reason": "fixtures loaded"
   },
-  "generatedAt": "2026-11-18T14:26:08.826Z",
+  "generatedAt": "2026-11-20T03:04:06.226Z",
   "generatedBy": "harness/src/golden/capture.ts",
   "origin": "legacy",
   "scenarioId": "GS-TS-05",

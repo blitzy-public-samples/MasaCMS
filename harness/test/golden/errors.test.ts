@@ -32,11 +32,16 @@ class ForeignEquivalenceImpossible extends Error {
 }
 
 describe('haltEvidence', () => {
-  it.each(['GS-ID-01', 'GS-CO-05', 'GS-PE-RH-02'])('builds repository- and state-relative paths for %s', (id) => {
-    const evidence = haltEvidence(id);
+  it.each([
+    ['GS-ID-01', false, ''],
+    ['GS-CO-05', false, ''],
+    ['GS-PE-RH-02', false, ''],
+    ['GS-ID-09', true, 'rehearsal/'],
+  ])('builds repository- and state-relative paths for %s (rehearsal crossing: %s)', (id, crossing, dir) => {
+    const evidence = haltEvidence(id, crossing);
     expect(evidence).toStrictEqual({
-      golden: `harness/golden/sets/${id}.json`,
-      replay: `\${OPT2_STATE_DIR}/golden/replay/${id}.json`,
+      golden: `harness/golden/sets/${dir}${id}.json`,
+      replay: `\${OPT2_STATE_DIR}/golden/replay/${dir}${id}.json`,
     });
     for (const p of [evidence.golden, evidence.replay]) {
       expect(path.isAbsolute(p)).toBe(false);

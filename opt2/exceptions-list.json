@@ -1129,6 +1129,71 @@
         "replay": "opt2/reports/parity.json#GS-ID-01"
       },
       "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+    },
+    {
+      "id": "EX-LOGIN-MAIL-SENDER",
+      "scenario": "GS-ID-04",
+      "routeKey": "admin:clogin.main{status=sendlogin}",
+      "appliesTo": [
+        "admin:clogin.login{status=sendlogin}",
+        "page:sendlogin"
+      ],
+      "difference": "Legacy `sendText` sends a login mail from `getFromEmail(siteid)`, which is also the sender name of a site-scoped mail without `from` (core/mura/mailer.cfc:251-255,267,274,289). `getFromEmail` takes the first valid address of: the mail-server username, when configBean `sendFromMailServerUserName` is on (default true, core/mura/configBean.cfc:95; core/templates/settings.template.cfm:109) and a mail-server password is set, the site's for a site id and the global `mailserverusername` for none (core/mura/mailer.cfc:539-543; core/mura/settings/settingsBean.cfc:456-462; core/mura/configBean.cfc:600-607); the site's `Contact`; the global `adminemail` (core/templates/settings.template.cfm:7); else `no-reply@` plus the site's `Domain` (core/mura/mailer.cfc:522-531). An empty site id reads the `default` site (core/mura/settings/settingsManager.cfc:539-541), and the admin forgot-password form passes none (admin/core/views/clogin/main.cfm:310), so Masa sends that mail from the `default` site's contact, `admin@example.com` as installed. communications ports only the last step: `no-reply@` plus the first domain its `tenant_registry` holds for the site, else for `default`, else `localhost` (`createSenderAddressSource` in services/communications/src/domain/sender-address.ts), so it would send that mail from `no-reply@localhost`.",
+      "decision": "preserve",
+      "reason": "No request reaches the case: the three send-login keys are withheld (opt2/decision-list.json) and `legacy-write` in v0001–v0003, so Masa sends every login mail, callers keep its sender, and GS-ID-04's replay is sent by legacy. Equivalence is possible, so the entry is open rather than halted: communications needs a site's mail-server username, whether its password is set, and its contact, with the global `sendFromMailServerUserName`, `mailserverusername` and `adminemail`, and programs-sites' contract gives it none of them (`lookupSiteMailSettings` admits only identity and answers no mail-server username, services/programs-sites/contracts/openapi.yaml). The target ports the remaining `getFromEmail` steps before these variants move, and the entry then closes.",
+      "status": "open",
+      "evidence": {
+        "golden": "harness/golden/sets/GS-ID-04.json",
+        "replay": "opt2/reports/parity.json#GS-ID-04"
+      },
+      "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+    },
+    {
+      "id": "EX-ADOPT-SESSION-COOKIES",
+      "scenario": "GS-ID-09",
+      "routeKey": "admin:cusers.listusers",
+      "appliesTo": [],
+      "difference": "A browser that opened its session on legacy before the login group moved still sends legacy's `CFID` and `CFTOKEN` after the `v0001 → v0002` transition, and legacy answers that request without a `Set-Cookie`. Through the gateway the first such request adopts the legacy session: `op=describe` reads it, identity's `sessions:adopt` takes it, the browser's cookies become the session's jar, and identity's cookies are re-emitted under the jar's names and attributes (`reissue` in gateway/src/session/resolve.ts): a fresh `CFID`, and `CFTOKEN` naming the identity session where legacy set no `JSESSIONID`, both persistent as legacy's setSessionCookies writes them (core/mura/utility.cfc:708-735). GS-ID-09's `adopt-continue` step therefore answers these two `Set-Cookie` values where legacy sends none.",
+      "matches": [
+        {
+          "step": "adopt-continue",
+          "path": "auth.cookies",
+          "kind": [
+            "extra"
+          ],
+          "actual": {
+            "name": "CFID",
+            "path": "/",
+            "httpOnly": true,
+            "secure": false,
+            "persistence": "persistent",
+            "rotation": "changed"
+          }
+        },
+        {
+          "step": "adopt-continue",
+          "path": "auth.cookies",
+          "kind": [
+            "extra"
+          ],
+          "actual": {
+            "name": "CFTOKEN",
+            "path": "/",
+            "httpOnly": true,
+            "secure": false,
+            "persistence": "persistent",
+            "rotation": "changed"
+          }
+        }
+      ],
+      "decision": "fix",
+      "reason": "Target-primary sessions are the identity sessions the browser's cookies name, and legacy's cookies stay in the gateway's jar, so an adopted session's cookies change once, at adoption, and sessions opened on legacy keep working; moving back to legacy-primary hands the jar's legacy values back. The browser cannot keep its legacy values instead: they name ColdFusion's session id, `<application>_<CFID>_<CFTOKEN>`, which changes whenever legacy re-creates the session behind the jar. Equivalence at that response is therefore impossible under the cut-over design, which specifies this re-emission, so the entry is accepted rather than proposed: `admin:cusers.listusers` keeps its cut-over entry, and only these two cookies of that step are excused.",
+      "status": "accepted",
+      "evidence": {
+        "golden": "harness/golden/sets/GS-ID-09.json",
+        "replay": "opt2/reports/parity.json#GS-ID-09"
+      },
+      "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
     }
   ]
 }

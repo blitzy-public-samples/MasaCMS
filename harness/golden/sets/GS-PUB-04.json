@@ -1,10 +1,10 @@
 {
-  "capturedAt": "2026-11-18T14:25:32.768Z",
+  "capturedAt": "2026-11-20T03:03:30.691Z",
   "fixtures": {
     "available": true,
     "reason": "fixtures loaded"
   },
-  "generatedAt": "2026-11-18T14:25:44.057Z",
+  "generatedAt": "2026-11-20T03:03:42.036Z",
   "generatedBy": "harness/src/golden/capture.ts",
   "origin": "legacy",
   "scenarioId": "GS-PUB-04",
@@ -7329,7 +7329,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "b2cfcc6bc49e521bd52c4cd6348a09d3cee88315fc09125fce4e2748a7a6e0f7",
+        "rawSha256": "e2e85c84688219f7919ddd1acedac2908816412d055a5cc0fcfc30c3554a64fa",
         "status": 200
       },
       "routeKey": "page:saverate"
@@ -7408,7 +7408,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "2072e338e56bcb8634952165b4e25842ec31cdb50655099d45f0a1012c757120",
+        "rawSha256": "6b13e32e727d07f2a00e2199d020bef696bdb0ed4adf19328cfec652605196a5",
         "status": 500
       },
       "routeKey": "cfm:/core/modules/v1/rater/ajax/saverate.cfm"

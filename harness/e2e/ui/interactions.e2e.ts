@@ -126,6 +126,10 @@ const TREE = '#gridContainer';
 const TREE_NEXT_PAGE = `${TREE} > .mura-results-wrapper ul.pagination a:has(i.mi-angle-right)`;
 const UPLOAD_INPUT = 'form#fileupload input[type="file"][name="files"]';
 const UPLOAD_ROW_READY = 'form#fileupload tbody.files tr.template-upload:not(.processing) button.start:not([disabled])';
+const UPLOAD_ROW = 'form#fileupload tbody.files tr.template-upload';
+const UPLOADED_ROW = 'form#fileupload tbody.files tr.template-download';
+/** True once every CKEditor instance on the page has loaded and set its element's markup. */
+const EDITORS_READY = "Object.values(window.CKEDITOR?.instances ?? {}).every((editor) => editor.status === 'ready')";
 const XHR_TYPES: ReadonlySet<string> = new Set(['xhr', 'fetch']);
 
 /** Base route keys of the admin actions the flows wait for. */
@@ -986,6 +990,8 @@ async function pendingApproval(suite: Suite, run: FlowRun): Promise<void> {
       if ((await send.count()) === 0) {
         throw new Error(`the edit screen of ${pageId} offers session ${REQUESTER_SESSION} no Send for Approval`);
       }
+      // Send posts a loading editor's raw textarea instead of its serialised data, so the stored body hangs on timing.
+      await page.waitForFunction(`window.CKEDITOR?.instances.body !== undefined && ${EDITORS_READY}`);
       await submitLeaving(page, send.first(), KEY.edit);
     });
   } catch (err) {
@@ -1106,14 +1112,25 @@ async function multiFileUpload(page: Page, run: FlowRun): Promise<void> {
     UPLOAD_INPUT,
     UPLOAD_FILES.map((file) => ({ name: file.name, mimeType: file.mimeType, buffer: file.buffer })),
   );
-  const start = page.locator('.fileupload-buttonbar .mura-file-start');
-  await start.waitFor({ state: 'visible' });
-  // The global start drops a row still processing its file, so it is pressed once every row is ready to upload.
+  // A row is ready once its `added` handler ran, which creates the inline editors the next wait covers.
   await page.waitForFunction(
     `document.querySelectorAll(${JSON.stringify(UPLOAD_ROW_READY)}).length >= ${UPLOAD_FILES.length}`,
   );
-  const upload = (record: XhrRecord): boolean => record.baseKey === KEY.update && record.method === 'POST';
-  await act(run, () => start.click(), upload, 'one upload per file', UPLOAD_FILES.length);
+  // Submit reads each row's summary; its inline editor, still loading when the rows are ready, rewrites it once loaded.
+  await page.waitForFunction(EDITORS_READY);
+  // Legacy puts each new file first among its siblings, so their nav order is their save order. The global start sends
+  // every row at once, racing that order; each row's own start, which the global start presses, goes in turn instead.
+  for (const file of UPLOAD_FILES) {
+    const named = { has: page.locator(`div.name:text-is(${JSON.stringify(file.name)})`) };
+    const upload = (record: XhrRecord): boolean =>
+      record.baseKey === KEY.update &&
+      record.method === 'POST' &&
+      record.body.kind === 'multipart' &&
+      record.body.value.files.some((part) => part.filename === file.name);
+    const start = page.locator(UPLOAD_ROW).filter(named).locator('button.start');
+    await act(run, () => start.click(), upload, `the upload of ${file.name}`);
+    await page.locator(UPLOADED_ROW).filter(named).waitFor();
+  }
   await run.shot();
 }
 

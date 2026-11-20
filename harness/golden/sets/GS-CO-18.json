@@ -1,10 +1,10 @@
 {
-  "capturedAt": "2026-11-18T14:27:33.896Z",
+  "capturedAt": "2026-11-20T03:05:28.184Z",
   "fixtures": {
     "available": true,
     "reason": "fixtures loaded"
   },
-  "generatedAt": "2026-11-18T14:28:04.278Z",
+  "generatedAt": "2026-11-20T03:05:52.206Z",
   "generatedBy": "harness/src/golden/capture.ts",
   "origin": "legacy",
   "scenarioId": "GS-CO-18",
@@ -2377,7 +2377,7 @@
               "form": 1,
               "name": "displayIntervalTZ",
               "type": "hidden",
-              "value": "UTC"
+              "value": "Etc/UTC"
             },
             {
               "disabled": false,
@@ -8041,7 +8041,7 @@
               "form": 1,
               "name": "displayIntervalTZ",
               "type": "hidden",
-              "value": "UTC"
+              "value": "Etc/UTC"
             },
             {
               "disabled": false,
@@ -11372,7 +11372,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "83efb7055a71a020e7996037c6a9661f068936bcb79cbd6236afcccff7369bd9",
+        "rawSha256": "322759fda98ac380b8533fd1e31634a59e3ce699997702a023fc39ca5db01294",
         "status": 200
       },
       "routeKey": "admin:carch.edit"
@@ -12012,8 +12012,8 @@
             "action": "add",
             "approved": "0",
             "body": "<p>GS-CO-18 Notify</p>",
-            "contenthistid": "568F17E4-EFA4-E734-EEF2006EE1DB7BE5",
-            "contentid": "568F1609-D143-761F-12EDE4A23F7363D9",
+            "contenthistid": "A52987D0-9B33-0946-86560CC06EB6F53A",
+            "contentid": "A52985DC-07F7-86F5-B4B5F4716E5BFA2B",
             "csrf_token": "<token>",
             "csrf_token_expires": "<token>",
             "display": "1",
@@ -12652,7 +12652,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "76072833c02b7077fb33b1f753da6565f0a1057aa6620940ee4bd710580bf603",
+        "rawSha256": "49e3e029c99b2046b4789476d2f731ae176df59e4099e719f911442afabb9b36",
         "status": 200
       },
       "routeKey": "admin:carch.update{notify}"
@@ -14990,7 +14990,7 @@
               "form": 1,
               "name": "displayIntervalTZ",
               "type": "hidden",
-              "value": "UTC"
+              "value": "Etc/UTC"
             },
             {
               "disabled": false,
@@ -20654,7 +20654,7 @@
               "form": 1,
               "name": "displayIntervalTZ",
               "type": "hidden",
-              "value": "UTC"
+              "value": "Etc/UTC"
             },
             {
               "disabled": false,
@@ -23985,7 +23985,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "0ca6d65809695ada0cdbd9da1e49a0a4a79d0c8ce35ced6da1dc1ef47d3411fc",
+        "rawSha256": "aa10892af25833920d68b94670088b0d72d3d649b08e1a48dbf338b1b2cce55e",
         "status": 200
       },
       "routeKey": "admin:carch.edit"
@@ -24625,8 +24625,8 @@
             "action": "add",
             "approved": "0",
             "body": "<p>GS-CO-18 Params</p>",
-            "contenthistid": "568F5E67-D017-1F29-3BDF5B98A4D41ED5",
-            "contentid": "568F5DE6-09AB-6E46-CF3D42DBC985E175",
+            "contenthistid": "A529D881-AEB4-6889-6355C52EB62B9A6C",
+            "contentid": "A529D7EF-0B3D-354D-25F80DA47755C4AB",
             "csrf_token": "<token>",
             "csrf_token_expires": "<token>",
             "display": "1",
@@ -25260,7 +25260,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "d23ab7bf0ef77c65c4ea986809868479d3b2df2dfe48e45c47aefe3f9c7ed3f4",
+        "rawSha256": "b5fe9d2ba5aee95e00b0f304a2749c1d263178cd4cdec7c9bc9a485008283c36",
         "status": 200
       },
       "routeKey": "admin:carch.update"
@@ -25337,7 +25337,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/_api/json/v1/tenant-a/content/568F5DE6-09AB-6E46-CF3D42DBC985E175"
+        "url": "/_api/json/v1/tenant-a/content/A529D7EF-0B3D-354D-25F80DA47755C4AB"
       },
       "response": {
         "body": {
@@ -25397,7 +25397,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "29e98e1f8ad3cb9bee0c676455a2f692e28a75eee8b7cee43ffcc06327d5bfb5",
+        "rawSha256": "9c8875c4a9b59962ae7ea8e9431187042da5e97cb448801b0f3627b84f1c649a",
         "status": 200
       },
       "routeKey": "api:content.findone"
@@ -25437,7 +25437,7 @@
           "value": {
             "approved": "0",
             "changesetid": "",
-            "contenthistid": "568F654B-C182-28D6-09557B4B3F6DB4A3",
+            "contenthistid": "A529DF90-C576-9498-AEA78B45999D4998",
             "name": "Text",
             "object": "text",
             "objectid": "",
@@ -25474,7 +25474,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "937fcf1d10666224d6c923104d53c3d56eabc0fc0431e5d1cf5725ea7de8cf47",
+        "rawSha256": "0af61b5e27aa71832e98e90cbe474298f02857def92828a28ff8353e360a5632",
         "status": 200
       },
       "routeKey": "admin:carch.updateobjectparams"
@@ -25551,7 +25551,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/_api/json/v1/tenant-a/content/568F5DE6-09AB-6E46-CF3D42DBC985E175"
+        "url": "/_api/json/v1/tenant-a/content/A529D7EF-0B3D-354D-25F80DA47755C4AB"
       },
       "response": {
         "body": {
@@ -25611,7 +25611,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "29e98e1f8ad3cb9bee0c676455a2f692e28a75eee8b7cee43ffcc06327d5bfb5",
+        "rawSha256": "9c8875c4a9b59962ae7ea8e9431187042da5e97cb448801b0f3627b84f1c649a",
         "status": 200
       },
       "routeKey": "api:content.findone"
@@ -25645,7 +25645,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/_api/json/v1/tenant-a/generateCSRFTokens?context=568F654B-C182-28D6-09557B4B3F6DB4A3add"
+        "url": "/_api/json/v1/tenant-a/generateCSRFTokens?context=A529DF90-C576-9498-AEA78B45999D4998add"
       },
       "response": {
         "body": {
@@ -25662,7 +25662,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "51ec8fe4fe570cb6c6661c6a51c8908e5a2758b565e9765ddcaa7442324afa03",
+        "rawSha256": "6a8eb784bc7fa9c18e58c616cb881001077b7c974fbd995cf5b9d9d6db7153c3",
         "status": 200
       },
       "routeKey": "api:generatecsrftokens"
@@ -25702,7 +25702,7 @@
           "value": {
             "approved": "1",
             "changesetid": "",
-            "contenthistid": "568F654B-C182-28D6-09557B4B3F6DB4A3",
+            "contenthistid": "A529DF90-C576-9498-AEA78B45999D4998",
             "name": "Text",
             "object": "text",
             "objectid": "",
@@ -25739,7 +25739,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "efa638e135802b014e842f18064828790ebcf1669514350046872ea01bc8f70c",
+        "rawSha256": "793958c4ff04228d73a2546d7659d300ccb294452186afd561023b0ee924b1b0",
         "status": 200
       },
       "routeKey": "admin:carch.updateobjectparams{approved=1}"
@@ -25872,7 +25872,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "584429cc1ef67376ef3d712597bebb386eb6496cf836e154b69c0111ad926d8e",
+        "rawSha256": "44d7ea0fe9a23d1d39511fa8b295577b0b830bce602cbeb28420a8240224692e",
         "status": 200
       },
       "routeKey": "api:content.findnew"
@@ -25951,9 +25951,9 @@
           "kind": "form",
           "value": {
             "approved": "1",
-            "contentid": "568F9DED-C6CA-F1DC-717793A0295CEB56",
+            "contentid": "A52A1B9F-F429-C33F-393FB04A1B5559EA",
             "entityname": "content",
-            "id": "568F9DED-C6CA-F1DC-717793A0295CEB56",
+            "id": "A52A1B9F-F429-C33F-393FB04A1B5559EA",
             "menutitle": "GS-CO-18 JSON",
             "method": "save",
             "parentid": "00000000000000000000000000000000001",
@@ -26030,7 +26030,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "c6fbbf7c00adfd0c578540168b84b8e8466627eaa26cb4b537ea1f3a1f555e5b",
+        "rawSha256": "7374d4b294ab56adb7063e8244909282191db16684cdc96d5354c1a548202eaa",
         "status": 200
       },
       "routeKey": "api:content.save{approved=1}"
@@ -26109,9 +26109,9 @@
           "kind": "form",
           "value": {
             "approved": "0",
-            "contentid": "568F9DED-C6CA-F1DC-717793A0295CEB56",
+            "contentid": "A52A1B9F-F429-C33F-393FB04A1B5559EA",
             "entityname": "content",
-            "id": "568F9DED-C6CA-F1DC-717793A0295CEB56",
+            "id": "A52A1B9F-F429-C33F-393FB04A1B5559EA",
             "menutitle": "GS-CO-18 JSON",
             "message": "This email is to notify you that there is new content for your review and/or approval. Please click the link below to view new content.\r\n\t",
             "method": "save",
@@ -26192,7 +26192,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "85eaca270677061cd10a4cebcc337373ea2a4d9f1b7178bc30035c9b1d0fc93d",
+        "rawSha256": "c0fa812f1248c9ee89f50375e4b4c54b575dfe62ed7d3d306d0f2b8283010b30",
         "status": 200
       },
       "routeKey": "api:content.save{notify}"
@@ -26325,7 +26325,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "41d787d02da36a51766ef5d055d23a8b3fa8290d793aae8de3a573c844e350f0",
+        "rawSha256": "35fff60f395d29778cad86d35269f294ddee67914dd16c999bd87b64d57c5f0e",
         "status": 200
       },
       "routeKey": "api:content.findnew"
@@ -26404,9 +26404,9 @@
           "kind": "form",
           "value": {
             "approved": "0",
-            "contentid": "568FB105-9ACD-B459-F2F2033243877D77",
+            "contentid": "A52A3009-A9C4-9DD4-42850928DA8D74BA",
             "entityname": "content",
-            "id": "568FB105-9ACD-B459-F2F2033243877D77",
+            "id": "A52A3009-A9C4-9DD4-42850928DA8D74BA",
             "menutitle": "GS-CO-18 JSON draft",
             "method": "save",
             "parentid": "00000000000000000000000000000000001",
@@ -26483,7 +26483,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "9f041ed7a21ce2ff9c0489d6140ec48ce2cd081a858457c2674e47cc587a1a18",
+        "rawSha256": "8d2fee9ac3a08457bc5150620d83d759d3d6747fc6fa192be7a1967e0928ef8a",
         "status": 200
       },
       "routeKey": "api:content.save"
@@ -26616,7 +26616,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "3f1586279d3f98969e7c2e42ec7a16f611d12a4fd215d25021beac669d1f1d85",
+        "rawSha256": "d6a4bee76ba0894badc7fd0149702454c3f2863e68d88077d84c81ec175e55a3",
         "status": 200
       },
       "routeKey": "api:content.findnew"
@@ -26695,9 +26695,9 @@
           "kind": "form",
           "value": {
             "approved": "1",
-            "contentid": "568FB744-0EFF-BF16-99F7548546A0AE69",
+            "contentid": "A52A3731-90A8-8BDD-CF0A31994492B73C",
             "entityname": "contentnav",
-            "id": "568FB744-0EFF-BF16-99F7548546A0AE69",
+            "id": "A52A3731-90A8-8BDD-CF0A31994492B73C",
             "menutitle": "GS-CO-18 JSON nav",
             "method": "save",
             "parentid": "00000000000000000000000000000000001",
@@ -26774,7 +26774,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "f1a6237845c719c5a4091bde311b80d0242b8cbf708d49036cc2d3fe70b97b69",
+        "rawSha256": "c3e35ed0c1263404de65d9332f2d7a630be9f2af831987b6c2e55093a6a41694",
         "status": 200
       },
       "routeKey": "api:contentnav.save{approved=1}"
@@ -26853,9 +26853,9 @@
           "kind": "form",
           "value": {
             "approved": "0",
-            "contentid": "568FB744-0EFF-BF16-99F7548546A0AE69",
+            "contentid": "A52A3731-90A8-8BDD-CF0A31994492B73C",
             "entityname": "contentnav",
-            "id": "568FB744-0EFF-BF16-99F7548546A0AE69",
+            "id": "A52A3731-90A8-8BDD-CF0A31994492B73C",
             "menutitle": "GS-CO-18 JSON nav",
             "message": "This email is to notify you that there is new content for your review and/or approval. Please click the link below to view new content.\r\n\t",
             "method": "save",
@@ -26936,7 +26936,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "f2da94d50ef605b8a394a6fdb398251c0ae1efd53265dd43e30236ef6107d8c0",
+        "rawSha256": "0beef6db7e9c852e56a9b389eb34b60ca6fdf2e67ca862d68dea31274cf10f6c",
         "status": 200
       },
       "routeKey": "api:contentnav.save{notify}"
@@ -27069,7 +27069,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "f9656cb2fe050a65addc34315532bf47a34f87707e5c1041b4507ff4563ed5b0",
+        "rawSha256": "0aba5201003dd06d6dd27a31bcd62b933c440320fbc6c0a3edbf2e7f8eb02af0",
         "status": 200
       },
       "routeKey": "api:content.findnew"
@@ -27148,9 +27148,9 @@
           "kind": "form",
           "value": {
             "approved": "0",
-            "contentid": "568FC16F-E8B9-B676-2ABF72ED75BFA766",
+            "contentid": "A52A72F9-DD27-3929-535110D78F937F43",
             "entityname": "contentnav",
-            "id": "568FC16F-E8B9-B676-2ABF72ED75BFA766",
+            "id": "A52A72F9-DD27-3929-535110D78F937F43",
             "menutitle": "GS-CO-18 JSON nav draft",
             "method": "save",
             "parentid": "00000000000000000000000000000000001",
@@ -27227,7 +27227,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "d0496e2493bc5a030c98fc26f09ca75eabafc9b71645d170182d0d7c83f11981",
+        "rawSha256": "7451b9ea63d443b7ebd2ccf72eb3f8a8a27724deca95b4ebfce4a403cbfce418",
         "status": 200
       },
       "routeKey": "api:contentnav.save"
@@ -27331,7 +27331,7 @@
         "headers": {
           "content-type": "text/html;charset=UTF-8"
         },
-        "rawSha256": "47da9aeaa9516f2ad3bf3a512f860524f75bd2431dd0ec7e1ef9ca095af7ba5a",
+        "rawSha256": "afc9ad73b19270b8db2b5121e14dacb16b0518030f512deb22edf317fd4ae3db",
         "status": 500
       },
       "routeKey": "rest:content.save{siteid}"
@@ -27387,7 +27387,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "68ccec2a7a06000d4de45b5ec930d260650670319f5e0f6f4deafe5425daa256",
+        "rawSha256": "a986ea77e3cd40c685c2e3eaaba4f4bbb396b75e14f3fe9e9c6b42afe6de1f3d",
         "status": 500
       },
       "routeKey": "rest:content.save"
@@ -27423,7 +27423,7 @@
           "authorization": "Basic <secret>"
         },
         "method": "DELETE",
-        "url": "/_api/rest/v1/tenant-a/content/568FB105-9ACD-B459-F2F2033243877D77"
+        "url": "/_api/rest/v1/tenant-a/content/A52A3009-A9C4-9DD4-42850928DA8D74BA"
       },
       "response": {
         "body": {
@@ -27440,7 +27440,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "7b7ea8d7f3a1fffebcbb4f561d61b9a1641d38701289022680fe392802f94bbb",
+        "rawSha256": "1cd15797dde7b677b6e7716ca57d91f6aef3bd6aeb690dd439a7907ba910756b",
         "status": 500
       },
       "routeKey": "rest:content.delete"
@@ -27546,7 +27546,7 @@
         "headers": {
           "content-type": "text/html;charset=UTF-8"
         },
-        "rawSha256": "47da9aeaa9516f2ad3bf3a512f860524f75bd2431dd0ec7e1ef9ca095af7ba5a",
+        "rawSha256": "afc9ad73b19270b8db2b5121e14dacb16b0518030f512deb22edf317fd4ae3db",
         "status": 500
       },
       "routeKey": "rest:contentnav.save{siteid}"
@@ -27604,7 +27604,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "5d945b87abeb57cc855f7db40ea968b5414792bcbf8f059f3bd348306cf38cbd",
+        "rawSha256": "2adf47962b64c895012aca40e0d2553d83a73959ec444253e6362256ad101a9f",
         "status": 500
       },
       "routeKey": "rest:contentnav.save"
@@ -27660,7 +27660,7 @@
           "kind": "form",
           "value": {
             "entityname": "contentnav",
-            "id": "568FC16F-E8B9-B676-2ABF72ED75BFA766",
+            "id": "A52A72F9-DD27-3929-535110D78F937F43",
             "method": "delete",
             "siteid": "tenant-a"
           }
@@ -27705,7 +27705,7 @@
         "headers": {
           "content-type": "text/html;charset=UTF-8"
         },
-        "rawSha256": "47da9aeaa9516f2ad3bf3a512f860524f75bd2431dd0ec7e1ef9ca095af7ba5a",
+        "rawSha256": "afc9ad73b19270b8db2b5121e14dacb16b0518030f512deb22edf317fd4ae3db",
         "status": 500
       },
       "routeKey": "rest:contentnav.delete{siteid}"
@@ -27730,7 +27730,7 @@
           "kind": "form",
           "value": {
             "entityname": "contentnav",
-            "id": "568FC16F-E8B9-B676-2ABF72ED75BFA766",
+            "id": "A52A72F9-DD27-3929-535110D78F937F43",
             "method": "delete"
           }
         },
@@ -27756,7 +27756,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "fff8f0df7f4ee999bfb569839db1e911c790c8032ed598256f04718d6033bc13",
+        "rawSha256": "fcedf3909142be72cbf56e4a595fe54f99c2dd3d2e5ad6b67ec1fc1f3a7dcdef",
         "status": 500
       },
       "routeKey": "rest:contentnav.delete"
@@ -27786,7 +27786,7 @@
           "kind": "form",
           "value": {
             "entityname": "content",
-            "id": "568FB105-9ACD-B459-F2F2033243877D77",
+            "id": "A52A3009-A9C4-9DD4-42850928DA8D74BA",
             "method": "delete",
             "siteid": "tenant-a"
           }
@@ -27841,7 +27841,7 @@
           "kind": "form",
           "value": {
             "entityname": "contentnav",
-            "id": "568FC16F-E8B9-B676-2ABF72ED75BFA766",
+            "id": "A52A72F9-DD27-3929-535110D78F937F43",
             "method": "delete",
             "siteid": "tenant-a"
           }
@@ -27970,7 +27970,7 @@
         "headers": {
           "content-type": "text/html;charset=UTF-8"
         },
-        "rawSha256": "47da9aeaa9516f2ad3bf3a512f860524f75bd2431dd0ec7e1ef9ca095af7ba5a",
+        "rawSha256": "afc9ad73b19270b8db2b5121e14dacb16b0518030f512deb22edf317fd4ae3db",
         "status": 500
       },
       "routeKey": "rest:content.save{approved=1}"
@@ -28026,7 +28026,7 @@
           "kind": "form",
           "value": {
             "approved": "0",
-            "contentid": "568F5DE6-09AB-6E46-CF3D42DBC985E175",
+            "contentid": "A529D7EF-0B3D-354D-25F80DA47755C4AB",
             "menutitle": "GS-CO-18 REST",
             "message": "This email is to notify you that there is new content for your review and/or approval. Please click the link below to view new content.\r\n\t",
             "notify": "54997BC5-1622-92A6-85D91337F7198874",
@@ -28079,7 +28079,7 @@
         "headers": {
           "content-type": "text/html;charset=UTF-8"
         },
-        "rawSha256": "47da9aeaa9516f2ad3bf3a512f860524f75bd2431dd0ec7e1ef9ca095af7ba5a",
+        "rawSha256": "afc9ad73b19270b8db2b5121e14dacb16b0518030f512deb22edf317fd4ae3db",
         "status": 500
       },
       "routeKey": "rest:content.save{notify}"
@@ -28185,7 +28185,7 @@
         "headers": {
           "content-type": "text/html;charset=UTF-8"
         },
-        "rawSha256": "47da9aeaa9516f2ad3bf3a512f860524f75bd2431dd0ec7e1ef9ca095af7ba5a",
+        "rawSha256": "afc9ad73b19270b8db2b5121e14dacb16b0518030f512deb22edf317fd4ae3db",
         "status": 500
       },
       "routeKey": "rest:contentnav.save{approved=1}"
@@ -28241,7 +28241,7 @@
           "kind": "form",
           "value": {
             "approved": "0",
-            "contentid": "568FB744-0EFF-BF16-99F7548546A0AE69",
+            "contentid": "A52A3731-90A8-8BDD-CF0A31994492B73C",
             "entityname": "contentnav",
             "menutitle": "GS-CO-18 REST nav",
             "message": "This email is to notify you that there is new content for your review and/or approval. Please click the link below to view new content.\r\n\t",
@@ -28296,7 +28296,7 @@
         "headers": {
           "content-type": "text/html;charset=UTF-8"
         },
-        "rawSha256": "47da9aeaa9516f2ad3bf3a512f860524f75bd2431dd0ec7e1ef9ca095af7ba5a",
+        "rawSha256": "afc9ad73b19270b8db2b5121e14dacb16b0518030f512deb22edf317fd4ae3db",
         "status": 500
       },
       "routeKey": "rest:contentnav.save{notify}"

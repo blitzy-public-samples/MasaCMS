@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { performance } from 'node:perf_hooks';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { LEGACY_ADMIN_SENTINEL_ID, cfUuid, isCfUuid, isLegacyFindOneId } from '../../src/legacy-compat/ids.js';
 
 const CF_UUID = 'A1B2C3D4-E5F6-A7B8-C9D0E1F2A3B4C5D6';
@@ -15,6 +16,31 @@ describe('cfUuid', () => {
   it('returns a distinct value on every call', () => {
     const ids = new Set(Array.from({ length: 10_000 }, () => cfUuid()));
     expect(ids.size).toBe(10_000);
+  });
+
+  describe('time order', () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    /** cfUuid with the wall clock at `wallMs`. */
+    function idAt(wallMs: number): string {
+      vi.spyOn(performance, 'now').mockReturnValue(wallMs - performance.timeOrigin);
+      return cfUuid();
+    }
+
+    // ACF createUUID() sampled on the legacy server: the first group is the low 32 bits of currentTimeMillis * 10.
+    it.each([
+      ['the 100 µs tick of the wall clock', 1_795_098_255_446.35, '89F0435F'],
+      ['the tick past a 32-bit wrap', 1_794_866_832_998.95, '00000005'],
+    ])('starts with %s', (_label, wallMs, group) => {
+      expect(idAt(wallMs).slice(0, 8)).toBe(group);
+    });
+
+    it('sorts an id after the ids made before it', () => {
+      const ids = [0, 0.2, 1, 25].map((offset) => idAt(1_795_098_255_446.35 + offset));
+      expect([...ids].sort()).toEqual(ids);
+    });
   });
 });
 

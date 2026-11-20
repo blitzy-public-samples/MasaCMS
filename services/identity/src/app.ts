@@ -26,6 +26,8 @@ import { personContactRegistration } from './events/person-contact.js';
 import { createIdentityEvents, identityPayloadValidators } from './events/publish.js';
 import { GATEWAY_SERVICE } from './legacy/bridge-relay.js';
 import { mappings } from './migration/mappings/index.js';
+import { dropOwnerlessRows } from './migration/ownerless-rows.js';
+import { rehomeStrikes } from './migration/strike-tenancy.js';
 import { SCHEMA, createIdentityRepository } from './repo/repository.js';
 import { IDENTITY_UNITS } from './repo/tables.js';
 import { legacyApiPrefixes, legacyApiSettings, registerRoutes } from './routes/index.js';
@@ -155,13 +157,19 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       identityPlatform,
     });
     await registerRoutes(app, { repository, db, clock, client, tokens });
+    const events = createIdentityEvents(repository);
     registerMigrationHandlers(app, {
       owner: SERVICE_NAME,
       repository: repository.base,
       mappings,
       units: IDENTITY_UNITS,
       db,
-      emitStateEvents: createIdentityEvents(repository).emitStateEvents,
+      // Derived rows follow first, so an event the platform withholds cannot skip them.
+      emitStateEvents: async (tx, change, write) => {
+        await dropOwnerlessRows(repository, tx, change, write);
+        await rehomeStrikes({ db, repository }, tx, change, write);
+        await events.emitStateEvents(tx, change, write);
+      },
       operationStatus,
     });
     registerConsumers(app, {

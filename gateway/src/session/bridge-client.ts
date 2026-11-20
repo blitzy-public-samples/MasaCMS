@@ -230,6 +230,24 @@ export interface VersionMenuClient {
   versionMenu(): Promise<LegacyVersionMenu>;
 }
 
+/** One `op=plugins` row: the `tplugins` columns `csettings/list.cfm` 312-350 prints, a NULL column as empty text. */
+export interface LegacyPlugin {
+  moduleId: string;
+  name: string;
+  directory: string;
+  category: string;
+  version: string;
+  provider: string;
+  providerUrl: string;
+  pluginId: string;
+}
+
+/** The gateway's read of the installed plugins through `site.cfm`. */
+export interface PluginListClient {
+  /** `op=plugins`: `pluginManager.getAllPlugins()`, ordered by name. */
+  plugins(): Promise<LegacyPlugin[]>;
+}
+
 type SessionOp = 'describe' | 'hydrate' | 'markUsed' | 'usedSince' | 'carry' | 'export' | 'end';
 
 interface OpSpec {
@@ -543,6 +561,40 @@ export function createVersionMenuClient(opts: BridgeClientOptions): VersionMenuC
         throw new ServiceUnavailableError(BRIDGE_SERVICE, new Error('legacy bridge site.versionMenu answered no Version menu values'));
       }
       return menu;
+    },
+  };
+}
+
+/** One `op=plugins` row; undefined unless every column is text. */
+function pluginOf(value: unknown): LegacyPlugin | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const fields = value as Record<string, unknown>;
+  const plugin = {
+    moduleId: wireText(fields.moduleId),
+    name: wireText(fields.name),
+    directory: wireText(fields.directory),
+    category: wireText(fields.category),
+    version: wireText(fields.version),
+    provider: wireText(fields.provider),
+    providerUrl: wireText(fields.providerUrl),
+    pluginId: wireText(fields.pluginId),
+  };
+  return Object.values(plugin).includes(undefined) ? undefined : (plugin as LegacyPlugin);
+}
+
+/** Creates the signed `site.cfm?op=plugins` client; a body without a list of plugin rows fails closed. */
+export function createPluginListClient(opts: BridgeClientOptions): PluginListClient {
+  const send = bridgeSender<'plugins'>(opts, 'site');
+
+  return {
+    async plugins() {
+      const { body } = await send<unknown>('plugins', { method: 'GET' }, {}, { userAgent: BOT_USER_AGENT });
+      const rows = typeof body === 'object' && body !== null ? (body as { plugins?: unknown }).plugins : undefined;
+      const plugins = Array.isArray(rows) ? rows.map(pluginOf) : undefined;
+      if (plugins === undefined || plugins.includes(undefined)) {
+        throw new ServiceUnavailableError(BRIDGE_SERVICE, new Error('legacy bridge site.plugins answered no plugin list'));
+      }
+      return plugins as LegacyPlugin[];
     },
   };
 }

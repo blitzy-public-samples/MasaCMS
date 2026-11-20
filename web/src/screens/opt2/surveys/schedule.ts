@@ -50,6 +50,7 @@ const TASK_STATUSES: Readonly<Record<ScheduledTaskView['status'], StateDisplay>>
   failed: { label: () => 'Failed', tone: 'important' },
   cancelled: { label: () => 'Cancelled', tone: 'inverse' },
   superseded: { label: () => 'Superseded', tone: 'inverse' },
+  expired: { label: () => 'Expired', tone: 'inverse' },
 });
 
 /** The survey with its schedule and the tasks communications holds for it, or the alert shown in their place. */

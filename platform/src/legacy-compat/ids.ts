@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
 import { cfEq } from './serializer.js';
 
 const CF_UUID_PATTERN = /^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{16}$/;
@@ -6,9 +7,13 @@ const CF_UUID_PATTERN = /^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-
 /** Fixed ContentID of every site's home node; the JSON API's findOne and save id checks accept it like a uuid. */
 export const LEGACY_ADMIN_SENTINEL_ID = '00000000000000000000000000000000001';
 
-/** Generates a 35-character ColdFusion `createUUID()` value (uppercase hex, 8-4-4-16). */
+/**
+ * Generates a 35-character ColdFusion `createUUID()` value (uppercase hex, 8-4-4-16). As on ACF, the first group is the
+ * low 32 bits of the wall clock in 100 µs ticks, so ids order by creation time between wraps; the rest is random.
+ */
 export function cfUuid(): string {
-  const hex = randomBytes(16).toString('hex').toUpperCase();
+  const ticks = Math.floor((performance.timeOrigin + performance.now()) * 10) % 0x1_0000_0000;
+  const hex = ticks.toString(16).toUpperCase().padStart(8, '0') + randomBytes(12).toString('hex').toUpperCase();
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16)}`;
 }
 

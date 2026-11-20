@@ -109,6 +109,13 @@ const INTERNAL_NAMESPACE = '/internal/v1';
 /** Families whose target routes legacy's servlet container and request start never serve: web's runtime files, OPT-2 paths, the bridge. */
 const NO_LEGACY_START_FAMILIES: ReadonlySet<RouteFamily> = new Set<RouteFamily>(['static', 'opt2', 'bridge']);
 
+/**
+ * Legacy-bound families whose legacy code reads and writes the shared session values: admin views; a front-end render's
+ * `session.siteID` (core/mura/Handler/standardEventsHandler.cfc:193-203); the feed API's (core/mura/client/api/feed/v1/feedApiUtility.cfc:93);
+ * the variation script's (core/mura/client/api/resource/variation.js.cfm:10).
+ */
+const SHARED_VALUE_FAMILIES: ReadonlySet<RouteFamily> = new Set<RouteFamily>(['admin', 'page', 'feed', 'variation']);
+
 /** Collaborators of the dispatcher; `app.ts` builds each once. */
 export interface DispatcherDeps {
   matcher: Matcher;
@@ -126,7 +133,7 @@ export interface DispatcherDeps {
   sites?: Pick<SiteRegistry, 'siteExists' | 'bindToDomain'>;
   stateCheck: Pick<SessionStateChecker, 'check'>;
   hydrator: Hydrator;
-  /** Installs identity's shared session values in the legacy session of a legacy-bound admin request, and imports legacy's changes after it. */
+  /** Installs identity's shared session values in the legacy session of a legacy-bound request that reads them, and imports legacy's changes after it. */
   carry: SessionCarry;
   csrf: CsrfContinuity;
   invalidation: Invalidation;
@@ -339,6 +346,7 @@ function sessionInputOf(request: FastifyRequest, outcome: RoutedOutcome): Sessio
     headers: request.headers,
     query: outcome.urlScope,
     params: outcome.result.params,
+    ...(outcome.result.credentialParams === undefined ? {} : { credentialParams: outcome.result.credentialParams }),
     scanFailed: outcome.scanFailed,
   };
 }
@@ -865,8 +873,7 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
       const claim = deps.csrf.beforeLegacy(input, result, mode);
       if (barrier === undefined) ex.csrfHandle = await claim;
       else await claimBehind(ex, barrier, claim);
-      // Only admin views read the carried Site Manager values from the legacy session.
-      if (sessionId !== undefined && result.family === 'admin') await deps.carry.beforeLegacy(sessionId, mode, { userAgent });
+      if (sessionId !== undefined && SHARED_VALUE_FAMILIES.has(result.family)) await deps.carry.beforeLegacy(sessionId, mode, { userAgent });
       ex.csrfStartedAt = clock.now();
     }
     // A probe reads stored rows, so a static request's named session's target writes are awaited before it as a page's are.
@@ -899,16 +906,41 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
     let afterHeaders: { adopted: string | undefined; legacySetCookies: readonly string[] } | undefined;
     let completed = false;
 
-    /** Adopts a legacy login into identity, run by whichever of beforeSend and legacy's completion comes second. */
+    /** The session the shared values legacy changed were imported into, once imported. */
+    let importedInto: string | undefined;
+
+    /** Imports the shared values legacy changed into `holder`, once. */
+    const importInto = async (holder: string | undefined): Promise<void> => {
+      if (holder === undefined || holder === importedInto || !SHARED_VALUE_FAMILIES.has(result.family)) return;
+      importedInto = holder;
+      await guarded(request, 'edge import of shared session values after legacy failed', () =>
+        deps.carry.afterLegacy(holder, mode, { userAgent }),
+      );
+    };
+
+    /**
+     * Imports them into the session the browser holds after legacy: the one adopted at legacy's headers, else the
+     * request's. A logout ends the session; a login's go to the session adoptLogin adopted.
+     */
+    const importShared = async (): Promise<void> => {
+      if (effect === undefined) await importInto(afterHeaders?.adopted ?? session);
+    };
+
+    /**
+     * Adopts a legacy login into identity, then imports legacy's shared values into the adopted session: a login replaces
+     * only `session.mura` (core/mura/user/userUtility.cfc:752-756), and a render that may log in sets the session site.
+     * Run by whichever of beforeSend and legacy's completion comes second.
+     */
     const adoptLogin = async (): Promise<void> => {
       if (effect !== 'login' || afterHeaders === undefined) return;
       const { adopted, legacySetCookies } = afterHeaders;
       const loggedIn = adopted ?? session ?? ex.csrfHandle?.sessionId;
       // With no identity session yet, the next target-bound request adopts the logged-in legacy session.
       if (loggedIn === undefined) return;
-      await guarded(request, 'edge adoption of legacy login failed', () =>
+      const login = await guarded(request, 'edge adoption of legacy login failed', () =>
         deps.invalidation.afterLegacyLogin(loggedIn, mode, loginFacts(legacySetCookies)),
       );
+      await importInto(login?.sessionId);
     };
 
     /** Maps legacy's session cookies at its headers and ends identity's session after a logout legacy performed. */
@@ -935,8 +967,11 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
         await deps.invalidation.afterLegacyLogout(session, { userAgent, cookies: heldCookies(legacySetCookies), mode });
       }
       afterHeaders = { adopted, legacySetCookies };
-      // Legacy may have completed already, as it always has in buffer mode; the login is then adopted here.
-      if (completed) await adoptLogin();
+      // Legacy may have completed already, as it always has in buffer mode; the login is then adopted, and the values imported, here.
+      if (completed) {
+        await adoptLogin();
+        await importShared();
+      }
       return setCookies === undefined ? undefined : { setCookies };
     };
 
@@ -951,12 +986,8 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
         await guarded(request, 'edge CSRF release after an unsent legacy request failed', () => ex.settleCsrf());
       } else {
         await guarded(request, 'edge CSRF settlement after legacy failed', () => ex.settleCsrf());
-        // A login or logout changes the session through adoption or invalidation, so its values are not imported.
-        if (session !== undefined && result.family === 'admin' && effect !== 'login' && effect !== 'logout') {
-          await guarded(request, 'edge import of shared session values after legacy failed', () =>
-            deps.carry.afterLegacy(session, mode, { userAgent }),
-          );
-        }
+        // Ahead of beforeSend (buffer mode) the request's session takes them; a session beforeSend then adopts takes them too.
+        await importShared();
         completed = true;
         // beforeSend may have run already, as it does at legacy's headers in stream mode; the login is then adopted here.
         if (afterHeaders !== undefined) await adoptLogin();

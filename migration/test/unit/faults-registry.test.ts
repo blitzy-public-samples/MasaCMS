@@ -189,26 +189,27 @@ describe('projectorHooks', () => {
     [{}, 3000],
     [{ delayMs: 0 }, 0],
     [{ delayMs: 1500 }, 1500],
-  ])('beforeFirstBatch sleeps while projector-delay is armed with %j, for %i ms', async (params, expected) => {
+  ])('beforeFirstRead, never a batch hook, sleeps while projector-delay is armed with %j, for %i ms', async (params, expected) => {
     const { registry, sleep } = registryIn();
     const hooks = registry.projectorHooks();
-    await hooks.beforeFirstBatch?.();
+    expect(hooks.beforeFirstBatch).toBeUndefined();
+    await hooks.beforeFirstRead?.();
     expect(sleep).not.toHaveBeenCalled();
 
     registry.set('projector-delay', params);
-    await hooks.beforeFirstBatch?.();
+    await hooks.beforeFirstRead?.();
     expect(sleep).toHaveBeenCalledExactlyOnceWith(expected);
 
     registry.clear('projector-delay');
-    await hooks.beforeFirstBatch?.();
+    await hooks.beforeFirstRead?.();
     expect(sleep).toHaveBeenCalledTimes(1);
     expect(registry.projectorHooks()).toBe(hooks);
   });
 
-  it('beforeFirstBatch uses the real timer by default', async () => {
+  it('beforeFirstRead uses the real timer by default', async () => {
     const { registry } = registryIn('local', { deps: {} });
     registry.set('projector-delay', { delayMs: 1 });
-    await expect(registry.projectorHooks().beforeFirstBatch?.()).resolves.toBeUndefined();
+    await expect(registry.projectorHooks().beforeFirstRead?.()).resolves.toBeUndefined();
   });
 
   it('afterLegacyCommit exits with 137 at the configured batch only, counting a batch once across its parts', async () => {

@@ -17,6 +17,7 @@ import {
   SERVICES,
   decisionRefs,
   exceptionRefs,
+  isRehearsalCrossing,
   isRehearsalScenario,
   loadCatalogue,
   readFixtureStatus,
@@ -59,6 +60,9 @@ export const DECISION_LIST_PATH: string = opt2Path('decision-list.json');
 
 /** Cut-over version parity is judged under; the rehearsal scenarios replay under v0003. */
 export const PARITY_TABLE_VERSION = 'v0002';
+
+/** Cut-over version of the rollback rehearsal, which a rehearsal crossing is judged under. */
+export const REHEARSAL_TABLE_VERSION = 'v0003';
 
 /** Services with a Masa legacy oracle: the only ones parity covers without the legacy fixtures. */
 export const MIGRATED_SERVICES = [
@@ -119,6 +123,11 @@ export interface ScenarioParity extends ScenarioVerdict {
   evidence: { golden: string; replay: string };
 }
 
+/** A rehearsal crossing: a non-rehearsal scenario replayed across the v0003 activation, against its crossing's set. */
+export interface CrossingParity extends ScenarioParity {
+  tableVersion: typeof REHEARSAL_TABLE_VERSION;
+}
+
 /** Counts per result; `total` counts every included scenario. */
 export interface ParitySummary {
   total: number;
@@ -163,6 +172,8 @@ export interface ParityReport {
   fixtures: { available: boolean; reason: string | null; source: string };
   summary: ParitySummary;
   scenarios: ScenarioParity[];
+  /** Present once a rehearsal crossing was compared; never counted in `summary`, never changing `scenarios`. */
+  rehearsalCrossings?: CrossingParity[];
   unmetWithheld: UnmetWithheld[];
   planned: PlannedParity;
   coverage?: ParityCoverage;
@@ -171,7 +182,27 @@ export interface ParityReport {
 const nullableString = z.string().nullable();
 const count = z.number().int().nonnegative();
 
-/** Schema of the written `parity.json`. */
+const scenarioParitySchema = z.strictObject({
+  id: z.string().min(1),
+  service: z.enum(SERVICES),
+  result: z.enum(PARITY_RESULTS),
+  reason: nullableString,
+  differences: z.array(
+    z.looseObject({
+      step: z.string(),
+      path: z.string(),
+      kind: z.enum(DIFFERENCE_KINDS),
+      classification: z.enum(['difference', 'known-issue']),
+      maskId: z.enum(KNOWN_ISSUE_IDS).optional(),
+      exceptionId: z.string().optional(),
+    }),
+  ),
+  exceptionId: nullableString,
+  decisionListRef: z.array(z.string()).nullable(),
+  evidence: z.strictObject({ golden: z.string().min(1), replay: z.string().min(1) }),
+});
+
+/** Schema of the written `parity.json`; reports written before rehearsal crossings lack `rehearsalCrossings`. */
 export const parityReportSchema = z.strictObject({
   sourceSha: z.string().regex(/^[0-9a-f]{40}$/, 'must be a 40-character lowercase hex commit id'),
   generatedBy: z.literal(GENERATED_BY),
@@ -190,27 +221,11 @@ export const parityReportSchema = z.strictObject({
     withheld: count,
     skipped: count,
   }),
-  scenarios: z.array(
-    z.strictObject({
-      id: z.string().min(1),
-      service: z.enum(SERVICES),
-      result: z.enum(PARITY_RESULTS),
-      reason: nullableString,
-      differences: z.array(
-        z.looseObject({
-          step: z.string(),
-          path: z.string(),
-          kind: z.enum(DIFFERENCE_KINDS),
-          classification: z.enum(['difference', 'known-issue']),
-          maskId: z.enum(KNOWN_ISSUE_IDS).optional(),
-          exceptionId: z.string().optional(),
-        }),
-      ),
-      exceptionId: nullableString,
-      decisionListRef: z.array(z.string()).nullable(),
-      evidence: z.strictObject({ golden: z.string().min(1), replay: z.string().min(1) }),
-    }),
-  ),
+  scenarios: z.array(scenarioParitySchema),
+  rehearsalCrossings: z
+    .array(scenarioParitySchema.extend({ tableVersion: z.literal(REHEARSAL_TABLE_VERSION) }))
+    .min(1)
+    .optional(),
   unmetWithheld: z.array(
     z.strictObject({ id: z.string().min(1), decisionListRef: nullableString, proposal: nullableString }),
   ),
@@ -568,6 +583,8 @@ export interface ClassifyOptions {
   gatewayOrigin?: string;
   /** Why a side could not be read; stated instead of "missing". */
   readErrors?: { golden?: string; replay?: string };
+  /** A rehearsal crossing: its withheld variants stay informational, so any unlisted difference fails it. */
+  crossing?: boolean;
 }
 
 /** The differences, steps and halts of one compared scenario, or why there is nothing to compare. */
@@ -638,7 +655,7 @@ function sameDifferences(a: readonly Difference[], b: readonly Difference[]): bo
 
 function observe(golden: GoldenSet | null, replay: ReplayOutput | null, opts: ClassifyOptions): Observed {
   const { scenario, readErrors } = opts;
-  const evidence = haltEvidence(scenario.id);
+  const evidence = haltEvidence(scenario.id, opts.crossing === true);
   if (scenario.browser !== undefined) {
     if (golden === null) return { error: readErrors?.golden ?? `no golden set at ${evidence.golden}` };
     const record = opts.browser ?? null;
@@ -706,9 +723,9 @@ function plural(n: number, noun: string): string {
 /**
  * Classifies one scenario. Precedence: skipped; nothing to compare, a failed run, or evidence of another scenario,
  * SHA or version (`fail`); a withheld variant (`withheld`, keeping its differences, their unlisted count and any
- * halted case's reason and entry); any difference neither masked nor excused (`fail`); a halted case (`halted`); then
- * `excepted`, `known-issue`, `pass`. A browser scenario compares `opts.browser`'s exchanges with `golden` in place of
- * `replay`.
+ * halted case's reason and entry), except in a rehearsal crossing; any difference neither masked nor excused (`fail`);
+ * a halted case (`halted`); then `excepted`, `known-issue`, `pass`. A browser scenario compares `opts.browser`'s
+ * exchanges with `golden` in place of `replay`.
  * Throws `GoldenConfigError` when a withheld route key is not on the decision list.
  */
 export function classifyScenario(
@@ -759,7 +776,7 @@ export function classifyScenario(
       haltSteps.find((step) => step.gap !== undefined)?.gap?.reason ??
       'declared halted; served by legacy')
     : null;
-  if (refs.length > 0 || declaresWithheld(scenario)) {
+  if (opts.crossing !== true && (refs.length > 0 || declaresWithheld(scenario))) {
     const reason = [unlisted, haltReason].filter((part) => part !== null).join('; ');
     return verdict('withheld', reason === '' ? null : reason, differences, exceptionId);
   }
@@ -770,12 +787,13 @@ export function classifyScenario(
   return verdict('pass', null, differences);
 }
 
-/** `verdict` as a report row of `scenario`. */
+/** `verdict` as a report row of `scenario`, or of its rehearsal crossing when `crossing`. */
 export function toScenarioParity(
   scenario: Pick<Scenario, 'id' | 'service' | 'browser'>,
   verdict: ScenarioVerdict,
+  crossing = false,
 ): ScenarioParity {
-  const { golden, replay } = haltEvidence(scenario.id);
+  const { golden, replay } = haltEvidence(scenario.id, crossing);
   const browserRecord = `${BROWSER_ROOT}/${scenario.id}.json`;
   return {
     id: scenario.id,
@@ -791,6 +809,8 @@ export interface ParityReportInputs {
   catalogue: Pick<Catalogue, 'scenarios'>;
   /** Classified scenarios; reported in catalogue order. */
   scenarios: readonly ScenarioParity[];
+  /** Classified rehearsal crossings; reported in catalogue order, apart from `scenarios`. */
+  rehearsalCrossings?: readonly CrossingParity[];
   fixtures: Pick<FixtureStatus, 'available' | 'reason'>;
   decisionList: DecisionList;
   exceptions: readonly ExceptionEntry[];
@@ -845,17 +865,22 @@ function plannedParity(
 
 /**
  * The parity report of `inputs`: scenarios in catalogue order with their summary, every withheld scenario's
- * decision-list entries and proposals, the catalogue's planned outcomes, and the coverage left when the legacy
- * fixtures are unavailable. Throws `GoldenConfigError` for a scenario the catalogue does not hold.
+ * decision-list entries and proposals, the catalogue's planned outcomes, any rehearsal crossings, and the coverage
+ * left when the legacy fixtures are unavailable. Throws `GoldenConfigError` for a scenario the catalogue does not hold.
  */
 export function buildParityReport(inputs: ParityReportInputs): ParityReport {
   const order = new Map(inputs.catalogue.scenarios.map((scenario, i) => [scenario.id, i]));
-  const ranked = inputs.scenarios.map((scenario) => {
-    const at = order.get(scenario.id);
-    if (at === undefined) throw new GoldenConfigError(`parity report: catalogue has no scenario ${scenario.id}`);
-    return { at, scenario };
-  });
-  const scenarios = ranked.sort((a, b) => a.at - b.at).map(({ scenario }) => scenario);
+  const inCatalogueOrder = <T extends { id: string }>(rows: readonly T[]): T[] =>
+    rows
+      .map((row) => {
+        const at = order.get(row.id);
+        if (at === undefined) throw new GoldenConfigError(`parity report: catalogue has no scenario ${row.id}`);
+        return { at, row };
+      })
+      .sort((a, b) => a.at - b.at)
+      .map(({ row }) => row);
+  const scenarios = inCatalogueOrder(inputs.scenarios);
+  const crossings = inCatalogueOrder(inputs.rehearsalCrossings ?? []);
   const index = indexDecisionList(inputs.decisionList);
   const unmetWithheld = scenarios
     .filter((scenario) => scenario.result === 'withheld')
@@ -881,6 +906,7 @@ export function buildParityReport(inputs: ParityReportInputs): ParityReport {
     unmetWithheld,
     planned: plannedParity(inputs.catalogue.scenarios, index, inputs.exceptions),
   };
+  if (crossings.length > 0) report.rehearsalCrossings = crossings;
   if (!inputs.fixtures.available) {
     report.coverage = {
       servicesCovered: MIGRATED_SERVICES.length,
@@ -951,12 +977,12 @@ function referenceCell(exceptionId: string | null, decisionListRef: readonly str
   return parts.join('; ');
 }
 
-function scenarioRow(scenario: ScenarioParity): string {
+function scenarioRow(scenario: ScenarioParity, anchor: string = scenario.id): string {
   const result = `${code(scenario.result)}${scenario.reason === null ? '' : `: ${scenario.reason}`}`;
   const reference = referenceCell(scenario.exceptionId, scenario.decisionListRef);
   const evidence = `golden ${code(scenario.evidence.golden)}, replay ${code(scenario.evidence.replay)}`;
   const cells = [
-    `<a id="${scenario.id}"></a>${scenario.id}`,
+    `<a id="${anchor}"></a>${scenario.id}`,
     scenario.service,
     result,
     differencesCell(scenario.differences),
@@ -1001,7 +1027,21 @@ export function renderParityMarkdown(report: ParityReport): string[] {
     lines.push('No scenario was compared.');
   } else {
     lines.push('| ID | Service | Result | Differences | Evidence |', '|---|---|---|---|---|');
-    lines.push(...report.scenarios.map(scenarioRow));
+    lines.push(...report.scenarios.map((scenario) => scenarioRow(scenario)));
+  }
+  if (report.rehearsalCrossings !== undefined) {
+    lines.push(
+      '',
+      '## Rehearsal crossings',
+      '',
+      `Replayed across the \`${REHEARSAL_TABLE_VERSION}\` activation in the rollback rehearsal and compared with the ` +
+        'golden set captured again just before the GS-PE-RH sets; any unlisted difference fails a crossing, withheld ' +
+        `variants included. Not counted in the summary, and each scenario's \`${report.tableVersion}\` result above stands.`,
+      '',
+      '| ID | Service | Result | Differences | Evidence |',
+      '|---|---|---|---|---|',
+      ...report.rehearsalCrossings.map((crossing) => scenarioRow(crossing, `${crossing.id}-rehearsal`)),
+    );
   }
   lines.push('', '## Unmet (withheld)', '');
   if (report.unmetWithheld.length === 0) {
@@ -1157,18 +1197,27 @@ interface CompareContext {
   exceptions: readonly ExceptionEntry[];
   decisionList: DecisionList;
   gatewayOrigin: string;
-  readGolden: (id: string) => Promise<GoldenSet>;
-  /** Filled with the scenarios whose golden set was read. */
+  /** Scenario `id`'s golden set, or its rehearsal crossing's when `crossing`. */
+  readGolden: (id: string, crossing: boolean) => Promise<GoldenSet>;
+  /** Filled with the scenarios whose own golden set was read. */
   captured: Set<string>;
 }
 
 type ReadErrors = NonNullable<ClassifyOptions['readErrors']>;
 
-/** Scenario `id`'s golden set, `null` when absent; any other read failure is stated in `readErrors.golden`. */
-async function readCapture(id: string, ctx: CompareContext, readErrors: ReadErrors): Promise<GoldenSet | null> {
+/**
+ * Scenario `id`'s golden set, or its rehearsal crossing's when `crossing`; `null` when absent, and any other read
+ * failure is stated in `readErrors.golden`.
+ */
+async function readCapture(
+  id: string,
+  ctx: CompareContext,
+  readErrors: ReadErrors,
+  crossing = false,
+): Promise<GoldenSet | null> {
   try {
-    const golden = await ctx.readGolden(id);
-    ctx.captured.add(id);
+    const golden = await ctx.readGolden(id, crossing);
+    if (!crossing) ctx.captured.add(id);
     return golden;
   } catch (err) {
     if (!isMissingFile(err)) readErrors.golden = errorMessage(err, ctx.env);
@@ -1176,8 +1225,12 @@ async function readCapture(id: string, ctx: CompareContext, readErrors: ReadErro
   }
 }
 
-/** Reads and classifies one scenario; `null` for a rehearsal scenario not yet replayed, which is reported nowhere. */
-async function compareScenario(scenario: Scenario, ctx: CompareContext): Promise<ScenarioParity | null> {
+/**
+ * Reads and classifies one scenario, or with `crossing` its rehearsal crossing against the crossing's golden set under
+ * {@link REHEARSAL_TABLE_VERSION}; `null` for a rehearsal scenario or crossing not yet replayed, which is reported
+ * nowhere.
+ */
+async function compareScenario(scenario: Scenario, ctx: CompareContext, crossing = false): Promise<ScenarioParity | null> {
   const { env } = ctx;
   const opts: ClassifyOptions = {
     scenario,
@@ -1186,6 +1239,7 @@ async function compareScenario(scenario: Scenario, ctx: CompareContext): Promise
     decisionList: ctx.decisionList,
     fixtures: ctx.fixtures,
     gatewayOrigin: ctx.gatewayOrigin,
+    ...(crossing ? { expected: { tableVersion: REHEARSAL_TABLE_VERSION }, crossing } : {}),
   };
   const readErrors: ReadErrors = {};
   if (scenario.browser !== undefined) {
@@ -1195,16 +1249,20 @@ async function compareScenario(scenario: Scenario, ctx: CompareContext): Promise
     if (record.error !== undefined) readErrors.replay = record.error;
     return toScenarioParity(scenario, classifyScenario(golden, null, { ...opts, browser: record.value, readErrors }));
   }
-  const replayFile = replayOutputPath(scenario.id, env);
-  if (isRehearsalScenario(scenario.id) && !(await exists(replayFile))) return null;
+  const replayFile = replayOutputPath(scenario.id, env, crossing);
+  if ((crossing || isRehearsalScenario(scenario.id)) && !(await exists(replayFile))) return null;
   if (skipReason(scenario, ctx.fixtures) !== null) {
-    return toScenarioParity(scenario, classifyScenario(null, null, opts));
+    return toScenarioParity(scenario, classifyScenario(null, null, opts), crossing);
   }
 
-  const golden = await readCapture(scenario.id, ctx, readErrors);
+  const golden = await readCapture(scenario.id, ctx, readErrors, crossing);
   const replay = await readSide(replayFile, () => readJson(replayFile, replayOutputSchema), env);
   if (replay.error !== undefined) readErrors.replay = replay.error;
-  return toScenarioParity(scenario, classifyScenario(golden, replay.value, { ...opts, readErrors }));
+  return toScenarioParity(scenario, classifyScenario(golden, replay.value, { ...opts, readErrors }), crossing);
+}
+
+function resultLine(label: string, parity: ScenarioParity): string {
+  return `${label}: ${parity.result}${parity.reason === null ? '' : ` (${parity.reason})`}`;
 }
 
 const USAGE = 'tsx src/golden/compare.ts [--catalogue <path>] [--exceptions <path>] [--decision-list <path>]';
@@ -1214,15 +1272,18 @@ const HELP = [
   'Compares every golden set with its replay output under ${OPT2_STATE_DIR}/golden/replay/ (browser scenarios:',
   '${OPT2_STATE_DIR}/golden/browser/) and writes parity.json and parity.md to ${OPT2_REPORTS_DIR:-opt2/reports},',
   'then the exceptions-list Markdown beside --exceptions (default opt2/exceptions-list.json), which is only read.',
-  'Rehearsal scenarios are included once their replay output exists.',
+  'Rehearsal scenarios are included once their replay output exists; a rehearsal crossing',
+  '(golden/replay/rehearsal/<id>.json) is compared under v0003 with harness/golden/sets/rehearsal/<id>.json and',
+  'listed apart, outside the summary; any unlisted difference fails it, withheld variants included.',
   '',
-  'Exit: 0 no scenario fails (withheld and skipped are reported as unmet), 1 a scenario fails, 2 usage error.',
+  'Exit: 0 no scenario or rehearsal crossing fails (withheld and skipped are reported as unmet), 1 one fails,',
+  '2 usage error.',
 ].join('\n');
 
 /** Collaborators of {@link main} beyond the environment. */
 export interface MainDeps {
-  /** Default {@link readGoldenSet}. */
-  readGolden?: (id: string) => Promise<GoldenSet>;
+  /** Default {@link readGoldenSet} of {@link goldenSetPath}; `crossing` asks for the rehearsal crossing's set. */
+  readGolden?: (id: string, crossing: boolean) => Promise<GoldenSet>;
   clock?: () => Date;
   /** Progress log; default {@link createHarnessLogger} on stderr. */
   logger?: Logger;
@@ -1234,8 +1295,9 @@ function pathFlag(value: string | undefined, flag: string, fallback: string): st
 }
 
 /**
- * Classifies every catalogue scenario, writes `parity.json` and `parity.md` under `reportsDir(env)`, then regenerates
- * the exceptions-list Markdown. Exit 1 when any scenario fails. Summary: the result counts and the written paths.
+ * Classifies every catalogue scenario and every replayed rehearsal crossing, writes `parity.json` and `parity.md`
+ * under `reportsDir(env)`, then regenerates the exceptions-list Markdown. Exit 1 when any scenario or crossing fails.
+ * Summary: the result counts, the crossings' counts when any was compared, and the written paths.
  */
 export async function main(argv: string[], env: EnvLike = process.env, deps: MainDeps = {}): Promise<CliOutcome> {
   const { values } = parseFlags(argv, {
@@ -1262,7 +1324,7 @@ export async function main(argv: string[], env: EnvLike = process.env, deps: Mai
     exceptions,
     decisionList: await loadDecisionList(decisionListPath),
     gatewayOrigin: new URL(browserBaseUrl('gateway', env)).origin,
-    readGolden: deps.readGolden ?? ((id) => readGoldenSet(id)),
+    readGolden: deps.readGolden ?? ((id, crossing) => readGoldenSet(id, goldenSetPath(id, crossing))),
     captured: new Set(),
   };
 
@@ -1274,13 +1336,23 @@ export async function main(argv: string[], env: EnvLike = process.env, deps: Mai
       continue;
     }
     scenarios.push(parity);
-    const line = safeDiagnostic(`${scenario.id}: ${parity.result}${parity.reason === null ? '' : ` (${parity.reason})`}`, env);
+    const line = safeDiagnostic(resultLine(scenario.id, parity), env);
+    if (parity.result === 'fail') logger.warn(line);
+    else logger.info(line);
+  }
+  const rehearsalCrossings: CrossingParity[] = [];
+  for (const scenario of catalogue.scenarios.filter(isRehearsalCrossing)) {
+    const parity = await compareScenario(scenario, ctx, true);
+    if (parity === null) continue;
+    rehearsalCrossings.push({ ...parity, tableVersion: REHEARSAL_TABLE_VERSION });
+    const line = safeDiagnostic(resultLine(`${scenario.id} rehearsal crossing`, parity), env);
     if (parity.result === 'fail') logger.warn(line);
     else logger.info(line);
   }
   const report = buildParityReport({
     catalogue,
     scenarios,
+    rehearsalCrossings,
     fixtures: ctx.fixtures,
     decisionList: ctx.decisionList,
     exceptions,
@@ -1299,9 +1371,11 @@ export async function main(argv: string[], env: EnvLike = process.env, deps: Mai
     EXCEPTIONS_TITLE,
     renderExceptionsMarkdown(list, { results, captured: ctx.captured }),
   );
+  const crossingSummary = report.rehearsalCrossings === undefined ? undefined : summarise(report.rehearsalCrossings);
+  const crossings = crossingSummary === undefined ? {} : { rehearsalCrossings: crossingSummary };
   return {
-    code: report.summary.fail > 0 ? 1 : 0,
-    summary: { ...report.summary, parityJson: written.path, parityMarkdown, exceptionsMarkdown },
+    code: report.summary.fail + (crossingSummary?.fail ?? 0) > 0 ? 1 : 0,
+    summary: { ...report.summary, ...crossings, parityJson: written.path, parityMarkdown, exceptionsMarkdown },
   };
 }
 

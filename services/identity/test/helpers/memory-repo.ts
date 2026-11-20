@@ -1000,7 +1000,10 @@ type Unimplemented =
   | 'read'
   | 'insertAbsent'
   | 'deleteOne'
-  | 'replaceOne';
+  | 'replaceOne'
+  | 'lockStrikeRow'
+  | 'hasUsernameOwner'
+  | 'deleteOwnerlessGroupRows';
 
 /** The recording members of a {@link MemoryIdentityRepo}. */
 interface MemoryExtras {

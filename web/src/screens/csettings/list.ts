@@ -1,19 +1,22 @@
 // The `csettings.list` (Global Settings) page: controller `list()` and the view `csettings/list.cfm` (server-only).
 import { cfEq, cfLsDateFormat, javaTrim } from '@opt2/platform/legacy-compat';
+import type { components as GatewayComponents } from '@/generated/clients/gateway';
 import type { components } from '@/generated/clients/programs-sites';
 import { parseLegacyDate } from '@/lib/dates';
 import { legacySettings } from '@/lib/env';
 import { okBody } from '@/lib/gateway-client';
-import { encodeHtml, encodeHtmlAttr, encodeJs, html, join, raw, type SafeHtml } from '@/lib/html';
+import { encodeHtml, encodeHtmlAttr, encodeJs, encodeUrl, html, join, raw, type SafeHtml } from '@/lib/html';
 import { setSessionMuraValue } from '@/lib/request-context';
 import { relativeAdminUrl } from '@/lib/urls';
 import type { PageScreen, Rc, ScreenContext } from '../registry';
 
 type SiteListItem = components['schemas']['SiteListItem'];
+type LegacyPlugin = GatewayComponents['schemas']['LegacyPlugin'];
 
-/** The sites `load` read, in the order programs-sites returned them. */
+/** The sites and legacy's installed plugins `load` read, each in the order its source returned them. */
 export interface SiteListData {
   readonly sites: readonly SiteListItem[];
+  readonly plugins: readonly LegacyPlugin[];
 }
 
 const UPDATE_SITES_CONTEXT = 'updatesites';
@@ -319,14 +322,62 @@ const JAVA_DISABLED = raw(
   '\n\n    <div class="help-block-empty">\n      Java is disabled. Plugin installation is unavailable.\n    </div>\n\n      ',
 );
 
-// Installed plugins live in `tplugins`, which stays with the legacy plugin runtime and has no target store, so the
-// tab always takes its no-plugins branch.
 const NO_PLUGINS = raw(
   '\n\t\t\t\t<div class="help-block-empty">\n\t\t\t\t\tThere are currently no installed plugins.\n\t\t\t\t</div>\n\t\t\t',
 );
 
+/** One Current Plugins row; its Delete action, which legacy serves, carries tokens for the plugin's module id. */
+function pluginRow(ctx: ScreenContext, plugin: LegacyPlugin): SafeHtml {
+  const deleteUrl = raw(`./?muraAction=cSettings.deletePlugin&moduleID=${plugin.moduleId}`);
+  const confirm = raw(encodeJs(`'${plugin.name.toUpperCase()}'`));
+  const viewHref = raw(`${legacySettings().context}/plugins/${plugin.directory}/`);
+  return html`
+\t\t\t\t\t<tr>
+\t\t\t\t\t\t<td class="actions">
+\t\t\t\t\t\t\t<a class="show-actions" href="javascript:;"  onclick="showTableControls(this);"><i class="mi-ellipsis-v"></i></a>
+\t\t\t\t\t\t\t<div class="actions-menu hide">
+\t\t\t\t\t\t\t\t<ul class="actions-list">
+\t\t\t\t\t\t\t\t\t<li class="edit"><a href="./?muraAction=cSettings.editPlugin&moduleID=${raw(plugin.moduleId)}"><i class="mi-pencil"></i>Edit</a></li>
+\t\t\t\t\t\t\t\t\t<li class="delete"><a href="#" onclick="confirmDialog('Delete ${confirm}?',function(){actionModal('${deleteUrl}${ctx.csrf.render(plugin.moduleId, 'url')}')});return false;"><i class="mi-trash"></i>Delete</a></li>
+\t\t\t\t\t\t\t\t</ul>
+\t\t\t\t\t\t\t</div>
+\t\t\t\t\t\t</td>
+\t\t\t\t\t\t<td class="var-width"><a class="alt" title="view" href="${viewHref}">${raw(encodeHtml(plugin.name))}</a></td>
+\t\t\t\t\t\t<td class="hidden-xs">${raw(encodeHtml(plugin.directory))}</td>
+\t\t\t\t\t\t<td>${raw(encodeHtml(plugin.category))}</td>
+\t\t\t\t\t\t<td>${raw(encodeHtml(plugin.version))}</td>
+\t\t\t\t\t\t<td><a class="alt" href="${raw(encodeUrl(plugin.providerUrl))}" target="_blank">${raw(encodeHtml(plugin.provider))}</a></td>
+\t\t\t\t\t\t
+\t\t\t\t\t\t<td>${raw(plugin.pluginId)}</td>
+\t\t\t\t\t</tr>
+\t\t\t\t\t`;
+}
+
+/** The Current Plugins table of legacy's installed plugins, or the no-plugins message when there are none. */
+function installedPlugins(ctx: ScreenContext, plugins: readonly LegacyPlugin[]): SafeHtml {
+  if (plugins.length === 0) return NO_PLUGINS;
+  return html`
+\t\t\t<h2>Current Plugins</h2>
+\t\t\t<table class="mura-table-grid">
+\t\t\t\t<tr>
+\t\t\t\t\t<th class="actions"></th>
+\t\t\t\t\t<th class="var-width">Name</th>
+\t\t\t\t\t<th class="hidden-xs">Directory</th>
+\t\t\t\t\t<th>Category</th>
+\t\t\t\t\t<th>Version</th>
+\t\t\t\t\t<th>Provider</th>
+\t\t\t\t\t
+\t\t\t\t\t<th>Plugin ID</th>
+\t\t\t\t</tr>
+
+\t\t\t\t\t${plugins.map((plugin) => pluginRow(ctx, plugin))}
+
+\t\t\t</table>
+\t\t\t`;
+}
+
 /** The tabbed Current Sites and Plugins block. */
-function tabs(ctx: ScreenContext, sites: readonly SiteListItem[], siteSortBy: string, view: TableView): SafeHtml {
+function tabs(ctx: ScreenContext, { sites, plugins }: SiteListData, siteSortBy: string, view: TableView): SafeHtml {
   const install = legacySettings().javaEnabled ? installPluginForms(ctx) : JAVA_DISABLED;
   return html`
 
@@ -361,7 +412,7 @@ ${sitesForm(ctx, sites, siteSortBy, view)}
 \t\t\t<div class="block-content">
 
 \t\t<h2>Install Plugin</h2>
-\t\t${install}${NO_PLUGINS}
+\t\t${install}${installedPlugins(ctx, plugins)}
 \t\t\t</div> <!-- /.block-content -->
 \t\t</div> <!-- /.block-bordered -->
 \t</div> <!-- /.tab-pane -->
@@ -373,14 +424,18 @@ ${sitesForm(ctx, sites, siteSortBy, view)}
 `;
 }
 
-/** The CSRF contexts the view renders: the sites form, Update Core, the plugin forms and each deletable site. */
-function csrfContexts(sites: readonly SiteListItem[]): string[] {
+/**
+ * The CSRF contexts the view renders: the sites form, Update Core, the plugin forms, each deletable site and each
+ * installed plugin's module id.
+ */
+function csrfContexts({ sites, plugins }: SiteListData): string[] {
   const { allowAutoUpdates, javaEnabled } = legacySettings();
   return [
     UPDATE_SITES_CONTEXT,
     ...(allowAutoUpdates ? [UPDATE_CORE_CONTEXT] : []),
     ...(javaEnabled ? [NEW_PLUGIN_CONTEXT] : []),
     ...sites.filter((item) => !cfEq(item.siteid, 'default')).map((item) => item.siteid),
+    ...plugins.map((plugin) => plugin.moduleId),
   ];
 }
 
@@ -410,15 +465,18 @@ export const listScreen: Omit<
       okBody(await ctx.gateway.programsSites.call('post', '/v1/sites/order', { json }), 'programs-sites', 'saveSiteOrder');
     }
     const listed = await ctx.gateway.programsSites.listSites({ sortBy });
-    return { sites: okBody(listed, 'programs-sites', 'listSites') };
+    const sites = okBody(listed, 'programs-sites', 'listSites');
+    // `tplugins` stays with the legacy plugin runtime, so the plugins are legacy's own `getAllPlugins()` rows.
+    const { plugins } = okBody(await ctx.gateway.legacyPlugins(), 'gateway', 'getLegacyPlugins');
+    return { sites, plugins };
   },
 
-  async render(ctx: ScreenContext, { sites }: SiteListData) {
+  async render(ctx: ScreenContext, data: SiteListData) {
     const siteSortBy = param(ctx.req.rc, 'siteSortBy', 'site');
     const byOrderNo = cfEq(siteSortBy, 'orderno');
     const staging = cfEq(legacySettings().mode, 'staging');
     const view: TableView = { byOrderNo, staging, deployColumns: staging && !byOrderNo };
-    await ctx.csrf.prefetch(csrfContexts(sites));
+    await ctx.csrf.prefetch(csrfContexts(data));
     const errors = sessionErrors(ctx);
     // The view clears the errors it read on every render: `getCurrentUser().setValue("errors", "")`.
     setSessionMuraValue(ctx.req, 'errors', '');
@@ -426,7 +484,7 @@ export const listScreen: Omit<
 \t\t${renderLegacyErrors(errors)}
 \t\t`;
     return {
-      body: html`${header(ctx, byOrderNo)}${sitesUpdatedMessage(ctx.req.rc)}${alert}${tabs(ctx, sites, siteSortBy, view)}`,
+      body: html`${header(ctx, byOrderNo)}${sitesUpdatedMessage(ctx.req.rc)}${alert}${tabs(ctx, data, siteSortBy, view)}`,
     };
   },
 });

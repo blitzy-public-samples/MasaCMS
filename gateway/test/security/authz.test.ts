@@ -61,6 +61,7 @@ const CLEAR_ORPHANS_URL = '/internal/v1/inflight::clear-orphans';
 const MARK_USED_URL = '/internal/v1/legacy-sessions/:sid(.+)::mark-used';
 const SITE_PATHS_URL = '/internal/v1/legacy-site-paths';
 const VERSION_MENU_URL = '/internal/v1/legacy-server/version-menu';
+const PLUGINS_URL = '/internal/v1/legacy-server/plugins';
 const RELAY_URL = '/internal/v1/relay/:service/*';
 const EDGE_URL = '/*';
 
@@ -146,6 +147,14 @@ const EXPECTED_ROUTES: readonly ExpectedRoute[] = [
     requires: [serviceRole('web')],
     siteCheck: true,
   },
+  {
+    operationId: 'getLegacyPlugins',
+    method: 'GET',
+    url: PLUGINS_URL,
+    transport: 'service',
+    requires: [serviceRole('web')],
+    siteCheck: true,
+  },
   { operationId: 'relayGet', method: 'GET', url: RELAY_URL, transport: 'service', requires: [serviceRole('web')], siteCheck: false },
   { operationId: 'relayPost', method: 'POST', url: RELAY_URL, transport: 'service', requires: [serviceRole('web')], siteCheck: false },
   { operationId: 'relayPut', method: 'PUT', url: RELAY_URL, transport: 'service', requires: [serviceRole('web')], siteCheck: false },
@@ -187,9 +196,10 @@ const PROBES: Readonly<Record<string, Probe>> = {
   [CLEAR_ORPHANS_URL]: { admitted: 200 },
   // No jar maps the probe's sid, so an admitted call answers the legacy 404.
   [MARK_USED_URL]: { admitted: 404 },
-  // An admitted call of either reads the values from the bridge's site.cfm.
+  // An admitted call of any of these reads the values from the bridge's site.cfm.
   [SITE_PATHS_URL]: { admitted: 200, reaches: 'legacy' },
   [VERSION_MENU_URL]: { admitted: 200, reaches: 'legacy' },
+  [PLUGINS_URL]: { admitted: 200, reaches: 'legacy' },
   [RELAY_URL]: { admitted: 200, reaches: 'people' },
   [EDGE_URL]: { admitted: 200, reaches: 'legacy' },
 };
@@ -601,7 +611,7 @@ describe('route declarations', () => {
 
   it('the table has one row per contract operation, declared as the contract declares it', async () => {
     const ids = EXPECTED_ROUTES.map((row) => row.operationId);
-    expect({ rows: ids.length, unique: new Set(ids).size }).toEqual({ rows: 22, unique: 22 });
+    expect({ rows: ids.length, unique: new Set(ids).size }).toEqual({ rows: 23, unique: 23 });
     expect(tableOperations()).toEqual(await contractOperations());
   });
 

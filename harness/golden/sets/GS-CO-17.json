@@ -1,10 +1,10 @@
 {
-  "capturedAt": "2026-11-18T14:27:30.995Z",
+  "capturedAt": "2026-11-20T03:05:25.126Z",
   "fixtures": {
     "available": true,
     "reason": "fixtures loaded"
   },
-  "generatedAt": "2026-11-18T14:27:33.894Z",
+  "generatedAt": "2026-11-20T03:05:28.183Z",
   "generatedBy": "harness/src/golden/capture.ts",
   "origin": "legacy",
   "scenarioId": "GS-CO-17",
@@ -13,8 +13,8 @@
       {
         "contentType": "image/png; charset=UTF-8",
         "name": "<id:5>",
-        "sha256": "abb98e9dd306cd13e6f14eb7bcadfcb1dcb5c2caf2c4fe2ae5833bbf216e9d2d",
-        "size": 79,
+        "sha256": "78af30728f721e31817321b5351614c752760e22865b8263a862b17837262516",
+        "size": 98,
         "variant": "_small"
       },
       {
@@ -171,7 +171,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "d84d3f95eff1799a7413732426597fdfa2a93d822ddfd288ea3a41c0fb4d99cc",
+        "rawSha256": "15ff74aee74fea91288637351ea235a7e28509d8d615b70d33a5edcc0c23a1d7",
         "status": 200
       },
       "routeKey": "api:content.findone"
@@ -287,7 +287,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "f6aa1c0aa435dda322b53eaaff26eee9c2d2d26a620c756efd0c77b15736f749",
+        "rawSha256": "41ebf6bcc9deb4d4912ef9f2834435f681ce6ccfd4029148fd790b8cee9a9801",
         "status": 200
       },
       "routeKey": "api:file.findnew"
@@ -358,7 +358,7 @@
           "value": {
             "fields": {
               "entityname": "file",
-              "id": "568EA7B0-0139-DD7F-7E21099F9D055420",
+              "id": "A5290B3B-A64B-73CB-5CF4C52788162345",
               "method": "save",
               "moduleid": "00000000000000000000000000000000000",
               "siteid": "tenant-a"
@@ -375,7 +375,7 @@
           }
         },
         "headers": {
-          "content-type": "multipart/form-data; boundary=----formdata-undici-069414568388",
+          "content-type": "multipart/form-data; boundary=----formdata-undici-018863372130",
           "x-csrf_token": "<token>",
           "x-csrf_token_expires": "<token>"
         },
@@ -431,7 +431,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "bddf0d0d5d8dd57e6e41a06467584e02d55cfecef1a9f2e9a989b05717e9633a",
+        "rawSha256": "471226f8f157cb7bbc758887e3c890bebace631ea8dc6be03699987d891bb054",
         "status": 200
       },
       "routeKey": "api:file.save{upload=image}"
@@ -547,7 +547,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "eb8f11730b68a1311ed3618379ea887150bd36299a11787d9d92d3092a8ff62d",
+        "rawSha256": "7791124280cd32910bb769518a7f1d7622d7a1f71e2f10014311f2940a48f891",
         "status": 200
       },
       "routeKey": "api:file.findnew"
@@ -616,7 +616,7 @@
           "value": {
             "fields": {
               "entityname": "file",
-              "id": "568EABD8-A75E-025B-9E4FD494B62E35DE",
+              "id": "A5290F98-E2FA-8CDE-CFE68E48C16DC84B",
               "method": "save",
               "moduleid": "00000000000000000000000000000000000",
               "siteid": "tenant-a"
@@ -633,7 +633,7 @@
           }
         },
         "headers": {
-          "content-type": "multipart/form-data; boundary=----formdata-undici-092269659568",
+          "content-type": "multipart/form-data; boundary=----formdata-undici-037842337370",
           "x-csrf_token": "<token>",
           "x-csrf_token_expires": "<token>"
         },
@@ -689,7 +689,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "e38105e69b257e4a2528444c373c900a16b5592fed1542a4c3a4b269c741c0be",
+        "rawSha256": "0ff23a9bec34a15c9e7f7f36a031bccd109ff1177009605d7d41cd009c9b46ed",
         "status": 200
       },
       "routeKey": "api:file.save"
@@ -805,7 +805,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "b33c8d1f0af7fb72a17eb384056cf1fa992545471e682dd50faa5a369ae810d8",
+        "rawSha256": "44fdf9b70050081cd44e2284c1200bad9ac36ce62e5647cc89b9f12203e79ca8",
         "status": 200
       },
       "routeKey": "api:filemetadata.findnew"
@@ -875,13 +875,13 @@
           "value": {
             "alttext": "GS-CO-17 PDF",
             "caption": "GS-CO-17 caption",
-            "contenthistid": "5586BAC8-B92F-C554-D036F32A78343DE7",
+            "contenthistid": "A459198B-A111-B6F1-786CF83DF07E0EDC",
             "contentid": "AEAEFD1B-B638-0F03-01B3D64831264009",
             "credits": "",
             "entityname": "fileMetaData",
-            "fileid": "568EADFC-D712-7741-D0476C5D19799BE7",
-            "id": "568EAF94-C033-B747-C8DE511C9B2B96AD",
-            "metaid": "568EAF94-C033-B747-C8DE511C9B2B96AD",
+            "fileid": "A52911C4-9163-D382-0D0A6A4B9CFE4B39",
+            "id": "A52913AA-99F3-AA04-50D79B9D9FACA9DC",
+            "metaid": "A52913AA-99F3-AA04-50D79B9D9FACA9DC",
             "method": "save",
             "siteid": "tenant-a"
           }
@@ -944,7 +944,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "fb5623a584123dcc7da74c83c32ceb6cb7ea34b20e7e97448b31baa011a63b92",
+        "rawSha256": "dd3b8c1b3085cdd94f6949d4eabf84ebfab8cac35742c682f89f0ba36325a035",
         "status": 200
       },
       "routeKey": "api:filemetadata.save"
@@ -999,10 +999,10 @@
           "value": {
             "alttext": "GS-CO-17 REST PDF",
             "caption": "GS-CO-17 REST caption",
-            "contenthistid": "5586BAC8-B92F-C554-D036F32A78343DE7",
+            "contenthistid": "A459198B-A111-B6F1-786CF83DF07E0EDC",
             "contentid": "AEAEFD1B-B638-0F03-01B3D64831264009",
             "credits": "",
-            "fileid": "568EADFC-D712-7741-D0476C5D19799BE7",
+            "fileid": "A52911C4-9163-D382-0D0A6A4B9CFE4B39",
             "siteid": "tenant-a"
           }
         },
@@ -1046,7 +1046,7 @@
         "headers": {
           "content-type": "text/html;charset=UTF-8"
         },
-        "rawSha256": "47da9aeaa9516f2ad3bf3a512f860524f75bd2431dd0ec7e1ef9ca095af7ba5a",
+        "rawSha256": "afc9ad73b19270b8db2b5121e14dacb16b0518030f512deb22edf317fd4ae3db",
         "status": 500
       },
       "routeKey": "rest:filemetadata.save{siteid}"
@@ -1072,10 +1072,10 @@
           "value": {
             "alttext": "GS-CO-17 REST PDF",
             "caption": "GS-CO-17 REST caption",
-            "contenthistid": "5586BAC8-B92F-C554-D036F32A78343DE7",
+            "contenthistid": "A459198B-A111-B6F1-786CF83DF07E0EDC",
             "contentid": "AEAEFD1B-B638-0F03-01B3D64831264009",
             "credits": "",
-            "fileid": "568EADFC-D712-7741-D0476C5D19799BE7"
+            "fileid": "A52911C4-9163-D382-0D0A6A4B9CFE4B39"
           }
         },
         "headers": {
@@ -1100,7 +1100,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "68ccec2a7a06000d4de45b5ec930d260650670319f5e0f6f4deafe5425daa256",
+        "rawSha256": "a986ea77e3cd40c685c2e3eaaba4f4bbb396b75e14f3fe9e9c6b42afe6de1f3d",
         "status": 500
       },
       "routeKey": "rest:filemetadata.save"
@@ -1137,7 +1137,7 @@
           "authorization": "Basic <secret>"
         },
         "method": "DELETE",
-        "url": "/_api/rest/v1/tenant-a/fileMetaData/568EAF94-C033-B747-C8DE511C9B2B96AD"
+        "url": "/_api/rest/v1/tenant-a/fileMetaData/A52913AA-99F3-AA04-50D79B9D9FACA9DC"
       },
       "response": {
         "body": {
@@ -1154,7 +1154,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "7b7ea8d7f3a1fffebcbb4f561d61b9a1641d38701289022680fe392802f94bbb",
+        "rawSha256": "1cd15797dde7b677b6e7716ca57d91f6aef3bd6aeb690dd439a7907ba910756b",
         "status": 500
       },
       "routeKey": "rest:filemetadata.delete"
@@ -1185,7 +1185,7 @@
           "kind": "form",
           "value": {
             "entityname": "fileMetaData",
-            "id": "568EAF94-C033-B747-C8DE511C9B2B96AD",
+            "id": "A52913AA-99F3-AA04-50D79B9D9FACA9DC",
             "method": "delete",
             "siteid": "tenant-a"
           }
@@ -1280,7 +1280,7 @@
         },
         "headers": {
           "authorization": "Basic <secret>",
-          "content-type": "multipart/form-data; boundary=----formdata-undici-053778892694"
+          "content-type": "multipart/form-data; boundary=----formdata-undici-021595860403"
         },
         "method": "POST",
         "url": "/_api/rest/v1/tenant-a/file/"
@@ -1318,7 +1318,7 @@
         "headers": {
           "content-type": "text/html;charset=UTF-8"
         },
-        "rawSha256": "47da9aeaa9516f2ad3bf3a512f860524f75bd2431dd0ec7e1ef9ca095af7ba5a",
+        "rawSha256": "afc9ad73b19270b8db2b5121e14dacb16b0518030f512deb22edf317fd4ae3db",
         "status": 500
       },
       "routeKey": "rest:file.save{upload=image}"
@@ -1388,7 +1388,7 @@
         },
         "headers": {
           "authorization": "Basic <secret>",
-          "content-type": "multipart/form-data; boundary=----formdata-undici-063668652765"
+          "content-type": "multipart/form-data; boundary=----formdata-undici-077146671424"
         },
         "method": "POST",
         "url": "/_api/rest/v1/tenant-a/file/"
@@ -1426,7 +1426,7 @@
         "headers": {
           "content-type": "text/html;charset=UTF-8"
         },
-        "rawSha256": "47da9aeaa9516f2ad3bf3a512f860524f75bd2431dd0ec7e1ef9ca095af7ba5a",
+        "rawSha256": "afc9ad73b19270b8db2b5121e14dacb16b0518030f512deb22edf317fd4ae3db",
         "status": 500
       },
       "routeKey": "rest:file.save{siteid}"
@@ -1466,7 +1466,7 @@
         },
         "headers": {
           "authorization": "Basic <secret>",
-          "content-type": "multipart/form-data; boundary=----formdata-undici-044995836010"
+          "content-type": "multipart/form-data; boundary=----formdata-undici-094605602069"
         },
         "method": "POST",
         "url": "/_api/rest/v1/tenant-a/file/"
@@ -1486,7 +1486,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "68ccec2a7a06000d4de45b5ec930d260650670319f5e0f6f4deafe5425daa256",
+        "rawSha256": "a986ea77e3cd40c685c2e3eaaba4f4bbb396b75e14f3fe9e9c6b42afe6de1f3d",
         "status": 500
       },
       "routeKey": "rest:file.save"
@@ -1617,7 +1617,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/?muraAction=cArch.imagedetails&siteid=tenant-a&fileid=568EA9E2-A736-853D-8B5126AF3B151F3E&compactDisplay=true"
+        "url": "/admin/?muraAction=cArch.imagedetails&siteid=tenant-a&fileid=A5290D96-A8AA-05FA-553FB713EFBCB148&compactDisplay=true"
       },
       "response": {
         "domModel": {
@@ -1730,7 +1730,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "e932176b532a34388ab19d0fbd97070d0358f15b81ca89c71b4e02bf1f309ef3",
+        "rawSha256": "5f210d05f688e74dc6badd78b6ffced2f4d98ac5f3cb68ccee9e3b3d55dba8c9",
         "status": 200
       },
       "routeKey": "admin:carch.imagedetails"
@@ -1758,7 +1758,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/?muraAction=carch.getImageSizeURL&siteid=tenant-a&fileid=568EA9E2-A736-853D-8B5126AF3B151F3E&size=small"
+        "url": "/admin/?muraAction=carch.getImageSizeURL&siteid=tenant-a&fileid=A5290D96-A8AA-05FA-553FB713EFBCB148&size=small"
       },
       "response": {
         "body": "/sites/umbrella/cache/file/<id:5>_small.png",
@@ -1768,7 +1768,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "5beed97ecae09b8aa0888ffccef30ca3582a1e898a929f5142a70a6d86e5b558",
+        "rawSha256": "e7d0cd2d7c3e7efbef8ab74c72221f54115447fbb05968fd1fdd61de3aed58f0",
         "status": 200
       },
       "routeKey": "admin:carch.getimagesizeurl"
@@ -1976,7 +1976,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/?muraAction=cArch.loadfilemetadata&fileid=568EA9E2-A736-853D-8B5126AF3B151F3E&property=fileid&contenthistid=5586BAC8-B92F-C554-D036F32A78343DE7&siteid=tenant-a"
+        "url": "/admin/?muraAction=cArch.loadfilemetadata&fileid=A5290D96-A8AA-05FA-553FB713EFBCB148&property=fileid&contenthistid=A459198B-A111-B6F1-786CF83DF07E0EDC&siteid=tenant-a"
       },
       "response": {
         "domModel": {
@@ -2166,7 +2166,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "c7bc39f366ba3e01623e940f312000b8495efdbcbf15ffeb0dce15c0978f4823",
+        "rawSha256": "34f6dcb141a71dfbaf9fbf06c3a27e93e3ea6a5d1c322f39d6aff83c74d137a3",
         "status": 200
       },
       "routeKey": "admin:carch.loadfilemetadata"
@@ -2201,7 +2201,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/_api/json/v1/tenant-a/generateCSRFTokens?context=568EA9E2-A736-853D-8B5126AF3B151F3E"
+        "url": "/_api/json/v1/tenant-a/generateCSRFTokens?context=A5290D96-A8AA-05FA-553FB713EFBCB148"
       },
       "response": {
         "body": {
@@ -2218,7 +2218,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "7fdae5fc3c714226d2b1ad9b49d1fd72504e5bc091bb1662fd53410acf7e0a71",
+        "rawSha256": "1b471fc5f6cc045995673661703bc5a82a9b24d4a6b67907b3f9be204cbe7cc9",
         "status": 200
       },
       "routeKey": "api:generatecsrftokens"
@@ -2259,7 +2259,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/?muraAction=carch.cropimage&fileid=568EA9E2-A736-853D-8B5126AF3B151F3E&size=small&x=0&y=0&width=4&height=4&siteid=tenant-a&csrf_token=<token>&csrf_token_expires=<token>"
+        "url": "/admin/?muraAction=carch.cropimage&fileid=A5290D96-A8AA-05FA-553FB713EFBCB148&size=small&x=0&y=0&width=4&height=4&siteid=tenant-a&csrf_token=<token>&csrf_token_expires=<token>"
       },
       "response": {
         "domModel": {
@@ -2315,7 +2315,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/_api/json/v1/tenant-a/generateCSRFTokens?context=568EA9E2-A736-853D-8B5126AF3B151F3E"
+        "url": "/_api/json/v1/tenant-a/generateCSRFTokens?context=A5290D96-A8AA-05FA-553FB713EFBCB148"
       },
       "response": {
         "body": {
@@ -2332,7 +2332,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "c9227dfa4c2945d1f27ca09ecca535a589c03f62f984285e3f6e20132a7d5f37",
+        "rawSha256": "c01bac5bc8794fd43cea396bc49c6e64c3fecc97547e24a3264d943ddbe97d81",
         "status": 200
       },
       "routeKey": "api:generatecsrftokens"
@@ -2373,7 +2373,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/?muraAction=carch.flipimage&fileid=568EA9E2-A736-853D-8B5126AF3B151F3E&siteid=tenant-a&transpose=horizontal&csrf_token=<token>&csrf_token_expires=<token>"
+        "url": "/admin/?muraAction=carch.flipimage&fileid=A5290D96-A8AA-05FA-553FB713EFBCB148&siteid=tenant-a&transpose=horizontal&csrf_token=<token>&csrf_token_expires=<token>"
       },
       "response": {
         "domModel": {
@@ -2429,7 +2429,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/_api/json/v1/tenant-a/generateCSRFTokens?context=568EA9E2-A736-853D-8B5126AF3B151F3E"
+        "url": "/_api/json/v1/tenant-a/generateCSRFTokens?context=A5290D96-A8AA-05FA-553FB713EFBCB148"
       },
       "response": {
         "body": {
@@ -2446,7 +2446,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "819258393f48175406efaaec1026e7d85a723f3ec90e123dd7d207fe11e4878a",
+        "rawSha256": "6b5b26925d9229c62a2403ad04c5fec04ec080978d64b3fa3585e84b2796caf4",
         "status": 200
       },
       "routeKey": "api:generatecsrftokens"
@@ -2487,7 +2487,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/?muraAction=carch.rotateimage&fileid=568EA9E2-A736-853D-8B5126AF3B151F3E&siteid=tenant-a&degrees=90&csrf_token=<token>&csrf_token_expires=<token>"
+        "url": "/admin/?muraAction=carch.rotateimage&fileid=A5290D96-A8AA-05FA-553FB713EFBCB148&siteid=tenant-a&degrees=90&csrf_token=<token>&csrf_token_expires=<token>"
       },
       "response": {
         "domModel": {
@@ -2520,7 +2520,7 @@
         "export": {
           "contentType": "image/png; charset=UTF-8",
           "kind": "file",
-          "sha256": "abb98e9dd306cd13e6f14eb7bcadfcb1dcb5c2caf2c4fe2ae5833bbf216e9d2d"
+          "sha256": "78af30728f721e31817321b5351614c752760e22865b8263a862b17837262516"
         },
         "headers": {
           "content-disposition": "inline;filename=\"gs-photo.png\"",
@@ -2541,13 +2541,13 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/_api/render/small/?fileid=568EA9E2-A736-853D-8B5126AF3B151F3E"
+        "url": "/_api/render/small/?fileid=A5290D96-A8AA-05FA-553FB713EFBCB148"
       },
       "response": {
         "export": {
           "contentType": "image/png; charset=UTF-8",
           "kind": "file",
-          "sha256": "abb98e9dd306cd13e6f14eb7bcadfcb1dcb5c2caf2c4fe2ae5833bbf216e9d2d"
+          "sha256": "78af30728f721e31817321b5351614c752760e22865b8263a862b17837262516"
         },
         "headers": {
           "content-disposition": "inline;filename=\"gs-photo.png\"",
@@ -2556,7 +2556,7 @@
           "last-modified": "<ts:http-date>, <ts:http-date>",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "abb98e9dd306cd13e6f14eb7bcadfcb1dcb5c2caf2c4fe2ae5833bbf216e9d2d",
+        "rawSha256": "78af30728f721e31817321b5351614c752760e22865b8263a862b17837262516",
         "status": 200
       },
       "routeKey": "render:small"
@@ -2593,7 +2593,7 @@
           "authorization": "Basic <secret>"
         },
         "method": "DELETE",
-        "url": "/_api/rest/v1/tenant-a/file/568EADFC-D712-7741-D0476C5D19799BE7"
+        "url": "/_api/rest/v1/tenant-a/file/A52911C4-9163-D382-0D0A6A4B9CFE4B39"
       },
       "response": {
         "body": {
@@ -2610,7 +2610,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "7b7ea8d7f3a1fffebcbb4f561d61b9a1641d38701289022680fe392802f94bbb",
+        "rawSha256": "1cd15797dde7b677b6e7716ca57d91f6aef3bd6aeb690dd439a7907ba910756b",
         "status": 500
       },
       "routeKey": "rest:file.delete"
@@ -2641,7 +2641,7 @@
           "kind": "form",
           "value": {
             "entityname": "file",
-            "id": "568EADFC-D712-7741-D0476C5D19799BE7",
+            "id": "A52911C4-9163-D382-0D0A6A4B9CFE4B39",
             "method": "delete",
             "siteid": "tenant-a"
           }
@@ -2697,7 +2697,7 @@
           "kind": "form",
           "value": {
             "entityname": "file",
-            "id": "568EA9E2-A736-853D-8B5126AF3B151F3E",
+            "id": "A5290D96-A8AA-05FA-553FB713EFBCB148",
             "method": "delete",
             "siteid": "tenant-a"
           }

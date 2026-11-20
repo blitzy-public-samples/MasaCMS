@@ -13,11 +13,13 @@ import {
   exceptionEntries,
   isExcepting,
   loadExceptionsList,
+  selectorMatches,
   type ParityResult,
   type ScenarioVerdict,
 } from '../../src/golden/compare.js';
 import type { DifferenceSelector, ExceptionEntry } from '../../src/golden/errors.js';
 import { createNormaliseState, normaliseBody } from '../../src/golden/normalise/index.js';
+import type { Difference } from '../../src/golden/normalise/masks.js';
 import type { NormalisedTable } from '../../src/golden/normalise/rows.js';
 import { loadRules, type NormaliseRules } from '../../src/golden/normalise/rules.js';
 import type { ReplayOutput } from '../../src/golden/replay.js';
@@ -338,5 +340,46 @@ describe("GS-PUB-04's rate-ajax step on legacy's debug page, under the committed
     const verdict = classifyPub04(captured, replayed);
     expect(verdict).toMatchObject({ result: 'fail' });
     expect(excuses(verdict)).toStrictEqual(unexcused.map((path) => [path, undefined]));
+  });
+});
+
+describe("GS-ID-09's adoption cookies under the committed list", () => {
+  /** A cookie the gateway re-emits at adoption, as the comparison reads it. */
+  const reissued = (name: string, persistence: string) => ({
+    hop: 0,
+    httpOnly: true,
+    name,
+    path: '/',
+    persistence,
+    rotation: 'changed',
+    secure: false,
+    value: '<token>',
+  });
+  /** An `extra` cookie of `step`, which legacy's answer lacks. */
+  const extra = (step: string, index: number, actual: unknown): Difference => ({
+    step,
+    path: `auth.cookies[${String(index)}]`,
+    kind: 'extra',
+    expected: undefined,
+    actual,
+    classification: 'difference',
+  });
+
+  let adoption: ExceptionEntry | undefined;
+
+  beforeAll(async () => {
+    adoption = exceptionEntries(await loadExceptionsList()).find((candidate) => candidate.id === 'EX-ADOPT-SESSION-COOKIES');
+  });
+
+  it.each<[string, boolean, Difference]>([
+    ['the re-emitted CFID', true, extra('adopt-continue', 0, reissued('CFID', 'persistent'))],
+    ['the re-emitted CFTOKEN', true, extra('adopt-continue', 1, reissued('CFTOKEN', 'persistent'))],
+    ['a session-only CFID, which legacy never writes', false, extra('adopt-continue', 0, reissued('CFID', 'session'))],
+    ['a JSESSIONID legacy never set', false, extra('adopt-continue', 2, reissued('JSESSIONID', 'persistent'))],
+    ['the CFID on a later step', false, extra('seam-user-form', 0, reissued('CFID', 'persistent'))],
+  ])('%s is excused: %s', (_label, excused, difference) => {
+    expect(adoption).toMatchObject({ scenario: 'GS-ID-09', routeKey: 'admin:cusers.listusers', decision: 'fix', status: 'accepted' });
+    const matches = adoption?.matches ?? [];
+    expect(adoption !== undefined && isExcepting(adoption) && matches.some((s) => selectorMatches(s, difference))).toBe(excused);
   });
 });

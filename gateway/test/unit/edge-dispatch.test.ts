@@ -1657,9 +1657,10 @@ describe('sessions of legacy-bound requests', () => {
   it.each<{ label: string; mode: SessionMode; family: RouteKeyResult['family']; url: string; carried: boolean }>([
     { label: 'a target-primary admin request', mode: 'target-primary', family: 'admin', url: '/admin/?muraAction=cArch.loadSiteFlat', carried: true },
     { label: 'a legacy-primary admin request', mode: 'legacy-primary', family: 'admin', url: '/admin/?muraAction=cArch.loadSiteFlat', carried: true },
-    { label: 'a target-primary page request', mode: 'target-primary', family: 'page', url: '/tenant-a/', carried: false },
+    { label: 'a target-primary page request', mode: 'target-primary', family: 'page', url: '/tenant-a/', carried: true },
+    { label: 'a legacy-primary feed request', mode: 'legacy-primary', family: 'feed', url: '/_api/feed/v1/default/?feedid=F', carried: true },
     { label: 'a legacy-primary JSON API request', mode: 'legacy-primary', family: 'api', url: '/_api/json/v1/default/content', carried: false },
-  ])('carries the session values target routes keep before legacy serves $label only when it is an admin one', async ({ mode, family, url, carried }) => {
+  ])('carries the session values target routes keep before legacy serves $label only when its family writes them', async ({ mode, family, url, carried }) => {
     const h = await harness(mode === 'target-primary' ? { active: indexOf('v0002', [], 'target') } : {});
     h.setScript(() => ({ destination: 'legacy', family }));
     vi.mocked(h.deps.resolver.resolveLegacyBound).mockResolvedValue(session(mode));
@@ -1689,11 +1690,11 @@ describe('sessions of legacy-bound requests', () => {
   it.each<{ label: string; mode: SessionMode; family: RouteKeyResult['family']; route?: string; url: string; imported: boolean }>([
     { label: 'a target-primary admin request', mode: 'target-primary', family: 'admin', url: '/admin/?muraAction=cArch.siteManagerTab&tab=1', imported: true },
     { label: 'a legacy-primary admin request', mode: 'legacy-primary', family: 'admin', url: '/admin/?muraAction=cArch.siteManagerTab&tab=1', imported: true },
-    { label: 'a target-primary page request', mode: 'target-primary', family: 'page', url: '/tenant-a/', imported: false },
+    { label: 'a target-primary page request', mode: 'target-primary', family: 'page', url: '/tenant-a/', imported: true },
     { label: 'a legacy-primary JSON API request', mode: 'legacy-primary', family: 'api', url: '/_api/json/v1/default/content', imported: false },
     { label: 'an admin logout', mode: 'target-primary', family: 'admin', route: 'admin:clogin.logout', url: '/admin/?muraAction=cLogin.logout', imported: false },
     { label: 'an admin login', mode: 'legacy-primary', family: 'admin', route: 'admin:clogin.login', url: '/admin/?muraAction=cLogin.login', imported: false },
-  ])('imports the shared values legacy changed once it completed $label only when it is an admin request but a login or logout', async (c) => {
+  ])('imports the shared values legacy changed once it completed $label only when its family writes them, but a logout or an unadopted login', async (c) => {
     const h = await harness({ ...(c.mode === 'target-primary' ? { active: indexOf('v0002', [], 'target') } : {}), facts: LOGIN_FACTS });
     h.setScript(() => ({ destination: 'legacy', family: c.family, ...(c.route === undefined ? {} : { entry: { route: c.route, kind: 'read' as const } }) }));
     vi.mocked(h.deps.resolver.resolveLegacyBound).mockResolvedValue(session(c.mode));
@@ -1713,6 +1714,64 @@ describe('sessions of legacy-bound requests', () => {
     expect(h.calls.filter((call) => ['legacy', 'csrf.after', 'carry.after'].includes(call))).toEqual(
       c.imported ? ['legacy', 'csrf.after', 'carry.after'] : ['legacy', 'csrf.after'],
     );
+  });
+
+  it.each([
+    ['stream', [] as string[]],
+    ['buffer', [RATING_UNIT]],
+  ] as const)('imports into the session a %s-mode page render opened, which the request did not hold', async (_mode, targetUnits) => {
+    const h = await harness({ active: indexOf('v0002', targetUnits, 'target') });
+    h.setScript(() => ({ entry: { route: 'page:render', kind: 'legacy-write', units: [RATING_UNIT] }, destination: 'legacy', family: 'page' }));
+    vi.mocked(h.deps.resolver.adoptAfterLegacy).mockResolvedValueOnce({
+      kind: 'session',
+      sessionId: 'S-ADOPTED',
+      epoch: 1,
+      mode: 'target-primary',
+      legacyCookies: {},
+      setCookies: ['CFTOKEN=S-ADOPTED;path=/;'],
+    });
+    h.legacy.setHandler((_req, res) => sendBytes(res, 200, 'page', { 'set-cookie': ['CFTOKEN=N2;path=/;'] }));
+
+    const res = await h.app.inject({ method: 'GET', url: '/?display=login', headers: { 'user-agent': 'OPT2-browser' } });
+
+    expect([res.statusCode, res.body]).toEqual([200, 'page']);
+    expect(h.deps.carry.beforeLegacy).not.toHaveBeenCalled();
+    expect(vi.mocked(h.deps.carry.afterLegacy).mock.calls).toEqual([['S-ADOPTED', 'target-primary', { userAgent: 'OPT2-browser' }]]);
+  });
+
+  /** Facts of the front-end render as the inventory records them: it may log the session in. */
+  const RENDER_FACTS: Record<string, RouteFacts> = {
+    'page:render': { route: 'page:render', csrfValidation: 'none', writeSet: [], keyScope: [], sessionEffects: ['login', 'relogin'] },
+  };
+
+  it.each([
+    ['stream', [] as string[]],
+    ['buffer', [RATING_UNIT]],
+  ] as const)('imports a %s-mode render that may log in into the session its login adoption leaves, after that adoption', async (_mode, targetUnits) => {
+    const h = await harness({ active: indexOf('v0002', targetUnits, 'target'), facts: RENDER_FACTS });
+    h.setScript(() => ({ entry: { route: 'page:render', kind: 'legacy-write', units: [RATING_UNIT] }, destination: 'legacy', family: 'page' }));
+    vi.mocked(h.deps.resolver.adoptAfterLegacy).mockResolvedValueOnce({
+      kind: 'session',
+      sessionId: 'S-OPENED',
+      epoch: 1,
+      mode: 'target-primary',
+      legacyCookies: {},
+      setCookies: ['CFTOKEN=S-OPENED;path=/;'],
+    });
+    vi.mocked(h.deps.invalidation.afterLegacyLogin).mockImplementationOnce(async (sessionId) => {
+      h.calls.push(`afterLegacyLogin:${sessionId}`);
+      return { sessionId: 'S-LOGGED-IN', epoch: 2, setCookie: [] };
+    });
+    vi.mocked(h.deps.carry.afterLegacy).mockImplementation(async (sessionId) => {
+      h.calls.push(`carry.after:${sessionId}`);
+    });
+    h.legacy.setHandler((_req, res) => sendBytes(res, 200, 'page', { 'set-cookie': ['CFTOKEN=N2;path=/;'] }));
+
+    const res = await h.app.inject({ method: 'GET', url: '/?display=login', headers: { 'user-agent': 'OPT2-browser' } });
+
+    expect([res.statusCode, res.body]).toEqual([200, 'page']);
+    expect(vi.mocked(h.deps.carry.afterLegacy).mock.calls).toEqual([['S-LOGGED-IN', 'target-primary', { userAgent: 'OPT2-browser' }]]);
+    expect(h.calls.filter((call) => /^(afterLegacyLogin|carry\.after):/.test(call))).toEqual(['afterLegacyLogin:S-OPENED', 'carry.after:S-LOGGED-IN']);
   });
 
   it('answers legacy own response when the import after it fails', async () => {

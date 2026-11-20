@@ -245,6 +245,22 @@ describe.skipIf(!available)('survey schedule consumer and recovery against Postg
     );
   });
 
+  it('records tasks a minute or more past as expired at their own time and queues only the rest, recovery included', async () => {
+    // Launch 10:00:30, reminders 60, 119 and 180 minutes later, consumed at noon.
+    const past = { ...schedule(survey, 1, [60, 119, 180]), launchAt: '2026-06-30T10:00:30.000' };
+    expect(await consume(envelope(past))).toBe('applied');
+    await scheduledTaskRecovery(deps).run(recoveryContext(SCHEDULED_TASK_RECOVERY_AGE_MS + 1));
+
+    const stored = await rows();
+    expect(stored.map((row) => [row.reminder_n, row.status, row.schedule_time.getTime(), row.enqueued_at?.getTime() ?? null])).toEqual([
+      [null, 'expired', new Date(2026, 5, 30, 10, 0, 30).getTime(), null],
+      [1, 'expired', new Date(2026, 5, 30, 11, 0, 30).getTime(), null],
+      [2, 'scheduled', NOW.getTime(), NOW.getTime()],
+      [3, 'scheduled', new Date(2026, 5, 30, 13, 0, 30).getTime(), NOW.getTime()],
+    ]);
+    expect(port.creates.map((task) => task.name)).toEqual(stored.slice(2).map((row) => row.queue_task_name));
+  });
+
   it.each([
     ['when consumed', false],
     ['by recovery after a failed queue call', true],

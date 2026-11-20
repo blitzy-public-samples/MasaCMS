@@ -1,10 +1,10 @@
 {
-  "capturedAt": "2026-11-18T14:22:23.563Z",
+  "capturedAt": "2026-11-20T03:00:14.448Z",
   "fixtures": {
     "available": true,
     "reason": "fixtures loaded"
   },
-  "generatedAt": "2026-11-18T14:22:25.805Z",
+  "generatedAt": "2026-11-20T03:00:16.638Z",
   "generatedBy": "harness/src/golden/capture.ts",
   "origin": "legacy",
   "scenarioId": "GS-PE-03",
@@ -273,7 +273,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "c3571c04eb0767d373164c4bd87c8fa89b5f9430c9600fa5957a071fb5fad0c6",
+        "rawSha256": "751814b825e3a8b09c56fe9935b32b99ffe3de37b27140785082ba4bc9714a9d",
         "status": 200
       },
       "routeKey": "fixture:people/persons/{id}/archive@post"
@@ -325,7 +325,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "c3571c04eb0767d373164c4bd87c8fa89b5f9430c9600fa5957a071fb5fad0c6",
+        "rawSha256": "751814b825e3a8b09c56fe9935b32b99ffe3de37b27140785082ba4bc9714a9d",
         "status": 200
       },
       "routeKey": "fixture:people/persons/{id}/archive@get"

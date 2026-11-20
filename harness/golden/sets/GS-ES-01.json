@@ -1,10 +1,10 @@
 {
-  "capturedAt": "2026-11-18T14:26:55.953Z",
+  "capturedAt": "2026-11-20T03:04:51.061Z",
   "fixtures": {
     "available": true,
     "reason": "fixtures loaded"
   },
-  "generatedAt": "2026-11-18T14:26:58.552Z",
+  "generatedAt": "2026-11-20T03:04:53.559Z",
   "generatedBy": "harness/src/golden/capture.ts",
   "origin": "legacy",
   "scenarioId": "GS-ES-01",
@@ -132,7 +132,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "a2227947990d45a97aff2667cb8bebfbef04435596cd439bd71fd70074c73d90",
+        "rawSha256": "353deef7c7fe782eae879efd503ee7bfd4a87f28f17b1ca4adaf4933871e0a55",
         "status": 200
       },
       "routeKey": "fixture:esignature/requests@post"
@@ -174,7 +174,7 @@
           "x-csrf_token_expires": "<token>"
         },
         "method": "POST",
-        "url": "/legacy-fixtures/cfml/api.cfm/esignature/requests/568957B7-CABF-A937-788A5F004A5D13D9/sign?siteid=tenant-a"
+        "url": "/legacy-fixtures/cfml/api.cfm/esignature/requests/A523E5AE-0190-0D59-3AD870D97C93136C/sign?siteid=tenant-a"
       },
       "response": {
         "body": {
@@ -197,7 +197,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "9a0f29a310bb2fcba25944b98cda88cf20fc3c031e8e82cfe507c70639385763",
+        "rawSha256": "c5a9f520568d9fd0e4ed870afdf50b5eef0751c998c26b4b4b2f09cd7c94937f",
         "status": 200
       },
       "routeKey": "fixture:esignature/requests/{id}/sign@post"
@@ -233,7 +233,7 @@
           "x-csrf_token_expires": "<token>"
         },
         "method": "POST",
-        "url": "/legacy-fixtures/cfml/api.cfm/esignature/requests/568957B7-CABF-A937-788A5F004A5D13D9/sign?siteid=tenant-a"
+        "url": "/legacy-fixtures/cfml/api.cfm/esignature/requests/A523E5AE-0190-0D59-3AD870D97C93136C/sign?siteid=tenant-a"
       },
       "response": {
         "body": {
@@ -560,7 +560,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "88ca2c5f2f98362c899b64d958c3406f9a8105e7f8f1aa0f6081051f723b9cf2",
+        "rawSha256": "f2576341ab5bc0a362d56b5bcdc880e98befb9e8b73b2269032af098e4f211e0",
         "status": 404
       },
       "routeKey": "opt2:/opt2/admin/e-signature/requests"
@@ -712,7 +712,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "a0ad7d275a3420fb8335495412e5489029d4942617dbe140cb8bf8b84d440b66",
+        "rawSha256": "e991d60fb395f10c7d72f38f23d91904235e36a2e559eacaea73b9121e6a9b09",
         "status": 404
       },
       "routeKey": "opt2:/opt2/admin-actions/e-signature/create-request"
@@ -864,7 +864,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "bbb6187086bd42442c617ecf10b39d107d5b9a3f93482de239a1b79af6770a00",
+        "rawSha256": "bad12a0c7558232676eb75f8d79684d50fea4e33e5897deb4308eaa0062278d1",
         "status": 404
       },
       "routeKey": "opt2:/opt2/files/esignature-documents/gs-unsigned"

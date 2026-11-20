@@ -1,10 +1,10 @@
 {
-  "capturedAt": "2026-11-18T14:25:18.091Z",
+  "capturedAt": "2026-11-20T03:03:15.603Z",
   "fixtures": {
     "available": true,
     "reason": "fixtures loaded"
   },
-  "generatedAt": "2026-11-18T14:25:32.761Z",
+  "generatedAt": "2026-11-20T03:03:30.681Z",
   "generatedBy": "harness/src/golden/capture.ts",
   "origin": "legacy",
   "scenarioId": "GS-PUB-03",
@@ -559,7 +559,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "9f70981021a6185630cc22594bd3d23289e318b99bf3284c5bbd7680fcabbf9b",
+        "rawSha256": "52e6df19db2da94e3f5abdc7cf8c26dab1edeea5b4151d483c7af36611f1c4bf",
         "status": 200
       },
       "routeKey": "api:findcurrentuser"
@@ -610,7 +610,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "5a229920809c59c73a7e0a21ff47cc54255a96c4ae12a42a28254eb8258063dc",
+        "rawSha256": "b8a45c90b7521e6ed19d46121b83d5d7bd76c0670caf7e8b635da4397a83a2f6",
         "status": 200
       },
       "routeKey": "api:generatecsrftokens"
@@ -8219,7 +8219,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "844b058caa5255556022ff4b8be4a295d1675ed0e4776c41d2a6c0f3186d4d35",
+        "rawSha256": "90f0bfe0b2bc5d99b18fac5aefd36fcea15631df196e5402df02796bb578f0bd",
         "status": 200
       },
       "routeKey": "page:updateprofile"
@@ -8309,7 +8309,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "64da34ea147cbf3047f991dbe4861bd18cc864edcc774e3136d59e82850bc0b8",
+        "rawSha256": "61122b8f2b115de7511738a229b537bbfa63c05ae9acd8a8fda729bf2c803dbb",
         "status": 200
       },
       "routeKey": "api:generatecsrftokens"
@@ -15605,7 +15605,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "973359bbdd3389793d975a255e7637d1bfa672c89c81b798cdc2e97ad7aee109",
+        "rawSha256": "59fd3090afd6ecc96985f4786559c0aa8ae67c476f32b6286ac9fe7be1bcf97c",
         "status": 200
       },
       "routeKey": "page:createprofile"

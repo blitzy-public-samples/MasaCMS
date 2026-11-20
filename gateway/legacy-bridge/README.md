@@ -150,14 +150,14 @@ Caller: the gateway, `gateway/src/session/bridge-client.ts` (AAP 0.4.2). Asserti
   - For a new session the gateway absorbs ColdFusion's `Set-Cookie` headers into `gateway.legacy_jar`.
 - **`markUsed`** adds each token to `session.mura.csrfusedtokens`. A token already present keeps its earlier timestamp. `applied` is the number of tokens newly added.
 - **`usedSince`** returns the ledger entries with `usedAt >= since`, compared to the millisecond. Ledger semantics are legacy's (`core/mura/user/sessionUserFacade.cfc:206-235`): a token validates once, and legacy purges entries older than 3 h at its next validation. The bridge never purges.
-- **Shared values.** Session values that target-served and legacy-served admin screens both read or write. Identity holds them in the session's admin state (AAP 0.4.2); `carry` installs them in the legacy session and `export` reads legacy's changes back.
+- **Shared values.** Session values that target-served and legacy-served requests both read or write: admin screens, and the front-end render, feed API and variation script, which set the session site. Identity holds them in the session's admin state (AAP 0.4.2); `carry` installs them in the legacy session and `export` reads legacy's changes back.
 
 | Wire name | Legacy session | Identity admin state | Legacy writer and reader |
 |---|---|---|---|
 | `flatViewArgs` | `session.flatViewArgs` | `mura.flatViewArgs` | `carch.list` defaults (`admin/core/views/carch/list.cfm:492-584`), `carch.siteManagerTab` (`admin/core/controllers/carch.cfc:516-523`); `carch.loadSiteFlat` reads it without a default (`admin/core/views/carch/loadsiteflat.cfm:109`) |
 | `mura.nextN` | `session.mura.nextN` | `mura.nextN` | Modify View rows (`list.cfm:459-460`, `carch.cfc:46`); `carch.loadSiteManager` pages the tree with it |
 | `mura.alerts` | `session.mura.alerts` | `mura.alerts` | The layout's site entry (`admin/common/layouts/template.cfm:262-265`), `cdashboard.dismissAlert` (`admin/core/controllers/cdashboard.cfc:142-153`) |
-| `siteid`, `userFilesPath`, `topID`, `openSectionList` | same top-level keys | same top-level keys | The admin site switch (`admin/Application.cfc:384-397`) |
+| `siteid`, `userFilesPath`, `topID`, `openSectionList` | same top-level keys | same top-level keys | The admin site switch (`admin/Application.cfc:384-397`); `siteid` also the front-end render (`core/mura/Handler/standardEventsHandler.cfc:193-203`), the feed API (`core/mura/client/api/feed/v1/feedApiUtility.cfc:93`) and the variation script (`core/mura/client/api/resource/variation.js.cfm:10`) |
 | `keywords` | `session.keywords` | `keywords` | `carch.search` (`carch.cfc:490`), `carch.list` (`list.cfm:585`); the header search box (`admin/common/layouts/includes/header.cfm:164`) |
 | `datakeywords`, `filterBy` | same top-level keys | same top-level keys | A form data manager new search (`admin/core/views/carch/datamanager.cfm:79-86`); its response panel (`admin/core/views/carch/data_manager/dsp_response.cfm:135-138`) |
 | `__fw1NextPreserveKey` | `session.__fw1NextPreserveKey` | `nextPreserveKey` (integer) | FW/1's preserve-key counter, which every preserving redirect on either side advances (`admin/framework.cfc:1432-1456`) |
@@ -173,14 +173,14 @@ Caller: the gateway, `gateway/src/session/bridge-client.ts` (AAP 0.4.2). Asserti
   - `__fw1` takes identity's contexts by preserve key: positive integer keys, each a struct of simple values whose `userBean`, when present, is JSON; anything else answers 400. Each context that differs from the one installed last becomes `session['__fw1<key>']`, and `session['__fw1<key - 10>']` is purged, as FW/1's key allocation purges it. The gateway sends only the contexts FW/1 has not purged under the shared counter, those from `nextPreserveKey - 10` on.
   - A context's `userBean` is a target save result (people `UpdateResult` or identity `GroupWriteResult`). It is installed as the user bean legacy's failed `userManager.update` or `create` leaves (`core/mura/user/userManager.cfc:404-450,563-582`): `userDAO.read(userid)` for `action=Update` with a user id, else a new `user` bean; `set` from the context's other entries; `setS2(0)` unless the session is S2, then `setIsPublic(0)` for an S2 bean; a new bean's posted or new `userID`; and `setErrors` with the result's `errors`. Nothing is validated or saved, so the bridge still writes nothing.
   - A value is installed only when its `revision` differs from the one `session.opt2Carried[name]` records, which then becomes `{revision, json}`, `json` being `serializeJSON` of the value as `export` reads it back after the write (for `__fw1`, of the contexts carried). An unchanged revision leaves legacy's own later writes standing.
-  - `applied` lists the names installed. The gateway sends it before each legacy-bound admin request of a session whose identity admin state holds a shared value (`gateway/src/session/carry.ts`).
+  - `applied` lists the names installed. The gateway sends it before each legacy-bound admin, page, feed or variation request of a session whose identity admin state holds a shared value (`gateway/src/session/carry.ts`).
 - **`export`** reads the shared values legacy holds, without a write.
   - It lists `{name, value}` for each shared name present in the session whose `serializeJSON` differs from the `json` `session.opt2Carried` records for it, or that `carry` never installed.
   - A struct value whose recorded `json` is a struct also carries it as `base`, the struct `carry` installed. For a `mura` value identity then stores only legacy's changes against `base`: changed, added and removed keys at every depth, matched ignoring case, applied under the locked session row to the value it holds now, so a target write since the carry stands. Without `base`, and for top-level values, the exported value replaces the stored one.
   - A simple value is sent as a JSON string, so a numeric-looking id such as `topID` keeps its digits; the gateway stores `__fw1NextPreserveKey` as an integer. Struct keys keep the spelling legacy gave them: dot-notation writes such as `.tab` arrive upper-cased (`TAB`).
   - `moduleTopIds` reads `{<key>: topid}` for each module top key whose session value is a struct with `topid`, topids as strings, and is absent when there is none. Identity replaces its stored set with the one exported, so the bridge sends every top legacy holds.
   - `__fw1` is never exported. In `v0002` and `v0003` every legacy-served preserving redirect (`cusers.downloadGroupMembers`, `cusers.advancedSearchToCSV`, `cusers.removeFromGroup`, and the `cusers.update` variants legacy serves) lands on a legacy-served page, so contexts travel target to legacy only, and legacy's own contexts, which hold CFC objects, stay in legacy.
-  - The gateway calls it after each legacy-bound admin request other than a login or logout and stores what it lists in identity (`importSessionAdminState`).
+  - The gateway calls it after each legacy-bound admin, page, feed or variation request other than a logout and stores what it lists in identity (`importSessionAdminState`), in the session the gateway adopted at legacy's headers when the request held none; after a request that may log in, such as a front-end render, in the session the login's adoption leaves, once it is adopted.
 - **`end`** calls `setUserStruct()` with no user (logged-out defaults, no database), then `sessionInvalidate()`.
 
 ### `jobs.cfm?job=…`
@@ -302,6 +302,14 @@ Caller: the gateway, `gateway/src/session/bridge-client.ts` (`createVersionMenuC
 
 - Response: `{appServerProductName, appServerVersion, dbProductName, dbProductVersion, javaVersion, osName, osVersion, serverTime}`, every value a string or `null` as above.
 
+### `site.cfm?op=plugins`
+
+Caller: the gateway, `gateway/src/session/bridge-client.ts` (`createPluginListClient`), for its `GET /internal/v1/legacy-server/plugins` (`getLegacyPlugins`), which web's Global Settings page (`csettings.list`) reads. Assertion op `site.plugins`, `siteId` `""`.
+
+- GET, no parameters, no body. Nothing is written; `tplugins` stays legacy's (decision list).
+- Reads `pluginManager.getAllPlugins()` (`core/mura/plugin/pluginManager.cfc:234-241`, `select * from tplugins order by name`), the rows `csettings.cfc` `list()` hands the Plugins tab (`admin/core/views/csettings/list.cfm:312-350`).
+- Response: `{plugins:[{moduleId, name, directory, category, version, provider, providerUrl, pluginId}], serverTime}` in that order, every value a string; a NULL column is `""`, as the CFML query reads it.
+
 ### `site.cfm?op=static`
 
 Caller: the gateway, `gateway/src/session/bridge-client.ts` (`createStaticFileClient`). Before forwarding a static-family request that carries remember-me cookies while the remember-me login's units are `target`-authoritative, the gateway asks whether the request runs Masa's request start, whose remember-me login writes `tusers.LastLogin` (`core/appcfc/onRequestStart_include.cfm:222-229`); it opens a write window only then (AAP 0.5.4). Assertion op `site.static`, `siteId` `""`.
@@ -364,10 +372,10 @@ The rendered server definition, `harness/repro/server.json.template`, also sets 
 
 | Endpoint | Caller | When |
 |---|---|---|
-| `session.cfm` | `gateway/src/session/bridge-client.ts` | Describe and adoption, hydrate, CSRF claims, shared values around legacy admin requests, logout |
+| `session.cfm` | `gateway/src/session/bridge-client.ts` | Describe and adoption, hydrate, CSRF claims, shared values around legacy-bound requests, logout |
 | `jobs.cfm` | The migration service on behalf of `services/programs-sites/src/jobs/dispatch.ts`; the reverse projector (`purgeCache`) | Legacy site-monitor steps, cursor hand-off, cache purge |
 | `scheduler.cfm` | `migration/src/scheduler/` and `opt2-ops` | `up.sh`, transitions, drain and resume, `down.sh` |
-| `site.cfm` | The migration reverse projector (`refresh`); `gateway/src/session/bridge-client.ts` (`list`, `paths`, `versionMenu`, `static`) | After a `tsettings` batch; gateway start and every second after (`list`); each web page that prints a first-touch path (`paths`); each full-layout web admin page (`versionMenu`); each static-family request with remember-me cookies while the remember-me login's units are `target`-authoritative (`static`) |
+| `site.cfm` | The migration reverse projector (`refresh`); `gateway/src/session/bridge-client.ts` (`list`, `paths`, `versionMenu`, `plugins`, `static`) | After a `tsettings` batch; gateway start and every second after (`list`); each web page that prints a first-touch path (`paths`); each full-layout web admin page (`versionMenu`); each web Global Settings page (`plugins`); each static-family request with remember-me cookies while the remember-me login's units are `target`-authoritative (`static`) |
 | `files.cfm` | `migration/src/files/` and the reverse projector | Snapshot manifest, transfer, reverse projection |
 
 ## Smoke check

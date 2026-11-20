@@ -12,7 +12,8 @@ import { addressRow, personRow, seedPeople } from '../helpers/fixtures.js';
 const A = TENANT_A.tenantId;
 
 describe.skipIf(!PG_AVAILABLE)('listAddresses against PostgreSQL', () => {
-  it("lists the user's addresses primary first, then by addressid, a NULL isPrimary last", async () => {
+  // SQL Server 2022 returns isPrimary NULL, 0, 1, 0 in addressID order as 1, 0, 0, NULL with the last 0 first.
+  it("lists the user's addresses as SQL Server's unstable sort of isPrimary desc leaves them, a NULL isPrimary last", async () => {
     const owner = personRow();
     const id = (n: number): string => `B0000000-0000-0000-000000000000000${String(n)}`;
     const own = [
@@ -32,8 +33,8 @@ describe.skipIf(!PG_AVAILABLE)('listAddresses against PostgreSQL', () => {
     expect(outcome).not.toHaveProperty('skipped');
     expect((outcome as AddressRow[]).map((row) => [row.addressid, row.isprimary])).toEqual([
       [id(3), 1],
-      [id(2), 0],
       [id(4), 0],
+      [id(2), 0],
       [id(1), null],
     ]);
   });

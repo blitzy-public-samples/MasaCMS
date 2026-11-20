@@ -1,10 +1,10 @@
 {
-  "capturedAt": "2026-11-18T14:29:24.473Z",
+  "capturedAt": "2026-11-20T03:06:57.362Z",
   "fixtures": {
     "available": true,
     "reason": "fixtures loaded"
   },
-  "generatedAt": "2026-11-18T14:29:27.100Z",
+  "generatedAt": "2026-11-20T03:06:59.407Z",
   "generatedBy": "harness/src/golden/capture.ts",
   "origin": "legacy",
   "scenarioId": "GS-PS-09",
@@ -41,7 +41,7 @@
             "",
             "",
             "Admin User",
-            "2",
+            "",
             "Back to Site Settings",
             "Select Working Directory",
             "Create Bundle"
@@ -425,10 +425,6 @@
             {
               "href": "/admin/?muraAction=ceditprofile.edit",
               "text": "Admin User"
-            },
-            {
-              "href": "./?muraAction=carch.list&moduleid=00000000000000000000000000000000000&activeTab=1&report=mydrafts&siteID=tenant-b&reportSortby=lastupdate&reportSortDirection=desc&refreshFlatview=true",
-              "text": "2 Drafts"
             },
             {
               "href": "/admin/?muraAction=ceditprofile.edit",
@@ -480,7 +476,7 @@
             "",
             "",
             "Admin User",
-            "2",
+            "",
             "Back to Site Settings",
             "Select Working Directory",
             "Create Bundle"
@@ -866,10 +862,6 @@
               "text": "Admin User"
             },
             {
-              "href": "./?muraAction=carch.list&moduleid=00000000000000000000000000000000000&activeTab=1&report=mydrafts&siteID=tenant-b&reportSortby=lastupdate&reportSortDirection=desc&refreshFlatview=true",
-              "text": "2 Drafts"
-            },
-            {
               "href": "/admin/?muraAction=ceditprofile.edit",
               "text": "Edit Profile"
             },
@@ -894,7 +886,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "bd3b1ba12d21659cf70776140cb30daf6ef6fc442e8fc4fbc5e3b4aba6320788",
+        "rawSha256": "cb1e6bef07cde024231b510effad5ac00676e4cd5187d28422fac4dd36e1d944",
         "status": 200
       },
       "routeKey": "admin:csettings.selectbundleoptions"
@@ -1003,22 +995,22 @@
             },
             {
               "name": "wddx_rstcontent.xml",
-              "sha256": "3b9be81f57a564564c849d0dc9bcf87797efe67d67403e456ac652df89328b75",
-              "size": 571195
+              "sha256": "150256a3fb65421c3b1a430599f6ae048d2edf80f19036bebd47bdd0d2b9d192",
+              "size": 568355
             },
             {
               "name": "wddx_rstcontentcategories.xml",
-              "sha256": "06aeca226ad22fab6f8e71612e09d40b9bfb4b197eb52a46321924f5952c1af4",
+              "sha256": "fed069db91fe51b0fc1f0f41103b630679f139dc40c5b53a80276b8fe9893ba9",
               "size": 5301
             },
             {
               "name": "wddx_rstcontentcategoryassign.xml",
-              "sha256": "9a0fb855307ecc78bc96c12daa1ddd5975f88615deda990eb0a2ff903522eafe",
+              "sha256": "8bdaedb5b5551aab8381b159e6e9a7368fa655cee758e8e04d0d1eebe7dc8162",
               "size": 68699
             },
             {
               "name": "wddx_rstcontentcommentcommenters.xml",
-              "sha256": "0958920fba4add6741f4a746e02dc5ff287cbae41d2786ba9221330e17841447",
+              "sha256": "5d055f3d40c9e6fa2dfd09370ec23adbf03f6a3d66efa796200133ac95f5a66b",
               "size": 2242
             },
             {
@@ -1043,12 +1035,12 @@
             },
             {
               "name": "wddx_rstcontentfilenamearchive.xml",
-              "sha256": "eb8e6929ae335f937731bb4264113a0d105a662a743274cfcdf650404d17dad2",
+              "sha256": "48d776c4fa5efb682f3a4ef8bac89e70444552885d34039464cae8c711b781c9",
               "size": 39941
             },
             {
               "name": "wddx_rstcontentobjects.xml",
-              "sha256": "3ddadb065a882b52575673d21af24ca218878607a5143240c573b5de02660d8d",
+              "sha256": "1ac6b951463707d166072e038fbaa9c7f9ad7911dfe09f5776bebbef5e81a7ac",
               "size": 702
             },
             {
@@ -1073,12 +1065,12 @@
             },
             {
               "name": "wddx_rstimagesizes.xml",
-              "sha256": "ea3681d491469e58ea4b1252677c23d07c4f45c19c6449bc0167ffb9365a6abb",
+              "sha256": "dab4d1e276f631b210839ad600ebf7266df2dd4e52312d3a244a4bbd3a2de5de",
               "size": 555
             },
             {
               "name": "wddx_rstmailinglist.xml",
-              "sha256": "642bb6f265e597941756c13d240105ed5dad3763ff7f47805f196a7e699706eb",
+              "sha256": "d9b04d6a4f273376079f7a420e633c1a762c001fe322df71abc61e3abd958404",
               "size": 593
             },
             {
@@ -1113,7 +1105,7 @@
             },
             {
               "name": "wddx_rstsystemobjects.xml",
-              "sha256": "329f98735240e6b0f04d297dfd892e13c562e11b61faf0266ec54acf1689f0f9",
+              "sha256": "e142abcad63bed7eb5ec3da2dce9e19571c68df95beb8b4997b4f27ff4b779bc",
               "size": 2178
             },
             {
@@ -1249,22 +1241,22 @@
             },
             {
               "name": "wddx_rstcontent.xml",
-              "sha256": "3b9be81f57a564564c849d0dc9bcf87797efe67d67403e456ac652df89328b75",
-              "size": 571195
+              "sha256": "150256a3fb65421c3b1a430599f6ae048d2edf80f19036bebd47bdd0d2b9d192",
+              "size": 568355
             },
             {
               "name": "wddx_rstcontentcategories.xml",
-              "sha256": "06aeca226ad22fab6f8e71612e09d40b9bfb4b197eb52a46321924f5952c1af4",
+              "sha256": "fed069db91fe51b0fc1f0f41103b630679f139dc40c5b53a80276b8fe9893ba9",
               "size": 5301
             },
             {
               "name": "wddx_rstcontentcategoryassign.xml",
-              "sha256": "9a0fb855307ecc78bc96c12daa1ddd5975f88615deda990eb0a2ff903522eafe",
+              "sha256": "8bdaedb5b5551aab8381b159e6e9a7368fa655cee758e8e04d0d1eebe7dc8162",
               "size": 68699
             },
             {
               "name": "wddx_rstcontentcommentcommenters.xml",
-              "sha256": "0958920fba4add6741f4a746e02dc5ff287cbae41d2786ba9221330e17841447",
+              "sha256": "5d055f3d40c9e6fa2dfd09370ec23adbf03f6a3d66efa796200133ac95f5a66b",
               "size": 2242
             },
             {
@@ -1289,12 +1281,12 @@
             },
             {
               "name": "wddx_rstcontentfilenamearchive.xml",
-              "sha256": "eb8e6929ae335f937731bb4264113a0d105a662a743274cfcdf650404d17dad2",
+              "sha256": "48d776c4fa5efb682f3a4ef8bac89e70444552885d34039464cae8c711b781c9",
               "size": 39941
             },
             {
               "name": "wddx_rstcontentobjects.xml",
-              "sha256": "3ddadb065a882b52575673d21af24ca218878607a5143240c573b5de02660d8d",
+              "sha256": "1ac6b951463707d166072e038fbaa9c7f9ad7911dfe09f5776bebbef5e81a7ac",
               "size": 702
             },
             {
@@ -1319,12 +1311,12 @@
             },
             {
               "name": "wddx_rstimagesizes.xml",
-              "sha256": "ea3681d491469e58ea4b1252677c23d07c4f45c19c6449bc0167ffb9365a6abb",
+              "sha256": "dab4d1e276f631b210839ad600ebf7266df2dd4e52312d3a244a4bbd3a2de5de",
               "size": 555
             },
             {
               "name": "wddx_rstmailinglist.xml",
-              "sha256": "642bb6f265e597941756c13d240105ed5dad3763ff7f47805f196a7e699706eb",
+              "sha256": "d9b04d6a4f273376079f7a420e633c1a762c001fe322df71abc61e3abd958404",
               "size": 593
             },
             {
@@ -1359,7 +1351,7 @@
             },
             {
               "name": "wddx_rstsystemobjects.xml",
-              "sha256": "329f98735240e6b0f04d297dfd892e13c562e11b61faf0266ec54acf1689f0f9",
+              "sha256": "e142abcad63bed7eb5ec3da2dce9e19571c68df95beb8b4997b4f27ff4b779bc",
               "size": 2178
             },
             {
@@ -1385,7 +1377,7 @@
           "last-modified": "<ts:http-date>, <ts:http-date>",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "da374638e587503ee243654646b45b982568e3054fa9d4b9ab16dfe973f6c921",
+        "rawSha256": "cc67bdf530452d2e745f6baa81f1515ece919ed71635e0a073707dd154ac544c",
         "status": 200
       },
       "routeKey": "admin:csettings.createbundle"
@@ -1419,7 +1411,7 @@
             "",
             "",
             "Admin User",
-            "2",
+            "",
             "Back",
             "Delete",
             "Save",
@@ -2030,10 +2022,6 @@
             {
               "href": "/admin/?muraAction=ceditprofile.edit",
               "text": "Admin User"
-            },
-            {
-              "href": "./?muraAction=carch.list&moduleid=00000000000000000000000000000000000&activeTab=1&report=mydrafts&siteID=tenant-b&reportSortby=lastupdate&reportSortDirection=desc&refreshFlatview=true",
-              "text": "2 Drafts"
             },
             {
               "href": "/admin/?muraAction=ceditprofile.edit",
@@ -2097,7 +2085,7 @@
             "",
             "",
             "Admin User",
-            "2",
+            "",
             "Back",
             "Delete",
             "Save",
@@ -2710,10 +2698,6 @@
               "text": "Admin User"
             },
             {
-              "href": "./?muraAction=carch.list&moduleid=00000000000000000000000000000000000&activeTab=1&report=mydrafts&siteID=tenant-b&reportSortby=lastupdate&reportSortDirection=desc&refreshFlatview=true",
-              "text": "2 Drafts"
-            },
-            {
               "href": "/admin/?muraAction=ceditprofile.edit",
               "text": "Edit Profile"
             },
@@ -2746,7 +2730,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "4534b67d1346becca7f72816ad86aebb35a6d7ae6aec35f7e3d6a37cf4e521e5",
+        "rawSha256": "b1ca7267fc7b119bfb07ee3a8ad02867b1fbf2b55c7636a03cb3b196c5be8738",
         "status": 200
       },
       "routeKey": "admin:scaffold.assembler"
@@ -2776,7 +2760,7 @@
             "",
             "",
             "Admin User",
-            "2",
+            "",
             "Back",
             "Update"
           ],
@@ -3121,10 +3105,6 @@
             {
               "href": "/admin/?muraAction=ceditprofile.edit",
               "text": "Admin User"
-            },
-            {
-              "href": "./?muraAction=carch.list&moduleid=00000000000000000000000000000000000&activeTab=1&report=mydrafts&siteID=tenant-b&reportSortby=lastupdate&reportSortDirection=desc&refreshFlatview=true",
-              "text": "2 Drafts"
             },
             {
               "href": "/admin/?muraAction=ceditprofile.edit",
@@ -3176,7 +3156,7 @@
             "",
             "",
             "Admin User",
-            "2",
+            "",
             "Back",
             "Update"
           ],
@@ -3523,10 +3503,6 @@
               "text": "Admin User"
             },
             {
-              "href": "./?muraAction=carch.list&moduleid=00000000000000000000000000000000000&activeTab=1&report=mydrafts&siteID=tenant-b&reportSortby=lastupdate&reportSortDirection=desc&refreshFlatview=true",
-              "text": "2 Drafts"
-            },
-            {
               "href": "/admin/?muraAction=ceditprofile.edit",
               "text": "Edit Profile"
             },
@@ -3551,7 +3527,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "473e4cf7b0e57e72f3c2e9936d6626033e6744e97a4e7f5099dc012d95c854b2",
+        "rawSha256": "7e0646f76f73be6d8ba05980390db80fc49cd3e1a5db22dd2817a235a6b3c14f",
         "status": 200
       },
       "routeKey": "admin:scaffold.sites"
@@ -3652,7 +3628,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "162909916d70f1da574d4468ef38500a4e628daeb7e9d9fb2e177bc529eec08b",
+        "rawSha256": "77752c61d08ef8ae346d87c42bd89eeed0f95d5ba7264d5a7b4f1aa2a230e5d3",
         "status": 500
       },
       "routeKey": "admin:scaffold.updatesites"

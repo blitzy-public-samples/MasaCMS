@@ -3028,6 +3028,7 @@ components:
             - failed
             - cancelled
             - superseded
+            - expired
     ScheduleRequest:
       type: object
       description: New launch time and reminder offsets of a survey; reminder ordinals follow array order.

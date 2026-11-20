@@ -23,6 +23,14 @@ export function isRehearsalScenario(id: string): boolean {
   return REHEARSAL_IDS.has(id);
 }
 
+/**
+ * Whether `scenario` has a rehearsal crossing: a non-rehearsal HTTP scenario across a transition, captured again
+ * before the rehearsal scenarios and replayed with `--rehearsal` across the v0003 activation.
+ */
+export function isRehearsalCrossing(scenario: Pick<Scenario, 'id' | 'acrossTransition' | 'browser'>): boolean {
+  return scenario.acrossTransition !== undefined && scenario.browser === undefined && !isRehearsalScenario(scenario.id);
+}
+
 /** What a scenario compares between capture and replay. */
 export const COMPARE_KINDS = [
   'status',

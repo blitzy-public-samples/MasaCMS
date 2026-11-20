@@ -1,10 +1,10 @@
 {
-  "capturedAt": "2026-11-18T14:28:04.308Z",
+  "capturedAt": "2026-11-20T03:05:52.217Z",
   "fixtures": {
     "available": true,
     "reason": "fixtures loaded"
   },
-  "generatedAt": "2026-11-18T14:28:11.196Z",
+  "generatedAt": "2026-11-20T03:05:56.698Z",
   "generatedBy": "harness/src/golden/capture.ts",
   "origin": "legacy",
   "scenarioId": "GS-CO-19",
@@ -294,7 +294,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "61bead5a6e297350453a01215b361b68909e793085544fc65b23ab069f400b22",
+        "rawSha256": "325d0f13570379742dc10b49c0e221c7c2f051b2b58b8c57baa2010b58787688",
         "status": 200
       },
       "routeKey": "admin:carch.variationtargeting"
@@ -338,7 +338,7 @@
           "kind": "form",
           "value": {
             "compactDisplay": "true",
-            "contentid": "5693F53B-F55E-D875-354384ECD4CD964F",
+            "contentid": "A52D2E32-EEAE-315D-F7AB2240309DD554",
             "initjs": "Mura('.gs-co-19').addClass('mxp-editable')",
             "moduleid": "00000000000000000000000000000000099",
             "muraAction": "carch.variationTargeting",
@@ -381,7 +381,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "3d91bb42411b8e1d45ada9296cbaa858c0960920e01b0328980a5fe2f3c76a37",
+        "rawSha256": "d8339b0a5ad3c5cd8897306aff84f01939ddff570f89346ea093f165155f6b06",
         "status": 200
       },
       "routeKey": "admin:carch.variationtargeting"
@@ -425,7 +425,7 @@
           "kind": "form",
           "value": {
             "compactDisplay": "true",
-            "contentid": "5693F53B-F55E-D875-354384ECD4CD964F",
+            "contentid": "A52D2E32-EEAE-315D-F7AB2240309DD554",
             "initjs": "Mura('.gs-co-19-notify').addClass('mxp-editable')",
             "moduleid": "00000000000000000000000000000000099",
             "muraAction": "carch.variationTargeting",
@@ -469,7 +469,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "3d91bb42411b8e1d45ada9296cbaa858c0960920e01b0328980a5fe2f3c76a37",
+        "rawSha256": "d8339b0a5ad3c5cd8897306aff84f01939ddff570f89346ea093f165155f6b06",
         "status": 200
       },
       "routeKey": "admin:carch.variationtargeting{notify}"
@@ -569,7 +569,7 @@
         "body": {
           "kind": "form",
           "value": {
-            "contentid": "5693F53B-F55E-D875-354384ECD4CD964F",
+            "contentid": "A52D2E32-EEAE-315D-F7AB2240309DD554",
             "entityname": "variationTargeting",
             "initjs": "",
             "method": "save",
@@ -617,7 +617,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "1e032288f4cf175a37ff73072ce8ad86133db2ada50255a905c0662dfa9970f1",
+        "rawSha256": "5419b470fd670f96e66424c1dbb3b4024fea001d002a404871b11ee2581270d1",
         "status": 200
       },
       "routeKey": "api:variationtargeting.save"
@@ -651,7 +651,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/_api/json/v1/tenant-a/variationtargeting/56940CF8-E5B7-2DEC-80359C118A5B916A"
+        "url": "/_api/json/v1/tenant-a/variationtargeting/A52D3E8C-B0DA-82C4-EEE5EF305F210F3C"
       },
       "response": {
         "body": {
@@ -698,7 +698,7 @@
           "kind": "form",
           "value": {
             "entityname": "variationTargeting",
-            "id": "56940CF8-E5B7-2DEC-80359C118A5B916A",
+            "id": "A52D3E8C-B0DA-82C4-EEE5EF305F210F3C",
             "method": "delete",
             "siteid": "tenant-a"
           }
@@ -749,10 +749,10 @@
         "body": {
           "kind": "form",
           "value": {
-            "contentid": "5693F53B-F55E-D875-354384ECD4CD964F",
+            "contentid": "A52D2E32-EEAE-315D-F7AB2240309DD554",
             "initjs": "",
             "siteid": "tenant-a",
-            "targetingid": "56940CF8-E5B7-2DEC-80359C118A5B916A",
+            "targetingid": "A52D3E8C-B0DA-82C4-EEE5EF305F210F3C",
             "targetingjs": "return true;"
           }
         },
@@ -796,7 +796,7 @@
         "headers": {
           "content-type": "text/html;charset=UTF-8"
         },
-        "rawSha256": "47da9aeaa9516f2ad3bf3a512f860524f75bd2431dd0ec7e1ef9ca095af7ba5a",
+        "rawSha256": "afc9ad73b19270b8db2b5121e14dacb16b0518030f512deb22edf317fd4ae3db",
         "status": 500
       },
       "routeKey": "rest:variationtargeting.save{siteid}"
@@ -820,9 +820,9 @@
         "body": {
           "kind": "form",
           "value": {
-            "contentid": "5693F53B-F55E-D875-354384ECD4CD964F",
+            "contentid": "A52D2E32-EEAE-315D-F7AB2240309DD554",
             "initjs": "",
-            "targetingid": "56940CF8-E5B7-2DEC-80359C118A5B916A",
+            "targetingid": "A52D3E8C-B0DA-82C4-EEE5EF305F210F3C",
             "targetingjs": "return true;"
           }
         },
@@ -848,7 +848,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "68ccec2a7a06000d4de45b5ec930d260650670319f5e0f6f4deafe5425daa256",
+        "rawSha256": "a986ea77e3cd40c685c2e3eaaba4f4bbb396b75e14f3fe9e9c6b42afe6de1f3d",
         "status": 500
       },
       "routeKey": "rest:variationtargeting.save"
@@ -876,7 +876,7 @@
           "authorization": "Basic <secret>"
         },
         "method": "DELETE",
-        "url": "/_api/rest/v1/tenant-a/variationtargeting/56940CF8-E5B7-2DEC-80359C118A5B916A"
+        "url": "/_api/rest/v1/tenant-a/variationtargeting/A52D3E8C-B0DA-82C4-EEE5EF305F210F3C"
       },
       "response": {
         "body": {
@@ -893,7 +893,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "7b7ea8d7f3a1fffebcbb4f561d61b9a1641d38701289022680fe392802f94bbb",
+        "rawSha256": "1cd15797dde7b677b6e7716ca57d91f6aef3bd6aeb690dd439a7907ba910756b",
         "status": 500
       },
       "routeKey": "rest:variationtargeting.delete"
@@ -966,7 +966,7 @@
         "body": {
           "kind": "form",
           "value": {
-            "contentid": "5693F53B-F55E-D875-354384ECD4CD964F",
+            "contentid": "A52D2E32-EEAE-315D-F7AB2240309DD554",
             "initjs": "",
             "siteid": "tenant-a",
             "targetingjs": "return true;"
@@ -1065,7 +1065,7 @@
         },
         "headers": {},
         "method": "DELETE",
-        "url": "/Index.cfm/_api/rest/v1/tenant-a/variationtargeting/56940CF8-E5B7-2DEC-80359C118A5B916A"
+        "url": "/Index.cfm/_api/rest/v1/tenant-a/variationtargeting/A52D3E8C-B0DA-82C4-EEE5EF305F210F3C"
       },
       "response": {
         "body": {
@@ -2000,7 +2000,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "7081cdaeaae54fbe890f68fe0209ca5ceb3831b6b598078cbec57b8a305971fa",
+        "rawSha256": "48122f9ef46b00b1f1ec7fa87868541d3372603c8be9efdcf7c652a4acdaac51",
         "status": 500
       },
       "routeKey": "rest:comment.~delete{session}"
@@ -2092,7 +2092,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "602455d9d610eaf82c171c329e2d6cf84d931773f84974c323fecea3a63e201b",
+        "rawSha256": "972c73d61a2ab6444c3c6a6cb6ff53713627f14709fce3464a2eff304a8475bb",
         "status": 500
       },
       "routeKey": "rest:comment.~flag{session}"
@@ -2184,7 +2184,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "602455d9d610eaf82c171c329e2d6cf84d931773f84974c323fecea3a63e201b",
+        "rawSha256": "972c73d61a2ab6444c3c6a6cb6ff53713627f14709fce3464a2eff304a8475bb",
         "status": 500
       },
       "routeKey": "rest:comment.~markasspam{session}"
@@ -2276,7 +2276,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "602455d9d610eaf82c171c329e2d6cf84d931773f84974c323fecea3a63e201b",
+        "rawSha256": "972c73d61a2ab6444c3c6a6cb6ff53713627f14709fce3464a2eff304a8475bb",
         "status": 500
       },
       "routeKey": "rest:comment.~undelete{session}"
@@ -2368,7 +2368,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "602455d9d610eaf82c171c329e2d6cf84d931773f84974c323fecea3a63e201b",
+        "rawSha256": "972c73d61a2ab6444c3c6a6cb6ff53713627f14709fce3464a2eff304a8475bb",
         "status": 500
       },
       "routeKey": "rest:comment.~unmarkasspam{session}"
@@ -2649,7 +2649,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "852bab96ef3649ec39e5d95b389e3a4b1f447132d1341c7b456cd183ed9d6e82",
+        "rawSha256": "aeedede4839ebb96e0b6a6cf51770ca6afa5f295f8779b7c2aed2d2e39c2df5d",
         "status": 500
       },
       "routeKey": "rest:contentcategoryassign.delete{session}"
@@ -2845,7 +2845,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "852bab96ef3649ec39e5d95b389e3a4b1f447132d1341c7b456cd183ed9d6e82",
+        "rawSha256": "aeedede4839ebb96e0b6a6cf51770ca6afa5f295f8779b7c2aed2d2e39c2df5d",
         "status": 500
       },
       "routeKey": "rest:contentnav.delete{session}"
@@ -3961,7 +3961,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "e9dcc64e21988d76b220560da609e9b5616dadbf2d951c78c964bad3b9a92bb5",
+        "rawSha256": "af41e22aa99691ae5dc4deb9b159f20050fdf97131b821b836fd0895ba815db7",
         "status": 500
       },
       "routeKey": "rest:stats.delete{session}"
@@ -4339,7 +4339,7 @@
         "headers": {
           "content-type": "text/html;charset=UTF-8"
         },
-        "rawSha256": "53223d9861eb43e9c194d5b334254ba50c909e33d4a16bf65146775fbc1a7c1b",
+        "rawSha256": "5e992d2f04e3d67404375948e071ac6f356bc23271dbb4584399e3d122169c0a",
         "status": 500
       },
       "routeKey": "rest:variationtargeting.delete{siteid}"
@@ -4431,7 +4431,7 @@
         "headers": {
           "content-type": "text/html;charset=UTF-8"
         },
-        "rawSha256": "53223d9861eb43e9c194d5b334254ba50c909e33d4a16bf65146775fbc1a7c1b",
+        "rawSha256": "5e992d2f04e3d67404375948e071ac6f356bc23271dbb4584399e3d122169c0a",
         "status": 500
       },
       "routeKey": "rest:category.delete{siteid}"
@@ -4523,7 +4523,7 @@
         "headers": {
           "content-type": "text/html;charset=UTF-8"
         },
-        "rawSha256": "53223d9861eb43e9c194d5b334254ba50c909e33d4a16bf65146775fbc1a7c1b",
+        "rawSha256": "5e992d2f04e3d67404375948e071ac6f356bc23271dbb4584399e3d122169c0a",
         "status": 500
       },
       "routeKey": "rest:changeset.delete{siteid}"
@@ -4615,7 +4615,7 @@
         "headers": {
           "content-type": "text/html;charset=UTF-8"
         },
-        "rawSha256": "53223d9861eb43e9c194d5b334254ba50c909e33d4a16bf65146775fbc1a7c1b",
+        "rawSha256": "5e992d2f04e3d67404375948e071ac6f356bc23271dbb4584399e3d122169c0a",
         "status": 500
       },
       "routeKey": "rest:changesetcategoryassignment.delete{siteid}"
@@ -4707,7 +4707,7 @@
         "headers": {
           "content-type": "text/html;charset=UTF-8"
         },
-        "rawSha256": "53223d9861eb43e9c194d5b334254ba50c909e33d4a16bf65146775fbc1a7c1b",
+        "rawSha256": "5e992d2f04e3d67404375948e071ac6f356bc23271dbb4584399e3d122169c0a",
         "status": 500
       },
       "routeKey": "rest:comment.delete{siteid}"
@@ -4804,7 +4804,7 @@
         "headers": {
           "content-type": "text/html;charset=UTF-8"
         },
-        "rawSha256": "47da9aeaa9516f2ad3bf3a512f860524f75bd2431dd0ec7e1ef9ca095af7ba5a",
+        "rawSha256": "afc9ad73b19270b8db2b5121e14dacb16b0518030f512deb22edf317fd4ae3db",
         "status": 500
       },
       "routeKey": "rest:comment.~delete{siteid}"
@@ -4901,7 +4901,7 @@
         "headers": {
           "content-type": "text/html;charset=UTF-8"
         },
-        "rawSha256": "47da9aeaa9516f2ad3bf3a512f860524f75bd2431dd0ec7e1ef9ca095af7ba5a",
+        "rawSha256": "afc9ad73b19270b8db2b5121e14dacb16b0518030f512deb22edf317fd4ae3db",
         "status": 500
       },
       "routeKey": "rest:comment.~flag{siteid}"
@@ -4998,7 +4998,7 @@
         "headers": {
           "content-type": "text/html;charset=UTF-8"
         },
-        "rawSha256": "47da9aeaa9516f2ad3bf3a512f860524f75bd2431dd0ec7e1ef9ca095af7ba5a",
+        "rawSha256": "afc9ad73b19270b8db2b5121e14dacb16b0518030f512deb22edf317fd4ae3db",
         "status": 500
       },
       "routeKey": "rest:comment.~markasspam{siteid}"
@@ -5095,7 +5095,7 @@
         "headers": {
           "content-type": "text/html;charset=UTF-8"
         },
-        "rawSha256": "47da9aeaa9516f2ad3bf3a512f860524f75bd2431dd0ec7e1ef9ca095af7ba5a",
+        "rawSha256": "afc9ad73b19270b8db2b5121e14dacb16b0518030f512deb22edf317fd4ae3db",
         "status": 500
       },
       "routeKey": "rest:comment.~undelete{siteid}"
@@ -5192,7 +5192,7 @@
         "headers": {
           "content-type": "text/html;charset=UTF-8"
         },
-        "rawSha256": "47da9aeaa9516f2ad3bf3a512f860524f75bd2431dd0ec7e1ef9ca095af7ba5a",
+        "rawSha256": "afc9ad73b19270b8db2b5121e14dacb16b0518030f512deb22edf317fd4ae3db",
         "status": 500
       },
       "routeKey": "rest:comment.~unmarkasspam{siteid}"
@@ -5284,7 +5284,7 @@
         "headers": {
           "content-type": "text/html;charset=UTF-8"
         },
-        "rawSha256": "53223d9861eb43e9c194d5b334254ba50c909e33d4a16bf65146775fbc1a7c1b",
+        "rawSha256": "5e992d2f04e3d67404375948e071ac6f356bc23271dbb4584399e3d122169c0a",
         "status": 500
       },
       "routeKey": "rest:content.delete{siteid}"
@@ -5376,7 +5376,7 @@
         "headers": {
           "content-type": "text/html;charset=UTF-8"
         },
-        "rawSha256": "53223d9861eb43e9c194d5b334254ba50c909e33d4a16bf65146775fbc1a7c1b",
+        "rawSha256": "5e992d2f04e3d67404375948e071ac6f356bc23271dbb4584399e3d122169c0a",
         "status": 500
       },
       "routeKey": "rest:feed.delete{siteid}"
@@ -5468,7 +5468,7 @@
         "headers": {
           "content-type": "text/html;charset=UTF-8"
         },
-        "rawSha256": "53223d9861eb43e9c194d5b334254ba50c909e33d4a16bf65146775fbc1a7c1b",
+        "rawSha256": "5e992d2f04e3d67404375948e071ac6f356bc23271dbb4584399e3d122169c0a",
         "status": 500
       },
       "routeKey": "rest:file.delete{siteid}"
@@ -5560,7 +5560,7 @@
         "headers": {
           "content-type": "text/html;charset=UTF-8"
         },
-        "rawSha256": "53223d9861eb43e9c194d5b334254ba50c909e33d4a16bf65146775fbc1a7c1b",
+        "rawSha256": "5e992d2f04e3d67404375948e071ac6f356bc23271dbb4584399e3d122169c0a",
         "status": 500
       },
       "routeKey": "rest:filemetadata.delete{siteid}"
@@ -5657,7 +5657,7 @@
         "headers": {
           "content-type": "text/html;charset=UTF-8"
         },
-        "rawSha256": "47da9aeaa9516f2ad3bf3a512f860524f75bd2431dd0ec7e1ef9ca095af7ba5a",
+        "rawSha256": "afc9ad73b19270b8db2b5121e14dacb16b0518030f512deb22edf317fd4ae3db",
         "status": 500
       },
       "routeKey": "rest:login{siteid}"
@@ -5755,7 +5755,7 @@
         "headers": {
           "content-type": "text/html;charset=UTF-8"
         },
-        "rawSha256": "47da9aeaa9516f2ad3bf3a512f860524f75bd2431dd0ec7e1ef9ca095af7ba5a",
+        "rawSha256": "afc9ad73b19270b8db2b5121e14dacb16b0518030f512deb22edf317fd4ae3db",
         "status": 500
       },
       "routeKey": "rest:oauth{siteid}"
@@ -5853,7 +5853,7 @@
         "headers": {
           "content-type": "text/html;charset=UTF-8"
         },
-        "rawSha256": "47da9aeaa9516f2ad3bf3a512f860524f75bd2431dd0ec7e1ef9ca095af7ba5a",
+        "rawSha256": "afc9ad73b19270b8db2b5121e14dacb16b0518030f512deb22edf317fd4ae3db",
         "status": 500
       },
       "routeKey": "rest:oauth2{siteid}"
@@ -5945,7 +5945,7 @@
         "headers": {
           "content-type": "text/html;charset=UTF-8"
         },
-        "rawSha256": "53223d9861eb43e9c194d5b334254ba50c909e33d4a16bf65146775fbc1a7c1b",
+        "rawSha256": "5e992d2f04e3d67404375948e071ac6f356bc23271dbb4584399e3d122169c0a",
         "status": 500
       },
       "routeKey": "rest:stats.delete{siteid}"
@@ -6037,7 +6037,7 @@
         "headers": {
           "content-type": "text/html;charset=UTF-8"
         },
-        "rawSha256": "53223d9861eb43e9c194d5b334254ba50c909e33d4a16bf65146775fbc1a7c1b",
+        "rawSha256": "5e992d2f04e3d67404375948e071ac6f356bc23271dbb4584399e3d122169c0a",
         "status": 500
       },
       "routeKey": "rest:tokeninfo{siteid}"

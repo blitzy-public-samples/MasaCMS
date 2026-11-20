@@ -27,7 +27,7 @@ Returns the people roster group set `R` to legacy authority and rehearses the ro
 
 - Do not start unless every row below holds.
 - Resolve each halted roster operation first, in the people service's environment: `opt2-people resolve-operation <operationId> --to rolled-back` or `--to done`. A halted operation resolves only with `--to`.
-- For the rehearsal, open the GS-ID-09 session step now, before the transition, so that it spans activation.
+- For the rehearsal, open the GS-ID-09 session step now, before the transition, so that it spans activation. `--rehearsal` keeps this crossing's sessions and output apart from its `v0002` parity replay.
 
 | Command | Evidence |
 |---|---|
@@ -35,7 +35,7 @@ Returns the people roster group set `R` to legacy authority and rehearses the ro
 | `opt2-migrate reconcile --point post-cutover` | Exit 0; `opt2/reports/reconciliation/post-cutover.json` has `result: zero-difference` |
 | Read `opt2/exceptions-list.json` and people `GET /internal/v1/roster-operations/halted` | No halted roster operation |
 | Read `${OPT2_STATE_DIR}/fixtures.json` | `available: true`; otherwise see section 12 |
-| `npm --prefix harness run golden:replay -- --only GS-ID-09 --phase pre-transition` | Exit 0; sessions saved in `${OPT2_STATE_DIR}/golden/sessions/GS-ID-09.json` |
+| `npm --prefix harness run golden:replay -- --rehearsal --only GS-ID-09 --phase pre-transition` | Exit 0; sessions saved in `${OPT2_STATE_DIR}/golden/sessions/rehearsal/GS-ID-09.json` |
 
 ## 3. Quiesce
 
@@ -102,15 +102,15 @@ Returns the people roster group set `R` to legacy authority and rehearses the ro
 
 - Replay GS-PE-RH-01, GS-PE-RH-02 and GS-PE-RH-03 (create, edit, archive) through the gateway, now served by legacy; archive runs the legacy `usp_person_archived_blackout`. `--rehearsal` requires `v0003` active and, without `--only`, selects only these scenarios.
 - The replay uses only the reserved identities in `legacy-fixtures/seed/seed.config.json` `reserved.rehearsal` and compares against golden sets captured at `harness/repro/test-all.sh` stage 5 from the same seeded state.
-- Complete the GS-ID-09 session step opened in section 2; `test-all.sh` stage 8 runs it directly after the transition completes.
+- Complete the GS-ID-09 session step opened in section 2; `test-all.sh` stage 8 runs it directly after the transition completes. It is compared with `harness/golden/sets/rehearsal/GS-ID-09.json`, which stage 5 captures (`golden:capture -- --rehearsal`) after every other scenario and just before the GS-PE-RH sets, and any unlisted difference fails it.
 - Run one feed pass, then compare the replays with their golden sets.
 
 | Command | Evidence |
 |---|---|
-| `npm --prefix harness run golden:replay -- --rehearsal --only GS-ID-09 --phase resume` | Exit 0; `${OPT2_STATE_DIR}/golden/replay/GS-ID-09.json` |
+| `npm --prefix harness run golden:replay -- --rehearsal --only GS-ID-09 --phase resume` | Exit 0; `${OPT2_STATE_DIR}/golden/replay/rehearsal/GS-ID-09.json` |
 | `npm --prefix harness run golden:replay -- --rehearsal` | Exit 0; `${OPT2_STATE_DIR}/golden/replay/<id>.json` per scenario |
 | `opt2-migrate feed` | JSON line; `opt2/reports/reconciliation/after-feed-<seq>.json` with `result: zero-difference` |
-| `npm --prefix harness run golden:compare` | GS-PE-RH-01/02/03 and GS-ID-09 results in `opt2/reports/parity.json` |
+| `npm --prefix harness run golden:compare` | GS-PE-RH-01/02/03 results in `opt2/reports/parity.json` `scenarios`; the GS-ID-09 crossing, compared under `v0003`, in `rehearsalCrossings`; exit 1 when any fails |
 
 ## 10. Reconcile after
 
@@ -123,7 +123,7 @@ Returns the people roster group set `R` to legacy authority and rehearses the ro
 
 ## 11. Evidence
 
-- Run `opt2-migrate rollback report`. It writes `opt2/reports/rollback-rehearsal.md` with the members of `R`, the session mode before and after, both reconciliation results, the GS-PE-RH and GS-ID-09 outcomes, and each step's start, finish and result in run order. The step times come from `transitions.json`, the `startedAt` and `generatedAt` of both reconciliation reports, `rebaseline.json`, the GS-PE-RH replay outputs, and the `feed.startedAt` and `generatedAt` of the last `after-feed-<seq>.json` between the rehearsal and `rollback-after`.
+- Run `opt2-migrate rollback report`. It writes `opt2/reports/rollback-rehearsal.md` with the members of `R`, the session mode before and after, both reconciliation results, the GS-PE-RH outcomes and the GS-ID-09 crossing's (`parity.json` `rehearsalCrossings`), and each step's start, finish and result in run order. The step times come from `transitions.json`, the `startedAt` and `generatedAt` of both reconciliation reports, `rebaseline.json`, the GS-PE-RH replay outputs, and the `feed.startedAt` and `generatedAt` of the last `after-feed-<seq>.json` between the rehearsal and `rollback-after`.
 - Its result is `pass`, `fail` or `incomplete`; the command exits 1 only on `fail`.
 
 | Command | Evidence |

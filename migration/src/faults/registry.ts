@@ -121,7 +121,7 @@ export interface FaultRegistry {
   /** The armed faults, sorted by name. */
   active(): ActiveFault[];
   /**
-   * `projector-delay` sleeps once per projector cycle before its first batch; `projector-crash` exits the process after
+   * `projector-delay` sleeps once per projector cycle before its first read; `projector-crash` exits the process after
    * the n-th batch's legacy commit; `projector-hold` holds the open batch transaction before an operation's first change,
    * or before a participant's first change after another participant's, then optionally fails it.
    */
@@ -185,7 +185,8 @@ export function createFaultRegistry(
   };
 
   const projectorHooks: ProjectorHooks = {
-    beforeFirstBatch: async () => {
+    // Before the reads, so a write committed during the sleep is projected by the same cycle.
+    beforeFirstRead: async () => {
       const fault = faults.get(PROJECTOR_DELAY);
       if (fault?.name === PROJECTOR_DELAY) await sleep(fault.params.delayMs);
     },

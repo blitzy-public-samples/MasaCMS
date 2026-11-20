@@ -1,10 +1,10 @@
 {
-  "capturedAt": "2026-11-18T14:28:21.205Z",
+  "capturedAt": "2026-11-20T03:06:05.762Z",
   "fixtures": {
     "available": true,
     "reason": "fixtures loaded"
   },
-  "generatedAt": "2026-11-18T14:29:19.262Z",
+  "generatedAt": "2026-11-20T03:06:51.778Z",
   "generatedBy": "harness/src/golden/capture.ts",
   "origin": "legacy",
   "scenarioId": "GS-LS-02",
@@ -7319,7 +7319,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "84a770071ab74a80ded504d1aa05f3f5813f03a97e232a96865594eedaa50765",
+        "rawSha256": "565c8ebd959e79b0dc56765314a06b6b5cd9d7a1ff093e452a0f97333d21bb4b",
         "status": 200
       },
       "routeKey": "page:subscribe"
@@ -14615,7 +14615,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "c6099c268451862c48b92eec61f6564f43634ad725614229f217248597c37682",
+        "rawSha256": "bf5dccfc7f107548bdbad2f47a561b00d3a34ef74d58c9f1c5f1ef52596881c6",
         "status": 200
       },
       "routeKey": "page:unsubscribe"
@@ -21911,7 +21911,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "e4d6bdbfbbe593ee973a8d4c62d67fb7f896cbfa8167d95bc6f2d3f0dd684253",
+        "rawSha256": "e4672965b53e124e950314a2667e099536652b871d580e9cde783b3ffbee0069",
         "status": 200
       },
       "routeKey": "page:mastersubscribe"
@@ -29199,7 +29199,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "c0a1288c885c13e000f719677988874303d4b7c893fa1b2b87e02030a7ffd66a",
+        "rawSha256": "52a887c9bd1e0214d1780a09948d4f0a4d3d8fda702f48f226cb2a148fd5106c",
         "status": 200
       },
       "routeKey": "page:validatemember"
@@ -36521,7 +36521,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "8f3e1a8777f9bbaeb9c28fa094293d4457e8b46c6dd010ead1228fe807690eeb",
+        "rawSha256": "f22de8d627121285f9b06b95181b796386f8d5f9537a5993c9440355d3a04c42",
         "status": 200
       },
       "routeKey": "page:setreminder"
@@ -43819,7 +43819,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "adada2161b353e14a79ec18703fa9e04186f240b49fe46672dba7a1dca635939",
+        "rawSha256": "33c51e9298528cea6d0c28b0b041301aedb2378db858f782ba44e62c48d38285",
         "status": 200
       },
       "routeKey": "page:forwardemail"
@@ -51107,7 +51107,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "7542506d05f100d4a1cf723cd6aeb067f18336ffebfaa1dbacc1060cb3a1b112",
+        "rawSha256": "8ac1098e69ab5d7114d392aa7cccb6a8a64db4f8eb66ae09d9f7f86dd035f53f",
         "status": 200
       },
       "routeKey": "page:return"
@@ -58675,7 +58675,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "ed109329d19010b422da32c5af659dccd19b632817f4593a6861b177c66af725",
+        "rawSha256": "c34146f78e6ffa05cda69dd993a949f8ea66bfebdbbd00d274fa0dc6dc798a71",
         "status": 200
       },
       "routeKey": "page:sendlogin"

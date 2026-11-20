@@ -35,7 +35,7 @@ const ADVISORY_LOCK_SQL = 'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))
 const ENQUEUE_DUE: ReadonlySet<ScheduledTaskStatus> = new Set<ScheduledTaskStatus>(['scheduled']);
 const DEQUEUE_DUE: ReadonlySet<ScheduledTaskStatus> = new Set<ScheduledTaskStatus>(['superseded', 'cancelled']);
 
-/** Columns a new or reactivated task takes from its schedule: `scheduled`, not yet enqueued or dequeued. */
+/** Columns a new or reactivated task takes from its schedule: `scheduled` unless `expired`, not yet enqueued or dequeued. */
 function scheduleColumns(
   task: NewAdoptedScheduledTask,
 ): Omit<ScheduledTaskRow, 'tenant_id' | 'scheduled_task_id' | 'task_name' | 'origin' | 'created_at' | 'updated_at'> {
@@ -47,7 +47,7 @@ function scheduleColumns(
     source_id: task.sourceId,
     reminder_n: task.n ?? null,
     schedule_time: task.scheduleTime,
-    status: 'scheduled',
+    status: task.expired === true ? 'expired' : 'scheduled',
     target_route: task.targetRoute,
     schedule_version: task.scheduleVersion,
     enqueued_at: null,
@@ -96,7 +96,7 @@ export interface NewDeliveryStatus {
   source: MessageSource;
 }
 
-/** One scheduled task to record; the repository assigns its id, `status = 'scheduled'` and its timestamps. */
+/** One scheduled task to record; the repository assigns its id, `status = 'scheduled'` (`expired` when flagged) and its timestamps. */
 export interface NewScheduledTask {
   /** The fixture ACF task name, `opt2-survey-<surveyId>-launch|reminder-<n>`. */
   taskName: string;
@@ -114,6 +114,8 @@ export interface NewScheduledTask {
   targetRoute: string;
   scheduleVersion: number;
   origin: ScheduledTaskOrigin;
+  /** A task the legacy scheduler misfires at registration: stored `expired`, which no queue side effect follows. */
+  expired?: boolean;
 }
 
 /** One captured ACF task to adopt; adoption sets `origin = 'adopted'`. */
@@ -135,7 +137,7 @@ export interface CommunicationsWrites {
   setMessageState(tx: TenantTx, change: MessageStateChange, ctx?: WriteContext): Promise<MessageRow | null>;
   /** Appends one history row, recorded now or 10 ms after the message's latest status when that is closer. */
   appendDeliveryStatus(tx: TenantTx, input: NewDeliveryStatus, ctx?: WriteContext): Promise<DeliveryStatusRow>;
-  /** Inserts every event task as `scheduled`, not yet enqueued or dequeued, and adopts adopted ones by name; returns the rows in input order. */
+  /** Inserts every event task as `scheduled` (`expired` when flagged), not yet enqueued or dequeued, and adopts adopted ones by name; returns the rows in input order. */
   insertScheduledTasks(tx: TenantTx, tasks: readonly NewScheduledTask[], ctx?: WriteContext): Promise<ScheduledTaskRow[]>;
   /**
    * Adopts each task once per task name: inserts it, reactivates a cancelled adoption, or returns the existing row; in input order.

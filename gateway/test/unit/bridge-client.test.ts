@@ -6,12 +6,14 @@ import {
   BRIDGE_ASSERTION_HEADER,
   MemoryNonceStore,
   encodeBridgePayload,
+  sessionCookieStrings,
   verifyBridgeAssertion,
   type BridgeAssertionPayload,
 } from '@opt2/platform/legacy-compat';
 import { SERVICE_CALL_TIMEOUT_MS, ServiceUnavailableError, fixedClock } from '@opt2/platform/service-kit';
 import {
   createBridgeClient,
+  createPluginListClient,
   createSiteListClient,
   createStaticFileClient,
   createVersionMenuClient,
@@ -24,6 +26,7 @@ import {
   type LegacyCookies,
   type LegacyDescribe,
   type LegacyDescribeUser,
+  type LegacyPlugin,
   type LegacyUsedToken,
   type LegacyVersionMenu,
   type SiteListing,
@@ -38,6 +41,7 @@ import {
   type RecordedRequest,
 } from '../helpers/http-double.js';
 import {
+  LEGACY_PLUGINS,
   LEGACY_VERSION_MENU,
   createInProcessLegacyOrigin,
   parseWireTime,
@@ -795,11 +799,10 @@ describe('createBridgeClient against the legacy origin double', () => {
     const result = await invoke(bridge());
 
     const created = sessionNamed(result.body.sessionId);
-    expect(result.setCookies).toEqual([
-      `CFID=${created.cfid};path=/;HttpOnly;`,
-      `CFTOKEN=${created.cftoken};path=/;HttpOnly;`,
-      `JSESSIONID=${created.jsessionid};path=/;HttpOnly;`,
-    ]);
+    expect(result.setCookies).toEqual(
+      sessionCookieStrings({ CFID: created.cfid, CFTOKEN: created.cftoken, jsessionid: created.jsessionid }, {}, TEST_CLOCK.now()),
+    );
+    expect(result.setCookies[0]).toMatch(/^CFID=[^;]+;expires=[^;]+ GMT;path=\/;HttpOnly;$/);
     expect(legacy.bridgeCalls[0]?.request.headers.cookie).toBeUndefined();
     expect(claimsOf(assertionOf(legacy.bridgeCalls[0]?.request)).sid).toBe('');
   });
@@ -1064,6 +1067,91 @@ describe('createVersionMenuClient', () => {
     const failure = await failureOf(menus().versionMenu());
 
     expect(failure.cause).toBeInstanceOf(SyntaxError);
+  });
+});
+
+describe('createPluginListClient', () => {
+  const lists = (overrides: Partial<BridgeClientOptions> = {}) =>
+    createPluginListClient({
+      legacyOrigin: double.url,
+      hmacKey: VECTOR_KEY,
+      clock: fixedClock(NOW),
+      fetch: double.fetch,
+      ...overrides,
+    });
+  const [plugin] = LEGACY_PLUGINS as [LegacyPlugin];
+
+  it('sends a signed GET to site.cfm?op=plugins without cookies, as the bridge bot', async () => {
+    double.setHandler((_req, res) => {
+      sendJson(res, 200, { plugins: LEGACY_PLUGINS, serverTime: SERVER_TIME });
+    });
+
+    await expect(lists().plugins()).resolves.toEqual(LEGACY_PLUGINS);
+
+    const [req] = double.requests;
+    expect(double.requests).toHaveLength(1);
+    expect(req?.method).toBe('GET');
+    expect(req?.url).toBe(`${SITE_PAGE}?op=plugins`);
+    expect(req?.headers.cookie).toBeUndefined();
+    expect(req?.headers['user-agent']).toBe('opt2-legacy-bridge-bot');
+    const assertion = assertionOf(req);
+    const { exp, nonce, ...named } = claimsOf(assertion);
+    expect(named).toEqual({ aud: 'legacy-bridge', op: 'site.plugins', sid: '', sub: '', siteId: '' });
+    expect(nonce).toMatch(/^[0-9a-f]{32}$/);
+    expect(exp - VECTOR_NOW_SECONDS).toBe(60);
+  });
+
+  it('is answered by the legacy origin double behind its assertion guard', async () => {
+    const legacy = createInProcessLegacyOrigin({ bridgeKey: VECTOR_KEY, clock: fixedClock(NOW) });
+    try {
+      await expect(lists({ legacyOrigin: legacy.url, fetch: legacy.fetch }).plugins()).resolves.toEqual(LEGACY_PLUGINS);
+      const refused = await failureOf(lists({ legacyOrigin: legacy.url, fetch: legacy.fetch, hmacKey: 'not-the-bridge-key' }).plugins());
+      expect(refused.cause).toMatchObject({ status: 403 });
+    } finally {
+      await legacy.close();
+    }
+  });
+
+  it.each<[string, unknown[], LegacyPlugin[]]>([
+    ['reads no installed plugin', [], []],
+    [
+      'coerces values serializeJSON wrote as numbers to text',
+      [{ ...plugin, version: 2, pluginId: 12 }],
+      [{ ...plugin, version: '2', pluginId: '12' }],
+    ],
+  ])('%s', async (_case, answered, expected) => {
+    double.setHandler((_req, res) => {
+      sendJson(res, 200, { plugins: answered, serverTime: SERVER_TIME });
+    });
+
+    await expect(lists().plugins()).resolves.toEqual(expected);
+  });
+
+  it.each<[string, unknown]>([
+    ['no plugins key', { serverTime: SERVER_TIME }],
+    ['a plugins object', { plugins: plugin }],
+    ['a row without its directory', { plugins: [{ ...plugin, directory: undefined }] }],
+    ['a null provider URL', { plugins: [{ ...plugin, providerUrl: null }] }],
+    ['a row that is no object', { plugins: ['GS-PS-10 Plugin'] }],
+    ['a JSON null body', null],
+  ])('fails closed on a 2xx with %s', async (_case, body) => {
+    double.setHandler((_req, res) => {
+      sendBytes(res, 200, JSON.stringify(body), { 'content-type': 'application/json; charset=utf-8' });
+    });
+
+    const failure = await failureOf(lists().plugins());
+
+    expect(failure.cause).toMatchObject({ message: 'legacy bridge site.plugins answered no plugin list' });
+  });
+
+  it('fails closed on an HTTP error answer', async () => {
+    double.setHandler((_req, res) => {
+      sendBytes(res, 500, '{"error":"serverError","message":"database"}');
+    });
+
+    const failure = await failureOf(lists().plugins());
+
+    expect(failure.cause).toMatchObject({ message: 'legacy bridge site.plugins answered HTTP 500 serverError', status: 500 });
   });
 });
 

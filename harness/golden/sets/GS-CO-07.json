@@ -1,10 +1,10 @@
 {
-  "capturedAt": "2026-11-18T14:23:38.667Z",
+  "capturedAt": "2026-11-20T03:01:35.343Z",
   "fixtures": {
     "available": true,
     "reason": "fixtures loaded"
   },
-  "generatedAt": "2026-11-18T14:23:44.957Z",
+  "generatedAt": "2026-11-20T03:01:42.287Z",
   "generatedBy": "harness/src/golden/capture.ts",
   "origin": "legacy",
   "scenarioId": "GS-CO-07",
@@ -13,8 +13,8 @@
       {
         "contentType": "image/png; charset=UTF-8",
         "name": "<id:1>",
-        "sha256": "1e16992c1d4de5887013241f4df32ebd25c2e25385b5473ec9b695949c8c2ed4",
-        "size": 80,
+        "sha256": "031438cd49179ed4167d5ccf9ca3c79a0ccbabba19972142a66cd32bc3e6e1bd",
+        "size": 165,
         "variant": "original"
       },
       {
@@ -505,7 +505,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "ce2635f2329cc8950f6b778d0aa009750811e8c2477db0dab72af829dbe7bada",
+        "rawSha256": "d4e1fadb0f1c512ff434eb8b8cd5588e2953c4e4150bcb73726dc548540c2473",
         "status": 200
       },
       "routeKey": "admin:carch.multifileupload"
@@ -561,7 +561,7 @@
           }
         },
         "headers": {
-          "content-type": "multipart/form-data; boundary=----formdata-undici-064943517585"
+          "content-type": "multipart/form-data; boundary=----formdata-undici-074513276635"
         },
         "method": "POST",
         "url": "/admin/?muraAction=cArch.update"
@@ -574,7 +574,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "cf8168f4c32a2c3dbb469104575d4127eee337d12c65c97dd593f518ff354e51",
+        "rawSha256": "b51028845f74cbd543fa49a350f777460bd04dd65a3b38f808a7b94365b0c2c0",
         "status": 200
       },
       "routeKey": "admin:carch.update"
@@ -1046,7 +1046,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "e034945aebc75c0528a47c5f13574c39eff72aa509c6937002ec347358701bbf",
+        "rawSha256": "fc036a3ce6aff4e686b458d84a5fc800bd51c45ad203c1304502e8c41f083342",
         "status": 200
       },
       "routeKey": "admin:carch.multifileupload"
@@ -1102,7 +1102,7 @@
           }
         },
         "headers": {
-          "content-type": "multipart/form-data; boundary=----formdata-undici-052268460260"
+          "content-type": "multipart/form-data; boundary=----formdata-undici-028849030671"
         },
         "method": "POST",
         "url": "/admin/?muraAction=cArch.update"
@@ -1115,7 +1115,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "38cc318aba497ef410933ff9d19b49e7756c0c47e0e9ca70c0bbcf441073e300",
+        "rawSha256": "971178c92522ba851fdb451a5efae185bf70f46e8747169c535e4a2b9491a545",
         "status": 200
       },
       "routeKey": "admin:carch.update{upload=image}"
@@ -1161,7 +1161,7 @@
           }
         },
         "headers": {
-          "content-type": "multipart/form-data; boundary=----formdata-undici-099932793233"
+          "content-type": "multipart/form-data; boundary=----formdata-undici-052974238883"
         },
         "method": "POST",
         "url": "/admin/?muraAction=cArch.multiFileUpload"
@@ -1607,7 +1607,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "fe20c985d2acf28c6c8c496d77228fa649d9f3d7239500bfe1e54b8b664d2745",
+        "rawSha256": "40a1322c052ac1755b684f00b9ac3dd5b055ce689a4b080e7ec4e073d89c99c0",
         "status": 200
       },
       "routeKey": "admin:carch.multifileupload{upload=image}"
@@ -3921,7 +3921,7 @@
               "form": 1,
               "name": "displayIntervalTZ",
               "type": "hidden",
-              "value": "UTC"
+              "value": "Etc/UTC"
             },
             {
               "disabled": false,
@@ -7092,7 +7092,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "be240dc2a7d124f85224a4e77068024c29877bc03d43e4660efafc0fd8f50a5e",
+        "rawSha256": "7bc21ad970dba7017fcdf43e84c1a24fba422beff63f9b50020bba4fbe6327fa",
         "status": 200
       },
       "routeKey": "admin:carch.edit"
@@ -7231,14 +7231,14 @@
               "changesetname": "",
               "closeCompactDisplay": "false",
               "compactDisplay": "false",
-              "contenthistid": "566BAB59-999D-EFF5-00F5DA898F804F02",
-              "contentid": "566BA997-EA82-8398-F538BDBF31EA603B",
+              "contenthistid": "A50681AE-C4F9-AA7A-6B6CF55F97CF8C6B",
+              "contentid": "A506800D-9810-BCA6-3BFE04E7F088BB7A",
               "convertDisplayTimeZone": "true",
               "csrf_token": "<token>",
               "csrf_token_expires": "<token>",
               "display": "1",
               "displayInterval": "Daily",
-              "displayIntervalTZ": "UTC",
+              "displayIntervalTZ": "Etc/UTC",
               "displayIntervalllDay": "0",
               "displayStart": "",
               "displayStop": "",
@@ -7288,7 +7288,7 @@
           }
         },
         "headers": {
-          "content-type": "multipart/form-data; boundary=----formdata-undici-013383941947"
+          "content-type": "multipart/form-data; boundary=----formdata-undici-009196222551"
         },
         "method": "POST",
         "url": "/admin/?muraAction=cArch.update"
@@ -7906,7 +7906,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "e70fce68e1e809e19fe369efdef3222bb76602204c4fb50e9a3ddc7a01a72a11",
+        "rawSha256": "5adc1b725eef1f0f4ec6ba50fccafc7d49574e4ef1ea37b91ebcd2156bbfdcdb",
         "status": 200
       },
       "routeKey": "admin:carch.update"
@@ -10220,7 +10220,7 @@
               "form": 1,
               "name": "displayIntervalTZ",
               "type": "hidden",
-              "value": "UTC"
+              "value": "Etc/UTC"
             },
             {
               "disabled": false,
@@ -13391,7 +13391,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "1572f6209e5e6885591b26a84eb691104acf6c9a397323acbd597af14a7c62aa",
+        "rawSha256": "2b456494f17289ed2619d3b8b0f9d3d4eee984e81548d1de7c624f7b19151068",
         "status": 200
       },
       "routeKey": "admin:carch.edit"
@@ -13530,14 +13530,14 @@
               "changesetname": "",
               "closeCompactDisplay": "false",
               "compactDisplay": "false",
-              "contenthistid": "566BBE3A-02D5-FCE9-5E345873ED6ADC74",
-              "contentid": "566BBDB8-C305-1CAC-97B3682C47AC9343",
+              "contenthistid": "A50694AC-F248-9DE7-61EF66B355799926",
+              "contentid": "A506941A-010E-7458-46CD65D6C3997491",
               "convertDisplayTimeZone": "true",
               "csrf_token": "<token>",
               "csrf_token_expires": "<token>",
               "display": "1",
               "displayInterval": "Daily",
-              "displayIntervalTZ": "UTC",
+              "displayIntervalTZ": "Etc/UTC",
               "displayIntervalllDay": "0",
               "displayStart": "",
               "displayStop": "",
@@ -13587,7 +13587,7 @@
           }
         },
         "headers": {
-          "content-type": "multipart/form-data; boundary=----formdata-undici-034556470409"
+          "content-type": "multipart/form-data; boundary=----formdata-undici-039197324639"
         },
         "method": "POST",
         "url": "/admin/?muraAction=cArch.update"
@@ -14205,7 +14205,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "93b43b8e77c7308eff2938d2a1b0c382da30ea84b2a9d9785ec088dd0c7935f8",
+        "rawSha256": "0074416f5d844f6fc378828d3f92920cee2922de86b9ad0ea5e81a763ef455b2",
         "status": 200
       },
       "routeKey": "admin:carch.update{upload=image}"
@@ -14232,7 +14232,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/_api/json/v1/tenant-a/content/566BBDB8-C305-1CAC-97B3682C47AC9343?fields=fileid"
+        "url": "/_api/json/v1/tenant-a/content/A506941A-010E-7458-46CD65D6C3997491?fields=fileid"
       },
       "response": {
         "body": {
@@ -14253,7 +14253,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "8d450c07e303d1863084e5a7cfe658a8c874d2a7323ef38cb974a9603e972d5e",
+        "rawSha256": "2b03ed816ed105f1b2f317d831a4671c70c7600ba50973b5d3c28b9674c96162",
         "status": 200
       },
       "routeKey": "api:content.findone"
@@ -14281,7 +14281,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/_api/render/file/?fileID=566BC58C-A190-C2C1-CFA60C2A39D3796E"
+        "url": "/_api/render/file/?fileID=A5069C73-E483-8324-35CB0E42A41EC9F9"
       },
       "response": {
         "domModel": {
@@ -14304,7 +14304,7 @@
             },
             {
               "level": 3,
-              "text": "File or directory /tmp/blitzy/scratch/<uuid:1>/dest/stack/sites/umbrella/cache/file/<id:55>_FILE.png does not exist."
+              "text": "File or directory /tmp/blitzy/scratch/<uuid:1>/w-020/stack2/sites/umbrella/cache/file/<id:55>_FILE.png does not exist."
             }
           ],
           "labels": [],
@@ -14318,7 +14318,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "e1818fa4ad3903f4629ccb8dd7bc4a997b5d38ed10f9118bc44074268f11576b",
+        "rawSha256": "b1d274e5aa1232ca1bc607085a03448530c7c8054beb5853f4f33d08cc17aae2",
         "status": 500
       },
       "routeKey": "render:file"
@@ -14348,7 +14348,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/_api/render/small/?fileID=566BC58C-A190-C2C1-CFA60C2A39D3796E"
+        "url": "/_api/render/small/?fileID=A5069C73-E483-8324-35CB0E42A41EC9F9"
       },
       "response": {
         "export": {
@@ -14393,7 +14393,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/_api/render/medium/?fileID=566BC58C-A190-C2C1-CFA60C2A39D3796E"
+        "url": "/_api/render/medium/?fileID=A5069C73-E483-8324-35CB0E42A41EC9F9"
       },
       "response": {
         "export": {
@@ -14459,7 +14459,7 @@
             },
             {
               "level": 3,
-              "text": "File or directory /tmp/blitzy/scratch/<uuid:1>/dest/stack/sites/umbrella/cache/file/<id:56>_FILE.png does not exist."
+              "text": "File or directory /tmp/blitzy/scratch/<uuid:1>/w-020/stack2/sites/umbrella/cache/file/<id:56>_FILE.png does not exist."
             }
           ],
           "labels": [],
@@ -14473,7 +14473,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "c11b2bdd45ce2742c93d59cd1345c24e8d3d8e6778b1a9f28b80b052f8b41967",
+        "rawSha256": "fb633903abcc9162b1f9bec155b68f3180759c2ab7edd62b4073f52e04ca6cb9",
         "status": 500
       },
       "routeKey": "render:file"
@@ -14510,7 +14510,7 @@
         "export": {
           "contentType": "image/png; charset=UTF-8",
           "kind": "file",
-          "sha256": "80d65b95f5545c07fbb2d2ba1858ed6f68ceda3e068173ecf753ddbd32f9ca29"
+          "sha256": "95079caf27a5f38b68850d4819e74228cfdc4f6c737f29ffd27a66188020e3cc"
         },
         "headers": {
           "content-disposition": "inline;filename=\"seed-image-01.png\"",
@@ -14520,7 +14520,7 @@
           "last-modified": "<ts:http-date>, <ts:http-date>",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "80d65b95f5545c07fbb2d2ba1858ed6f68ceda3e068173ecf753ddbd32f9ca29",
+        "rawSha256": "95079caf27a5f38b68850d4819e74228cfdc4f6c737f29ffd27a66188020e3cc",
         "status": 200
       },
       "routeKey": "render:small"
@@ -14557,7 +14557,7 @@
         "export": {
           "contentType": "image/png; charset=UTF-8",
           "kind": "file",
-          "sha256": "543ccbf23d455c09d54603a8b3fc7c19c8b2245ed22a3789260983258b3010a8"
+          "sha256": "c9bf17a7ae36b8724fd53e79ba6ec4b8cfacef9ea1d6b37718a2eb51dfe982da"
         },
         "headers": {
           "content-disposition": "inline;filename=\"seed-image-01.png\"",
@@ -14567,7 +14567,7 @@
           "last-modified": "<ts:http-date>, <ts:http-date>",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "543ccbf23d455c09d54603a8b3fc7c19c8b2245ed22a3789260983258b3010a8",
+        "rawSha256": "c9bf17a7ae36b8724fd53e79ba6ec4b8cfacef9ea1d6b37718a2eb51dfe982da",
         "status": 200
       },
       "routeKey": "render:medium"
@@ -14602,7 +14602,7 @@
         "export": {
           "contentType": "image/png; charset=UTF-8",
           "kind": "file",
-          "sha256": "80d65b95f5545c07fbb2d2ba1858ed6f68ceda3e068173ecf753ddbd32f9ca29"
+          "sha256": "95079caf27a5f38b68850d4819e74228cfdc4f6c737f29ffd27a66188020e3cc"
         },
         "headers": {
           "content-disposition": "inline;filename=\"seed-image-01.png\"",
@@ -14612,7 +14612,7 @@
           "last-modified": "<ts:http-date>, <ts:http-date>",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "80d65b95f5545c07fbb2d2ba1858ed6f68ceda3e068173ecf753ddbd32f9ca29",
+        "rawSha256": "95079caf27a5f38b68850d4819e74228cfdc4f6c737f29ffd27a66188020e3cc",
         "status": 200
       },
       "routeKey": "render:small"
@@ -14764,7 +14764,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "148bc9859e4a7f27b44760769ef56271ee1f712a899c5e95a6909721149e7767",
+        "rawSha256": "0d0619d56f73ca3538c45857888f92f2541d5c1040841d93573d9f04a5a02842",
         "status": 404
       },
       "routeKey": "opt2:/opt2/files/content-files/gs-unsigned"

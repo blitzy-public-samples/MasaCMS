@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { InvalidTaskNameError, QUEUES, TASK_NAME_PATTERN, UnknownTaskTargetError, targetUrl } from '@opt2/platform/tasks';
 import { TENANT_A, businessClock } from '@opt2/platform/testing';
 import {
+  LEGACY_MISFIRE_THRESHOLD_MS,
   SURVEY_TASK_QUEUES,
   kindOfLegacyTaskName,
   legacyRunTime,
@@ -224,10 +225,25 @@ describe('planSurveyTasks', () => {
     expect(tasks.map((task) => task.kind)).toStrictEqual(['survey-launch']);
   });
 
-  it('moves past run times to now and keeps future ones', () => {
+  it('decides each task by its own run time: expires those a minute or more past, runs a later past one now, keeps future ones', () => {
     const now = businessClock('12:00:00').now();
     const tasks = planSurveyTasks(scheduled('2026-06-30T09:00:00.000', [60, 180, 240]), { now });
-    expect(tasks.map((task) => task.scheduleTime)).toStrictEqual([now, now, now, new Date(2026, 5, 30, 13, 0, 0, 0)]);
+    expect(tasks.map((task) => [task.scheduleTime, task.expired])).toStrictEqual([
+      [new Date(2026, 5, 30, 9, 0, 0, 0), true],
+      [new Date(2026, 5, 30, 10, 0, 0, 0), true],
+      [now, undefined],
+      [new Date(2026, 5, 30, 13, 0, 0, 0), undefined],
+    ]);
+  });
+
+  it.each([
+    ['59 s past runs now', '2026-06-30T11:59:01.000', new Date(2026, 5, 30, 12, 0, 0, 0), undefined],
+    ['60 s past is expired at its own time', '2026-06-30T11:59:00.000', new Date(2026, 5, 30, 11, 59, 0, 0), true],
+    ['due now runs now', '2026-06-30T12:00:00.000', new Date(2026, 5, 30, 12, 0, 0, 0), undefined],
+  ] as const)('applies the legacy misfire threshold: a launch %s', (_label, launchAt, scheduleTime, expired) => {
+    const tasks = planSurveyTasks(scheduled(launchAt, []), { now: businessClock('12:00:00').now() });
+    expect(LEGACY_MISFIRE_THRESHOLD_MS).toBe(60_000);
+    expect(tasks.map((task) => [task.scheduleTime, task.expired])).toStrictEqual([[scheduleTime, expired]]);
   });
 
   it.each([

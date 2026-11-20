@@ -42,7 +42,7 @@ import {
 } from '../helpers/app.js';
 import { TEST_INSTANCE_ID } from '../helpers/env.js';
 import type { RecordedRequest } from '../helpers/http-double.js';
-import { BRIDGE_SITE_PATH, LEGACY_VERSION_MENU } from '../helpers/legacy-origin.js';
+import { BRIDGE_SITE_PATH, LEGACY_PLUGINS, LEGACY_VERSION_MENU } from '../helpers/legacy-origin.js';
 import type { MemoryGatewayDb } from '../helpers/memory-store.js';
 import type { TargetDouble } from '../helpers/target-double.js';
 import { committedGroups, committedTable, cutoverTable, type CommittedVersion } from '../helpers/versions.js';
@@ -123,6 +123,7 @@ const GATEWAY_OPERATION_IDS = [
   'inflightClearOrphans',
   'legacySessionMarkUsed',
   'getLegacyVersionMenu',
+  'getLegacyPlugins',
   'legacySitePaths',
   'relayGet',
   'relayPost',
@@ -183,6 +184,7 @@ const STATUS = '/internal/v1/cutover/status';
 const STATUS_V2 = '/internal/v2/cutover/status';
 const CLEAR = '/internal/v1/inflight:clear-orphans';
 const VERSION_MENU = '/internal/v1/legacy-server/version-menu';
+const PLUGINS = '/internal/v1/legacy-server/plugins';
 /** The keys of a v1 in-flight group; v2 adds `orphaned`. */
 const V1_INFLIGHT_KEYS = ['count', 'instanceId', 'oldestStartedAt', 'route', 'side'];
 /** Route of the live instance's running and abandoned writes, one v1 group and two v2 groups. */
@@ -898,6 +900,27 @@ const CONTROL_CASES: Case[] = [
     request: async () => ({ method: 'GET', url: VERSION_MENU, headers: await webServiceHeaders() }),
   },
   ...credentialCases('getLegacyVersionMenu', VERSION_MENU, 'GET', undefined, 'identity', V0002),
+  {
+    operationId: 'getLegacyPlugins',
+    status: '200',
+    title: "legacy's installed plugins through the bridge",
+    start: V0002,
+    request: async () => ({ method: 'GET', url: PLUGINS, headers: await webServiceHeaders() }),
+    verify: (_res, body, tg) => {
+      expect(body).toEqual({ plugins: LEGACY_PLUGINS });
+      expect(tg.legacy.requests.at(-1)).toMatchObject({ method: 'GET', path: BRIDGE_SITE_PATH, query: { op: 'plugins' } });
+    },
+  },
+  {
+    operationId: 'getLegacyPlugins',
+    status: '503',
+    title: 'a bridge answering its 500 serverError',
+    start: V0002,
+    before: (tg) => tg.legacy.setPluginsAnswer({ status: 500, body: { error: 'serverError', message: 'database' } }),
+    after: (tg) => tg.legacy.setPluginsAnswer(),
+    request: async () => ({ method: 'GET', url: PLUGINS, headers: await webServiceHeaders() }),
+  },
+  ...credentialCases('getLegacyPlugins', PLUGINS, 'GET', undefined, 'identity', V0002),
 ];
 
 const relayOperation = (method: string): string => `relay${method.charAt(0)}${method.slice(1).toLowerCase()}`;

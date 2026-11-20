@@ -10,7 +10,7 @@ import {
   jsessionidForSessionId,
   parseCookieHeader,
   purgeUsedTokens,
-  setCookieLegacy,
+  sessionCookieStrings,
   strictLocalInstant,
   verifyBridgeAssertion,
   type BridgeAssertionPayload,
@@ -22,6 +22,7 @@ import type {
   ExportResult,
   ExportedValue,
   HydrateResult,
+  LegacyPlugin,
   LegacyVersionMenu,
   MarkUsedResult,
   UsedSinceResult,
@@ -42,8 +43,22 @@ import {
 /** Path of the bridge's session page. */
 export const BRIDGE_SESSION_PATH = '/gateway/legacy-bridge/cfml/session.cfm';
 
-/** Path of the bridge's site page, of which the double serves `op=paths`, `op=versionMenu` and `op=static`. */
+/** Path of the bridge's site page, of which the double serves `op=paths`, `op=versionMenu`, `op=plugins` and `op=static`. */
 export const BRIDGE_SITE_PATH = '/gateway/legacy-bridge/cfml/site.cfm';
+
+/** `site.cfm?op=plugins` as legacy answers it with the GS-PS-10 golden plugin deployed. */
+export const LEGACY_PLUGINS: LegacyPlugin[] = [
+  {
+    moduleId: '88C48C97-ADFA-018D-66EAB47267C52ED2',
+    name: 'GS-PS-10 Plugin',
+    directory: '1',
+    category: 'Utility',
+    version: '1.0.0',
+    provider: 'OPT-2 golden harness',
+    providerUrl: 'https://opt2.invalid/golden-plugin',
+    pluginId: '1',
+  },
+];
 
 /** `site.cfm?op=versionMenu` as the ACF 2023 oracle answers it, without `server.java`. */
 export const LEGACY_VERSION_MENU: LegacyVersionMenu = {
@@ -232,6 +247,8 @@ export type LegacyOrigin = HttpDouble & {
   failSitePaths(status?: number): void;
   /** Programs the answer of `site.cfm?op=versionMenu`; without an argument it answers {@link LEGACY_VERSION_MENU} again. */
   setVersionMenuAnswer(answer?: { status: number; body: object }): void;
+  /** Programs the answer of `site.cfm?op=plugins`; without an argument it answers {@link LEGACY_PLUGINS} again. */
+  setPluginsAnswer(answer?: { status: number; body: object }): void;
   /** Decoded paths of the regular files the container serves without CFML; `op=static` answers `cfml: false` only for these. */
   staticFiles: Set<string>;
   /** Verified `site.cfm?op=static` calls. */
@@ -432,10 +449,9 @@ function sessionCookies(session: LegacySession): Record<LegacySessionCookieName,
   return { CFID: session.cfid, CFTOKEN: session.cftoken, JSESSIONID: session.jsessionid };
 }
 
-/** The `Set-Cookie` values legacy sends for a new session: session cookies, `path=/`, `HttpOnly`. */
+/** The `Set-Cookie` values legacy's setSessionCookies sends for a new session under Masa's default settings: `expires=never`, `path=/`, `HttpOnly`. */
 function setCookiesFor(session: LegacySession, now: Date): string[] {
-  const cookies = sessionCookies(session);
-  return LEGACY_SESSION_COOKIE_NAMES.map((name) => setCookieLegacy({ name, value: cookies[name] }, {}, now));
+  return sessionCookieStrings({ CFID: session.cfid, CFTOKEN: session.cftoken, jsessionid: session.jsessionid }, {}, now);
 }
 
 /** The `Cookie` request header a browser holding the session's cookies sends. */
@@ -799,6 +815,7 @@ function legacyOriginCore(opts: LegacyOriginOptions) {
   let sitePathsFailure: number | undefined;
   let responder: LegacyResponseSpec | LegacyResponder = {};
   let versionMenuAnswer: { status: number; body: object } | undefined;
+  let pluginsAnswer: { status: number; body: object } | undefined;
   const staticFiles = new Set<string>();
   const staticCalls: StaticPathCall[] = [];
   let staticFailure: number | undefined;
@@ -909,11 +926,11 @@ function legacyOriginCore(opts: LegacyOriginOptions) {
     sendJson(res, status, body, withSetCookies({}, setCookies, []));
   };
 
-  /** Answers `site.cfm?op=versionMenu` behind the guard: 403 unless signed for `site.versionMenu`, 400 unless GET. */
-  const versionMenu = (req: RecordedRequest, res: ServerResponse): void => {
+  /** Answers the GET-only `site.cfm?op=<op>` behind the guard: 403 unless signed for `site.<op>`, 400 unless GET. */
+  const siteRead = (req: RecordedRequest, res: ServerResponse, op: string, answer: { status: number; body: object }): void => {
     const header = req.headers[ASSERTION_HEADER];
     const result = typeof header === 'string' && header !== '' ? verifyBridgeAssertion(header, bridgeKey, nonces, clock.now()) : undefined;
-    if (result?.ok !== true || result.payload.op !== 'site.versionMenu' || result.payload.siteId !== queryValue(req, 'siteid')) {
+    if (result?.ok !== true || result.payload.op !== `site.${op}` || result.payload.siteId !== queryValue(req, 'siteid')) {
       sendBytes(res, 403, '');
       return;
     }
@@ -922,9 +939,12 @@ function legacyOriginCore(opts: LegacyOriginOptions) {
       sendJson(res, 400, { error: 'badRequest', message: 'GET required', serverTime });
       return;
     }
-    const { status, body } = versionMenuAnswer ?? { status: 200, body: LEGACY_VERSION_MENU };
-    sendJson(res, status, { ...body, serverTime });
+    sendJson(res, answer.status, { ...answer.body, serverTime });
   };
+  const versionMenu = (req: RecordedRequest, res: ServerResponse): void =>
+    siteRead(req, res, 'versionMenu', versionMenuAnswer ?? { status: 200, body: LEGACY_VERSION_MENU });
+  const plugins = (req: RecordedRequest, res: ServerResponse): void =>
+    siteRead(req, res, 'plugins', pluginsAnswer ?? { status: 200, body: { plugins: LEGACY_PLUGINS } });
 
   /** Answers `site.cfm?op=static` behind the guard as site.cfm does: 403 unless signed for `site.static`, 400 for a method or path it refuses. */
   const staticPage = (req: RecordedRequest, res: ServerResponse): void => {
@@ -1050,6 +1070,7 @@ function legacyOriginCore(opts: LegacyOriginOptions) {
   const handler: DoubleHandler = async (req, res) => {
     if (req.path === BRIDGE_SESSION_PATH) bridge(req, res);
     else if (req.path === BRIDGE_SITE_PATH && queryValue(req, 'op') === 'versionMenu') versionMenu(req, res);
+    else if (req.path === BRIDGE_SITE_PATH && queryValue(req, 'op') === 'plugins') plugins(req, res);
     else if (req.path === BRIDGE_SITE_PATH && queryValue(req, 'op') === 'static') staticPage(req, res);
     else if (req.path === BRIDGE_SITE_PATH) sitePage(req, res);
     else if (req.path.startsWith(BRIDGE_PREFIX)) sendBytes(res, 404, '');
@@ -1079,6 +1100,9 @@ function legacyOriginCore(opts: LegacyOriginOptions) {
     },
     setVersionMenuAnswer(answer) {
       versionMenuAnswer = answer;
+    },
+    setPluginsAnswer(answer) {
+      pluginsAnswer = answer;
     },
     staticFiles,
     staticCalls,

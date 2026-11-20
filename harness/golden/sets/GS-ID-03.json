@@ -1,10 +1,10 @@
 {
-  "capturedAt": "2026-11-18T14:20:20.861Z",
+  "capturedAt": "2026-11-20T02:58:14.925Z",
   "fixtures": {
     "available": true,
     "reason": "fixtures loaded"
   },
-  "generatedAt": "2026-11-18T14:20:22.444Z",
+  "generatedAt": "2026-11-20T02:58:16.571Z",
   "generatedBy": "harness/src/golden/capture.ts",
   "origin": "legacy",
   "scenarioId": "GS-ID-03",
@@ -539,7 +539,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "06feda0f7c5c27ce4dba267feeee45840a1944b4c767fc11d76c43b89c51805f",
+        "rawSha256": "79fcc4531bc4e0d7366f4a878439bd28af4f653e7d7fb08ee3b7a976fe507e94",
         "status": 200
       },
       "routeKey": "admin:csettings.editsite"
@@ -743,7 +743,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "091dec06d959c0b7cfdb7cf50c77dd5aca99d5b7c23c9f410aa66280e48f75ef",
+        "rawSha256": "82bc980367928773bebb3ea23f82b883fa84d00ab9d350d752e7e09c41517fd8",
         "status": 200
       },
       "routeKey": "api:content.findone"

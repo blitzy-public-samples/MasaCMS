@@ -1,10 +1,10 @@
 {
-  "capturedAt": "2026-11-18T14:20:22.446Z",
+  "capturedAt": "2026-11-20T02:58:16.572Z",
   "fixtures": {
     "available": true,
     "reason": "fixtures loaded"
   },
-  "generatedAt": "2026-11-18T14:21:22.981Z",
+  "generatedAt": "2026-11-20T02:59:17.068Z",
   "generatedBy": "harness/src/golden/capture.ts",
   "origin": "legacy",
   "scenarioId": "GS-ID-04",
@@ -513,7 +513,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "d3bf72a667be5b5613f544189654919deeff4ff7806e381cddb4de858e105eea",
+        "rawSha256": "96d10448bf88e8f96ec3315f9c63d86b34e8e1dfd1efdd39acb750a7f5478a49",
         "status": 200
       },
       "routeKey": "admin:clogin.main"
@@ -1036,7 +1036,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "df45f3752694ff0a7e1e81a8b82861816b83f65f51665a9740b87306c1ca581c",
+        "rawSha256": "72e186fcc3aa1f1e62e66f5ebc72bf5c52305364d8e1cd36afc8cca9abbeebd7",
         "status": 200
       },
       "routeKey": "admin:clogin.main{status=sendlogin}"
@@ -1562,7 +1562,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "db223d405709f9fb52fa9fc5600030eccc2e82114824cb189c4e4b0d6ea1b2b7",
+        "rawSha256": "915a9061258a0ec7a57a7d2b4554b19191bafc42576dd27a3c176c569ee1451f",
         "status": 200
       },
       "routeKey": "admin:clogin.login{status=sendlogin}"

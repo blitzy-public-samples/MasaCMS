@@ -74,6 +74,9 @@ export type GatewayCallee = WebServiceName | typeof GATEWAY_CALLEE;
 /** Path of the gateway's own `getLegacyVersionMenu`, called at that path rather than through the relay. */
 export const LEGACY_VERSION_MENU_PATH = '/internal/v1/legacy-server/version-menu' satisfies keyof GatewayPaths;
 
+/** Path of the gateway's own `getLegacyPlugins`, called at that path rather than through the relay. */
+export const LEGACY_PLUGINS_PATH = '/internal/v1/legacy-server/plugins' satisfies keyof GatewayPaths;
+
 /** Per-request facts every call carries. */
 export interface GatewayCallContext {
   /** Raw bearer user token exactly as the gateway attached it, an anonymous session's included; absent without one. */
@@ -570,6 +573,7 @@ type HrefDomainsOperation = ProgramsSitesOperation<'/v1/href-domains', 'get'>;
 type UserSitesOperation = ProgramsSitesOperation<'/v1/user-sites', 'get'>;
 type LegacySitePathsOperation = OperationOf<GatewayPaths['/internal/v1/legacy-site-paths'], 'get'>;
 type LegacyVersionMenuOperation = OperationOf<GatewayPaths[typeof LEGACY_VERSION_MENU_PATH], 'get'>;
+type LegacyPluginsOperation = OperationOf<GatewayPaths[typeof LEGACY_PLUGINS_PATH], 'get'>;
 
 /** The gateway's own read of legacy's live site beans. */
 export interface LegacySiteFacade {
@@ -656,6 +660,8 @@ export interface GatewayClient {
   readonly eSignature: ServiceFacade<ESignaturePaths>;
   /** The legacy server facts of the nav Version menu, the gateway's own `getLegacyVersionMenu`. */
   legacyVersionMenu(): Promise<OperationResponse<LegacyVersionMenuOperation>>;
+  /** Legacy's installed plugins, which the Global Settings Plugins tab lists, the gateway's own `getLegacyPlugins`. */
+  legacyPlugins(): Promise<OperationResponse<LegacyPluginsOperation>>;
 }
 
 type CoreCalls = Pick<GatewayClient, 'call' | 'raw' | 'stream'>;
@@ -792,6 +798,11 @@ export function createGatewayClient(ctx: GatewayCallContext, serviceClient?: Ser
       const request: GatewayRequest = { method: 'GET', path: LEGACY_VERSION_MENU_PATH };
       const response = await send(ctx, GATEWAY_CALLEE, request, 'decoded', serviceClient);
       return response as OperationResponse<LegacyVersionMenuOperation>;
+    },
+    legacyPlugins: async () => {
+      const request: GatewayRequest = { method: 'GET', path: LEGACY_PLUGINS_PATH };
+      const response = await send(ctx, GATEWAY_CALLEE, request, 'decoded', serviceClient);
+      return response as OperationResponse<LegacyPluginsOperation>;
     },
   };
 }

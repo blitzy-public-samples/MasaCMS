@@ -1,10 +1,10 @@
 {
-  "capturedAt": "2026-11-18T14:27:00.157Z",
+  "capturedAt": "2026-11-20T03:04:54.973Z",
   "fixtures": {
     "available": true,
     "reason": "fixtures loaded"
   },
-  "generatedAt": "2026-11-18T14:27:08.390Z",
+  "generatedAt": "2026-11-20T03:05:01.634Z",
   "generatedBy": "harness/src/golden/capture.ts",
   "origin": "legacy",
   "scenarioId": "GS-ID-10",
@@ -1883,7 +1883,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "f0fd4db9af1c42f5add11cdfaff1297fd3cbd0a2ef9e7c51bfc76521fb6d886d",
+        "rawSha256": "48080d58c9d59095127b57cecb5543517c3709a60d6655e7465bbee8ee6c9e2e",
         "status": 200
       },
       "routeKey": "admin:cextend.editsubtype"
@@ -2260,7 +2260,7 @@
             "muraAction": "cExtend.updateSubType",
             "siteID": "tenant-a",
             "subType": "GSID10",
-            "subTypeID": "5689E700-A72D-FAF6-DBAC0D8C84CDAF6B",
+            "subTypeID": "A5247226-0F1A-1462-23C3D70547D4802E",
             "type": "1"
           }
         },
@@ -2611,7 +2611,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "e86ca46f47bf22b42383d5eaf456c89b10aae779c45dded0a1358a30ebb722d3",
+        "rawSha256": "e15f46557e8f846ebf0c803bb965e264dcbc8e3f8f969ea82b4e3714eb4907ad",
         "status": 200
       },
       "routeKey": "admin:cextend.updatesubtype"
@@ -3050,7 +3050,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/?muraAction=cExtend.editSet&siteid=tenant-a&subTypeID=5689E700-A72D-FAF6-DBAC0D8C84CDAF6B&extendSetID="
+        "url": "/admin/?muraAction=cExtend.editSet&siteid=tenant-a&subTypeID=A5247226-0F1A-1462-23C3D70547D4802E&extendSetID="
       },
       "response": {
         "domModel": {
@@ -3470,7 +3470,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "38213e8d2e8943cb11f1c810e4f8c30e70e6e449be0c622666dd8664fe5fd279",
+        "rawSha256": "0d510627740379d65e051160fede57ecc69a9c2008d8243c3e046cc8d20072d5",
         "status": 200
       },
       "routeKey": "admin:cextend.editset"
@@ -4157,11 +4157,11 @@
             "container": "Default",
             "csrf_token": "<token>",
             "csrf_token_expires": "<token>",
-            "extendSetID": "568A2D0F-039F-62A5-E0B97191A68D20D4",
+            "extendSetID": "A524B357-BA21-0672-573BE7BB6E9C5B1F",
             "muraAction": "cExtend.updateSet",
             "name": "GSID10 Set",
             "siteID": "tenant-a",
-            "subTypeID": "5689E700-A72D-FAF6-DBAC0D8C84CDAF6B"
+            "subTypeID": "A5247226-0F1A-1462-23C3D70547D4802E"
           }
         },
         "headers": {
@@ -4829,7 +4829,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "3311b77c41d55a52479d799762b5255466e9cb07577fa71394bd31cf18ea535d",
+        "rawSha256": "322888fb918cca0da330e21324ddaf5c24a0032a06c58549cafdef7b994108f6",
         "status": 200
       },
       "routeKey": "admin:cextend.updateset"
@@ -5509,7 +5509,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/?muraAction=cExtend.editAttributes&siteid=tenant-a&subTypeID=5689E700-A72D-FAF6-DBAC0D8C84CDAF6B&extendSetID=568A2D0F-039F-62A5-E0B97191A68D20D4"
+        "url": "/admin/?muraAction=cExtend.editAttributes&siteid=tenant-a&subTypeID=A5247226-0F1A-1462-23C3D70547D4802E&extendSetID=A524B357-BA21-0672-573BE7BB6E9C5B1F"
       },
       "response": {
         "domModel": {
@@ -6170,7 +6170,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "0b44f29f9bcbc7ab5eaa6a73ff9516446a4c1738fbb4daf4b7a3f27f89bccf37",
+        "rawSha256": "6a3e4eebd4ce19b66c8539c2241215b3f4af7d7ef8157289d4d2cfaf555471f5",
         "status": 200
       },
       "routeKey": "admin:cextend.editattributes"
@@ -7174,14 +7174,14 @@
             "attributeID": "0",
             "csrf_token": "<token>",
             "csrf_token_expires": "<token>",
-            "extendSetID": "568A2D0F-039F-62A5-E0B97191A68D20D4",
+            "extendSetID": "A524B357-BA21-0672-573BE7BB6E9C5B1F",
             "isActive": "1",
             "label": "GSID10 Field",
             "muraAction": "cExtend.updateAttribute",
             "name": "gsid10field",
             "orderno": "1",
             "siteID": "tenant-a",
-            "subTypeID": "5689E700-A72D-FAF6-DBAC0D8C84CDAF6B",
+            "subTypeID": "A5247226-0F1A-1462-23C3D70547D4802E",
             "type": "TextBox"
           }
         },
@@ -8167,7 +8167,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "53eef7530975ac5adf529bb9170ddb656de99b7a5cb5dbfd7d3f18f3bab7ced1",
+        "rawSha256": "17f21e2bd78f4c2a730c2955c61b34d86fe4e68b0f76ae2cca9a0784c569534b",
         "status": 200
       },
       "routeKey": "admin:cextend.updateattribute"
@@ -9278,7 +9278,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "7a485c40c5b2a89b3afc84262ec6dc507040c0f93657fd54772772096cfafb7c",
+        "rawSha256": "03687a16ed6e28a24bb337019fee48a50181ada087e20b7c2d5d6f27c109d049",
         "status": 200
       },
       "routeKey": "admin:cusers.editgroup"
@@ -9693,7 +9693,7 @@
           "content-type": "application/x-www-form-urlencoded"
         },
         "method": "POST",
-        "url": "/admin/?muraAction=cUsers.update&userid=568A765E-E3AF-F64A-4215263811B6C0BA"
+        "url": "/admin/?muraAction=cUsers.update&userid=A524C197-ECE4-5B81-9155DBE779E35D71"
       },
       "response": {
         "domModel": {
@@ -10072,7 +10072,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "a64237d0e79d11509de21eb55b6f575c462477ba9f77958d1abcf39cfba7d8a7",
+        "rawSha256": "7766270f9c5090f8c16f623ce94a991c2f9ab62ab355e1a51549da9547b3551c",
         "status": 200
       },
       "routeKey": "admin:cusers.update{type=1}"
@@ -10132,7 +10132,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/?muraAction=cUsers.loadExtendedAttributes&baseID=568A765E-E3AF-F64A-4215263811B6C0BA&type=1&subType=GSID10&siteID=tenant-a"
+        "url": "/admin/?muraAction=cUsers.loadExtendedAttributes&baseID=A524C197-ECE4-5B81-9155DBE779E35D71&type=1&subType=GSID10&siteID=tenant-a"
       },
       "response": {
         "domModel": {
@@ -10175,7 +10175,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "9460cf793b5c12f75dcc77b5adb29871fc3f2d92ade898ef37c32e679f5e1f81",
+        "rawSha256": "9c662eaaeffe801b064c79000c5885c0cf51956324e83a917722fdabcf6309a2",
         "status": 200
       },
       "routeKey": "admin:cusers.loadextendedattributes"
@@ -10715,7 +10715,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/?muraAction=cUsers.editGroup&siteid=tenant-a&userid=568A765E-E3AF-F64A-4215263811B6C0BA"
+        "url": "/admin/?muraAction=cUsers.editGroup&siteid=tenant-a&userid=A524C197-ECE4-5B81-9155DBE779E35D71"
       },
       "response": {
         "domModel": {
@@ -11238,7 +11238,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "7df14b9062b9224d7ea91858f226053ae8cd75b437d2402ecde545067716dfbb",
+        "rawSha256": "5c0c5d86269de1972decdf46188f36c465243322dd5f4fb8b36a02d960a9d5f5",
         "status": 200
       },
       "routeKey": "admin:cusers.editgroup"
@@ -12703,7 +12703,7 @@
             "csrf_token": "<token>",
             "csrf_token_expires": "<token>",
             "email": "",
-            "extendSetID": "568A2D0F-039F-62A5-E0B97191A68D20D4",
+            "extendSetID": "A524B357-BA21-0672-573BE7BB6E9C5B1F",
             "groupname": "GS-ID-10 Group",
             "gsid10field": "GS-ID-10 admin",
             "isPublic": "0",
@@ -12717,7 +12717,7 @@
           "content-type": "application/x-www-form-urlencoded"
         },
         "method": "POST",
-        "url": "/admin/?muraAction=cUsers.update&userid=568A765E-E3AF-F64A-4215263811B6C0BA"
+        "url": "/admin/?muraAction=cUsers.update&userid=A524C197-ECE4-5B81-9155DBE779E35D71"
       },
       "response": {
         "domModel": {
@@ -14130,7 +14130,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "448e23c624ca02e2210f4e996851aff500d8aee0712040cac1389e765da91b6d",
+        "rawSha256": "519b9ef7c441b41bc4113faec6b143039edc679eac6361d5a8afde6f311db37d",
         "status": 200
       },
       "routeKey": "admin:cusers.update{type=1,extdata}"
@@ -14180,7 +14180,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/_api/json/v1/tenant-a/group/568A765E-E3AF-F64A-4215263811B6C0BA"
+        "url": "/_api/json/v1/tenant-a/group/A524C197-ECE4-5B81-9155DBE779E35D71"
       },
       "response": {
         "body": {
@@ -14213,7 +14213,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "e2b7e1e74d3c392a5cce16a1427fc3fa9df65d1e66dbbf4a0cf66903b99d5224",
+        "rawSha256": "86a3aed9a6914274a9c43e8ff4c10154bcd01f87a78cd4a2444a9f40e4b2ade7",
         "status": 200
       },
       "routeKey": "api:group.findone"
@@ -14266,11 +14266,11 @@
           "value": {
             "entityname": "group",
             "groupname": "GS-ID-10 Group JSON",
-            "id": "568A765E-E3AF-F64A-4215263811B6C0BA",
+            "id": "A524C197-ECE4-5B81-9155DBE779E35D71",
             "method": "save",
             "siteid": "tenant-a",
             "type": "1",
-            "userid": "568A765E-E3AF-F64A-4215263811B6C0BA"
+            "userid": "A524C197-ECE4-5B81-9155DBE779E35D71"
           }
         },
         "headers": {
@@ -14313,7 +14313,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "353d60f28600707197658d3e5fe04f96826000dc9cc6545b48b790fcc5660f9e",
+        "rawSha256": "6c75aa6441d5ac5b19a45a56dd3e8e4ce9639921673c0b75d1eac120777c96b1",
         "status": 200
       },
       "routeKey": "api:group.save"
@@ -14365,15 +14365,15 @@
           "kind": "form",
           "value": {
             "entityname": "group",
-            "extendSetID": "568A2D0F-039F-62A5-E0B97191A68D20D4",
+            "extendSetID": "A524B357-BA21-0672-573BE7BB6E9C5B1F",
             "groupname": "GS-ID-10 Group",
             "gsid10field": "GS-ID-10 json",
-            "id": "568A765E-E3AF-F64A-4215263811B6C0BA",
+            "id": "A524C197-ECE4-5B81-9155DBE779E35D71",
             "method": "save",
             "siteid": "tenant-a",
             "subtype": "GSID10",
             "type": "1",
-            "userid": "568A765E-E3AF-F64A-4215263811B6C0BA"
+            "userid": "A524C197-ECE4-5B81-9155DBE779E35D71"
           }
         },
         "headers": {
@@ -14416,7 +14416,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "3cd47a25e01de38a64dda89eeafda5cb4a5f228a5da3e761502e5ff6c6c67892",
+        "rawSha256": "ca96f4f2f42dd276ab1fa54a5b822c69fd784471629fbb12cf4183ee1645ec68",
         "status": 200
       },
       "routeKey": "api:group.save{extdata}"
@@ -14468,11 +14468,11 @@
           "kind": "form",
           "value": {
             "entityname": "group",
-            "id": "568A765E-E3AF-F64A-4215263811B6C0BA",
+            "id": "A524C197-ECE4-5B81-9155DBE779E35D71",
             "method": "save",
             "removePhotoFile": "true",
             "siteid": "tenant-a",
-            "userid": "568A765E-E3AF-F64A-4215263811B6C0BA"
+            "userid": "A524C197-ECE4-5B81-9155DBE779E35D71"
           }
         },
         "headers": {
@@ -14515,7 +14515,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "3cd47a25e01de38a64dda89eeafda5cb4a5f228a5da3e761502e5ff6c6c67892",
+        "rawSha256": "ca96f4f2f42dd276ab1fa54a5b822c69fd784471629fbb12cf4183ee1645ec68",
         "status": 200
       },
       "routeKey": "api:group.save{photo}"
@@ -14547,7 +14547,7 @@
           "kind": "form",
           "value": {
             "entityname": "group",
-            "id": "568A765E-E3AF-F64A-4215263811B6C0BA",
+            "id": "A524C197-ECE4-5B81-9155DBE779E35D71",
             "method": "delete",
             "siteid": "tenant-a"
           }
@@ -14673,7 +14673,7 @@
         "headers": {
           "content-type": "text/html;charset=UTF-8"
         },
-        "rawSha256": "47da9aeaa9516f2ad3bf3a512f860524f75bd2431dd0ec7e1ef9ca095af7ba5a",
+        "rawSha256": "afc9ad73b19270b8db2b5121e14dacb16b0518030f512deb22edf317fd4ae3db",
         "status": 500
       },
       "routeKey": "rest:group.save{siteid}"
@@ -14722,87 +14722,87 @@
               "ErrNumber": 0,
               "Message": "The requested scope session has not been enabled.",
               "ScopeName": "session",
-              "StackTrace": "coldfusion.runtime.NoOperScope$ScopeDisabledException: The requested scope session has not been enabled.\n\tat coldfusion.runtime.NoOperScope.resolveName(NoOperScope.java:36)\n\tat coldfusion.runtime.Scope.get(Scope.java:62)\n\tat coldfusion.runtime.DotResolver.resolve(DotResolver.java:52)\n\tat coldfusion.runtime.DotResolver.resolve(DotResolver.java:88)\n\tat coldfusion.runtime.NeoPageContext.SymTab_resolveSplitName(NeoPageContext.java:1336)\n\tat coldfusion.runtime.NeoPageContext.SymTab_resolveSplitName(NeoPageContext.java:1324)\n\tat coldfusion.runtime.NeoPageContext.SymTab_resolveDottedName(NeoPageContext.java:1304)\n\tat coldfusion.runtime.NeoPageContext.findAttributeVar(NeoPageContext.java:808)\n\tat coldfusion.runtime.CFPage.IsDefined(CFPage.java:2200)\n\tat cfcontentRenderer2ecfc193136440$funcINIT.runFunction(/tmp/blitzy/scratch/<uuid:1>/dest/stack/core/mura/content/contentRenderer.cfc:701)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:668)\n\tat coldfusion.filter.SilentFilter.invoke(SilentFilter.java:47)\n\tat coldfusion.runtime.UDFMethod$ArgumentCollectionFilter.invoke(UDFMethod.java:561)\n\tat coldfusion.filter.FunctionAccessFilter.invoke(FunctionAccessFilter.java:95)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:483)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:456)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:726)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:1022)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:804)\n\tat coldfusion.runtime.CfJspPage._invoke(CfJspPage.java:4048)\n\tat coldfusion.runtime.CfJspPage._invoke(CfJspPage.java:4012)\n\tat cfMasaScope2ecfc573892996$funcGETCONTENTRENDERER._factor0(/tmp/blitzy/scratch/<uuid:1>/dest/stack/core/mura/MasaScope.cfc:174)\n\tat cfMasaScope2ecfc573892996$funcGETCONTENTRENDERER.runFunction(/tmp/blitzy/scratch/<uuid:1>/dest/stack/core/mura/MasaScope.cfc:157)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:668)\n\tat coldfusion.filter.SilentFilter.invoke(SilentFilter.java:47)\n\tat coldfusion.runtime.UDFMethod$ArgumentCollectionFilter.invoke(UDFMethod.java:561)\n\tat coldfusion.filter.FunctionAccessFilter.invoke(FunctionAccessFilter.java:95)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:483)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:456)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:328)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:1017)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:737)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:541)\n\tat coldfusion.runtime.CfJspPage._invoke(CfJspPage.java:4137)\n\tat coldfusion.runtime.CfJspPage._invoke(CfJspPage.java:4100)\n\tat cfevent2ecfc1860771027$funcLOADSITERELATEDOBJECTS.runFunction(/tmp/blitzy/scratch/<uuid:1>/dest/stack/core/mura/event.cfc:220)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:668)\n\tat coldfusion.filter.SilentFilter.invoke(SilentFilter.java:47)\n\tat coldfusion.runtime.UDFMethod$ArgumentCollectionFilter.invoke(UDFMethod.java:561)\n\tat coldfusion.filter.FunctionAccessFilter.invoke(FunctionAccessFilter.java:95)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:483)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:456)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:328)\n\tat coldfusion.runtime.CfJspPage._invokeUDF(CfJspPage.java:4898)\n\tat coldfusion.runtime.CfJspPage._invokeUDF(CfJspPage.java:4878)\n\tat cfevent2ecfc1860771027$funcINIT.runFunction(/tmp/blitzy/scratch/<uuid:1>/dest/stack/core/mura/event.cfc:97)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:668)\n\tat coldfusion.filter.SilentFilter.invoke(SilentFilter.java:47)\n\tat coldfusion.runtime.UDFMethod$ArgumentCollectionFilter.invoke(UDFMethod.java:561)\n\tat coldfusion.filter.FunctionAccessFilter.invoke(FunctionAccessFilter.java:95)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:483)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:456)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:328)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:1017)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:737)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:541)\n\tat coldfusion.runtime.CfJspPage._invoke(CfJspPage.java:4137)\n\tat coldfusion.runtime.CfJspPage._invoke(CfJspPage.java:4100)\n\tat cfuserUtility2ecfc454098704$funcLOOKUPBYCREDENTIALS.runFunction(/tmp/blitzy/scratch/<uuid:1>/dest/stack/core/mura/user/userUtility.cfc:119)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:668)\n\tat coldfusion.filter.SilentFilter.invoke(SilentFilter.java:47)\n\tat coldfusion.runtime.UDFMethod$ArgumentCollectionFilter.invoke(UDFMethod.java:561)\n\tat coldfusion.filter.FunctionAccessFilter.invoke(FunctionAccessFilter.java:95)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:483)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:456)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:328)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:1017)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:737)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:541)\n\tat coldfusion.runtime.CfJspPage._invoke(CfJspPage.java:4137)\n\tat coldfusion.runtime.CfJspPage._invoke(CfJspPage.java:4100)\n\tat cfjsonApiUtility2ecfc988474930$funcPROCESSREQUEST.runFunction(/tmp/blitzy/scratch/<uuid:1>/dest/stack/core/mura/client/api/json/v1/jsonApiUtility.cfc:473)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:668)\n\tat coldfusion.runtime.UDFMethod$ArgumentCollectionFilter.invoke(UDFMethod.java:561)\n\tat coldfusion.filter.FunctionAccessFilter.invoke(FunctionAccessFilter.java:95)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:483)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:456)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:328)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:1017)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:737)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:541)\n\tat coldfusion.runtime.CfJspPage._invoke(CfJspPage.java:4137)\n\tat coldfusion.runtime.CfJspPage._invoke(CfJspPage.java:4100)\n\tat cfcontentServer2ecfc2032813127$funcHANDLEAPIREQUEST.runFunction(/tmp/blitzy/scratch/<uuid:1>/dest/stack/core/mura/content/contentServer.cfc:636)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:668)\n\tat coldfusion.filter.SilentFilter.invoke(SilentFilter.java:47)\n\tat coldfusion.runtime.UDFMethod$ArgumentCollectionFilter.invoke(UDFMethod.java:561)\n\tat coldfusion.filter.FunctionAccessFilter.invoke(FunctionAccessFilter.java:95)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:483)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:456)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:328)\n\tat coldfusion.runtime.CfJspPage._invokeUDF(CfJspPage.java:4898)\n\tat coldfusion.runtime.CfJspPage._invokeUDF(CfJspPage.java:4878)\n\tat cfcontentServer2ecfc2032813127$funcHANDLEROOTREQUEST.runFunction(/tmp/blitzy/scratch/<uuid:1>/dest/stack/core/mura/content/contentServer.cfc:784)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:668)\n\tat coldfusion.filter.SilentFilter.invoke(SilentFilter.java:47)\n\tat coldfusion.runtime.UDFMethod$ArgumentCollectionFilter.invoke(UDFMethod.java:561)\n\tat coldfusion.filter.FunctionAccessFilter.invoke(FunctionAccessFilter.java:95)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:483)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:456)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:328)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:1017)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:737)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:541)\n\tat coldfusion.runtime.CfJspPage._invoke(CfJspPage.java:4137)\n\tat coldfusion.runtime.CfJspPage._invoke(CfJspPage.java:4100)\n\tat cfindex2ecfm994378857.runPage(/tmp/blitzy/scratch/<uuid:1>/dest/stack/index.cfm:75)\n\tat coldfusion.runtime.CfJspPage.invoke(CfJspPage.java:251)\n\tat coldfusion.tagext.lang.IncludeTag.handlePageInvoke(IncludeTag.java:749)\n\tat coldfusion.tagext.lang.IncludeTag.doStartTag(IncludeTag.java:578)\n\tat coldfusion.filter.CfincludeFilter.invoke(CfincludeFilter.java:65)\n\tat coldfusion.filter.ApplicationFilter.invoke(ApplicationFilter.java:573)\n\tat coldfusion.filter.RequestMonitorFilter.invoke(RequestMonitorFilter.java:43)\n\tat coldfusion.filter.MonitoringFilter.invoke(MonitoringFilter.java:40)\n\tat coldfusion.filter.PathFilter.invoke(PathFilter.java:162)\n\tat coldfusion.filter.IpFilter.invoke(IpFilter.java:45)\n\tat coldfusion.filter.ExceptionFilter.invoke(ExceptionFilter.java:96)\n\tat coldfusion.filter.ClientScopePersistenceFilter.invoke(ClientScopePersistenceFilter.java:28)\n\tat coldfusion.filter.BrowserFilter.invoke(BrowserFilter.java:38)\n\tat coldfusion.filter.NoCacheFilter.invoke(NoCacheFilter.java:60)\n\tat coldfusion.filter.GlobalsFilter.invoke(GlobalsFilter.java:38)\n\tat coldfusion.filter.DatasourceFilter.invoke(DatasourceFilter.java:22)\n\tat coldfusion.filter.CachingFilter.invoke(CachingFilter.java:62)\n\tat coldfusion.filter.RequestThrottleFilter.invoke(RequestThrottleFilter.java:154)\n\tat coldfusion.CfmServlet.service(CfmServlet.java:231)\n\tat coldfusion.bootstrap.BootstrapServlet.service(BootstrapServlet.java:311)\n\tat io.undertow.servlet.handlers.ServletHandler.handleRequest(ServletHandler.java:74)\n\tat io.undertow.servlet.handlers.FilterHandler$FilterChainImpl.doFilter(FilterHandler.java:129)\n\tat org.cfmlprojects.regexpathinfofilter.RegexPathInfoFilter.doFilter(RegexPathInfoFilter.java:56)\n\tat io.undertow.servlet.core.ManagedFilter.doFilter(ManagedFilter.java:67)\n\tat io.undertow.servlet.handlers.FilterHandler$FilterChainImpl.doFilter(FilterHandler.java:131)\n\tat io.undertow.servlet.handlers.FilterHandler.handleRequest(FilterHandler.java:84)\n\tat io.undertow.servlet.handlers.security.ServletSecurityRoleHandler.handleRequest(ServletSecurityRoleHandler.java:62)\n\tat io.undertow.servlet.handlers.ServletChain$1.handleRequest(ServletChain.java:68)\n\tat io.undertow.servlet.handlers.ServletDispatchingHandler.handleRequest(ServletDispatchingHandler.java:36)\n\tat runwar.undertow.SSLCertHeaderHandler.handleRequest(SSLCertHeaderHandler.java:161)\n\tat io.undertow.servlet.handlers.RedirectDirHandler.handleRequest(RedirectDirHandler.java:68)\n\tat io.undertow.server.handlers.PredicateHandler.handleRequest(PredicateHandler.java:43)\n\tat io.undertow.server.handlers.PredicateHandler.handleRequest(PredicateHandler.java:43)\n\tat io.undertow.servlet.handlers.ServletInitialHandler.dispatchRequest(ServletInitialHandler.java:259)\n\tat io.undertow.servlet.handlers.ServletInitialHandler.dispatchToPath(ServletInitialHandler.java:184)\n\tat io.undertow.servlet.spec.RequestDispatcherImpl.forwardImpl(RequestDispatcherImpl.java:186)\n\tat io.undertow.servlet.spec.RequestDispatcherImpl.forwardImplSetup(RequestDispatcherImpl.java:134)\n\tat io.undertow.servlet.spec.RequestDispatcherImpl.forward(RequestDispatcherImpl.java:97)\n\tat org.cfmlprojects.regexpathinfofilter.RegexPathInfoFilter.doFilter(RegexPathInfoFilter.java:54)\n\tat io.undertow.servlet.core.ManagedFilter.doFilter(ManagedFilter.java:67)\n\tat io.undertow.servlet.handlers.FilterHandler$FilterChainImpl.doFilter(FilterHandler.java:131)\n\tat io.undertow.servlet.handlers.FilterHandler.handleRequest(FilterHandler.java:84)\n\tat io.undertow.servlet.handlers.security.ServletSecurityRoleHandler.handleRequest(ServletSecurityRoleHandler.java:62)\n\tat io.undertow.servlet.handlers.ServletChain$1.handleRequest(ServletChain.java:68)\n\tat io.undertow.servlet.handlers.ServletDispatchingHandler.handleRequest(ServletDispatchingHandler.java:36)\n\tat runwar.undertow.SSLCertHeaderHandler.handleRequest(SSLCertHeaderHandler.java:161)\n\tat io.undertow.servlet.handlers.RedirectDirHandler.handleRequest(RedirectDirHandler.java:68)\n\tat io.undertow.servlet.handlers.security.SSLInformationAssociationHandler.handleRequest(SSLInformationAssociationHandler.java:117)\n\tat io.undertow.servlet.handlers.security.ServletAuthenticationCallHandler.handleRequest(ServletAuthenticationCallHandler.java:57)\n\tat io.undertow.server.handlers.PredicateHandler.handleRequest(PredicateHandler.java:43)\n\tat io.undertow.security.handlers.AbstractConfidentialityHandler.handleRequest(AbstractConfidentialityHandler.java:46)\n\tat io.undertow.servlet.handlers.security.ServletConfidentialityConstraintHandler.handleRequest(ServletConfidentialityConstraintHandler.java:64)\n\tat io.undertow.security.handlers.AuthenticationMechanismsHandler.handleRequest(AuthenticationMechanismsHandler.java:60)\n\tat io.undertow.servlet.handlers.security.CachedAuthenticatedSessionHandler.handleRequest(CachedAuthenticatedSessionHandler.java:75)\n\tat io.undertow.security.handlers.AbstractSecurityContextAssociationHandler.handleRequest(AbstractSecurityContextAssociationHandler.java:43)\n\tat io.undertow.server.handlers.PredicateHandler.handleRequest(PredicateHandler.java:43)\n\tat io.undertow.servlet.handlers.SendErrorPageHandler.handleRequest(SendErrorPageHandler.java:52)\n\tat io.undertow.server.handlers.PredicateHandler.handleRequest(PredicateHandler.java:43)\n\tat io.undertow.servlet.handlers.ServletInitialHandler.handleFirstRequest(ServletInitialHandler.java:277)\n\tat io.undertow.servlet.handlers.ServletInitialHandler.access$000(ServletInitialHandler.java:79)\n\tat io.undertow.servlet.handlers.ServletInitialHandler$1.call(ServletInitialHandler.java:130)\n\tat io.undertow.servlet.handlers.ServletInitialHandler$1.call(ServletInitialHandler.java:127)\n\tat io.undertow.servlet.core.ServletRequestContextThreadSetupAction$1.call(ServletRequestContextThreadSetupAction.java:48)\n\tat io.undertow.servlet.core.ContextClassLoaderSetupAction$1.call(ContextClassLoaderSetupAction.java:43)\n\tat io.undertow.servlet.handlers.ServletInitialHandler.dispatchRequest(ServletInitialHandler.java:257)\n\tat io.undertow.servlet.handlers.ServletInitialHandler.handleRequest(ServletInitialHandler.java:177)\n\tat io.undertow.server.handlers.HttpContinueReadHandler.handleRequest(HttpContinueReadHandler.java:69)\n\tat io.undertow.server.handlers.PredicateHandler.handleRequest(PredicateHandler.java:43)\n\tat runwar.undertow.WelcomeFileHandler.handleRequest(WelcomeFileHandler.java:49)\n\tat io.undertow.server.handlers.PathHandler.handleRequest(PathHandler.java:104)\n\tat runwar.undertow.SiteDeployment$1.handleRequest(SiteDeployment.java:169)\n\tat io.undertow.predicate.PredicatesHandler.handleRequest(PredicatesHandler.java:141)\n\tat io.undertow.predicate.PredicatesHandler.handleRequest(PredicatesHandler.java:141)\n\tat io.undertow.server.handlers.SetAttributeHandler.handleRequest(SetAttributeHandler.java:119)\n\tat io.undertow.server.handlers.builder.RewriteHandlerBuilder$2$1.handleRequest(RewriteHandlerBuilder.java:92)\n\tat io.undertow.predicate.PredicatesHandler.handleRequest(PredicatesHandler.java:113)\n\tat io.undertow.predicate.PredicatesHandler.handleRequest(PredicatesHandler.java:113)\n\tat io.undertow.server.handlers.DisallowedMethodsHandler.handleRequest(DisallowedMethodsHandler.java:62)\n\tat io.undertow.predicate.PredicatesHandler.handleRequest(PredicatesHandler.java:113)\n\tat io.undertow.server.handlers.encoding.EncodingHandler.handleRequest(EncodingHandler.java:72)\n\tat runwar.undertow.LifecyleHandler.handleRequest(LifecyleHandler.java:145)\n\tat runwar.undertow.SiteDeployment$4.handleRequest(SiteDeployment.java:360)\n\tat io.undertow.server.Connectors.executeRootHandler(Connectors.java:343)\n\tat io.undertow.server.HttpServerExchange$1.run(HttpServerExchange.java:931)\n\tat org.jboss.threads.ContextHandler$1.runWith(ContextHandler.java:18)\n\tat org.jboss.threads.EnhancedQueueExecutor$Task.run(EnhancedQueueExecutor.java:2513)\n\tat org.jboss.threads.EnhancedQueueExecutor$ThreadBody.run(EnhancedQueueExecutor.java:1538)\n\tat org.xnio.XnioWorker$WorkerThreadFactory$1$1.run(XnioWorker.java:1282)\n\tat java.base/java.lang.Thread.run(Thread.java:840)\n",
+              "StackTrace": "coldfusion.runtime.NoOperScope$ScopeDisabledException: The requested scope session has not been enabled.\n\tat coldfusion.runtime.NoOperScope.resolveName(NoOperScope.java:36)\n\tat coldfusion.runtime.Scope.get(Scope.java:62)\n\tat coldfusion.runtime.DotResolver.resolve(DotResolver.java:52)\n\tat coldfusion.runtime.DotResolver.resolve(DotResolver.java:88)\n\tat coldfusion.runtime.NeoPageContext.SymTab_resolveSplitName(NeoPageContext.java:1336)\n\tat coldfusion.runtime.NeoPageContext.SymTab_resolveSplitName(NeoPageContext.java:1324)\n\tat coldfusion.runtime.NeoPageContext.SymTab_resolveDottedName(NeoPageContext.java:1304)\n\tat coldfusion.runtime.NeoPageContext.findAttributeVar(NeoPageContext.java:808)\n\tat coldfusion.runtime.CFPage.IsDefined(CFPage.java:2200)\n\tat cfcontentRenderer2ecfc329935073$funcINIT.runFunction(/tmp/blitzy/scratch/<uuid:1>/w-020/stack2/core/mura/content/contentRenderer.cfc:701)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:668)\n\tat coldfusion.filter.SilentFilter.invoke(SilentFilter.java:47)\n\tat coldfusion.runtime.UDFMethod$ArgumentCollectionFilter.invoke(UDFMethod.java:561)\n\tat coldfusion.filter.FunctionAccessFilter.invoke(FunctionAccessFilter.java:95)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:483)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:456)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:726)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:1022)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:804)\n\tat coldfusion.runtime.CfJspPage._invoke(CfJspPage.java:4048)\n\tat coldfusion.runtime.CfJspPage._invoke(CfJspPage.java:4012)\n\tat cfMasaScope2ecfc736754709$funcGETCONTENTRENDERER._factor0(/tmp/blitzy/scratch/<uuid:1>/w-020/stack2/core/mura/MasaScope.cfc:174)\n\tat cfMasaScope2ecfc736754709$funcGETCONTENTRENDERER.runFunction(/tmp/blitzy/scratch/<uuid:1>/w-020/stack2/core/mura/MasaScope.cfc:157)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:668)\n\tat coldfusion.filter.SilentFilter.invoke(SilentFilter.java:47)\n\tat coldfusion.runtime.UDFMethod$ArgumentCollectionFilter.invoke(UDFMethod.java:561)\n\tat coldfusion.filter.FunctionAccessFilter.invoke(FunctionAccessFilter.java:95)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:483)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:456)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:328)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:1017)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:737)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:541)\n\tat coldfusion.runtime.CfJspPage._invoke(CfJspPage.java:4137)\n\tat coldfusion.runtime.CfJspPage._invoke(CfJspPage.java:4100)\n\tat cfevent2ecfc1635328434$funcLOADSITERELATEDOBJECTS.runFunction(/tmp/blitzy/scratch/<uuid:1>/w-020/stack2/core/mura/event.cfc:220)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:668)\n\tat coldfusion.filter.SilentFilter.invoke(SilentFilter.java:47)\n\tat coldfusion.runtime.UDFMethod$ArgumentCollectionFilter.invoke(UDFMethod.java:561)\n\tat coldfusion.filter.FunctionAccessFilter.invoke(FunctionAccessFilter.java:95)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:483)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:456)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:328)\n\tat coldfusion.runtime.CfJspPage._invokeUDF(CfJspPage.java:4898)\n\tat coldfusion.runtime.CfJspPage._invokeUDF(CfJspPage.java:4878)\n\tat cfevent2ecfc1635328434$funcINIT.runFunction(/tmp/blitzy/scratch/<uuid:1>/w-020/stack2/core/mura/event.cfc:97)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:668)\n\tat coldfusion.filter.SilentFilter.invoke(SilentFilter.java:47)\n\tat coldfusion.runtime.UDFMethod$ArgumentCollectionFilter.invoke(UDFMethod.java:561)\n\tat coldfusion.filter.FunctionAccessFilter.invoke(FunctionAccessFilter.java:95)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:483)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:456)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:328)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:1017)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:737)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:541)\n\tat coldfusion.runtime.CfJspPage._invoke(CfJspPage.java:4137)\n\tat coldfusion.runtime.CfJspPage._invoke(CfJspPage.java:4100)\n\tat cfuserUtility2ecfc704181814$funcLOOKUPBYCREDENTIALS.runFunction(/tmp/blitzy/scratch/<uuid:1>/w-020/stack2/core/mura/user/userUtility.cfc:119)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:668)\n\tat coldfusion.filter.SilentFilter.invoke(SilentFilter.java:47)\n\tat coldfusion.runtime.UDFMethod$ArgumentCollectionFilter.invoke(UDFMethod.java:561)\n\tat coldfusion.filter.FunctionAccessFilter.invoke(FunctionAccessFilter.java:95)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:483)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:456)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:328)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:1017)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:737)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:541)\n\tat coldfusion.runtime.CfJspPage._invoke(CfJspPage.java:4137)\n\tat coldfusion.runtime.CfJspPage._invoke(CfJspPage.java:4100)\n\tat cfjsonApiUtility2ecfc1819627928$funcPROCESSREQUEST.runFunction(/tmp/blitzy/scratch/<uuid:1>/w-020/stack2/core/mura/client/api/json/v1/jsonApiUtility.cfc:473)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:668)\n\tat coldfusion.runtime.UDFMethod$ArgumentCollectionFilter.invoke(UDFMethod.java:561)\n\tat coldfusion.filter.FunctionAccessFilter.invoke(FunctionAccessFilter.java:95)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:483)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:456)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:328)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:1017)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:737)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:541)\n\tat coldfusion.runtime.CfJspPage._invoke(CfJspPage.java:4137)\n\tat coldfusion.runtime.CfJspPage._invoke(CfJspPage.java:4100)\n\tat cfcontentServer2ecfc902908446$funcHANDLEAPIREQUEST.runFunction(/tmp/blitzy/scratch/<uuid:1>/w-020/stack2/core/mura/content/contentServer.cfc:636)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:668)\n\tat coldfusion.filter.SilentFilter.invoke(SilentFilter.java:47)\n\tat coldfusion.runtime.UDFMethod$ArgumentCollectionFilter.invoke(UDFMethod.java:561)\n\tat coldfusion.filter.FunctionAccessFilter.invoke(FunctionAccessFilter.java:95)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:483)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:456)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:328)\n\tat coldfusion.runtime.CfJspPage._invokeUDF(CfJspPage.java:4898)\n\tat coldfusion.runtime.CfJspPage._invokeUDF(CfJspPage.java:4878)\n\tat cfcontentServer2ecfc902908446$funcHANDLEROOTREQUEST.runFunction(/tmp/blitzy/scratch/<uuid:1>/w-020/stack2/core/mura/content/contentServer.cfc:784)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:668)\n\tat coldfusion.filter.SilentFilter.invoke(SilentFilter.java:47)\n\tat coldfusion.runtime.UDFMethod$ArgumentCollectionFilter.invoke(UDFMethod.java:561)\n\tat coldfusion.filter.FunctionAccessFilter.invoke(FunctionAccessFilter.java:95)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:483)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:456)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:328)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:1017)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:737)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:541)\n\tat coldfusion.runtime.CfJspPage._invoke(CfJspPage.java:4137)\n\tat coldfusion.runtime.CfJspPage._invoke(CfJspPage.java:4100)\n\tat cfindex2ecfm895911804.runPage(/tmp/blitzy/scratch/<uuid:1>/w-020/stack2/index.cfm:75)\n\tat coldfusion.runtime.CfJspPage.invoke(CfJspPage.java:251)\n\tat coldfusion.tagext.lang.IncludeTag.handlePageInvoke(IncludeTag.java:749)\n\tat coldfusion.tagext.lang.IncludeTag.doStartTag(IncludeTag.java:578)\n\tat coldfusion.filter.CfincludeFilter.invoke(CfincludeFilter.java:65)\n\tat coldfusion.filter.ApplicationFilter.invoke(ApplicationFilter.java:573)\n\tat coldfusion.filter.RequestMonitorFilter.invoke(RequestMonitorFilter.java:43)\n\tat coldfusion.filter.MonitoringFilter.invoke(MonitoringFilter.java:40)\n\tat coldfusion.filter.PathFilter.invoke(PathFilter.java:162)\n\tat coldfusion.filter.IpFilter.invoke(IpFilter.java:45)\n\tat coldfusion.filter.ExceptionFilter.invoke(ExceptionFilter.java:96)\n\tat coldfusion.filter.ClientScopePersistenceFilter.invoke(ClientScopePersistenceFilter.java:28)\n\tat coldfusion.filter.BrowserFilter.invoke(BrowserFilter.java:38)\n\tat coldfusion.filter.NoCacheFilter.invoke(NoCacheFilter.java:60)\n\tat coldfusion.filter.GlobalsFilter.invoke(GlobalsFilter.java:38)\n\tat coldfusion.filter.DatasourceFilter.invoke(DatasourceFilter.java:22)\n\tat coldfusion.filter.CachingFilter.invoke(CachingFilter.java:62)\n\tat coldfusion.filter.RequestThrottleFilter.invoke(RequestThrottleFilter.java:154)\n\tat coldfusion.CfmServlet.service(CfmServlet.java:231)\n\tat coldfusion.bootstrap.BootstrapServlet.service(BootstrapServlet.java:311)\n\tat io.undertow.servlet.handlers.ServletHandler.handleRequest(ServletHandler.java:74)\n\tat io.undertow.servlet.handlers.FilterHandler$FilterChainImpl.doFilter(FilterHandler.java:129)\n\tat org.cfmlprojects.regexpathinfofilter.RegexPathInfoFilter.doFilter(RegexPathInfoFilter.java:56)\n\tat io.undertow.servlet.core.ManagedFilter.doFilter(ManagedFilter.java:67)\n\tat io.undertow.servlet.handlers.FilterHandler$FilterChainImpl.doFilter(FilterHandler.java:131)\n\tat io.undertow.servlet.handlers.FilterHandler.handleRequest(FilterHandler.java:84)\n\tat io.undertow.servlet.handlers.security.ServletSecurityRoleHandler.handleRequest(ServletSecurityRoleHandler.java:62)\n\tat io.undertow.servlet.handlers.ServletChain$1.handleRequest(ServletChain.java:68)\n\tat io.undertow.servlet.handlers.ServletDispatchingHandler.handleRequest(ServletDispatchingHandler.java:36)\n\tat runwar.undertow.SSLCertHeaderHandler.handleRequest(SSLCertHeaderHandler.java:161)\n\tat io.undertow.servlet.handlers.RedirectDirHandler.handleRequest(RedirectDirHandler.java:68)\n\tat io.undertow.server.handlers.PredicateHandler.handleRequest(PredicateHandler.java:43)\n\tat io.undertow.server.handlers.PredicateHandler.handleRequest(PredicateHandler.java:43)\n\tat io.undertow.servlet.handlers.ServletInitialHandler.dispatchRequest(ServletInitialHandler.java:259)\n\tat io.undertow.servlet.handlers.ServletInitialHandler.dispatchToPath(ServletInitialHandler.java:184)\n\tat io.undertow.servlet.spec.RequestDispatcherImpl.forwardImpl(RequestDispatcherImpl.java:186)\n\tat io.undertow.servlet.spec.RequestDispatcherImpl.forwardImplSetup(RequestDispatcherImpl.java:134)\n\tat io.undertow.servlet.spec.RequestDispatcherImpl.forward(RequestDispatcherImpl.java:97)\n\tat org.cfmlprojects.regexpathinfofilter.RegexPathInfoFilter.doFilter(RegexPathInfoFilter.java:54)\n\tat io.undertow.servlet.core.ManagedFilter.doFilter(ManagedFilter.java:67)\n\tat io.undertow.servlet.handlers.FilterHandler$FilterChainImpl.doFilter(FilterHandler.java:131)\n\tat io.undertow.servlet.handlers.FilterHandler.handleRequest(FilterHandler.java:84)\n\tat io.undertow.servlet.handlers.security.ServletSecurityRoleHandler.handleRequest(ServletSecurityRoleHandler.java:62)\n\tat io.undertow.servlet.handlers.ServletChain$1.handleRequest(ServletChain.java:68)\n\tat io.undertow.servlet.handlers.ServletDispatchingHandler.handleRequest(ServletDispatchingHandler.java:36)\n\tat runwar.undertow.SSLCertHeaderHandler.handleRequest(SSLCertHeaderHandler.java:161)\n\tat io.undertow.servlet.handlers.RedirectDirHandler.handleRequest(RedirectDirHandler.java:68)\n\tat io.undertow.servlet.handlers.security.SSLInformationAssociationHandler.handleRequest(SSLInformationAssociationHandler.java:117)\n\tat io.undertow.servlet.handlers.security.ServletAuthenticationCallHandler.handleRequest(ServletAuthenticationCallHandler.java:57)\n\tat io.undertow.server.handlers.PredicateHandler.handleRequest(PredicateHandler.java:43)\n\tat io.undertow.security.handlers.AbstractConfidentialityHandler.handleRequest(AbstractConfidentialityHandler.java:46)\n\tat io.undertow.servlet.handlers.security.ServletConfidentialityConstraintHandler.handleRequest(ServletConfidentialityConstraintHandler.java:64)\n\tat io.undertow.security.handlers.AuthenticationMechanismsHandler.handleRequest(AuthenticationMechanismsHandler.java:60)\n\tat io.undertow.servlet.handlers.security.CachedAuthenticatedSessionHandler.handleRequest(CachedAuthenticatedSessionHandler.java:75)\n\tat io.undertow.security.handlers.AbstractSecurityContextAssociationHandler.handleRequest(AbstractSecurityContextAssociationHandler.java:43)\n\tat io.undertow.server.handlers.PredicateHandler.handleRequest(PredicateHandler.java:43)\n\tat io.undertow.servlet.handlers.SendErrorPageHandler.handleRequest(SendErrorPageHandler.java:52)\n\tat io.undertow.server.handlers.PredicateHandler.handleRequest(PredicateHandler.java:43)\n\tat io.undertow.servlet.handlers.ServletInitialHandler.handleFirstRequest(ServletInitialHandler.java:277)\n\tat io.undertow.servlet.handlers.ServletInitialHandler.access$000(ServletInitialHandler.java:79)\n\tat io.undertow.servlet.handlers.ServletInitialHandler$1.call(ServletInitialHandler.java:130)\n\tat io.undertow.servlet.handlers.ServletInitialHandler$1.call(ServletInitialHandler.java:127)\n\tat io.undertow.servlet.core.ServletRequestContextThreadSetupAction$1.call(ServletRequestContextThreadSetupAction.java:48)\n\tat io.undertow.servlet.core.ContextClassLoaderSetupAction$1.call(ContextClassLoaderSetupAction.java:43)\n\tat io.undertow.servlet.handlers.ServletInitialHandler.dispatchRequest(ServletInitialHandler.java:257)\n\tat io.undertow.servlet.handlers.ServletInitialHandler.handleRequest(ServletInitialHandler.java:177)\n\tat io.undertow.server.handlers.HttpContinueReadHandler.handleRequest(HttpContinueReadHandler.java:69)\n\tat io.undertow.server.handlers.PredicateHandler.handleRequest(PredicateHandler.java:43)\n\tat runwar.undertow.WelcomeFileHandler.handleRequest(WelcomeFileHandler.java:49)\n\tat io.undertow.server.handlers.PathHandler.handleRequest(PathHandler.java:104)\n\tat runwar.undertow.SiteDeployment$1.handleRequest(SiteDeployment.java:169)\n\tat io.undertow.predicate.PredicatesHandler.handleRequest(PredicatesHandler.java:141)\n\tat io.undertow.predicate.PredicatesHandler.handleRequest(PredicatesHandler.java:141)\n\tat io.undertow.server.handlers.SetAttributeHandler.handleRequest(SetAttributeHandler.java:119)\n\tat io.undertow.server.handlers.builder.RewriteHandlerBuilder$2$1.handleRequest(RewriteHandlerBuilder.java:92)\n\tat io.undertow.predicate.PredicatesHandler.handleRequest(PredicatesHandler.java:113)\n\tat io.undertow.predicate.PredicatesHandler.handleRequest(PredicatesHandler.java:113)\n\tat io.undertow.server.handlers.DisallowedMethodsHandler.handleRequest(DisallowedMethodsHandler.java:62)\n\tat io.undertow.predicate.PredicatesHandler.handleRequest(PredicatesHandler.java:113)\n\tat io.undertow.server.handlers.encoding.EncodingHandler.handleRequest(EncodingHandler.java:72)\n\tat runwar.undertow.LifecyleHandler.handleRequest(LifecyleHandler.java:145)\n\tat runwar.undertow.SiteDeployment$4.handleRequest(SiteDeployment.java:360)\n\tat io.undertow.server.Connectors.executeRootHandler(Connectors.java:343)\n\tat io.undertow.server.HttpServerExchange$1.run(HttpServerExchange.java:931)\n\tat org.jboss.threads.ContextHandler$1.runWith(ContextHandler.java:18)\n\tat org.jboss.threads.EnhancedQueueExecutor$Task.run(EnhancedQueueExecutor.java:2513)\n\tat org.jboss.threads.EnhancedQueueExecutor$ThreadBody.run(EnhancedQueueExecutor.java:1538)\n\tat org.xnio.XnioWorker$WorkerThreadFactory$1$1.run(XnioWorker.java:1282)\n\tat java.base/java.lang.Thread.run(Thread.java:840)\n",
               "Suppressed": [],
               "TagContext": [
                 {
                   "COLUMN": 0,
                   "ID": "CF_CFPAGE",
                   "LINE": 701,
-                  "RAW_TRACE": "\tat cfcontentRenderer2ecfc193136440$funcINIT.runFunction(/tmp/blitzy/scratch/<uuid:1>/dest/stack/core/mura/content/contentRenderer.cfc:701)",
-                  "TEMPLATE": "/tmp/blitzy/scratch/<uuid:1>/dest/stack/core/mura/content/contentRenderer.cfc",
+                  "RAW_TRACE": "\tat cfcontentRenderer2ecfc329935073$funcINIT.runFunction(/tmp/blitzy/scratch/<uuid:1>/w-020/stack2/core/mura/content/contentRenderer.cfc:701)",
+                  "TEMPLATE": "/tmp/blitzy/scratch/<uuid:1>/w-020/stack2/core/mura/content/contentRenderer.cfc",
                   "TYPE": "CFML"
                 },
                 {
                   "COLUMN": 0,
                   "ID": "CF_TEMPLATEPROXY",
                   "LINE": 174,
-                  "RAW_TRACE": "\tat cfMasaScope2ecfc573892996$funcGETCONTENTRENDERER._factor0(/tmp/blitzy/scratch/<uuid:1>/dest/stack/core/mura/MasaScope.cfc:174)",
-                  "TEMPLATE": "/tmp/blitzy/scratch/<uuid:1>/dest/stack/core/mura/MasaScope.cfc",
+                  "RAW_TRACE": "\tat cfMasaScope2ecfc736754709$funcGETCONTENTRENDERER._factor0(/tmp/blitzy/scratch/<uuid:1>/w-020/stack2/core/mura/MasaScope.cfc:174)",
+                  "TEMPLATE": "/tmp/blitzy/scratch/<uuid:1>/w-020/stack2/core/mura/MasaScope.cfc",
                   "TYPE": "CFML"
                 },
                 {
                   "COLUMN": 0,
                   "ID": "CF_MASASCOPE",
                   "LINE": 157,
-                  "RAW_TRACE": "\tat cfMasaScope2ecfc573892996$funcGETCONTENTRENDERER.runFunction(/tmp/blitzy/scratch/<uuid:1>/dest/stack/core/mura/MasaScope.cfc:157)",
-                  "TEMPLATE": "/tmp/blitzy/scratch/<uuid:1>/dest/stack/core/mura/MasaScope.cfc",
+                  "RAW_TRACE": "\tat cfMasaScope2ecfc736754709$funcGETCONTENTRENDERER.runFunction(/tmp/blitzy/scratch/<uuid:1>/w-020/stack2/core/mura/MasaScope.cfc:157)",
+                  "TEMPLATE": "/tmp/blitzy/scratch/<uuid:1>/w-020/stack2/core/mura/MasaScope.cfc",
                   "TYPE": "CFML"
                 },
                 {
                   "COLUMN": 0,
                   "ID": "CF_TEMPLATEPROXY",
                   "LINE": 220,
-                  "RAW_TRACE": "\tat cfevent2ecfc1860771027$funcLOADSITERELATEDOBJECTS.runFunction(/tmp/blitzy/scratch/<uuid:1>/dest/stack/core/mura/event.cfc:220)",
-                  "TEMPLATE": "/tmp/blitzy/scratch/<uuid:1>/dest/stack/core/mura/event.cfc",
+                  "RAW_TRACE": "\tat cfevent2ecfc1635328434$funcLOADSITERELATEDOBJECTS.runFunction(/tmp/blitzy/scratch/<uuid:1>/w-020/stack2/core/mura/event.cfc:220)",
+                  "TEMPLATE": "/tmp/blitzy/scratch/<uuid:1>/w-020/stack2/core/mura/event.cfc",
                   "TYPE": "CFML"
                 },
                 {
                   "COLUMN": 0,
                   "ID": "CF_UDFMETHOD",
                   "LINE": 97,
-                  "RAW_TRACE": "\tat cfevent2ecfc1860771027$funcINIT.runFunction(/tmp/blitzy/scratch/<uuid:1>/dest/stack/core/mura/event.cfc:97)",
-                  "TEMPLATE": "/tmp/blitzy/scratch/<uuid:1>/dest/stack/core/mura/event.cfc",
+                  "RAW_TRACE": "\tat cfevent2ecfc1635328434$funcINIT.runFunction(/tmp/blitzy/scratch/<uuid:1>/w-020/stack2/core/mura/event.cfc:97)",
+                  "TEMPLATE": "/tmp/blitzy/scratch/<uuid:1>/w-020/stack2/core/mura/event.cfc",
                   "TYPE": "CFML"
                 },
                 {
                   "COLUMN": 0,
                   "ID": "CF_TEMPLATEPROXY",
                   "LINE": 119,
-                  "RAW_TRACE": "\tat cfuserUtility2ecfc454098704$funcLOOKUPBYCREDENTIALS.runFunction(/tmp/blitzy/scratch/<uuid:1>/dest/stack/core/mura/user/userUtility.cfc:119)",
-                  "TEMPLATE": "/tmp/blitzy/scratch/<uuid:1>/dest/stack/core/mura/user/userUtility.cfc",
+                  "RAW_TRACE": "\tat cfuserUtility2ecfc704181814$funcLOOKUPBYCREDENTIALS.runFunction(/tmp/blitzy/scratch/<uuid:1>/w-020/stack2/core/mura/user/userUtility.cfc:119)",
+                  "TEMPLATE": "/tmp/blitzy/scratch/<uuid:1>/w-020/stack2/core/mura/user/userUtility.cfc",
                   "TYPE": "CFML"
                 },
                 {
                   "COLUMN": 0,
                   "ID": "CF_TEMPLATEPROXY",
                   "LINE": 473,
-                  "RAW_TRACE": "\tat cfjsonApiUtility2ecfc988474930$funcPROCESSREQUEST.runFunction(/tmp/blitzy/scratch/<uuid:1>/dest/stack/core/mura/client/api/json/v1/jsonApiUtility.cfc:473)",
-                  "TEMPLATE": "/tmp/blitzy/scratch/<uuid:1>/dest/stack/core/mura/client/api/json/v1/jsonApiUtility.cfc",
+                  "RAW_TRACE": "\tat cfjsonApiUtility2ecfc1819627928$funcPROCESSREQUEST.runFunction(/tmp/blitzy/scratch/<uuid:1>/w-020/stack2/core/mura/client/api/json/v1/jsonApiUtility.cfc:473)",
+                  "TEMPLATE": "/tmp/blitzy/scratch/<uuid:1>/w-020/stack2/core/mura/client/api/json/v1/jsonApiUtility.cfc",
                   "TYPE": "CFML"
                 },
                 {
                   "COLUMN": 0,
                   "ID": "CF_TEMPLATEPROXY",
                   "LINE": 636,
-                  "RAW_TRACE": "\tat cfcontentServer2ecfc2032813127$funcHANDLEAPIREQUEST.runFunction(/tmp/blitzy/scratch/<uuid:1>/dest/stack/core/mura/content/contentServer.cfc:636)",
-                  "TEMPLATE": "/tmp/blitzy/scratch/<uuid:1>/dest/stack/core/mura/content/contentServer.cfc",
+                  "RAW_TRACE": "\tat cfcontentServer2ecfc902908446$funcHANDLEAPIREQUEST.runFunction(/tmp/blitzy/scratch/<uuid:1>/w-020/stack2/core/mura/content/contentServer.cfc:636)",
+                  "TEMPLATE": "/tmp/blitzy/scratch/<uuid:1>/w-020/stack2/core/mura/content/contentServer.cfc",
                   "TYPE": "CFML"
                 },
                 {
                   "COLUMN": 0,
                   "ID": "CF_UDFMETHOD",
                   "LINE": 784,
-                  "RAW_TRACE": "\tat cfcontentServer2ecfc2032813127$funcHANDLEROOTREQUEST.runFunction(/tmp/blitzy/scratch/<uuid:1>/dest/stack/core/mura/content/contentServer.cfc:784)",
-                  "TEMPLATE": "/tmp/blitzy/scratch/<uuid:1>/dest/stack/core/mura/content/contentServer.cfc",
+                  "RAW_TRACE": "\tat cfcontentServer2ecfc902908446$funcHANDLEROOTREQUEST.runFunction(/tmp/blitzy/scratch/<uuid:1>/w-020/stack2/core/mura/content/contentServer.cfc:784)",
+                  "TEMPLATE": "/tmp/blitzy/scratch/<uuid:1>/w-020/stack2/core/mura/content/contentServer.cfc",
                   "TYPE": "CFML"
                 },
                 {
                   "COLUMN": 0,
                   "ID": "CF_TEMPLATEPROXY",
                   "LINE": 75,
-                  "RAW_TRACE": "\tat cfindex2ecfm994378857.runPage(/tmp/blitzy/scratch/<uuid:1>/dest/stack/index.cfm:75)",
-                  "TEMPLATE": "/tmp/blitzy/scratch/<uuid:1>/dest/stack/index.cfm",
+                  "RAW_TRACE": "\tat cfindex2ecfm895911804.runPage(/tmp/blitzy/scratch/<uuid:1>/w-020/stack2/index.cfm:75)",
+                  "TEMPLATE": "/tmp/blitzy/scratch/<uuid:1>/w-020/stack2/index.cfm",
                   "TYPE": "CFML"
                 }
               ],
@@ -14817,7 +14817,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "68ccec2a7a06000d4de45b5ec930d260650670319f5e0f6f4deafe5425daa256",
+        "rawSha256": "a986ea77e3cd40c685c2e3eaaba4f4bbb396b75e14f3fe9e9c6b42afe6de1f3d",
         "status": 500
       },
       "routeKey": "rest:group.save"
@@ -14872,7 +14872,7 @@
         "body": {
           "kind": "form",
           "value": {
-            "extendSetID": "568A2D0F-039F-62A5-E0B97191A68D20D4",
+            "extendSetID": "A524B357-BA21-0672-573BE7BB6E9C5B1F",
             "gsid10field": "GS-ID-10 rest",
             "siteid": "tenant-a",
             "subtype": "GSID10"
@@ -14883,7 +14883,7 @@
           "content-type": "application/x-www-form-urlencoded"
         },
         "method": "POST",
-        "url": "/_api/rest/v1/tenant-a/group/568A765E-E3AF-F64A-4215263811B6C0BA"
+        "url": "/_api/rest/v1/tenant-a/group/A524C197-ECE4-5B81-9155DBE779E35D71"
       },
       "response": {
         "domModel": {
@@ -14918,7 +14918,7 @@
         "headers": {
           "content-type": "text/html;charset=UTF-8"
         },
-        "rawSha256": "47da9aeaa9516f2ad3bf3a512f860524f75bd2431dd0ec7e1ef9ca095af7ba5a",
+        "rawSha256": "afc9ad73b19270b8db2b5121e14dacb16b0518030f512deb22edf317fd4ae3db",
         "status": 500
       },
       "routeKey": "rest:group.save{extdata}"
@@ -14982,7 +14982,7 @@
           "content-type": "application/x-www-form-urlencoded"
         },
         "method": "POST",
-        "url": "/_api/rest/v1/tenant-a/group/568A765E-E3AF-F64A-4215263811B6C0BA"
+        "url": "/_api/rest/v1/tenant-a/group/A524C197-ECE4-5B81-9155DBE779E35D71"
       },
       "response": {
         "domModel": {
@@ -15017,7 +15017,7 @@
         "headers": {
           "content-type": "text/html;charset=UTF-8"
         },
-        "rawSha256": "47da9aeaa9516f2ad3bf3a512f860524f75bd2431dd0ec7e1ef9ca095af7ba5a",
+        "rawSha256": "afc9ad73b19270b8db2b5121e14dacb16b0518030f512deb22edf317fd4ae3db",
         "status": 500
       },
       "routeKey": "rest:group.save{photo}"
@@ -15047,7 +15047,7 @@
           "authorization": "Basic <secret>"
         },
         "method": "DELETE",
-        "url": "/_api/rest/v1/tenant-a/group/568A765E-E3AF-F64A-4215263811B6C0BA"
+        "url": "/_api/rest/v1/tenant-a/group/A524C197-ECE4-5B81-9155DBE779E35D71"
       },
       "response": {
         "body": {
@@ -15060,87 +15060,87 @@
               "ErrNumber": 0,
               "Message": "The requested scope session has not been enabled.",
               "ScopeName": "session",
-              "StackTrace": "coldfusion.runtime.NoOperScope$ScopeDisabledException: The requested scope session has not been enabled.\n\tat coldfusion.runtime.NoOperScope.resolveName(NoOperScope.java:36)\n\tat coldfusion.runtime.Scope.get(Scope.java:62)\n\tat coldfusion.runtime.DotResolver.resolve(DotResolver.java:52)\n\tat coldfusion.runtime.DotResolver.resolve(DotResolver.java:88)\n\tat coldfusion.runtime.NeoPageContext.SymTab_resolveSplitName(NeoPageContext.java:1336)\n\tat coldfusion.runtime.NeoPageContext.SymTab_resolveSplitName(NeoPageContext.java:1324)\n\tat coldfusion.runtime.NeoPageContext.SymTab_resolveDottedName(NeoPageContext.java:1304)\n\tat coldfusion.runtime.NeoPageContext.findAttributeVar(NeoPageContext.java:808)\n\tat coldfusion.runtime.CFPage.IsDefined(CFPage.java:2200)\n\tat cfcontentRenderer2ecfc193136440$funcINIT.runFunction(/tmp/blitzy/scratch/<uuid:1>/dest/stack/core/mura/content/contentRenderer.cfc:701)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:668)\n\tat coldfusion.filter.SilentFilter.invoke(SilentFilter.java:47)\n\tat coldfusion.runtime.UDFMethod$ArgumentCollectionFilter.invoke(UDFMethod.java:561)\n\tat coldfusion.filter.FunctionAccessFilter.invoke(FunctionAccessFilter.java:95)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:483)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:456)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:726)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:1022)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:804)\n\tat coldfusion.runtime.CfJspPage._invoke(CfJspPage.java:4048)\n\tat coldfusion.runtime.CfJspPage._invoke(CfJspPage.java:4012)\n\tat cfMasaScope2ecfc573892996$funcGETCONTENTRENDERER._factor0(/tmp/blitzy/scratch/<uuid:1>/dest/stack/core/mura/MasaScope.cfc:174)\n\tat cfMasaScope2ecfc573892996$funcGETCONTENTRENDERER.runFunction(/tmp/blitzy/scratch/<uuid:1>/dest/stack/core/mura/MasaScope.cfc:157)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:668)\n\tat coldfusion.filter.SilentFilter.invoke(SilentFilter.java:47)\n\tat coldfusion.runtime.UDFMethod$ArgumentCollectionFilter.invoke(UDFMethod.java:561)\n\tat coldfusion.filter.FunctionAccessFilter.invoke(FunctionAccessFilter.java:95)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:483)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:456)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:328)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:1017)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:737)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:541)\n\tat coldfusion.runtime.CfJspPage._invoke(CfJspPage.java:4137)\n\tat coldfusion.runtime.CfJspPage._invoke(CfJspPage.java:4100)\n\tat cfevent2ecfc1860771027$funcLOADSITERELATEDOBJECTS.runFunction(/tmp/blitzy/scratch/<uuid:1>/dest/stack/core/mura/event.cfc:220)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:668)\n\tat coldfusion.filter.SilentFilter.invoke(SilentFilter.java:47)\n\tat coldfusion.runtime.UDFMethod$ArgumentCollectionFilter.invoke(UDFMethod.java:561)\n\tat coldfusion.filter.FunctionAccessFilter.invoke(FunctionAccessFilter.java:95)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:483)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:456)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:328)\n\tat coldfusion.runtime.CfJspPage._invokeUDF(CfJspPage.java:4898)\n\tat coldfusion.runtime.CfJspPage._invokeUDF(CfJspPage.java:4878)\n\tat cfevent2ecfc1860771027$funcINIT.runFunction(/tmp/blitzy/scratch/<uuid:1>/dest/stack/core/mura/event.cfc:97)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:668)\n\tat coldfusion.filter.SilentFilter.invoke(SilentFilter.java:47)\n\tat coldfusion.runtime.UDFMethod$ArgumentCollectionFilter.invoke(UDFMethod.java:561)\n\tat coldfusion.filter.FunctionAccessFilter.invoke(FunctionAccessFilter.java:95)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:483)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:456)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:328)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:1017)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:737)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:541)\n\tat coldfusion.runtime.CfJspPage._invoke(CfJspPage.java:4137)\n\tat coldfusion.runtime.CfJspPage._invoke(CfJspPage.java:4100)\n\tat cfuserUtility2ecfc454098704$funcLOOKUPBYCREDENTIALS.runFunction(/tmp/blitzy/scratch/<uuid:1>/dest/stack/core/mura/user/userUtility.cfc:119)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:668)\n\tat coldfusion.filter.SilentFilter.invoke(SilentFilter.java:47)\n\tat coldfusion.runtime.UDFMethod$ArgumentCollectionFilter.invoke(UDFMethod.java:561)\n\tat coldfusion.filter.FunctionAccessFilter.invoke(FunctionAccessFilter.java:95)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:483)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:456)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:328)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:1017)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:737)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:541)\n\tat coldfusion.runtime.CfJspPage._invoke(CfJspPage.java:4137)\n\tat coldfusion.runtime.CfJspPage._invoke(CfJspPage.java:4100)\n\tat cfjsonApiUtility2ecfc988474930$funcPROCESSREQUEST.runFunction(/tmp/blitzy/scratch/<uuid:1>/dest/stack/core/mura/client/api/json/v1/jsonApiUtility.cfc:473)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:668)\n\tat coldfusion.runtime.UDFMethod$ArgumentCollectionFilter.invoke(UDFMethod.java:561)\n\tat coldfusion.filter.FunctionAccessFilter.invoke(FunctionAccessFilter.java:95)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:483)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:456)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:328)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:1017)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:737)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:541)\n\tat coldfusion.runtime.CfJspPage._invoke(CfJspPage.java:4137)\n\tat coldfusion.runtime.CfJspPage._invoke(CfJspPage.java:4100)\n\tat cfcontentServer2ecfc2032813127$funcHANDLEAPIREQUEST.runFunction(/tmp/blitzy/scratch/<uuid:1>/dest/stack/core/mura/content/contentServer.cfc:636)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:668)\n\tat coldfusion.filter.SilentFilter.invoke(SilentFilter.java:47)\n\tat coldfusion.runtime.UDFMethod$ArgumentCollectionFilter.invoke(UDFMethod.java:561)\n\tat coldfusion.filter.FunctionAccessFilter.invoke(FunctionAccessFilter.java:95)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:483)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:456)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:328)\n\tat coldfusion.runtime.CfJspPage._invokeUDF(CfJspPage.java:4898)\n\tat coldfusion.runtime.CfJspPage._invokeUDF(CfJspPage.java:4878)\n\tat cfcontentServer2ecfc2032813127$funcHANDLEROOTREQUEST.runFunction(/tmp/blitzy/scratch/<uuid:1>/dest/stack/core/mura/content/contentServer.cfc:784)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:668)\n\tat coldfusion.filter.SilentFilter.invoke(SilentFilter.java:47)\n\tat coldfusion.runtime.UDFMethod$ArgumentCollectionFilter.invoke(UDFMethod.java:561)\n\tat coldfusion.filter.FunctionAccessFilter.invoke(FunctionAccessFilter.java:95)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:483)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:456)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:328)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:1017)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:737)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:541)\n\tat coldfusion.runtime.CfJspPage._invoke(CfJspPage.java:4137)\n\tat coldfusion.runtime.CfJspPage._invoke(CfJspPage.java:4100)\n\tat cfindex2ecfm994378857.runPage(/tmp/blitzy/scratch/<uuid:1>/dest/stack/index.cfm:75)\n\tat coldfusion.runtime.CfJspPage.invoke(CfJspPage.java:251)\n\tat coldfusion.tagext.lang.IncludeTag.handlePageInvoke(IncludeTag.java:749)\n\tat coldfusion.tagext.lang.IncludeTag.doStartTag(IncludeTag.java:578)\n\tat coldfusion.filter.CfincludeFilter.invoke(CfincludeFilter.java:65)\n\tat coldfusion.filter.ApplicationFilter.invoke(ApplicationFilter.java:573)\n\tat coldfusion.filter.RequestMonitorFilter.invoke(RequestMonitorFilter.java:43)\n\tat coldfusion.filter.MonitoringFilter.invoke(MonitoringFilter.java:40)\n\tat coldfusion.filter.PathFilter.invoke(PathFilter.java:162)\n\tat coldfusion.filter.IpFilter.invoke(IpFilter.java:45)\n\tat coldfusion.filter.ExceptionFilter.invoke(ExceptionFilter.java:96)\n\tat coldfusion.filter.ClientScopePersistenceFilter.invoke(ClientScopePersistenceFilter.java:28)\n\tat coldfusion.filter.BrowserFilter.invoke(BrowserFilter.java:38)\n\tat coldfusion.filter.NoCacheFilter.invoke(NoCacheFilter.java:60)\n\tat coldfusion.filter.GlobalsFilter.invoke(GlobalsFilter.java:38)\n\tat coldfusion.filter.DatasourceFilter.invoke(DatasourceFilter.java:22)\n\tat coldfusion.filter.CachingFilter.invoke(CachingFilter.java:62)\n\tat coldfusion.CfmServlet.service(CfmServlet.java:231)\n\tat coldfusion.bootstrap.BootstrapServlet.service(BootstrapServlet.java:311)\n\tat io.undertow.servlet.handlers.ServletHandler.handleRequest(ServletHandler.java:74)\n\tat io.undertow.servlet.handlers.FilterHandler$FilterChainImpl.doFilter(FilterHandler.java:129)\n\tat org.cfmlprojects.regexpathinfofilter.RegexPathInfoFilter.doFilter(RegexPathInfoFilter.java:56)\n\tat io.undertow.servlet.core.ManagedFilter.doFilter(ManagedFilter.java:67)\n\tat io.undertow.servlet.handlers.FilterHandler$FilterChainImpl.doFilter(FilterHandler.java:131)\n\tat io.undertow.servlet.handlers.FilterHandler.handleRequest(FilterHandler.java:84)\n\tat io.undertow.servlet.handlers.security.ServletSecurityRoleHandler.handleRequest(ServletSecurityRoleHandler.java:62)\n\tat io.undertow.servlet.handlers.ServletChain$1.handleRequest(ServletChain.java:68)\n\tat io.undertow.servlet.handlers.ServletDispatchingHandler.handleRequest(ServletDispatchingHandler.java:36)\n\tat runwar.undertow.SSLCertHeaderHandler.handleRequest(SSLCertHeaderHandler.java:161)\n\tat io.undertow.servlet.handlers.RedirectDirHandler.handleRequest(RedirectDirHandler.java:68)\n\tat io.undertow.server.handlers.PredicateHandler.handleRequest(PredicateHandler.java:43)\n\tat io.undertow.server.handlers.PredicateHandler.handleRequest(PredicateHandler.java:43)\n\tat io.undertow.servlet.handlers.ServletInitialHandler.dispatchRequest(ServletInitialHandler.java:259)\n\tat io.undertow.servlet.handlers.ServletInitialHandler.dispatchToPath(ServletInitialHandler.java:184)\n\tat io.undertow.servlet.spec.RequestDispatcherImpl.forwardImpl(RequestDispatcherImpl.java:186)\n\tat io.undertow.servlet.spec.RequestDispatcherImpl.forwardImplSetup(RequestDispatcherImpl.java:134)\n\tat io.undertow.servlet.spec.RequestDispatcherImpl.forward(RequestDispatcherImpl.java:97)\n\tat org.cfmlprojects.regexpathinfofilter.RegexPathInfoFilter.doFilter(RegexPathInfoFilter.java:54)\n\tat io.undertow.servlet.core.ManagedFilter.doFilter(ManagedFilter.java:67)\n\tat io.undertow.servlet.handlers.FilterHandler$FilterChainImpl.doFilter(FilterHandler.java:131)\n\tat io.undertow.servlet.handlers.FilterHandler.handleRequest(FilterHandler.java:84)\n\tat io.undertow.servlet.handlers.security.ServletSecurityRoleHandler.handleRequest(ServletSecurityRoleHandler.java:62)\n\tat io.undertow.servlet.handlers.ServletChain$1.handleRequest(ServletChain.java:68)\n\tat io.undertow.servlet.handlers.ServletDispatchingHandler.handleRequest(ServletDispatchingHandler.java:36)\n\tat runwar.undertow.SSLCertHeaderHandler.handleRequest(SSLCertHeaderHandler.java:161)\n\tat io.undertow.servlet.handlers.RedirectDirHandler.handleRequest(RedirectDirHandler.java:68)\n\tat io.undertow.servlet.handlers.security.SSLInformationAssociationHandler.handleRequest(SSLInformationAssociationHandler.java:117)\n\tat io.undertow.servlet.handlers.security.ServletAuthenticationCallHandler.handleRequest(ServletAuthenticationCallHandler.java:57)\n\tat io.undertow.server.handlers.PredicateHandler.handleRequest(PredicateHandler.java:43)\n\tat io.undertow.security.handlers.AbstractConfidentialityHandler.handleRequest(AbstractConfidentialityHandler.java:46)\n\tat io.undertow.servlet.handlers.security.ServletConfidentialityConstraintHandler.handleRequest(ServletConfidentialityConstraintHandler.java:64)\n\tat io.undertow.security.handlers.AuthenticationMechanismsHandler.handleRequest(AuthenticationMechanismsHandler.java:60)\n\tat io.undertow.servlet.handlers.security.CachedAuthenticatedSessionHandler.handleRequest(CachedAuthenticatedSessionHandler.java:75)\n\tat io.undertow.security.handlers.AbstractSecurityContextAssociationHandler.handleRequest(AbstractSecurityContextAssociationHandler.java:43)\n\tat io.undertow.server.handlers.PredicateHandler.handleRequest(PredicateHandler.java:43)\n\tat io.undertow.servlet.handlers.SendErrorPageHandler.handleRequest(SendErrorPageHandler.java:52)\n\tat io.undertow.server.handlers.PredicateHandler.handleRequest(PredicateHandler.java:43)\n\tat io.undertow.servlet.handlers.ServletInitialHandler.handleFirstRequest(ServletInitialHandler.java:277)\n\tat io.undertow.servlet.handlers.ServletInitialHandler.access$000(ServletInitialHandler.java:79)\n\tat io.undertow.servlet.handlers.ServletInitialHandler$1.call(ServletInitialHandler.java:130)\n\tat io.undertow.servlet.handlers.ServletInitialHandler$1.call(ServletInitialHandler.java:127)\n\tat io.undertow.servlet.core.ServletRequestContextThreadSetupAction$1.call(ServletRequestContextThreadSetupAction.java:48)\n\tat io.undertow.servlet.core.ContextClassLoaderSetupAction$1.call(ContextClassLoaderSetupAction.java:43)\n\tat io.undertow.servlet.handlers.ServletInitialHandler.dispatchRequest(ServletInitialHandler.java:257)\n\tat io.undertow.servlet.handlers.ServletInitialHandler.handleRequest(ServletInitialHandler.java:177)\n\tat io.undertow.server.handlers.HttpContinueReadHandler.handleRequest(HttpContinueReadHandler.java:69)\n\tat io.undertow.server.handlers.PredicateHandler.handleRequest(PredicateHandler.java:43)\n\tat runwar.undertow.WelcomeFileHandler.handleRequest(WelcomeFileHandler.java:49)\n\tat io.undertow.server.handlers.PathHandler.handleRequest(PathHandler.java:104)\n\tat runwar.undertow.SiteDeployment$1.handleRequest(SiteDeployment.java:169)\n\tat io.undertow.predicate.PredicatesHandler.handleRequest(PredicatesHandler.java:141)\n\tat io.undertow.predicate.PredicatesHandler.handleRequest(PredicatesHandler.java:141)\n\tat io.undertow.server.handlers.SetAttributeHandler.handleRequest(SetAttributeHandler.java:119)\n\tat io.undertow.server.handlers.builder.RewriteHandlerBuilder$2$1.handleRequest(RewriteHandlerBuilder.java:92)\n\tat io.undertow.predicate.PredicatesHandler.handleRequest(PredicatesHandler.java:113)\n\tat io.undertow.predicate.PredicatesHandler.handleRequest(PredicatesHandler.java:113)\n\tat io.undertow.server.handlers.DisallowedMethodsHandler.handleRequest(DisallowedMethodsHandler.java:62)\n\tat io.undertow.predicate.PredicatesHandler.handleRequest(PredicatesHandler.java:113)\n\tat io.undertow.server.handlers.encoding.EncodingHandler.handleRequest(EncodingHandler.java:72)\n\tat runwar.undertow.LifecyleHandler.handleRequest(LifecyleHandler.java:145)\n\tat runwar.undertow.SiteDeployment$4.handleRequest(SiteDeployment.java:360)\n\tat io.undertow.server.Connectors.executeRootHandler(Connectors.java:343)\n\tat io.undertow.server.HttpServerExchange$1.run(HttpServerExchange.java:931)\n\tat org.jboss.threads.ContextHandler$1.runWith(ContextHandler.java:18)\n\tat org.jboss.threads.EnhancedQueueExecutor$Task.run(EnhancedQueueExecutor.java:2513)\n\tat org.jboss.threads.EnhancedQueueExecutor$ThreadBody.run(EnhancedQueueExecutor.java:1538)\n\tat org.xnio.XnioWorker$WorkerThreadFactory$1$1.run(XnioWorker.java:1282)\n\tat java.base/java.lang.Thread.run(Thread.java:840)\n",
+              "StackTrace": "coldfusion.runtime.NoOperScope$ScopeDisabledException: The requested scope session has not been enabled.\n\tat coldfusion.runtime.NoOperScope.resolveName(NoOperScope.java:36)\n\tat coldfusion.runtime.Scope.get(Scope.java:62)\n\tat coldfusion.runtime.DotResolver.resolve(DotResolver.java:52)\n\tat coldfusion.runtime.DotResolver.resolve(DotResolver.java:88)\n\tat coldfusion.runtime.NeoPageContext.SymTab_resolveSplitName(NeoPageContext.java:1336)\n\tat coldfusion.runtime.NeoPageContext.SymTab_resolveSplitName(NeoPageContext.java:1324)\n\tat coldfusion.runtime.NeoPageContext.SymTab_resolveDottedName(NeoPageContext.java:1304)\n\tat coldfusion.runtime.NeoPageContext.findAttributeVar(NeoPageContext.java:808)\n\tat coldfusion.runtime.CFPage.IsDefined(CFPage.java:2200)\n\tat cfcontentRenderer2ecfc329935073$funcINIT.runFunction(/tmp/blitzy/scratch/<uuid:1>/w-020/stack2/core/mura/content/contentRenderer.cfc:701)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:668)\n\tat coldfusion.filter.SilentFilter.invoke(SilentFilter.java:47)\n\tat coldfusion.runtime.UDFMethod$ArgumentCollectionFilter.invoke(UDFMethod.java:561)\n\tat coldfusion.filter.FunctionAccessFilter.invoke(FunctionAccessFilter.java:95)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:483)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:456)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:726)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:1022)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:804)\n\tat coldfusion.runtime.CfJspPage._invoke(CfJspPage.java:4048)\n\tat coldfusion.runtime.CfJspPage._invoke(CfJspPage.java:4012)\n\tat cfMasaScope2ecfc736754709$funcGETCONTENTRENDERER._factor0(/tmp/blitzy/scratch/<uuid:1>/w-020/stack2/core/mura/MasaScope.cfc:174)\n\tat cfMasaScope2ecfc736754709$funcGETCONTENTRENDERER.runFunction(/tmp/blitzy/scratch/<uuid:1>/w-020/stack2/core/mura/MasaScope.cfc:157)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:668)\n\tat coldfusion.filter.SilentFilter.invoke(SilentFilter.java:47)\n\tat coldfusion.runtime.UDFMethod$ArgumentCollectionFilter.invoke(UDFMethod.java:561)\n\tat coldfusion.filter.FunctionAccessFilter.invoke(FunctionAccessFilter.java:95)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:483)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:456)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:328)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:1017)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:737)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:541)\n\tat coldfusion.runtime.CfJspPage._invoke(CfJspPage.java:4137)\n\tat coldfusion.runtime.CfJspPage._invoke(CfJspPage.java:4100)\n\tat cfevent2ecfc1635328434$funcLOADSITERELATEDOBJECTS.runFunction(/tmp/blitzy/scratch/<uuid:1>/w-020/stack2/core/mura/event.cfc:220)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:668)\n\tat coldfusion.filter.SilentFilter.invoke(SilentFilter.java:47)\n\tat coldfusion.runtime.UDFMethod$ArgumentCollectionFilter.invoke(UDFMethod.java:561)\n\tat coldfusion.filter.FunctionAccessFilter.invoke(FunctionAccessFilter.java:95)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:483)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:456)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:328)\n\tat coldfusion.runtime.CfJspPage._invokeUDF(CfJspPage.java:4898)\n\tat coldfusion.runtime.CfJspPage._invokeUDF(CfJspPage.java:4878)\n\tat cfevent2ecfc1635328434$funcINIT.runFunction(/tmp/blitzy/scratch/<uuid:1>/w-020/stack2/core/mura/event.cfc:97)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:668)\n\tat coldfusion.filter.SilentFilter.invoke(SilentFilter.java:47)\n\tat coldfusion.runtime.UDFMethod$ArgumentCollectionFilter.invoke(UDFMethod.java:561)\n\tat coldfusion.filter.FunctionAccessFilter.invoke(FunctionAccessFilter.java:95)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:483)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:456)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:328)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:1017)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:737)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:541)\n\tat coldfusion.runtime.CfJspPage._invoke(CfJspPage.java:4137)\n\tat coldfusion.runtime.CfJspPage._invoke(CfJspPage.java:4100)\n\tat cfuserUtility2ecfc704181814$funcLOOKUPBYCREDENTIALS.runFunction(/tmp/blitzy/scratch/<uuid:1>/w-020/stack2/core/mura/user/userUtility.cfc:119)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:668)\n\tat coldfusion.filter.SilentFilter.invoke(SilentFilter.java:47)\n\tat coldfusion.runtime.UDFMethod$ArgumentCollectionFilter.invoke(UDFMethod.java:561)\n\tat coldfusion.filter.FunctionAccessFilter.invoke(FunctionAccessFilter.java:95)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:483)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:456)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:328)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:1017)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:737)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:541)\n\tat coldfusion.runtime.CfJspPage._invoke(CfJspPage.java:4137)\n\tat coldfusion.runtime.CfJspPage._invoke(CfJspPage.java:4100)\n\tat cfjsonApiUtility2ecfc1819627928$funcPROCESSREQUEST.runFunction(/tmp/blitzy/scratch/<uuid:1>/w-020/stack2/core/mura/client/api/json/v1/jsonApiUtility.cfc:473)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:668)\n\tat coldfusion.runtime.UDFMethod$ArgumentCollectionFilter.invoke(UDFMethod.java:561)\n\tat coldfusion.filter.FunctionAccessFilter.invoke(FunctionAccessFilter.java:95)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:483)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:456)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:328)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:1017)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:737)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:541)\n\tat coldfusion.runtime.CfJspPage._invoke(CfJspPage.java:4137)\n\tat coldfusion.runtime.CfJspPage._invoke(CfJspPage.java:4100)\n\tat cfcontentServer2ecfc902908446$funcHANDLEAPIREQUEST.runFunction(/tmp/blitzy/scratch/<uuid:1>/w-020/stack2/core/mura/content/contentServer.cfc:636)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:668)\n\tat coldfusion.filter.SilentFilter.invoke(SilentFilter.java:47)\n\tat coldfusion.runtime.UDFMethod$ArgumentCollectionFilter.invoke(UDFMethod.java:561)\n\tat coldfusion.filter.FunctionAccessFilter.invoke(FunctionAccessFilter.java:95)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:483)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:456)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:328)\n\tat coldfusion.runtime.CfJspPage._invokeUDF(CfJspPage.java:4898)\n\tat coldfusion.runtime.CfJspPage._invokeUDF(CfJspPage.java:4878)\n\tat cfcontentServer2ecfc902908446$funcHANDLEROOTREQUEST.runFunction(/tmp/blitzy/scratch/<uuid:1>/w-020/stack2/core/mura/content/contentServer.cfc:784)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:668)\n\tat coldfusion.filter.SilentFilter.invoke(SilentFilter.java:47)\n\tat coldfusion.runtime.UDFMethod$ArgumentCollectionFilter.invoke(UDFMethod.java:561)\n\tat coldfusion.filter.FunctionAccessFilter.invoke(FunctionAccessFilter.java:95)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:483)\n\tat coldfusion.runtime.UDFMethod.runFilterChain(UDFMethod.java:456)\n\tat coldfusion.runtime.UDFMethod.invoke(UDFMethod.java:328)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:1017)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:737)\n\tat coldfusion.runtime.TemplateProxy.invoke(TemplateProxy.java:541)\n\tat coldfusion.runtime.CfJspPage._invoke(CfJspPage.java:4137)\n\tat coldfusion.runtime.CfJspPage._invoke(CfJspPage.java:4100)\n\tat cfindex2ecfm895911804.runPage(/tmp/blitzy/scratch/<uuid:1>/w-020/stack2/index.cfm:75)\n\tat coldfusion.runtime.CfJspPage.invoke(CfJspPage.java:251)\n\tat coldfusion.tagext.lang.IncludeTag.handlePageInvoke(IncludeTag.java:749)\n\tat coldfusion.tagext.lang.IncludeTag.doStartTag(IncludeTag.java:578)\n\tat coldfusion.filter.CfincludeFilter.invoke(CfincludeFilter.java:65)\n\tat coldfusion.filter.ApplicationFilter.invoke(ApplicationFilter.java:573)\n\tat coldfusion.filter.RequestMonitorFilter.invoke(RequestMonitorFilter.java:43)\n\tat coldfusion.filter.MonitoringFilter.invoke(MonitoringFilter.java:40)\n\tat coldfusion.filter.PathFilter.invoke(PathFilter.java:162)\n\tat coldfusion.filter.IpFilter.invoke(IpFilter.java:45)\n\tat coldfusion.filter.ExceptionFilter.invoke(ExceptionFilter.java:96)\n\tat coldfusion.filter.ClientScopePersistenceFilter.invoke(ClientScopePersistenceFilter.java:28)\n\tat coldfusion.filter.BrowserFilter.invoke(BrowserFilter.java:38)\n\tat coldfusion.filter.NoCacheFilter.invoke(NoCacheFilter.java:60)\n\tat coldfusion.filter.GlobalsFilter.invoke(GlobalsFilter.java:38)\n\tat coldfusion.filter.DatasourceFilter.invoke(DatasourceFilter.java:22)\n\tat coldfusion.filter.CachingFilter.invoke(CachingFilter.java:62)\n\tat coldfusion.CfmServlet.service(CfmServlet.java:231)\n\tat coldfusion.bootstrap.BootstrapServlet.service(BootstrapServlet.java:311)\n\tat io.undertow.servlet.handlers.ServletHandler.handleRequest(ServletHandler.java:74)\n\tat io.undertow.servlet.handlers.FilterHandler$FilterChainImpl.doFilter(FilterHandler.java:129)\n\tat org.cfmlprojects.regexpathinfofilter.RegexPathInfoFilter.doFilter(RegexPathInfoFilter.java:56)\n\tat io.undertow.servlet.core.ManagedFilter.doFilter(ManagedFilter.java:67)\n\tat io.undertow.servlet.handlers.FilterHandler$FilterChainImpl.doFilter(FilterHandler.java:131)\n\tat io.undertow.servlet.handlers.FilterHandler.handleRequest(FilterHandler.java:84)\n\tat io.undertow.servlet.handlers.security.ServletSecurityRoleHandler.handleRequest(ServletSecurityRoleHandler.java:62)\n\tat io.undertow.servlet.handlers.ServletChain$1.handleRequest(ServletChain.java:68)\n\tat io.undertow.servlet.handlers.ServletDispatchingHandler.handleRequest(ServletDispatchingHandler.java:36)\n\tat runwar.undertow.SSLCertHeaderHandler.handleRequest(SSLCertHeaderHandler.java:161)\n\tat io.undertow.servlet.handlers.RedirectDirHandler.handleRequest(RedirectDirHandler.java:68)\n\tat io.undertow.server.handlers.PredicateHandler.handleRequest(PredicateHandler.java:43)\n\tat io.undertow.server.handlers.PredicateHandler.handleRequest(PredicateHandler.java:43)\n\tat io.undertow.servlet.handlers.ServletInitialHandler.dispatchRequest(ServletInitialHandler.java:259)\n\tat io.undertow.servlet.handlers.ServletInitialHandler.dispatchToPath(ServletInitialHandler.java:184)\n\tat io.undertow.servlet.spec.RequestDispatcherImpl.forwardImpl(RequestDispatcherImpl.java:186)\n\tat io.undertow.servlet.spec.RequestDispatcherImpl.forwardImplSetup(RequestDispatcherImpl.java:134)\n\tat io.undertow.servlet.spec.RequestDispatcherImpl.forward(RequestDispatcherImpl.java:97)\n\tat org.cfmlprojects.regexpathinfofilter.RegexPathInfoFilter.doFilter(RegexPathInfoFilter.java:54)\n\tat io.undertow.servlet.core.ManagedFilter.doFilter(ManagedFilter.java:67)\n\tat io.undertow.servlet.handlers.FilterHandler$FilterChainImpl.doFilter(FilterHandler.java:131)\n\tat io.undertow.servlet.handlers.FilterHandler.handleRequest(FilterHandler.java:84)\n\tat io.undertow.servlet.handlers.security.ServletSecurityRoleHandler.handleRequest(ServletSecurityRoleHandler.java:62)\n\tat io.undertow.servlet.handlers.ServletChain$1.handleRequest(ServletChain.java:68)\n\tat io.undertow.servlet.handlers.ServletDispatchingHandler.handleRequest(ServletDispatchingHandler.java:36)\n\tat runwar.undertow.SSLCertHeaderHandler.handleRequest(SSLCertHeaderHandler.java:161)\n\tat io.undertow.servlet.handlers.RedirectDirHandler.handleRequest(RedirectDirHandler.java:68)\n\tat io.undertow.servlet.handlers.security.SSLInformationAssociationHandler.handleRequest(SSLInformationAssociationHandler.java:117)\n\tat io.undertow.servlet.handlers.security.ServletAuthenticationCallHandler.handleRequest(ServletAuthenticationCallHandler.java:57)\n\tat io.undertow.server.handlers.PredicateHandler.handleRequest(PredicateHandler.java:43)\n\tat io.undertow.security.handlers.AbstractConfidentialityHandler.handleRequest(AbstractConfidentialityHandler.java:46)\n\tat io.undertow.servlet.handlers.security.ServletConfidentialityConstraintHandler.handleRequest(ServletConfidentialityConstraintHandler.java:64)\n\tat io.undertow.security.handlers.AuthenticationMechanismsHandler.handleRequest(AuthenticationMechanismsHandler.java:60)\n\tat io.undertow.servlet.handlers.security.CachedAuthenticatedSessionHandler.handleRequest(CachedAuthenticatedSessionHandler.java:75)\n\tat io.undertow.security.handlers.AbstractSecurityContextAssociationHandler.handleRequest(AbstractSecurityContextAssociationHandler.java:43)\n\tat io.undertow.server.handlers.PredicateHandler.handleRequest(PredicateHandler.java:43)\n\tat io.undertow.servlet.handlers.SendErrorPageHandler.handleRequest(SendErrorPageHandler.java:52)\n\tat io.undertow.server.handlers.PredicateHandler.handleRequest(PredicateHandler.java:43)\n\tat io.undertow.servlet.handlers.ServletInitialHandler.handleFirstRequest(ServletInitialHandler.java:277)\n\tat io.undertow.servlet.handlers.ServletInitialHandler.access$000(ServletInitialHandler.java:79)\n\tat io.undertow.servlet.handlers.ServletInitialHandler$1.call(ServletInitialHandler.java:130)\n\tat io.undertow.servlet.handlers.ServletInitialHandler$1.call(ServletInitialHandler.java:127)\n\tat io.undertow.servlet.core.ServletRequestContextThreadSetupAction$1.call(ServletRequestContextThreadSetupAction.java:48)\n\tat io.undertow.servlet.core.ContextClassLoaderSetupAction$1.call(ContextClassLoaderSetupAction.java:43)\n\tat io.undertow.servlet.handlers.ServletInitialHandler.dispatchRequest(ServletInitialHandler.java:257)\n\tat io.undertow.servlet.handlers.ServletInitialHandler.handleRequest(ServletInitialHandler.java:177)\n\tat io.undertow.server.handlers.HttpContinueReadHandler.handleRequest(HttpContinueReadHandler.java:69)\n\tat io.undertow.server.handlers.PredicateHandler.handleRequest(PredicateHandler.java:43)\n\tat runwar.undertow.WelcomeFileHandler.handleRequest(WelcomeFileHandler.java:49)\n\tat io.undertow.server.handlers.PathHandler.handleRequest(PathHandler.java:104)\n\tat runwar.undertow.SiteDeployment$1.handleRequest(SiteDeployment.java:169)\n\tat io.undertow.predicate.PredicatesHandler.handleRequest(PredicatesHandler.java:141)\n\tat io.undertow.predicate.PredicatesHandler.handleRequest(PredicatesHandler.java:141)\n\tat io.undertow.server.handlers.SetAttributeHandler.handleRequest(SetAttributeHandler.java:119)\n\tat io.undertow.server.handlers.builder.RewriteHandlerBuilder$2$1.handleRequest(RewriteHandlerBuilder.java:92)\n\tat io.undertow.predicate.PredicatesHandler.handleRequest(PredicatesHandler.java:113)\n\tat io.undertow.predicate.PredicatesHandler.handleRequest(PredicatesHandler.java:113)\n\tat io.undertow.server.handlers.DisallowedMethodsHandler.handleRequest(DisallowedMethodsHandler.java:62)\n\tat io.undertow.predicate.PredicatesHandler.handleRequest(PredicatesHandler.java:113)\n\tat io.undertow.server.handlers.encoding.EncodingHandler.handleRequest(EncodingHandler.java:72)\n\tat runwar.undertow.LifecyleHandler.handleRequest(LifecyleHandler.java:145)\n\tat runwar.undertow.SiteDeployment$4.handleRequest(SiteDeployment.java:360)\n\tat io.undertow.server.Connectors.executeRootHandler(Connectors.java:343)\n\tat io.undertow.server.HttpServerExchange$1.run(HttpServerExchange.java:931)\n\tat org.jboss.threads.ContextHandler$1.runWith(ContextHandler.java:18)\n\tat org.jboss.threads.EnhancedQueueExecutor$Task.run(EnhancedQueueExecutor.java:2513)\n\tat org.jboss.threads.EnhancedQueueExecutor$ThreadBody.run(EnhancedQueueExecutor.java:1538)\n\tat org.xnio.XnioWorker$WorkerThreadFactory$1$1.run(XnioWorker.java:1282)\n\tat java.base/java.lang.Thread.run(Thread.java:840)\n",
               "Suppressed": [],
               "TagContext": [
                 {
                   "COLUMN": 0,
                   "ID": "CF_CFPAGE",
                   "LINE": 701,
-                  "RAW_TRACE": "\tat cfcontentRenderer2ecfc193136440$funcINIT.runFunction(/tmp/blitzy/scratch/<uuid:1>/dest/stack/core/mura/content/contentRenderer.cfc:701)",
-                  "TEMPLATE": "/tmp/blitzy/scratch/<uuid:1>/dest/stack/core/mura/content/contentRenderer.cfc",
+                  "RAW_TRACE": "\tat cfcontentRenderer2ecfc329935073$funcINIT.runFunction(/tmp/blitzy/scratch/<uuid:1>/w-020/stack2/core/mura/content/contentRenderer.cfc:701)",
+                  "TEMPLATE": "/tmp/blitzy/scratch/<uuid:1>/w-020/stack2/core/mura/content/contentRenderer.cfc",
                   "TYPE": "CFML"
                 },
                 {
                   "COLUMN": 0,
                   "ID": "CF_TEMPLATEPROXY",
                   "LINE": 174,
-                  "RAW_TRACE": "\tat cfMasaScope2ecfc573892996$funcGETCONTENTRENDERER._factor0(/tmp/blitzy/scratch/<uuid:1>/dest/stack/core/mura/MasaScope.cfc:174)",
-                  "TEMPLATE": "/tmp/blitzy/scratch/<uuid:1>/dest/stack/core/mura/MasaScope.cfc",
+                  "RAW_TRACE": "\tat cfMasaScope2ecfc736754709$funcGETCONTENTRENDERER._factor0(/tmp/blitzy/scratch/<uuid:1>/w-020/stack2/core/mura/MasaScope.cfc:174)",
+                  "TEMPLATE": "/tmp/blitzy/scratch/<uuid:1>/w-020/stack2/core/mura/MasaScope.cfc",
                   "TYPE": "CFML"
                 },
                 {
                   "COLUMN": 0,
                   "ID": "CF_MASASCOPE",
                   "LINE": 157,
-                  "RAW_TRACE": "\tat cfMasaScope2ecfc573892996$funcGETCONTENTRENDERER.runFunction(/tmp/blitzy/scratch/<uuid:1>/dest/stack/core/mura/MasaScope.cfc:157)",
-                  "TEMPLATE": "/tmp/blitzy/scratch/<uuid:1>/dest/stack/core/mura/MasaScope.cfc",
+                  "RAW_TRACE": "\tat cfMasaScope2ecfc736754709$funcGETCONTENTRENDERER.runFunction(/tmp/blitzy/scratch/<uuid:1>/w-020/stack2/core/mura/MasaScope.cfc:157)",
+                  "TEMPLATE": "/tmp/blitzy/scratch/<uuid:1>/w-020/stack2/core/mura/MasaScope.cfc",
                   "TYPE": "CFML"
                 },
                 {
                   "COLUMN": 0,
                   "ID": "CF_TEMPLATEPROXY",
                   "LINE": 220,
-                  "RAW_TRACE": "\tat cfevent2ecfc1860771027$funcLOADSITERELATEDOBJECTS.runFunction(/tmp/blitzy/scratch/<uuid:1>/dest/stack/core/mura/event.cfc:220)",
-                  "TEMPLATE": "/tmp/blitzy/scratch/<uuid:1>/dest/stack/core/mura/event.cfc",
+                  "RAW_TRACE": "\tat cfevent2ecfc1635328434$funcLOADSITERELATEDOBJECTS.runFunction(/tmp/blitzy/scratch/<uuid:1>/w-020/stack2/core/mura/event.cfc:220)",
+                  "TEMPLATE": "/tmp/blitzy/scratch/<uuid:1>/w-020/stack2/core/mura/event.cfc",
                   "TYPE": "CFML"
                 },
                 {
                   "COLUMN": 0,
                   "ID": "CF_UDFMETHOD",
                   "LINE": 97,
-                  "RAW_TRACE": "\tat cfevent2ecfc1860771027$funcINIT.runFunction(/tmp/blitzy/scratch/<uuid:1>/dest/stack/core/mura/event.cfc:97)",
-                  "TEMPLATE": "/tmp/blitzy/scratch/<uuid:1>/dest/stack/core/mura/event.cfc",
+                  "RAW_TRACE": "\tat cfevent2ecfc1635328434$funcINIT.runFunction(/tmp/blitzy/scratch/<uuid:1>/w-020/stack2/core/mura/event.cfc:97)",
+                  "TEMPLATE": "/tmp/blitzy/scratch/<uuid:1>/w-020/stack2/core/mura/event.cfc",
                   "TYPE": "CFML"
                 },
                 {
                   "COLUMN": 0,
                   "ID": "CF_TEMPLATEPROXY",
                   "LINE": 119,
-                  "RAW_TRACE": "\tat cfuserUtility2ecfc454098704$funcLOOKUPBYCREDENTIALS.runFunction(/tmp/blitzy/scratch/<uuid:1>/dest/stack/core/mura/user/userUtility.cfc:119)",
-                  "TEMPLATE": "/tmp/blitzy/scratch/<uuid:1>/dest/stack/core/mura/user/userUtility.cfc",
+                  "RAW_TRACE": "\tat cfuserUtility2ecfc704181814$funcLOOKUPBYCREDENTIALS.runFunction(/tmp/blitzy/scratch/<uuid:1>/w-020/stack2/core/mura/user/userUtility.cfc:119)",
+                  "TEMPLATE": "/tmp/blitzy/scratch/<uuid:1>/w-020/stack2/core/mura/user/userUtility.cfc",
                   "TYPE": "CFML"
                 },
                 {
                   "COLUMN": 0,
                   "ID": "CF_TEMPLATEPROXY",
                   "LINE": 473,
-                  "RAW_TRACE": "\tat cfjsonApiUtility2ecfc988474930$funcPROCESSREQUEST.runFunction(/tmp/blitzy/scratch/<uuid:1>/dest/stack/core/mura/client/api/json/v1/jsonApiUtility.cfc:473)",
-                  "TEMPLATE": "/tmp/blitzy/scratch/<uuid:1>/dest/stack/core/mura/client/api/json/v1/jsonApiUtility.cfc",
+                  "RAW_TRACE": "\tat cfjsonApiUtility2ecfc1819627928$funcPROCESSREQUEST.runFunction(/tmp/blitzy/scratch/<uuid:1>/w-020/stack2/core/mura/client/api/json/v1/jsonApiUtility.cfc:473)",
+                  "TEMPLATE": "/tmp/blitzy/scratch/<uuid:1>/w-020/stack2/core/mura/client/api/json/v1/jsonApiUtility.cfc",
                   "TYPE": "CFML"
                 },
                 {
                   "COLUMN": 0,
                   "ID": "CF_TEMPLATEPROXY",
                   "LINE": 636,
-                  "RAW_TRACE": "\tat cfcontentServer2ecfc2032813127$funcHANDLEAPIREQUEST.runFunction(/tmp/blitzy/scratch/<uuid:1>/dest/stack/core/mura/content/contentServer.cfc:636)",
-                  "TEMPLATE": "/tmp/blitzy/scratch/<uuid:1>/dest/stack/core/mura/content/contentServer.cfc",
+                  "RAW_TRACE": "\tat cfcontentServer2ecfc902908446$funcHANDLEAPIREQUEST.runFunction(/tmp/blitzy/scratch/<uuid:1>/w-020/stack2/core/mura/content/contentServer.cfc:636)",
+                  "TEMPLATE": "/tmp/blitzy/scratch/<uuid:1>/w-020/stack2/core/mura/content/contentServer.cfc",
                   "TYPE": "CFML"
                 },
                 {
                   "COLUMN": 0,
                   "ID": "CF_UDFMETHOD",
                   "LINE": 784,
-                  "RAW_TRACE": "\tat cfcontentServer2ecfc2032813127$funcHANDLEROOTREQUEST.runFunction(/tmp/blitzy/scratch/<uuid:1>/dest/stack/core/mura/content/contentServer.cfc:784)",
-                  "TEMPLATE": "/tmp/blitzy/scratch/<uuid:1>/dest/stack/core/mura/content/contentServer.cfc",
+                  "RAW_TRACE": "\tat cfcontentServer2ecfc902908446$funcHANDLEROOTREQUEST.runFunction(/tmp/blitzy/scratch/<uuid:1>/w-020/stack2/core/mura/content/contentServer.cfc:784)",
+                  "TEMPLATE": "/tmp/blitzy/scratch/<uuid:1>/w-020/stack2/core/mura/content/contentServer.cfc",
                   "TYPE": "CFML"
                 },
                 {
                   "COLUMN": 0,
                   "ID": "CF_TEMPLATEPROXY",
                   "LINE": 75,
-                  "RAW_TRACE": "\tat cfindex2ecfm994378857.runPage(/tmp/blitzy/scratch/<uuid:1>/dest/stack/index.cfm:75)",
-                  "TEMPLATE": "/tmp/blitzy/scratch/<uuid:1>/dest/stack/index.cfm",
+                  "RAW_TRACE": "\tat cfindex2ecfm895911804.runPage(/tmp/blitzy/scratch/<uuid:1>/w-020/stack2/index.cfm:75)",
+                  "TEMPLATE": "/tmp/blitzy/scratch/<uuid:1>/w-020/stack2/index.cfm",
                   "TYPE": "CFML"
                 }
               ],
@@ -15155,7 +15155,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "7b7ea8d7f3a1fffebcbb4f561d61b9a1641d38701289022680fe392802f94bbb",
+        "rawSha256": "1cd15797dde7b677b6e7716ca57d91f6aef3bd6aeb690dd439a7907ba910756b",
         "status": 500
       },
       "routeKey": "rest:group.delete"
@@ -15885,7 +15885,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/?muraAction=cExtend.editSubType&siteid=tenant-a&subTypeID=5689E700-A72D-FAF6-DBAC0D8C84CDAF6B"
+        "url": "/admin/?muraAction=cExtend.editSubType&siteid=tenant-a&subTypeID=A5247226-0F1A-1462-23C3D70547D4802E"
       },
       "response": {
         "domModel": {
@@ -16596,7 +16596,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "72cb6fcb24f79c4d5ec1676ca15db0b3f0b3092719ae6b656952535dfa8f4b31",
+        "rawSha256": "d38d32896c817a7383c9f6bcb50fce1c44af8ebd522efccdf845042ffb796f17",
         "status": 200
       },
       "routeKey": "admin:cextend.editsubtype"
@@ -16958,7 +16958,7 @@
             "isnew": "0",
             "muraAction": "cExtend.updateSubType",
             "siteID": "tenant-a",
-            "subTypeID": "5689E700-A72D-FAF6-DBAC0D8C84CDAF6B",
+            "subTypeID": "A5247226-0F1A-1462-23C3D70547D4802E",
             "type": "1"
           }
         },
@@ -17296,7 +17296,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "b5a24888d9326edde9408a49ab499eeba04e9583f8aae9427804d902ae925ccb",
+        "rawSha256": "e52934b48a62beadb5c4dc4d9a7710667158224a2f81aa15d638cec0bee8cf1f",
         "status": 200
       },
       "routeKey": "admin:cextend.updatesubtype"

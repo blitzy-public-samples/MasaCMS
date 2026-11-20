@@ -7,6 +7,7 @@ import {
   FIXTURES_UNAVAILABLE,
   SCENARIO_ID_PATTERN,
   STEP_EXPECTATIONS,
+  isRehearsalCrossing,
   isRehearsalScenario,
   loadCatalogue,
   readFixtureStatus,
@@ -18,7 +19,13 @@ import {
   type Scenario,
   type StepExpectation,
 } from './catalogue.js';
-import { GoldenConfigError, haltEvidence, isRosterHaltId, type ExceptionEntry } from './errors.js';
+import {
+  GoldenConfigError,
+  REHEARSAL_CROSSING_DIR,
+  haltEvidence,
+  isRosterHaltId,
+  type ExceptionEntry,
+} from './errors.js';
 import {
   KNOWN_ISSUE_IDS,
   createNormaliseState,
@@ -124,7 +131,7 @@ export interface GoldenStep {
 export type GoldenSideEffects = Required<Pick<NormalisedSideEffects, 'mail' | 'rows' | 'tasks' | 'files'>> &
   Pick<NormalisedSideEffects, 'transitions'>;
 
-/** One committed golden set, `harness/golden/sets/<scenarioId>.json`. */
+/** One committed golden set, `harness/golden/sets/[rehearsal/]<scenarioId>.json`. */
 export interface GoldenSet {
   sourceSha: string;
   scenarioId: string;
@@ -150,11 +157,15 @@ export interface RawCapture {
   sideEffects: SideEffects;
 }
 
-/** A captured scenario: its set, its raw exchanges (absent when skipped) and the exception ids of its gaps. */
+/**
+ * A captured scenario: its set, its raw exchanges (absent when skipped), the exception ids of its gaps, and whether it
+ * is the scenario's rehearsal crossing.
+ */
 export interface CapturedScenario {
   set: GoldenSet;
   raw?: RawCapture;
   gaps: string[];
+  crossing?: boolean;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -304,14 +315,24 @@ export const goldenSetSchema: z.ZodType<GoldenSet> = z
     }
   });
 
-/** Absolute path of scenario `id`'s committed golden set. */
-export function goldenSetPath(id: string): string {
-  return repoPath(GOLDEN_SETS_DIR, `${id}.json`);
+function crossingSegments(crossing: boolean): string[] {
+  return crossing ? [REHEARSAL_CROSSING_DIR] : [];
 }
 
-/** Path of scenario `id`'s raw capture, `<stateDir>/golden/raw/<id>.json`, outside the checkout. */
-export function rawCapturePath(id: string, env: EnvLike = process.env): string {
-  return path.join(stateDir(env), 'golden', 'raw', `${id}.json`);
+/**
+ * Absolute path of scenario `id`'s committed golden set; with `crossing`, of its rehearsal crossing's,
+ * `harness/golden/sets/rehearsal/<id>.json`.
+ */
+export function goldenSetPath(id: string, crossing = false): string {
+  return repoPath(GOLDEN_SETS_DIR, ...crossingSegments(crossing), `${id}.json`);
+}
+
+/**
+ * Path of scenario `id`'s raw capture, `<stateDir>/golden/raw/<id>.json`, outside the checkout; with `crossing`, its
+ * rehearsal crossing's, `<stateDir>/golden/raw/rehearsal/<id>.json`.
+ */
+export function rawCapturePath(id: string, env: EnvLike = process.env, crossing = false): string {
+  return path.join(stateDir(env), 'golden', 'raw', ...crossingSegments(crossing), `${id}.json`);
 }
 
 /** Parses scenario `id`'s golden set; throws `GoldenConfigError` when it is missing, not JSON or off-schema. */
@@ -578,7 +599,13 @@ export function gapExceptionId(scenarioId: string, record: Pick<StepRecord, 'nam
   return `EX-GAP-${id}`;
 }
 
-function gapEntry(scenario: Scenario, record: StepRecord, gap: StepGap, sourceSha: string): ExceptionEntry {
+function gapEntry(
+  scenario: Scenario,
+  record: StepRecord,
+  gap: StepGap,
+  sourceSha: string,
+  crossing: boolean,
+): ExceptionEntry {
   return {
     id: gapExceptionId(scenario.id, record),
     scenario: scenario.id,
@@ -590,7 +617,7 @@ function gapEntry(scenario: Scenario, record: StepRecord, gap: StepGap, sourceSh
       `JSON API server_error envelope, so the case is halted and its mapping is proven by the ` +
       `@opt2/platform/legacy-compat error-map unit tests.`,
     status: 'halted',
-    evidence: haltEvidence(scenario.id),
+    evidence: haltEvidence(scenario.id, crossing),
     sourceSha,
   };
 }
@@ -612,6 +639,8 @@ export interface CaptureDeps {
   exceptions?: AppendExceptionOptions;
   /** Route-key registries and variants recorded keys use; default the coverage gate's committed ones. */
   routeKeyOptions?: StepRunOptions['routeKeyOptions'];
+  /** Capture the scenario's rehearsal crossing, a second capture kept apart from its own set. */
+  crossing?: boolean;
 }
 
 /** `err`'s name and message with `secrets` redacted, then masked by {@link safeDiagnostic}. */
@@ -642,12 +671,16 @@ export function assertNoReloadKey(text: string, key: string | undefined, what: s
  * Captures `scenario` against legacy. A fixture-dependent scenario without fixtures yields a `skipped` set; a browser
  * scenario yields `null` (the Playwright interaction suite captures it). Otherwise Mailpit is emptied, the steps run in
  * capture mode, side effects are collected, every step is normalised and redacted, and each step without a
- * deterministic trigger (`gap`) is recorded as a halted exceptions entry.
+ * deterministic trigger (`gap`) is recorded as a halted exceptions entry. With `deps.crossing` the capture is marked
+ * as the scenario's rehearsal crossing.
  */
 export async function captureScenario(scenario: Scenario, deps: CaptureDeps): Promise<CapturedScenario | null> {
   const env = deps.env ?? process.env;
   const logger = deps.logger ?? createHarnessLogger('harness-golden-capture', env);
   const capturedAt = (deps.clock ?? (() => new Date()))().toISOString();
+  const crossing = deps.crossing === true;
+  const label = crossing ? `${scenario.id} rehearsal crossing` : scenario.id;
+  const marked = crossing ? { crossing } : {};
   const base = {
     sourceSha: deps.sourceSha,
     scenarioId: scenario.id,
@@ -658,8 +691,8 @@ export async function captureScenario(scenario: Scenario, deps: CaptureDeps): Pr
   };
   const skipped = skipReason(scenario, deps.fixtures);
   if (skipped !== null) {
-    logger.info(safeDiagnostic(`${scenario.id}: ${skipped}`, env));
-    return { set: { ...base, skipped, steps: [], sideEffects: emptySideEffects() }, gaps: [] };
+    logger.info(safeDiagnostic(`${label}: ${skipped}`, env));
+    return { set: { ...base, skipped, steps: [], sideEffects: emptySideEffects() }, gaps: [], ...marked };
   }
   if (scenario.browser !== undefined) {
     const flow = scenario.browser.flow;
@@ -694,11 +727,11 @@ export async function captureScenario(scenario: Scenario, deps: CaptureDeps): Pr
   for (const record of scrub(records)) {
     let exceptionId = record.exceptionId;
     if (record.gap !== undefined) {
-      const entry = gapEntry(scenario, record, record.gap, deps.sourceSha);
+      const entry = gapEntry(scenario, record, record.gap, deps.sourceSha, crossing);
       const stored = await appendExceptionEntry(entry, deps.exceptions);
       exceptionId ??= stored.id;
       gaps.push(stored.id);
-      logger.warn(safeDiagnostic(`${scenario.id} step ${record.name}: ${record.gap.reason}; recorded ${stored.id}`, env));
+      logger.warn(safeDiagnostic(`${label} step ${record.name}: ${record.gap.reason}; recorded ${stored.id}`, env));
     }
     steps.push(await builder.step(exceptionId === undefined ? record : { ...record, exceptionId }));
   }
@@ -713,54 +746,74 @@ export async function captureScenario(scenario: Scenario, deps: CaptureDeps): Pr
   assertNoReloadKey(setText, reloadKey, `${scenario.id} golden set`);
   assertNoSecrets(rawText, secrets, `${scenario.id} raw capture`);
   assertNoReloadKey(rawText, reloadKey, `${scenario.id} raw capture`);
-  logger.info(safeDiagnostic(`${scenario.id}: captured ${steps.length} exchanges`, env));
-  return { set, raw, gaps };
+  logger.info(safeDiagnostic(`${label}: captured ${steps.length} exchanges`, env));
+  return { set, raw, gaps, ...marked };
 }
 
-/** Writes a capture: the raw exchanges under `${OPT2_STATE_DIR}` first, then the committed set. */
+/** Writes a capture: the raw exchanges under `${OPT2_STATE_DIR}` first, then the committed set; a crossing's apart. */
 export async function writeCapture(
   captured: CapturedScenario,
   env: EnvLike = process.env,
   report: ReportOptions = {},
 ): Promise<string> {
   const opts: ReportOptions = { generatedBy: GENERATED_BY, ...report };
+  const crossing = captured.crossing === true;
   if (captured.raw !== undefined) {
-    await writeJsonReport(rawCapturePath(captured.raw.scenarioId, env), { ...captured.raw }, opts);
+    await writeJsonReport(rawCapturePath(captured.raw.scenarioId, env, crossing), { ...captured.raw }, opts);
   }
-  const { path: file } = await writeJsonReport(goldenSetPath(captured.set.scenarioId), { ...captured.set }, opts);
+  const setFile = goldenSetPath(captured.set.scenarioId, crossing);
+  const { path: file } = await writeJsonReport(setFile, { ...captured.set }, opts);
   return file;
 }
 
-const USAGE = 'tsx src/golden/capture.ts [--only <scenario-id>[,<scenario-id>…]] [--catalogue <path>]';
+const USAGE = 'tsx src/golden/capture.ts [--only <scenario-id>[,<scenario-id>…]] [--rehearsal] [--catalogue <path>]';
 const HELP = [
   `Usage: ${USAGE}`,
   '',
-  'Captures every catalogue scenario (or --only those) against legacy directly and writes',
+  'Captures catalogue scenarios against legacy directly in replay order and writes',
   `${GOLDEN_SETS_DIR}/<id>.json, plus the raw exchanges under \${OPT2_STATE_DIR}/golden/raw/.`,
-  'Scenarios run in replay order: catalogue order, with the rollback-rehearsal (GS-PE-RH) scenarios last.',
+  'Without --rehearsal: every scenario but the rollback-rehearsal (GS-PE-RH) ones, in catalogue order.',
+  'With --rehearsal, run after the browser captures: each acrossTransition HTTP scenario again as its rehearsal',
+  `crossing (${GOLDEN_SETS_DIR}/rehearsal/<id>.json, raw under golden/raw/rehearsal/), then the GS-PE-RH scenarios.`,
+  '--only captures the named scenarios, the GS-PE-RH ones last; with --rehearsal a non-rehearsal one as its crossing.',
 ].join('\n');
 
 /** Collaborators of {@link main} beyond the environment. */
 export type MainDeps = Pick<CaptureDeps, 'fetch' | 'secrets' | 'seed' | 'sideEffects' | 'clock' | 'logger'>;
 
-/** `scenarios` in replay order: the others, then the rollback-rehearsal ones, each part in catalogue order. */
-function replayOrder(scenarios: readonly Scenario[]): Scenario[] {
-  return [
-    ...scenarios.filter((scenario) => !isRehearsalScenario(scenario.id)),
-    ...scenarios.filter((scenario) => isRehearsalScenario(scenario.id)),
-  ];
+/** One capture of a run: a scenario, or its rehearsal crossing. */
+interface PlannedCapture {
+  scenario: Scenario;
+  crossing: boolean;
 }
 
-/** Every scenario, or those `--only` names, in replay order; every id must exist. */
-function selectedScenarios(catalogue: Catalogue, only: string | undefined): Scenario[] {
-  if (only === undefined) return replayOrder(catalogue.scenarios);
-  const ids = only
-    .split(',')
-    .map((id) => id.trim())
-    .filter((id) => id !== '');
-  if (ids.length === 0) throw new UsageError('--only needs at least one scenario id', USAGE);
-  const wanted = new Set(ids.map((id) => scenarioById(catalogue, id).id));
-  return replayOrder(catalogue.scenarios.filter((scenario) => wanted.has(scenario.id)));
+/**
+ * Captures in replay order. Without `rehearsal`: the non-rehearsal scenarios, plus any rehearsal one `only` names, last.
+ * With it: each rehearsal crossing, then the rehearsal scenarios. Every `only` id must exist, and under `rehearsal`
+ * each non-rehearsal one must have a crossing.
+ */
+function plannedCaptures(catalogue: Catalogue, only: string | undefined, rehearsal: boolean): PlannedCapture[] {
+  let scenarios = catalogue.scenarios;
+  if (only !== undefined) {
+    const ids = only
+      .split(',')
+      .map((id) => id.trim())
+      .filter((id) => id !== '');
+    if (ids.length === 0) throw new UsageError('--only needs at least one scenario id', USAGE);
+    const wanted = new Set(ids.map((id) => scenarioById(catalogue, id).id));
+    scenarios = scenarios.filter((scenario) => wanted.has(scenario.id));
+  }
+  const others = scenarios.filter((scenario) => !isRehearsalScenario(scenario.id));
+  const rehearsals = scenarios.filter((scenario) => isRehearsalScenario(scenario.id));
+  const plain = (scenario: Scenario): PlannedCapture => ({ scenario, crossing: false });
+  if (!rehearsal) return [...others, ...(only === undefined ? [] : rehearsals)].map(plain);
+  const uncrossed = others.filter((scenario) => !isRehearsalCrossing(scenario));
+  if (only !== undefined && uncrossed.length > 0) {
+    const names = uncrossed.map((scenario) => scenario.id).join(', ');
+    throw new UsageError(`--rehearsal captures only rehearsal crossings and GS-PE-RH scenarios, not ${names}`, USAGE);
+  }
+  const crossings = others.filter(isRehearsalCrossing);
+  return [...crossings.map((scenario) => ({ scenario, crossing: true })), ...rehearsals.map(plain)];
 }
 
 /**
@@ -769,7 +822,7 @@ function selectedScenarios(catalogue: Catalogue, only: string | undefined): Scen
  */
 export async function main(argv: string[], env: EnvLike = process.env, deps: MainDeps = {}): Promise<CliOutcome> {
   const { values } = parseFlags(argv, {
-    options: { only: { type: 'string' }, catalogue: { type: 'string' } },
+    options: { only: { type: 'string' }, rehearsal: { type: 'boolean' }, catalogue: { type: 'string' } },
     usage: USAGE,
     help: HELP,
   });
@@ -778,7 +831,7 @@ export async function main(argv: string[], env: EnvLike = process.env, deps: Mai
   const pin = readPin();
   const cataloguePath = values.catalogue === undefined ? CATALOGUE_PATH : path.resolve(values.catalogue);
   const catalogue = await loadCatalogue(cataloguePath);
-  const scenarios = selectedScenarios(catalogue, values.only);
+  const captures = plannedCaptures(catalogue, values.only, values.rehearsal === true);
   const rules = loadRules(RULES_PATH, env);
   const fixtures = readFixtureStatus(env);
   const secrets = deps.secrets ?? loadSecretStore(env);
@@ -789,7 +842,7 @@ export async function main(argv: string[], env: EnvLike = process.env, deps: Mai
   const counts = { captured: 0, skipped: 0, browser: 0 };
   const gaps: string[] = [];
   const failed: { id: string; error: string }[] = [];
-  for (const scenario of scenarios) {
+  for (const { scenario, crossing } of captures) {
     try {
       const captured = await captureScenario(scenario, {
         ...deps,
@@ -801,6 +854,7 @@ export async function main(argv: string[], env: EnvLike = process.env, deps: Mai
         seed,
         sideEffects,
         logger,
+        crossing,
       });
       if (captured === null) {
         counts.browser += 1;
@@ -811,8 +865,9 @@ export async function main(argv: string[], env: EnvLike = process.env, deps: Mai
       else counts.skipped += 1;
       gaps.push(...captured.gaps);
     } catch (err) {
-      failed.push({ id: scenario.id, error: describeFailure(err, secretValues({ secrets }), env) });
-      logger.error({ error: serializeError(err) }, safeDiagnostic(`${scenario.id}: capture failed`, env));
+      const label = crossing ? `${scenario.id} rehearsal crossing` : scenario.id;
+      failed.push({ id: label, error: describeFailure(err, secretValues({ secrets }), env) });
+      logger.error({ error: serializeError(err) }, safeDiagnostic(`${label}: capture failed`, env));
     }
   }
   return { code: failed.length > 0 ? 1 : 0, summary: { ...counts, gaps, failed } };

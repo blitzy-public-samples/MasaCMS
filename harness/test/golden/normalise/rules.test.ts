@@ -219,6 +219,22 @@ describe('loadRules', () => {
       'envelope/apply/5',
       'envelope.apply.5: names unknown rule id mailpit-id',
     ],
+    [
+      'a current-url path that is not absolute',
+      (doc) => {
+        (doc.urls as { currentUrl: { paths: string[] } }).currentUrl.paths = ['404/'];
+      },
+      'urls/currentUrl/paths/0',
+      'urls.currentUrl.paths.0: must start with /',
+    ],
+    [
+      'no current-url path',
+      (doc) => {
+        (doc.urls as { currentUrl: { paths: string[] } }).currentUrl.paths = [];
+      },
+      'urls/currentUrl/paths',
+      'urls.currentUrl.paths: ',
+    ],
   ])('rejects a copy with %s', async (_label, mutate, pointer, message) => {
     const doc = parse(committedText) as RulesDoc;
     mutate(doc);

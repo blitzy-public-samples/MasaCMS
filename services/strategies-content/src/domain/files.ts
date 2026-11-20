@@ -3,12 +3,12 @@ import type { Readable } from 'node:stream';
 import { cfUuid, isCfUuid } from '@opt2/platform/legacy-compat';
 import { withGatedTenant, type WriteContext } from '@opt2/platform/migration-kit';
 import { contentFileKey, type ContentFileVariant, type PutResult, type StoragePort } from '@opt2/platform/storage';
-import { poolTenantFor, registryEntryForTenant, type TenantTx } from '@opt2/platform/tenancy';
+import { registryEntryForTenant, type TenantTx } from '@opt2/platform/tenancy';
 import { CONTENT_FILES_BUCKET, type StoreObjectDeps } from '../migration/objects.js';
 import { StagedObjectMissingError, recoverStagedObjects, settleStagedObject, stageObject } from '../migration/staged-objects.js';
 import { claimStagedObject, lockFileObjectKey, type StagedObjectEntry } from '../repo/files.js';
 import type { ContentFilesDeletion, ContentRepository, Patch } from '../repo/repository.js';
-import { FILE, FILE_METADATA, type FileMetadataRow, type FileObjectRow, type FileRow } from '../repo/tables.js';
+import { FILE, type FileMetadataRow, type FileObjectRow, type FileRow } from '../repo/tables.js';
 import { writeContextFor, type Actor, type DomainDeps } from './context.js';
 import { UnregisteredTenantError, poolTenantTx, withGatedPoolTenant, withPoolTenant } from './pools.js';
 
@@ -340,7 +340,7 @@ function idKey(id: string | null): string {
 }
 
 /** The bean `serializeExif`: JSON text is kept, anything else becomes '{}'. */
-function serializedExif(exif: string | null | undefined): string {
+export function serializedExif(exif: string | null | undefined): string {
   if (exif === null || exif === undefined) return '{}';
   try {
     JSON.parse(exif);
@@ -489,23 +489,41 @@ export function deleteFileMetaDataEntity(
   return withGatedTenant(deps.db, tenantId, (tx) => deps.repository.files.deleteFileMetadata(tx, { metaId }, write));
 }
 
-/**
- * `saveFileMetaData` in one gated transaction of the content tenant `tenantId`, acting as `tenantId`'s file pool tenant
- * for `fileTx` when that is another tenant.
- * @throws UnregisteredTenantError when `tenantId` has no registry entry.
- */
-export async function saveFileMetaDataEntity(
+/** contentFileMetaDataBean's persistent columns besides its key, which beanORM.save writes on every insert and update (contentFileMetaDataBean.cfc:84-111, beanORMVersioned.cfc:78-80). */
+export const FILE_METADATA_BEAN_COLUMNS = [
+  'fileid',
+  'alttext',
+  'caption',
+  'credits',
+  'remoteid',
+  'remoteurl',
+  'remotepubdate',
+  'remotesource',
+  'remotesourceurl',
+  'exif',
+  'contentid',
+  'contenthistid',
+  'siteid',
+] as const satisfies readonly (keyof FileMetadataRow)[];
+
+/** A fileMetaData bean's persistent columns as beanORM.save binds them. */
+export type FileMetaDataBeanColumns = Pick<FileMetadataRow, (typeof FILE_METADATA_BEAN_COLUMNS)[number]>;
+
+/** beanORM.save of a `fileMetaData` (beanORM.cfc:379-560): updates `metaId`'s row of any site, else inserts it, in one gated transaction of the content tenant `tenantId`. */
+export function saveFileMetaDataBean(
   deps: EntityWriteDeps,
   tenantId: string,
-  args: SaveFileMetaDataArgs,
+  metaId: string,
+  columns: FileMetaDataBeanColumns,
   write?: WriteContext,
 ): Promise<FileMetadataRow> {
-  const poolTenantId = await poolTenantFor(deps.db, tenantId, 'file');
-  if (poolTenantId === null) throw new UnregisteredTenantError(tenantId);
-  const units = args.setAsDefault ? [FILE_METADATA.unit, FILE.unit] : [FILE_METADATA.unit];
-  return withGatedTenant(deps.db, tenantId, async (tx) =>
-    saveFileMetaData(tx, deps.repository, args, { fileTx: await poolTenantTx(tx, poolTenantId, units), write }),
-  );
+  return withGatedTenant(deps.db, tenantId, async (tx) => {
+    const stored = await deps.repository.files.findFileMetadataByKey(tx, metaId);
+    if (stored === null) return deps.repository.files.insertFileMetadata(tx, { metaid: metaId, ...columns }, write);
+    const updated = await deps.repository.files.updateFileMetadata(tx, stored.metaid, columns, write);
+    if (updated === null) throw new Error(`File metadata ${stored.metaid} vanished while it was saved`);
+    return updated;
+  });
 }
 
 /** Collaborators of a render resolution. */

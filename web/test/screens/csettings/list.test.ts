@@ -5,10 +5,12 @@ import type { CheerioAPI } from 'cheerio';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { formatDateField } from '@/lib/dates';
 import { resetLegacySettingsForTests } from '@/lib/env';
+import { LEGACY_PLUGINS_PATH } from '@/lib/gateway-client';
 import { toString } from '@/lib/html';
 import { csettingsScreens } from '@/screens/csettings';
 import { listScreen, renderLegacyErrors } from '@/screens/csettings/list';
 import type { ScreenDefinition } from '@/screens/registry';
+import { LEGACY_PLUGINS } from '../../fixtures/gateway/plugins';
 import { SITE_IDS, SITE_LIST, SITE_LIST_BY_ORDERNO, siteTenantA } from '../../fixtures/programs-sites/sites';
 import {
   SITE_ERRORS_MULTI,
@@ -17,7 +19,7 @@ import {
   SITE_ORDER_UPDATE,
 } from '../../fixtures/programs-sites/site-errors';
 import { adminS2Request, siteAdminRequest, type AdminRequestPartial } from '../../helpers/admin-request';
-import { domModel, type DomModel } from '../../helpers/dom-model';
+import { domModel, normaliseAdminUrl, type DomModel } from '../../helpers/dom-model';
 import { useTestEnv } from '../../helpers/env';
 import { fakeGatewayClient, routeKey, type FakeGatewayClient, type FakeRouteTable } from '../../helpers/fake-gateway';
 import { FIXED_CSRF, makeScreenContext, renderScreenModel, renderScreenPage } from '../../helpers/screen-context';
@@ -31,12 +33,17 @@ type Fields = Readonly<Record<string, string>>;
 
 const LIST_ROUTE = routeKey('GET', 'programs-sites', '/v1/sites');
 const ORDER_ROUTE = routeKey('POST', 'programs-sites', '/v1/sites/order');
+const PLUGINS_ROUTE = routeKey('GET', 'gateway', LEGACY_PLUGINS_PATH);
 const CSRF_FIELDS: Fields = { csrf_token: FIXED_CSRF.token, csrf_token_expires: FIXED_CSRF.expires };
 
-/** programs-sites answering `listSites` by its `sortBy` and `saveSiteOrder` with the fixture result. */
-const routes = (): FakeRouteTable => ({
+/**
+ * programs-sites answering `listSites` by its `sortBy` and `saveSiteOrder` with the fixture result, and the gateway
+ * answering `getLegacyPlugins` with `plugins`.
+ */
+const routes = (plugins: readonly object[] = []): FakeRouteTable => ({
   [LIST_ROUTE]: ({ query }) => ({ status: 200, body: query.sortBy === 'orderno' ? SITE_LIST_BY_ORDERNO : SITE_LIST }),
   [ORDER_ROUTE]: { status: 200, body: SITE_ORDER_RESULT_SUCCESS },
+  [PLUGINS_ROUTE]: { status: 200, body: { plugins } },
 });
 
 /** Template settings with `vars` laid over them; the host's `MURA_` variables are hidden. */
@@ -63,8 +70,8 @@ interface Page {
   readonly req: ListRequest;
 }
 
-async function renderPage(req: ListRequest): Promise<Page> {
-  const gateway = fakeGatewayClient(routes());
+async function renderPage(req: ListRequest, plugins: readonly object[] = []): Promise<Page> {
+  const gateway = fakeGatewayClient(routes(plugins));
   const page = await renderScreenPage(registeredList(), makeScreenContext({ req, gateway }));
   if (page.kind !== 'document') throw new Error(`redirected to ${page.location}`);
   return { html: page.html, model: domModel(page.html), $: cheerio.load(page.html), gateway, req };
@@ -123,6 +130,28 @@ describe('csettings.list page', () => {
     );
     expect(model.tables).toHaveLength(1);
     expect(valuesOf(model, 'csrf_token')).toEqual(['<token>', '<token>', '<token>']);
+  });
+
+  it("lists a deployed plugin as legacy's page does after cSettings.updatePlugin (GS-PS-10)", async () => {
+    const golden = LEGACY_PLUGINS.slice(0, 1);
+
+    const { model, $ } = await renderPage(listRequest(), golden);
+
+    expect(model.headings.at(-1)).toBe('Current Plugins');
+    expect(model.tables[1]).toEqual({
+      headers: ['', 'Name', 'Directory', 'Category', 'Version', 'Provider', 'Plugin ID'],
+      rows: [['Edit Delete', 'GS-PS-10 Plugin', '1', 'Utility', '1.0.0', 'OPT-2 golden harness', '1']],
+    });
+    const links = $('#tabPlugins table a')
+      .toArray()
+      .map((a) => ({ href: normaliseAdminUrl($(a).attr('href') ?? ''), text: $(a).text().trim() }));
+    expect(links).toEqual([
+      { href: 'javascript:;', text: '' },
+      { href: `./?muraAction=csettings.editplugin&moduleID=${golden[0]?.moduleId ?? ''}`, text: 'Edit' },
+      { href: '#', text: 'Delete' },
+      { href: '/plugins/1/', text: 'GS-PS-10 Plugin' },
+      { href: 'https%3A%2F%2Fopt2.invalid%2Fgolden-plugin', text: 'OPT-2 golden harness' },
+    ]);
   });
 
   it('opens the Current Sites tab and posts form1 to csettings.list', async () => {

@@ -272,6 +272,38 @@ describe('domModel', () => {
     ],
     ['a date of the same format class as equal', '10/302/2026 Alice', '10/30/2026 Alice', false, []],
     [
+      'a date and time with seconds an hour apart as equal',
+      '11/323/2026 1:43:43 PM',
+      '11/323/2026 2:43:43 PM',
+      false,
+      [],
+    ],
+    [
+      'a time that lost its seconds as a difference',
+      '11/323/2026 1:43:43 PM',
+      '11/323/2026 1:43 PM',
+      false,
+      [['domModel.tables[0].rows[0][0]', 'difference', undefined]],
+    ],
+    // The comment list's date link (ccomments/loadcomments.cfm:264-268).
+    [
+      'a comment-list date a day apart as equal',
+      '<a href="#c"> 26/11/19 </a>',
+      '<a href="#c"> 26/11/20 </a>',
+      false,
+      [],
+    ],
+    [
+      'a comment-list date in another format as a difference',
+      '<a href="#c"> 26/11/19 </a>',
+      '<a href="#c"> 11/19/26 </a>',
+      false,
+      [
+        ['domModel.links[0].text', 'difference', undefined],
+        ['domModel.tables[0].rows[0][0]', 'difference', undefined],
+      ],
+    ],
+    [
       'a changed literal date alone as known-issue',
       '10/302/2026 Alice',
       '10/30/2026 Alice',

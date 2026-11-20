@@ -445,6 +445,23 @@ describe.skipIf(!available)('people repository against PostgreSQL', () => {
       expect(await inTenant((tx) => repo.updateAddress(tx, cfUuid(), {}))).toBeNull();
     });
 
+    // SQL Server's Sort of `order by isPrimary desc` over the addressID-clustered rows is not stable.
+    it.each([
+      ['one primary rotates the rows after it to the front', [0, 1, 0, 0], [1, 2, 3, 0]],
+      ['the primary first keeps addressID order', [1, 0, 0], [0, 1, 2]],
+      ['a right run of more bits starts the merge', [1, 0, 1, 1, 1, 1], [2, 3, 4, 5, 0, 1]],
+    ])('lists addresses as SQL Server orders them: %s', async (_label, primaries, order) => {
+      const userid = cfUuid();
+      const ids = primaries.map((_, index) => `${userid.slice(0, 23)}${String(index).padStart(12, '0')}`);
+      // Inserted in reverse, so the stored order cannot stand in for addressID order.
+      for (const index of [...ids.keys()].reverse()) {
+        await inTenant((tx) => repo.insertAddress(tx, { userid, addressid: ids[index], isprimary: primaries[index] }));
+      }
+      const expected = order.map((index) => ids[index]);
+      expect((await inTenant((tx) => repo.listAddresses(tx, userid))).map((row) => row.addressid)).toEqual(expected);
+      expect((await inTenant((tx) => repo.listAddressesOf(tx, [userid]))).get(userid)?.map((row) => row.addressid)).toEqual(expected);
+    });
+
     it.each<[string, AddressInput, string, 'width' | 'range']>([
       ['city of 51 characters', { userid: '', city: 'c'.repeat(51) }, 'city', 'width'],
       ['isprimary -1', { userid: '', isprimary: -1 }, 'isprimary', 'range'],

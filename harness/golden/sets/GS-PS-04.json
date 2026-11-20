@@ -1,10 +1,10 @@
 {
-  "capturedAt": "2026-11-18T14:22:52.543Z",
+  "capturedAt": "2026-11-20T03:00:44.939Z",
   "fixtures": {
     "available": true,
     "reason": "fixtures loaded"
   },
-  "generatedAt": "2026-11-18T14:22:54.786Z",
+  "generatedAt": "2026-11-20T03:00:47.264Z",
   "generatedBy": "harness/src/golden/capture.ts",
   "origin": "legacy",
   "scenarioId": "GS-PS-04",
@@ -258,7 +258,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "e6d73f37858fd7dc1c8c7dffb252be3ae2c4a0e794476ab2657746065aed2c88",
+        "rawSha256": "03c77eead0b589ee52ad59b204f72b32890497f7dbb9f5b39a81d6fc590a3446",
         "status": 200
       },
       "routeKey": "reload:application"
@@ -914,7 +914,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "500d13609a0e8094b9af5b5f3e896d6e28a43480449c2b9a473d51054423e4e9",
+        "rawSha256": "77f32fe689598688bc2fe417d5701ba6f9992591f8cbaf42e2c1441c567f2243",
         "status": 200
       },
       "routeKey": "reload:application"

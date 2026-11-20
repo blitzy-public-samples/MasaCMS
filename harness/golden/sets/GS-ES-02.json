@@ -1,10 +1,10 @@
 {
-  "capturedAt": "2026-11-18T14:26:58.553Z",
+  "capturedAt": "2026-11-20T03:04:53.560Z",
   "fixtures": {
     "available": true,
     "reason": "fixtures loaded"
   },
-  "generatedAt": "2026-11-18T14:27:00.156Z",
+  "generatedAt": "2026-11-20T03:04:54.972Z",
   "generatedBy": "harness/src/golden/capture.ts",
   "origin": "legacy",
   "scenarioId": "GS-ES-02",
@@ -78,7 +78,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "1bcc83ebabdc23b9c9683c96f330e7db92b11dd523367e10107108dc1e3abcdd",
+        "rawSha256": "a0bdae34aa103490310a812c18f14aa50ee1aec0924a0ec50e1a4d26a8815a7c",
         "status": 200
       },
       "routeKey": "fixture:esignature/requests@post"
@@ -120,7 +120,7 @@
           "x-csrf_token_expires": "<token>"
         },
         "method": "POST",
-        "url": "/legacy-fixtures/cfml/api.cfm/esignature/requests/5689BB5F-DB79-F2D1-CCDF15E42BA1DA8C/sign?siteid=tenant-a"
+        "url": "/legacy-fixtures/cfml/api.cfm/esignature/requests/A5243C00-0A95-FBF6-51C2B0718CA66F4B/sign?siteid=tenant-a"
       },
       "response": {
         "body": {
@@ -143,7 +143,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "c4e33342dc6ba941be11cd16280b07a9d9ec02338f113f820152dd319506e54c",
+        "rawSha256": "1be7ab1577d9fa9d0844462eaf599fb8daa0dee081c7755daf8f0f511a15e18f",
         "status": 200
       },
       "routeKey": "fixture:esignature/requests/{id}/sign@post"
@@ -200,7 +200,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/legacy-fixtures/cfml/api.cfm/esignature/requests/5689BB5F-DB79-F2D1-CCDF15E42BA1DA8C/audit?siteid=tenant-a"
+        "url": "/legacy-fixtures/cfml/api.cfm/esignature/requests/A5243C00-0A95-FBF6-51C2B0718CA66F4B/audit?siteid=tenant-a"
       },
       "response": {
         "body": {
@@ -245,7 +245,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "ff4667a74b3eca504a98008273c58617e3f83203062cbd74c698f2f5ed008260",
+        "rawSha256": "61afc91f04208055f4bd9c4073fa21220d6ba58f1301b56e34647bd0ccea90c2",
         "status": 200
       },
       "routeKey": "fixture:esignature/requests/{id}/audit@get"
@@ -275,7 +275,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/legacy-fixtures/cfml/api.cfm/esignature/requests/5689BB5F-DB79-F2D1-CCDF15E42BA1DA8C/verify?siteid=tenant-a"
+        "url": "/legacy-fixtures/cfml/api.cfm/esignature/requests/A5243C00-0A95-FBF6-51C2B0718CA66F4B/verify?siteid=tenant-a"
       },
       "response": {
         "body": {
@@ -325,23 +325,23 @@
               {
                 "action": "created",
                 "actor_user_id": "7EDFAD01-DC76-57C6-993CE5D531B1DBC7",
-                "at": "2026-11-18T14:26:59.697",
+                "at": "2026-11-20T03:04:54.527",
                 "detail": "60d80e20e5ca21d9893e5a839b5428a5a581d206423440178d592b7796cc4ec7",
-                "entry_hash": "faf4b3eebff34b2c7f70f8c6f1e5934bef16020388b78f4fd20303637c8499c3",
-                "entry_id": "5689BB94-9B75-6ADA-BF18E8A5AC3DF88C",
+                "entry_hash": "238fdbedeb7eb0e1320f2120dcb1415a69095893f61ce202d41963b61ec54a6b",
+                "entry_id": "A5243C27-FE11-61E8-3D43A2C55E4FE48F",
                 "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
-                "request_id": "5689BB5F-DB79-F2D1-CCDF15E42BA1DA8C",
+                "request_id": "A5243C00-0A95-FBF6-51C2B0718CA66F4B",
                 "seq": 1
               },
               {
                 "action": "signed",
                 "actor_user_id": "7EDFAD01-DC76-57C6-993CE5D531B1DBC7",
-                "at": "2026-11-18T14:26:59.740",
+                "at": "2026-11-20T03:04:54.570",
                 "detail": "Golden Signer",
-                "entry_hash": "5c0aec352c9139ecb6d02d69f4258910368a65bd4a909c24f5656b541fea5379",
-                "entry_id": "5689BD45-CDD0-3333-FE705CBBA4BB57D4",
-                "prev_hash": "faf4b3eebff34b2c7f70f8c6f1e5934bef16020388b78f4fd20303637c8499c3",
-                "request_id": "5689BB5F-DB79-F2D1-CCDF15E42BA1DA8C",
+                "entry_hash": "9abef1215a04ad5d841e9a4c52f34794522de204c70e693fce3a97d5dfe4bc7b",
+                "entry_id": "A5243DD2-FB57-D3A2-8F8A5D9AAA2AEFCE",
+                "prev_hash": "238fdbedeb7eb0e1320f2120dcb1415a69095893f61ce202d41963b61ec54a6b",
+                "request_id": "A5243C00-0A95-FBF6-51C2B0718CA66F4B",
                 "seq": 2
               }
             ]
@@ -353,7 +353,7 @@
           "x-csrf_token_expires": "<token>"
         },
         "method": "POST",
-        "url": "/legacy-fixtures/cfml/api.cfm/esignature/requests/5689BB5F-DB79-F2D1-CCDF15E42BA1DA8C/verify?siteid=tenant-a"
+        "url": "/legacy-fixtures/cfml/api.cfm/esignature/requests/A5243C00-0A95-FBF6-51C2B0718CA66F4B/verify?siteid=tenant-a"
       },
       "response": {
         "body": {
@@ -403,21 +403,21 @@
               {
                 "action": "created",
                 "actor_user_id": "7EDFAD01-DC76-57C6-993CE5D531B1DBC7",
-                "at": "2026-11-18T14:26:59.697",
+                "at": "2026-11-20T03:04:54.527",
                 "detail": "60d80e20e5ca21d9893e5a839b5428a5a581d206423440178d592b7796cc4ec7",
-                "entry_hash": "faf4b3eebff34b2c7f70f8c6f1e5934bef16020388b78f4fd20303637c8499c3",
-                "entry_id": "5689BB94-9B75-6ADA-BF18E8A5AC3DF88C",
+                "entry_hash": "238fdbedeb7eb0e1320f2120dcb1415a69095893f61ce202d41963b61ec54a6b",
+                "entry_id": "A5243C27-FE11-61E8-3D43A2C55E4FE48F",
                 "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
-                "request_id": "5689BB5F-DB79-F2D1-CCDF15E42BA1DA8C",
+                "request_id": "A5243C00-0A95-FBF6-51C2B0718CA66F4B",
                 "seq": 1
               },
               {
                 "action": "signed",
                 "actor_user_id": "7EDFAD01-DC76-57C6-993CE5D531B1DBC7",
-                "at": "2026-11-18T14:26:59.740",
+                "at": "2026-11-20T03:04:54.570",
                 "detail": "Tampered Signer",
-                "entry_hash": "5c0aec352c9139ecb6d02d69f4258910368a65bd4a909c24f5656b541fea5379",
-                "prev_hash": "faf4b3eebff34b2c7f70f8c6f1e5934bef16020388b78f4fd20303637c8499c3",
+                "entry_hash": "9abef1215a04ad5d841e9a4c52f34794522de204c70e693fce3a97d5dfe4bc7b",
+                "prev_hash": "238fdbedeb7eb0e1320f2120dcb1415a69095893f61ce202d41963b61ec54a6b",
                 "seq": 2
               }
             ]
@@ -429,7 +429,7 @@
           "x-csrf_token_expires": "<token>"
         },
         "method": "POST",
-        "url": "/legacy-fixtures/cfml/api.cfm/esignature/requests/5689BB5F-DB79-F2D1-CCDF15E42BA1DA8C/verify?siteid=tenant-a"
+        "url": "/legacy-fixtures/cfml/api.cfm/esignature/requests/A5243C00-0A95-FBF6-51C2B0718CA66F4B/verify?siteid=tenant-a"
       },
       "response": {
         "body": {

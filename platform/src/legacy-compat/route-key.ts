@@ -103,6 +103,8 @@ export interface RouteKeyResult {
   httpMethod: string;
   /** The family's merged params as legacy merges them, lower-cased keys, simple values only. */
   params: Record<string, string>;
+  /** REST only: `params` as the credential block reads them, before credential handling and method resolution (jsonApiUtility.cfc:405-422). */
+  credentialParams?: Record<string, string>;
   /** Reload only: the route legacy serves once start-up has re-run (session effects, CSRF claims, 503 surface). */
   afterReload?: RouteKeyResult;
 }
@@ -280,6 +282,8 @@ interface BaseRoute {
   siteId?: string;
   /** The family's own effective method, when it reads X-HTTP-Method-Override differently from the JSON API. */
   httpMethod?: string;
+  /** REST only: the params the credential block reads; absent when legacy throws before it. */
+  credentialParams?: ParamMap;
 }
 
 const GLOB_FAMILIES: ReadonlySet<RouteFamily> = new Set<RouteFamily>(['opt2', 'bridge', 'static', 'cfm', 'cfc', 'apiother']);
@@ -753,8 +757,13 @@ function entityOperation(c: RouteContext, pi: readonly string[], P: ParamMap, ur
   }
 }
 
+/** The params legacy's REST credential block reads, recorded once resolution reaches it. */
+interface CredentialRead {
+  params?: ParamMap;
+}
+
 /** processRequest's method and entity resolution (jsonApiUtility.cfc:368-1306); legacy error responses throw LegacyThrow. */
-function resolveJsonApi(c: RouteContext, restMode: boolean, siteId: string, P: ParamMap): string {
+function resolveJsonApi(c: RouteContext, restMode: boolean, siteId: string, P: ParamMap, credentials: CredentialRead): string {
   const { req, opts } = c;
   const url = scopeMap(req.query);
   url.delete(opts.appReloadKey);
@@ -769,6 +778,7 @@ function resolveJsonApi(c: RouteContext, restMode: boolean, siteId: string, P: P
   if (P.has('murapointintime')) throw new LegacyThrow('server_error');
 
   if (restMode) {
+    credentials.params = new Map(P);
     const credentialKey = restCredentials(c, P, url);
     if (credentialKey !== undefined) return credentialKey;
     dropConsumedCredentials(c, P);
@@ -884,14 +894,15 @@ function apiSiteId(c: RouteContext): string {
 function jsonApiRoute(c: RouteContext, family: 'api' | 'rest'): BaseRoute {
   const siteId = apiSiteId(c);
   const params: ParamMap = new Map();
+  const credentials: CredentialRead = {};
   let body: string;
   try {
-    body = resolveJsonApi(c, family === 'rest', siteId, params);
+    body = resolveJsonApi(c, family === 'rest', siteId, params, credentials);
   } catch (e) {
     if (!(e instanceof LegacyThrow)) throw e;
     body = `!${e.type}`;
   }
-  return { family, body, params, siteId };
+  return { family, body, params, siteId, ...(credentials.params === undefined ? {} : { credentialParams: credentials.params }) };
 }
 
 /** handleAPIRequest endpoints in legacy order; each test is a case-insensitive prefix (contentServer.cfc:593-777). */
@@ -1288,6 +1299,7 @@ export function routeKeyForRequest(req: RouteKeyRequest, opts: RouteKeyOptions =
   const params = simpleParams(route.params);
   const sessionManaged = !startsNoCase(pathInfo, SESSIONLESS_PATH_INFO);
   const result = keyedResult({ baseKey, family: route.family, httpMethod, params, siteId: route.siteId, sessionManaged }, req, resolved);
+  if (route.credentialParams !== undefined) result.credentialParams = simpleParams(route.credentialParams);
   if (!isReloadRequest(req, route.family, resolved)) return result;
   const reloadParams = Object.fromEntries(Object.entries(params).filter(([name]) => name !== resolved.appReloadKey));
   const reload = keyedResult(

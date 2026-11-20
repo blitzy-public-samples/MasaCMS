@@ -1,10 +1,10 @@
 {
-  "capturedAt": "2026-11-18T14:24:25.490Z",
+  "capturedAt": "2026-11-20T03:02:18.353Z",
   "fixtures": {
     "available": true,
     "reason": "fixtures loaded"
   },
-  "generatedAt": "2026-11-18T14:24:29.068Z",
+  "generatedAt": "2026-11-20T03:02:23.546Z",
   "generatedBy": "harness/src/golden/capture.ts",
   "origin": "legacy",
   "scenarioId": "GS-CO-12",
@@ -41,7 +41,7 @@
             "",
             "",
             "Admin User",
-            "2",
+            "",
             "Add Category",
             "Permissions"
           ],
@@ -317,10 +317,6 @@
             {
               "href": "/admin/?muraAction=ceditprofile.edit",
               "text": "Admin User"
-            },
-            {
-              "href": "./?muraAction=carch.list&moduleid=00000000000000000000000000000000000&activeTab=1&report=mydrafts&siteID=tenant-b&reportSortby=lastupdate&reportSortDirection=desc&refreshFlatview=true",
-              "text": "2 Drafts"
             },
             {
               "href": "/admin/?muraAction=ceditprofile.edit",
@@ -629,7 +625,7 @@
             "",
             "",
             "Admin User",
-            "2",
+            "",
             "Add Category",
             "Permissions"
           ],
@@ -905,10 +901,6 @@
             {
               "href": "/admin/?muraAction=ceditprofile.edit",
               "text": "Admin User"
-            },
-            {
-              "href": "./?muraAction=carch.list&moduleid=00000000000000000000000000000000000&activeTab=1&report=mydrafts&siteID=tenant-b&reportSortby=lastupdate&reportSortDirection=desc&refreshFlatview=true",
-              "text": "2 Drafts"
             },
             {
               "href": "/admin/?muraAction=ceditprofile.edit",
@@ -1192,7 +1184,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "96779114a7456df432a3e48a1b0f2887fcd10fe473f5bb925131c0aff9c34c17",
+        "rawSha256": "3ebe05cf50b705456923b8a39b3503832932ec2bddc887d9472df5173f3a44bd",
         "status": 200
       },
       "routeKey": "admin:ccategory.list"
@@ -1222,7 +1214,7 @@
             "",
             "",
             "Admin User",
-            "2",
+            "",
             "Back to Categories",
             "Add"
           ],
@@ -1810,10 +1802,6 @@
             {
               "href": "/admin/?muraAction=ceditprofile.edit",
               "text": "Admin User"
-            },
-            {
-              "href": "./?muraAction=carch.list&moduleid=00000000000000000000000000000000000&activeTab=1&report=mydrafts&siteID=tenant-b&reportSortby=lastupdate&reportSortDirection=desc&refreshFlatview=true",
-              "text": "2 Drafts"
             },
             {
               "href": "/admin/?muraAction=ceditprofile.edit",
@@ -1865,7 +1853,7 @@
             "",
             "",
             "Admin User",
-            "2",
+            "",
             "Back to Categories",
             "Add"
           ],
@@ -2455,10 +2443,6 @@
               "text": "Admin User"
             },
             {
-              "href": "./?muraAction=carch.list&moduleid=00000000000000000000000000000000000&activeTab=1&report=mydrafts&siteID=tenant-b&reportSortby=lastupdate&reportSortDirection=desc&refreshFlatview=true",
-              "text": "2 Drafts"
-            },
-            {
               "href": "/admin/?muraAction=ceditprofile.edit",
               "text": "Edit Profile"
             },
@@ -2483,7 +2467,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "a5fbcac521177c78788481b54ddfbdab1f1a1be58e880c735602df3fd549209b",
+        "rawSha256": "d44c5e87dbe0fbd498dc9a22b1c2a259f6b090a950ec8a1b14ae929268a3a05a",
         "status": 200
       },
       "routeKey": "admin:ccategory.edit"
@@ -2518,7 +2502,7 @@
             "",
             "",
             "Admin User",
-            "2",
+            "",
             "Add Category",
             "Permissions"
           ],
@@ -2794,10 +2778,6 @@
             {
               "href": "/admin/?muraAction=ceditprofile.edit",
               "text": "Admin User"
-            },
-            {
-              "href": "./?muraAction=carch.list&moduleid=00000000000000000000000000000000000&activeTab=1&report=mydrafts&siteID=tenant-b&reportSortby=lastupdate&reportSortDirection=desc&refreshFlatview=true",
-              "text": "2 Drafts"
             },
             {
               "href": "/admin/?muraAction=ceditprofile.edit",
@@ -3145,7 +3125,7 @@
             "",
             "",
             "Admin User",
-            "2",
+            "",
             "Add Category",
             "Permissions"
           ],
@@ -3421,10 +3401,6 @@
             {
               "href": "/admin/?muraAction=ceditprofile.edit",
               "text": "Admin User"
-            },
-            {
-              "href": "./?muraAction=carch.list&moduleid=00000000000000000000000000000000000&activeTab=1&report=mydrafts&siteID=tenant-b&reportSortby=lastupdate&reportSortDirection=desc&refreshFlatview=true",
-              "text": "2 Drafts"
             },
             {
               "href": "/admin/?muraAction=ceditprofile.edit",
@@ -3732,7 +3708,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "b650f55f3507da7f260e608bc5cfbdbb8e40f61d1e5b1c48011e618381e14f34",
+        "rawSha256": "96b06090a45d01996f51e5d9d7f83035c388e3d7dcf25d286d5cfb5ac820b289",
         "status": 200
       },
       "routeKey": "admin:ccategory.update"
@@ -3762,7 +3738,7 @@
             "",
             "",
             "Admin User",
-            "2",
+            "",
             "Back to Categories",
             "Delete",
             "Update"
@@ -4351,10 +4327,6 @@
             {
               "href": "/admin/?muraAction=ceditprofile.edit",
               "text": "Admin User"
-            },
-            {
-              "href": "./?muraAction=carch.list&moduleid=00000000000000000000000000000000000&activeTab=1&report=mydrafts&siteID=tenant-b&reportSortby=lastupdate&reportSortDirection=desc&refreshFlatview=true",
-              "text": "2 Drafts"
             },
             {
               "href": "/admin/?muraAction=ceditprofile.edit",
@@ -4387,7 +4359,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/?muraAction=cCategory.edit&siteid=tenant-b&categoryID=567261C4-E5C9-775F-9E47DC90EA1BBCAF&parentID="
+        "url": "/admin/?muraAction=cCategory.edit&siteid=tenant-b&categoryID=A50CA4F4-C62D-52C3-4D8FA965BFD8B299&parentID="
       },
       "response": {
         "domModel": {
@@ -4406,7 +4378,7 @@
             "",
             "",
             "Admin User",
-            "2",
+            "",
             "Back to Categories",
             "Delete",
             "Update"
@@ -4997,10 +4969,6 @@
               "text": "Admin User"
             },
             {
-              "href": "./?muraAction=carch.list&moduleid=00000000000000000000000000000000000&activeTab=1&report=mydrafts&siteID=tenant-b&reportSortby=lastupdate&reportSortDirection=desc&refreshFlatview=true",
-              "text": "2 Drafts"
-            },
-            {
               "href": "/admin/?muraAction=ceditprofile.edit",
               "text": "Edit Profile"
             },
@@ -5025,7 +4993,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "7d1c6f3574c1e297a607f6f21a92b55607435d9b49d28313b488b6e76c87e513",
+        "rawSha256": "0d7fcd0cf535655f788bf42ff538d7bfac797016578136d22a517b66d004c4da",
         "status": 200
       },
       "routeKey": "admin:ccategory.edit"
@@ -5060,7 +5028,7 @@
             "",
             "",
             "Admin User",
-            "2",
+            "",
             "Add Category",
             "Permissions"
           ],
@@ -5336,10 +5304,6 @@
             {
               "href": "/admin/?muraAction=ceditprofile.edit",
               "text": "Admin User"
-            },
-            {
-              "href": "./?muraAction=carch.list&moduleid=00000000000000000000000000000000000&activeTab=1&report=mydrafts&siteID=tenant-b&reportSortby=lastupdate&reportSortDirection=desc&refreshFlatview=true",
-              "text": "2 Drafts"
             },
             {
               "href": "/admin/?muraAction=ceditprofile.edit",
@@ -5652,7 +5616,7 @@
           "kind": "form",
           "value": {
             "action": "update",
-            "categoryID": "567261C4-E5C9-775F-9E47DC90EA1BBCAF",
+            "categoryID": "A50CA4F4-C62D-52C3-4D8FA965BFD8B299",
             "csrf_token": "<token>",
             "csrf_token_expires": "<token>",
             "isActive": "1",
@@ -5683,7 +5647,7 @@
             "",
             "",
             "Admin User",
-            "2",
+            "",
             "Add Category",
             "Permissions"
           ],
@@ -5959,10 +5923,6 @@
             {
               "href": "/admin/?muraAction=ceditprofile.edit",
               "text": "Admin User"
-            },
-            {
-              "href": "./?muraAction=carch.list&moduleid=00000000000000000000000000000000000&activeTab=1&report=mydrafts&siteID=tenant-b&reportSortby=lastupdate&reportSortDirection=desc&refreshFlatview=true",
-              "text": "2 Drafts"
             },
             {
               "href": "/admin/?muraAction=ceditprofile.edit",
@@ -6270,7 +6230,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "d31bb1572b0c427730bc2d681f609799d28a35718e1c4ee781dba5ef8163be01",
+        "rawSha256": "34bb064483d2acf956e545b813ff26c806cd9887681a4e60fdbae4ce28d58f77",
         "status": 200
       },
       "routeKey": "admin:ccategory.update"
@@ -6300,7 +6260,7 @@
             "",
             "",
             "Admin User",
-            "2",
+            "",
             "Back to Categories",
             "Delete",
             "Update"
@@ -6889,10 +6849,6 @@
             {
               "href": "/admin/?muraAction=ceditprofile.edit",
               "text": "Admin User"
-            },
-            {
-              "href": "./?muraAction=carch.list&moduleid=00000000000000000000000000000000000&activeTab=1&report=mydrafts&siteID=tenant-b&reportSortby=lastupdate&reportSortDirection=desc&refreshFlatview=true",
-              "text": "2 Drafts"
             },
             {
               "href": "/admin/?muraAction=ceditprofile.edit",
@@ -6925,7 +6881,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/?muraAction=cCategory.edit&siteid=tenant-b&categoryID=567261C4-E5C9-775F-9E47DC90EA1BBCAF&parentID="
+        "url": "/admin/?muraAction=cCategory.edit&siteid=tenant-b&categoryID=A50CA4F4-C62D-52C3-4D8FA965BFD8B299&parentID="
       },
       "response": {
         "domModel": {
@@ -6944,7 +6900,7 @@
             "",
             "",
             "Admin User",
-            "2",
+            "",
             "Back to Categories",
             "Delete",
             "Update"
@@ -7535,10 +7491,6 @@
               "text": "Admin User"
             },
             {
-              "href": "./?muraAction=carch.list&moduleid=00000000000000000000000000000000000&activeTab=1&report=mydrafts&siteID=tenant-b&reportSortby=lastupdate&reportSortDirection=desc&refreshFlatview=true",
-              "text": "2 Drafts"
-            },
-            {
               "href": "/admin/?muraAction=ceditprofile.edit",
               "text": "Edit Profile"
             },
@@ -7563,7 +7515,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "7012ad9c66b491fee04f927c08ba9389c4bf7c4113d36841b9fa9d79ff9eebf1",
+        "rawSha256": "99fe9cfe0a4d7571c3ee495756bd9afa925b2b89778e87ecad2cc757cc6bd63d",
         "status": 200
       },
       "routeKey": "admin:ccategory.edit"
@@ -7598,7 +7550,7 @@
             "",
             "",
             "Admin User",
-            "2",
+            "",
             "Add Category",
             "Permissions"
           ],
@@ -7874,10 +7826,6 @@
             {
               "href": "/admin/?muraAction=ceditprofile.edit",
               "text": "Admin User"
-            },
-            {
-              "href": "./?muraAction=carch.list&moduleid=00000000000000000000000000000000000&activeTab=1&report=mydrafts&siteID=tenant-b&reportSortby=lastupdate&reportSortDirection=desc&refreshFlatview=true",
-              "text": "2 Drafts"
             },
             {
               "href": "/admin/?muraAction=ceditprofile.edit",
@@ -8166,7 +8114,7 @@
           "kind": "form",
           "value": {
             "action": "delete",
-            "categoryID": "567261C4-E5C9-775F-9E47DC90EA1BBCAF",
+            "categoryID": "A50CA4F4-C62D-52C3-4D8FA965BFD8B299",
             "csrf_token": "<token>",
             "csrf_token_expires": "<token>",
             "siteid": "tenant-b"
@@ -8195,7 +8143,7 @@
             "",
             "",
             "Admin User",
-            "2",
+            "",
             "Add Category",
             "Permissions"
           ],
@@ -8471,10 +8419,6 @@
             {
               "href": "/admin/?muraAction=ceditprofile.edit",
               "text": "Admin User"
-            },
-            {
-              "href": "./?muraAction=carch.list&moduleid=00000000000000000000000000000000000&activeTab=1&report=mydrafts&siteID=tenant-b&reportSortby=lastupdate&reportSortDirection=desc&refreshFlatview=true",
-              "text": "2 Drafts"
             },
             {
               "href": "/admin/?muraAction=ceditprofile.edit",
@@ -8758,7 +8702,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "8a3c4a27409ce4edbf3d970a334c60cba8ef151e213fecbb6e2c5250a69e8fdb",
+        "rawSha256": "0a3229359d81adc5632d47b6a31313b2ae57cba86e87ef85a0a695d01bbcd86d",
         "status": 200
       },
       "routeKey": "admin:ccategory.update"
@@ -8894,7 +8838,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "835343076b380e7826d3949e92a06228524aa957968485c40ae8ae2bed23e04a",
+        "rawSha256": "34233da4621a19225d294b1d215ad4957a6aa0726b91b27d74948fab90ce78f6",
         "status": 200
       },
       "routeKey": "api:category.save"
@@ -9031,7 +8975,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "86c127cd8f9c55704aa3af8a8f2423219286ce9d96348dc32d43529d2c0d6aff",
+        "rawSha256": "7e6c35eef2ffba4137f228cd32b325ee8b01de23979b2cc5a546869ec9a8dcf2",
         "status": 200
       },
       "routeKey": "api:content.findone"
@@ -9063,8 +9007,8 @@
         "body": {
           "kind": "form",
           "value": {
-            "categoryid": "56728EE6-A051-DB78-5C4F20EE8A57DCD7",
-            "contenthistid": "55E09F8F-A934-7569-F0065267B54F0001",
+            "categoryid": "A50CFEF8-97F1-DBC1-AD73B7F78B4C3003",
+            "contenthistid": "A4B518AD-9008-4C8C-4202B397CB036CC0",
             "contentid": "E2CD0DF6-049E-A2F3-5709C35F495024D4",
             "entityname": "contentCategoryAssign",
             "isfeature": "0",
@@ -9095,7 +9039,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "30314a000f58d21b312648ba50a32adc735b2008776088e2b0d77c5747f6c349",
+        "rawSha256": "5ef490952ce33b295bfcc191c1806b52cbea2e930c8f8b92e1cb73765c9de6cf",
         "status": 500
       },
       "routeKey": "api:contentcategoryassign.save"
@@ -9156,7 +9100,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "790216b25722a57f356446a79fde3cd3f615792b63ed91eafa53e020ba1136e9",
+        "rawSha256": "266d4439158a5ae73b0b389912d6bc6f869ff19b365d35fb8a8ee1c35e0368da",
         "status": 500
       },
       "routeKey": "api:contentcategoryassign.delete"
@@ -9260,7 +9204,7 @@
         "headers": {
           "content-type": "text/html;charset=UTF-8"
         },
-        "rawSha256": "47da9aeaa9516f2ad3bf3a512f860524f75bd2431dd0ec7e1ef9ca095af7ba5a",
+        "rawSha256": "afc9ad73b19270b8db2b5121e14dacb16b0518030f512deb22edf317fd4ae3db",
         "status": 500
       },
       "routeKey": "rest:category.save{siteid}"
@@ -9314,7 +9258,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "68ccec2a7a06000d4de45b5ec930d260650670319f5e0f6f4deafe5425daa256",
+        "rawSha256": "a986ea77e3cd40c685c2e3eaaba4f4bbb396b75e14f3fe9e9c6b42afe6de1f3d",
         "status": 500
       },
       "routeKey": "rest:category.save"
@@ -9369,8 +9313,8 @@
         "body": {
           "kind": "form",
           "value": {
-            "categoryid": "56728EE6-A051-DB78-5C4F20EE8A57DCD7",
-            "contenthistid": "55E09F8F-A934-7569-F0065267B54F0001",
+            "categoryid": "A50CFEF8-97F1-DBC1-AD73B7F78B4C3003",
+            "contenthistid": "A4B518AD-9008-4C8C-4202B397CB036CC0",
             "contentid": "E2CD0DF6-049E-A2F3-5709C35F495024D4",
             "isfeature": "0",
             "siteid": "tenant-b"
@@ -9416,7 +9360,7 @@
         "headers": {
           "content-type": "text/html;charset=UTF-8"
         },
-        "rawSha256": "47da9aeaa9516f2ad3bf3a512f860524f75bd2431dd0ec7e1ef9ca095af7ba5a",
+        "rawSha256": "afc9ad73b19270b8db2b5121e14dacb16b0518030f512deb22edf317fd4ae3db",
         "status": 500
       },
       "routeKey": "rest:contentcategoryassign.save{siteid}"
@@ -9440,8 +9384,8 @@
         "body": {
           "kind": "form",
           "value": {
-            "categoryid": "56728EE6-A051-DB78-5C4F20EE8A57DCD7",
-            "contenthistid": "55E09F8F-A934-7569-F0065267B54F0001",
+            "categoryid": "A50CFEF8-97F1-DBC1-AD73B7F78B4C3003",
+            "contenthistid": "A4B518AD-9008-4C8C-4202B397CB036CC0",
             "contentid": "E2CD0DF6-049E-A2F3-5709C35F495024D4",
             "isfeature": "0"
           }
@@ -9468,7 +9412,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "68ccec2a7a06000d4de45b5ec930d260650670319f5e0f6f4deafe5425daa256",
+        "rawSha256": "a986ea77e3cd40c685c2e3eaaba4f4bbb396b75e14f3fe9e9c6b42afe6de1f3d",
         "status": 500
       },
       "routeKey": "rest:contentcategoryassign.save"
@@ -9568,7 +9512,7 @@
         "headers": {
           "content-type": "text/html;charset=UTF-8"
         },
-        "rawSha256": "47da9aeaa9516f2ad3bf3a512f860524f75bd2431dd0ec7e1ef9ca095af7ba5a",
+        "rawSha256": "afc9ad73b19270b8db2b5121e14dacb16b0518030f512deb22edf317fd4ae3db",
         "status": 500
       },
       "routeKey": "rest:contentcategoryassign.delete{siteid}"
@@ -9618,7 +9562,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "fff8f0df7f4ee999bfb569839db1e911c790c8032ed598256f04718d6033bc13",
+        "rawSha256": "fcedf3909142be72cbf56e4a595fe54f99c2dd3d2e5ad6b67ec1fc1f3a7dcdef",
         "status": 500
       },
       "routeKey": "rest:contentcategoryassign.delete"
@@ -9654,7 +9598,7 @@
           "authorization": "Basic <secret>"
         },
         "method": "DELETE",
-        "url": "/_api/rest/v1/tenant-b/category/56728EE6-A051-DB78-5C4F20EE8A57DCD7"
+        "url": "/_api/rest/v1/tenant-b/category/A50CFEF8-97F1-DBC1-AD73B7F78B4C3003"
       },
       "response": {
         "body": {
@@ -9671,7 +9615,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "7b7ea8d7f3a1fffebcbb4f561d61b9a1641d38701289022680fe392802f94bbb",
+        "rawSha256": "1cd15797dde7b677b6e7716ca57d91f6aef3bd6aeb690dd439a7907ba910756b",
         "status": 500
       },
       "routeKey": "rest:category.delete"
@@ -9701,7 +9645,7 @@
           "kind": "form",
           "value": {
             "entityname": "category",
-            "id": "56728EE6-A051-DB78-5C4F20EE8A57DCD7",
+            "id": "A50CFEF8-97F1-DBC1-AD73B7F78B4C3003",
             "method": "delete",
             "siteid": "tenant-b"
           }

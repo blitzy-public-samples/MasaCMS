@@ -1,10 +1,10 @@
 {
-  "capturedAt": "2026-11-18T14:22:41.800Z",
+  "capturedAt": "2026-11-20T03:00:34.054Z",
   "fixtures": {
     "available": true,
     "reason": "fixtures loaded"
   },
-  "generatedAt": "2026-11-18T14:22:52.529Z",
+  "generatedAt": "2026-11-20T03:00:44.918Z",
   "generatedBy": "harness/src/golden/capture.ts",
   "origin": "legacy",
   "scenarioId": "GS-PS-03",
@@ -15110,7 +15110,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "3f01b5437851a359afa39f23247497b502fab40bdaf09dde15c7dcb9d40d8c10",
+        "rawSha256": "d186fa3242a2fb94d8ceef736165a8e1d45c2412550013b8dc105547d126993c",
         "status": 200
       },
       "routeKey": "admin:csettings.editsite"
@@ -15498,7 +15498,7 @@
               "text": "Masa CMS © 2026 We Are North Groep BV Licensed under GNU General Public License Version 2.0 with exceptions"
             },
             {
-              "href": "http://gs-ps-03.seed.opt2.test:26400/",
+              "href": "http://gs-ps-03.seed.opt2.test:8100/",
               "text": "GS-PS-03 Copy Target"
             },
             {
@@ -16060,7 +16060,7 @@
               "text": "Masa CMS © 2026 We Are North Groep BV Licensed under GNU General Public License Version 2.0 with exceptions"
             },
             {
-              "href": "http://gs-ps-03.seed.opt2.test:26400/",
+              "href": "http://gs-ps-03.seed.opt2.test:8100/",
               "text": "GS-PS-03 Copy Target"
             },
             {
@@ -16235,7 +16235,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "3298eb7a5cc45bf5b852fd2f7151d92ea12ffd7525f149557bef0761378cd802",
+        "rawSha256": "b20ec9fdf4eb13c0fc1b9b069a3dc4e58f90c6ef1e7e17e4876aa2690d1fd669",
         "status": 200
       },
       "routeKey": "admin:csettings.updatesite{action=add}"
@@ -16271,7 +16271,7 @@
             "",
             "",
             "Admin User",
-            "2",
+            "",
             "Copy"
           ],
           "controls": [
@@ -16660,10 +16660,6 @@
             {
               "href": "/admin/?muraAction=ceditprofile.edit",
               "text": "Admin User"
-            },
-            {
-              "href": "./?muraAction=carch.list&moduleid=00000000000000000000000000000000000&activeTab=1&report=mydrafts&siteID=tenant-b&reportSortby=lastupdate&reportSortDirection=desc&refreshFlatview=true",
-              "text": "2 Drafts"
             },
             {
               "href": "/admin/?muraAction=ceditprofile.edit",
@@ -16715,7 +16711,7 @@
             "",
             "",
             "Admin User",
-            "2",
+            "",
             "Copy"
           ],
           "controls": [
@@ -17106,10 +17102,6 @@
               "text": "Admin User"
             },
             {
-              "href": "./?muraAction=carch.list&moduleid=00000000000000000000000000000000000&activeTab=1&report=mydrafts&siteID=tenant-b&reportSortby=lastupdate&reportSortDirection=desc&refreshFlatview=true",
-              "text": "2 Drafts"
-            },
-            {
               "href": "/admin/?muraAction=ceditprofile.edit",
               "text": "Edit Profile"
             },
@@ -17130,7 +17122,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "04f3db94ac3b5e2bc2ff9ef5acafcbf3626c88a31789228135235d57ec4c7677",
+        "rawSha256": "8ccf049f0e5c2c5aed2f7281481066a3f58a582da8efa5721a5663ee9d4f9ade",
         "status": 200
       },
       "routeKey": "admin:csettings.sitecopyselect"
@@ -17167,7 +17159,7 @@
             "",
             "",
             "Admin User",
-            "2"
+            ""
           ],
           "controls": [
             {
@@ -17441,10 +17433,6 @@
             {
               "href": "/admin/?muraAction=ceditprofile.edit",
               "text": "Admin User"
-            },
-            {
-              "href": "./?muraAction=carch.list&moduleid=00000000000000000000000000000000000&activeTab=1&report=mydrafts&siteID=tenant-b&reportSortby=lastupdate&reportSortDirection=desc&refreshFlatview=true",
-              "text": "2 Drafts"
             },
             {
               "href": "/admin/?muraAction=ceditprofile.edit",
@@ -17502,7 +17490,7 @@
             "",
             "",
             "Admin User",
-            "2"
+            ""
           ],
           "controls": [
             {
@@ -17778,10 +17766,6 @@
               "text": "Admin User"
             },
             {
-              "href": "./?muraAction=carch.list&moduleid=00000000000000000000000000000000000&activeTab=1&report=mydrafts&siteID=tenant-b&reportSortby=lastupdate&reportSortDirection=desc&refreshFlatview=true",
-              "text": "2 Drafts"
-            },
-            {
               "href": "/admin/?muraAction=ceditprofile.edit",
               "text": "Edit Profile"
             },
@@ -17802,7 +17786,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "97c469ccae0124d805566c1497e51ee23e25ef81656707893169980cc0c7113e",
+        "rawSha256": "1828e623db5ea89459f5c465075931f37ee9dd6ca1cd64d6f6e222218218fd38",
         "status": 200
       },
       "routeKey": "admin:csettings.sitecopy"
@@ -17832,7 +17816,7 @@
             "",
             "",
             "Admin User",
-            "2"
+            ""
           ],
           "controls": [
             {
@@ -18106,10 +18090,6 @@
             {
               "href": "/admin/?muraAction=ceditprofile.edit",
               "text": "Admin User"
-            },
-            {
-              "href": "./?muraAction=carch.list&moduleid=00000000000000000000000000000000000&activeTab=1&report=mydrafts&siteID=tenant-b&reportSortby=lastupdate&reportSortDirection=desc&refreshFlatview=true",
-              "text": "2 Drafts"
             },
             {
               "href": "/admin/?muraAction=ceditprofile.edit",
@@ -18157,7 +18137,7 @@
             "",
             "",
             "Admin User",
-            "2"
+            ""
           ],
           "controls": [
             {
@@ -18433,10 +18413,6 @@
               "text": "Admin User"
             },
             {
-              "href": "./?muraAction=carch.list&moduleid=00000000000000000000000000000000000&activeTab=1&report=mydrafts&siteID=tenant-b&reportSortby=lastupdate&reportSortDirection=desc&refreshFlatview=true",
-              "text": "2 Drafts"
-            },
-            {
               "href": "/admin/?muraAction=ceditprofile.edit",
               "text": "Edit Profile"
             },
@@ -18457,7 +18433,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "3ee064737d555092bc90f2b2e8adb0a37f3904b9a79bfee3f350c19fedc6f547",
+        "rawSha256": "8839eaee7c7062f463db3518d1a194f0f82cf2c739bb57c8e5d78f48bdcb9510",
         "status": 200
       },
       "routeKey": "admin:csettings.sitecopyresult"
@@ -18487,7 +18463,7 @@
             "",
             "",
             "Admin User",
-            "2",
+            "",
             "Create Site Bundle",
             "Class Extensions",
             "Trash Bin",
@@ -25905,7 +25881,7 @@
               "text": "Masa CMS © 2026 We Are North Groep BV Licensed under GNU General Public License Version 2.0 with exceptions"
             },
             {
-              "href": "http://gs-ps-03.seed.opt2.test:26400/",
+              "href": "http://gs-ps-03.seed.opt2.test:8100/",
               "text": "GS-PS-03 Copy Target"
             },
             {
@@ -25931,10 +25907,6 @@
             {
               "href": "/admin/?muraAction=ceditprofile.edit",
               "text": "Admin User"
-            },
-            {
-              "href": "./?muraAction=carch.list&moduleid=00000000000000000000000000000000000&activeTab=1&report=mydrafts&siteID=gs-ps-03&reportSortby=lastupdate&reportSortDirection=desc&refreshFlatview=true",
-              "text": "2 Drafts"
             },
             {
               "href": "/admin/?muraAction=ceditprofile.edit",
@@ -26046,7 +26018,7 @@
             "",
             "",
             "Admin User",
-            "2",
+            "",
             "Create Site Bundle",
             "Class Extensions",
             "Trash Bin",
@@ -33464,7 +33436,7 @@
               "text": "Masa CMS © 2026 We Are North Groep BV Licensed under GNU General Public License Version 2.0 with exceptions"
             },
             {
-              "href": "http://gs-ps-03.seed.opt2.test:26400/",
+              "href": "http://gs-ps-03.seed.opt2.test:8100/",
               "text": "GS-PS-03 Copy Target"
             },
             {
@@ -33490,10 +33462,6 @@
             {
               "href": "/admin/?muraAction=ceditprofile.edit",
               "text": "Admin User"
-            },
-            {
-              "href": "./?muraAction=carch.list&moduleid=00000000000000000000000000000000000&activeTab=1&report=mydrafts&siteID=gs-ps-03&reportSortby=lastupdate&reportSortDirection=desc&refreshFlatview=true",
-              "text": "2 Drafts"
             },
             {
               "href": "/admin/?muraAction=ceditprofile.edit",
@@ -33580,7 +33548,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "727232084e842031d5ef455f8dc81ca783fbfe506379329f08276da08f46b270",
+        "rawSha256": "d48a6ec7480e145f3c5c94fb7ae459f5e37496d0ed6455c4fe4022bfd11d833e",
         "status": 200
       },
       "routeKey": "admin:csettings.editsite"
@@ -34644,7 +34612,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "ffff39f99e8522c854f50c704ef846bec1f2742ab346c7f6748f50795d36c97e",
+        "rawSha256": "183b2921e7a187f0fd70016c26f953a012e87888593f5e17664d3b232ac7ca11",
         "status": 200
       },
       "routeKey": "admin:csettings.updatesite{action=delete}"

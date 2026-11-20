@@ -1,10 +1,10 @@
 {
-  "capturedAt": "2026-11-18T14:23:03.197Z",
+  "capturedAt": "2026-11-20T03:00:56.748Z",
   "fixtures": {
     "available": true,
     "reason": "fixtures loaded"
   },
-  "generatedAt": "2026-11-18T14:23:09.199Z",
+  "generatedAt": "2026-11-20T03:01:02.536Z",
   "generatedBy": "harness/src/golden/capture.ts",
   "origin": "legacy",
   "scenarioId": "GS-PS-06",
@@ -2349,7 +2349,7 @@
               "form": 1,
               "name": "displayIntervalTZ",
               "type": "hidden",
-              "value": "UTC"
+              "value": "Etc/UTC"
             },
             {
               "disabled": false,
@@ -8013,7 +8013,7 @@
               "form": 1,
               "name": "displayIntervalTZ",
               "type": "hidden",
-              "value": "UTC"
+              "value": "Etc/UTC"
             },
             {
               "disabled": false,
@@ -11344,7 +11344,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "72b06b40d20c4254ad3ebb1fe6b01bd7e325ae96b62cc35df5e2fef32e900e0f",
+        "rawSha256": "ed1fd0bc76456d6570b9a3cfba44459a304ac605c79e84821a80c80bc9029470",
         "status": 200
       },
       "routeKey": "admin:carch.edit"
@@ -11984,8 +11984,8 @@
             "action": "add",
             "approved": "0",
             "body": "<p>GS-PS-06 Trash Page</p>",
-            "contenthistid": "5665CAB2-A091-4FF3-7483B60B02FA9CD2",
-            "contentid": "5665C8C3-EE8B-2D11-93F483FC0D8C8B32",
+            "contenthistid": "A5001E79-EE50-998B-F509A4093F639B10",
+            "contentid": "A5001A75-A5F1-8BAF-ADFB6B0DCA2A549D",
             "csrf_token": "<token>",
             "csrf_token_expires": "<token>",
             "display": "1",
@@ -12619,7 +12619,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "c3eda9562f2e36feedfc50f6df9d594a16c0768e93f919de8b3e2e0cfd002171",
+        "rawSha256": "effe835437df84738db5cf027a4ba828067a652e2c656221775e9dc52de2f5ab",
         "status": 200
       },
       "routeKey": "admin:carch.update"
@@ -12653,7 +12653,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/_api/json/v1/tenant-a/generateCSRFTokens?context=5665C8C3-EE8B-2D11-93F483FC0D8C8B32deleteall"
+        "url": "/_api/json/v1/tenant-a/generateCSRFTokens?context=A5001A75-A5F1-8BAF-ADFB6B0DCA2A549Ddeleteall"
       },
       "response": {
         "body": {
@@ -12670,7 +12670,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "ebfe85c05c8ed49fc3de8c42384d4a60e9bf0b202b83d457d81cb4b43c5c86cd",
+        "rawSha256": "e93ebee10878c2315bd60a0f17bc479ad89e9a8680eb0c568ad2f8114f059017",
         "status": 200
       },
       "routeKey": "api:generatecsrftokens"
@@ -13308,7 +13308,7 @@
           "kind": "form",
           "value": {
             "action": "deleteall",
-            "contentid": "5665C8C3-EE8B-2D11-93F483FC0D8C8B32",
+            "contentid": "A5001A75-A5F1-8BAF-ADFB6B0DCA2A549D",
             "csrf_token": "<token>",
             "csrf_token_expires": "<token>",
             "moduleid": "00000000000000000000000000000000000",
@@ -13936,7 +13936,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "0a1bfaddebd918c2bf272ff67754e376b17b4692dbec7e2e5adf502aaf33dc24",
+        "rawSha256": "817a47c94e99d3e70b84f040c705bb6f05969e0e6fe14319c7b0fd12a5e1bc47",
         "status": 200
       },
       "routeKey": "admin:carch.update"
@@ -14023,7 +14023,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "bf2f4cc56d081d06b6b985d89d39e2b0ba1013de96a0428853d38d12a3c2b779",
+        "rawSha256": "dffe8f636324416cb25908cd81773d41ec1d74c102f79918ef6eedd8c6d4b954",
         "status": 500
       },
       "routeKey": "admin:ctrash.list"
@@ -14371,7 +14371,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/?muraAction=cTrash.detail&objectID=5665C8C3-EE8B-2D11-93F483FC0D8C8B32&siteID=tenant-a"
+        "url": "/admin/?muraAction=cTrash.detail&objectID=A5001A75-A5F1-8BAF-ADFB6B0DCA2A549D&siteID=tenant-a"
       },
       "response": {
         "domModel": {
@@ -14700,7 +14700,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "226be0375fc3a4622451dbc3ee84af392f66b1b40da185aeb64186dae6e7ee6f",
+        "rawSha256": "d0802691251a8134ad696d523b079401a4a9fcf76a79e02ff22c5e7f6f47d5a1",
         "status": 200
       },
       "routeKey": "admin:ctrash.detail"
@@ -14734,7 +14734,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/_api/json/v1/tenant-a/generateCSRFTokens?context=restore5665C8C3-EE8B-2D11-93F483FC0D8C8B32"
+        "url": "/_api/json/v1/tenant-a/generateCSRFTokens?context=restoreA5001A75-A5F1-8BAF-ADFB6B0DCA2A549D"
       },
       "response": {
         "body": {
@@ -14751,7 +14751,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "b9058ae34d874763ea32ffbce99bf17634b0dbb4cff45a221904102f28f700f7",
+        "rawSha256": "55219fc0eb97130a2e215df6a69c24853372243745e4bdeb4a98db94bcfd2b75",
         "status": 200
       },
       "routeKey": "api:generatecsrftokens"
@@ -14809,7 +14809,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/?muraAction=cTrash.restore&objectID=5665C8C3-EE8B-2D11-93F483FC0D8C8B32&siteID=tenant-a&csrf_token=<token>&csrf_token_expires=<token>"
+        "url": "/admin/?muraAction=cTrash.restore&objectID=A5001A75-A5F1-8BAF-ADFB6B0DCA2A549D&siteID=tenant-a&csrf_token=<token>&csrf_token_expires=<token>"
       },
       "response": {
         "domModel": {
@@ -14843,7 +14843,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "bf2f4cc56d081d06b6b985d89d39e2b0ba1013de96a0428853d38d12a3c2b779",
+        "rawSha256": "dffe8f636324416cb25908cd81773d41ec1d74c102f79918ef6eedd8c6d4b954",
         "status": 500
       },
       "routeKey": "admin:ctrash.restore"
@@ -14877,7 +14877,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/_api/json/v1/tenant-a/generateCSRFTokens?context=5665C8C3-EE8B-2D11-93F483FC0D8C8B32deleteall"
+        "url": "/_api/json/v1/tenant-a/generateCSRFTokens?context=A5001A75-A5F1-8BAF-ADFB6B0DCA2A549Ddeleteall"
       },
       "response": {
         "body": {
@@ -14894,7 +14894,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "7f8e0c8150775b721db0109a1f679220fb12bddeb5d236c89bfa36982c338c0e",
+        "rawSha256": "34d2b0de46af36a5ad045198edfcec8fe10a1af2a39d3b0ae1e3086a11d64f8b",
         "status": 200
       },
       "routeKey": "api:generatecsrftokens"
@@ -15532,7 +15532,7 @@
           "kind": "form",
           "value": {
             "action": "deleteall",
-            "contentid": "5665C8C3-EE8B-2D11-93F483FC0D8C8B32",
+            "contentid": "A5001A75-A5F1-8BAF-ADFB6B0DCA2A549D",
             "csrf_token": "<token>",
             "csrf_token_expires": "<token>",
             "moduleid": "00000000000000000000000000000000000",
@@ -16160,7 +16160,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "9217a9a98fdaa6312128cc9cc76fa0327795d51cbea98a8081b4d04bc95945f4",
+        "rawSha256": "b5cd016236b102744044926ae832114f518cabb4f3046769eca8abe57edd2c53",
         "status": 200
       },
       "routeKey": "admin:carch.update"
@@ -16211,7 +16211,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "49dffcff509f4e39722c078add4176994b51a2c2e7029b031c5185356a5ded8a",
+        "rawSha256": "a78f7b59dd886c0ff4d14f07253f39ab6be3109ec5266546fdea56ceedc02329",
         "status": 200
       },
       "routeKey": "api:generatecsrftokens"
@@ -16303,7 +16303,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "bf2f4cc56d081d06b6b985d89d39e2b0ba1013de96a0428853d38d12a3c2b779",
+        "rawSha256": "dffe8f636324416cb25908cd81773d41ec1d74c102f79918ef6eedd8c6d4b954",
         "status": 500
       },
       "routeKey": "admin:ctrash.empty"

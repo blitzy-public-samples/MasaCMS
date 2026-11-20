@@ -273,7 +273,7 @@ describe('buildApp composition', () => {
     await build({ startBackground: false });
 
     const [, projectorOptions] = vi.mocked(createProjector).mock.calls[0] ?? [];
-    expect(projectorOptions?.hooks).toEqual(expect.objectContaining({ beforeFirstBatch: expect.any(Function), afterLegacyCommit: expect.any(Function) }));
+    expect(projectorOptions?.hooks).toEqual(expect.objectContaining({ beforeFirstRead: expect.any(Function), afterLegacyCommit: expect.any(Function) }));
     expect(projectorOptions?.startupGuard).toEqual(expect.objectContaining({ run: expect.any(Function), settled: expect.any(Function) }));
     expect(windowOptions().hooks).toEqual(expect.objectContaining({ beforeImport: expect.any(Function) }));
 

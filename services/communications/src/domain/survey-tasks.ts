@@ -37,6 +37,8 @@ export interface PlannedSurveyTask {
   scheduleVersion: number;
   /** Reminder ordinal; absent for the launch. */
   n?: number;
+  /** Present when the legacy scheduler would misfire the task: it is recorded `expired` and never queued. */
+  expired?: true;
 }
 
 /** A task's absolute URL, and the URL's path as `scheduled_task.target_route` stores it. */
@@ -69,6 +71,9 @@ const LEGACY_TASK_NAME =
 const MS_PER_MINUTE = 60_000;
 // Base names end in `-v<version>`, so only a reactivation's name ends in `-r<generation>`.
 const REACTIVATION_SUFFIX = /-r([1-9][0-9]*)$/;
+
+/** ColdFusion's Quartz `misfireThreshold`: a ONCE task registered this long or longer after its start never runs. */
+export const LEGACY_MISFIRE_THRESHOLD_MS = 60_000;
 
 /** Queue task name of a legacy task name in a schedule version; throws `InvalidTaskNameError` outside `TASK_NAME_PATTERN`. */
 export function portTaskName(taskName: string, scheduleVersion: number): string {
@@ -115,7 +120,10 @@ export function legacyRunTime(at: Date): Date {
   return instant === undefined ? at : new Date(instant);
 }
 
-/** One planned task; a run time before `now` is moved to `now`, so it is scheduled immediately. */
+/**
+ * One planned task registered at `now`, as cfschedule registers it: a run time less than LEGACY_MISFIRE_THRESHOLD_MS
+ * before `now` moves to `now`, so it runs at once; an earlier one keeps its time and is `expired`, never run.
+ */
 function plannedTask(
   payload: SurveyScheduledPayload,
   kind: SurveyTaskKind,
@@ -125,21 +133,23 @@ function plannedTask(
   n?: number,
 ): PlannedSurveyTask {
   const queue = SURVEY_TASK_QUEUES[kind];
+  const expired = now.getTime() - runAt.getTime() >= LEGACY_MISFIRE_THRESHOLD_MS;
   return {
     kind,
     queue,
     legacyTaskName,
     portName: portTaskName(legacyTaskName, payload.scheduleVersion),
-    scheduleTime: new Date(Math.max(runAt.getTime(), now.getTime())),
+    scheduleTime: expired ? runAt : new Date(Math.max(runAt.getTime(), now.getTime())),
     deadlineS: QUEUES[queue].deadlineS,
     surveyId: payload.surveyId,
     siteId: payload.siteId,
     scheduleVersion: payload.scheduleVersion,
     ...(n === undefined ? {} : { n }),
+    ...(expired ? { expired } : {}),
   };
 }
 
-/** Plans the launch task, then one task per reminder in payload order, each reminder `offsetMinutes` after `launchAt`. */
+/** Plans the launch task, then one task per reminder in payload order, each reminder `offsetMinutes` after `launchAt`, all registered at `now`. */
 export function planSurveyTasks(payload: SurveyScheduledPayload, opts: { now: Date }): PlannedSurveyTask[] {
   const launchAt = parseLocalTimestamp(payload.launchAt);
   return [

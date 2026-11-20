@@ -24,6 +24,7 @@ import {
   ROLLBACK_REPORT_PATH,
   ROLLBACK_VERSION,
   RollbackSetMismatchError,
+  SESSION_GOLDEN_SET,
   SESSION_SCENARIO,
   computeRollbackSet,
   deriveRollbackSet,
@@ -335,7 +336,24 @@ function replayPath(id: string): string {
 }
 
 function outcome(id: string, result: string): ScenarioOutcome {
-  return { id, result, golden: `harness/golden/sets/${id}.json`, replay: replayPath(id) };
+  const golden = id === SESSION_SCENARIO ? SESSION_GOLDEN_SET : `harness/golden/sets/${id}.json`;
+  return { id, result, golden, replay: replayPath(id) };
+}
+
+/** Replay output of `id`'s rehearsal crossing, as `parity.json` `rehearsalCrossings` cites it. */
+function crossingPath(id: string): string {
+  return `\${OPT2_STATE_DIR}/golden/replay/rehearsal/${id}.json`;
+}
+
+/** `id`'s rehearsal crossing row with `result`, compared under the rollback version with its crossing's golden set. */
+function crossingRow(id: string, result: string, over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id,
+    result,
+    tableVersion: ROLLBACK_VERSION,
+    evidence: { golden: `harness/golden/sets/rehearsal/${id}.json`, replay: crossingPath(id) },
+    ...over,
+  };
 }
 
 /** A transition `from` → `to` whose eight steps each ran once and succeeded. */
@@ -398,9 +416,11 @@ function reconciliationRow(ref: ReconciliationRef): string {
   return `| ${point} | [${ref.path}](${ref.path}) | ${value(ref.tableVersion)} | ${value(ref.units)} | ${value(ref.differences)} | ${ref.result} |`;
 }
 
+/** Replay row of `id`; the session scenario's golden set is its rehearsal crossing's. */
 function replayRow(id: string, replay: string | undefined, result: string): string {
   const label = SCENARIO_LABELS[id] ?? '';
-  return `| ${id} (${label}) | \`harness/golden/sets/${id}.json\` | ${replay === undefined ? 'not-run' : code(replay)} | ${result} |`;
+  const golden = id === SESSION_SCENARIO ? SESSION_GOLDEN_SET : `harness/golden/sets/${id}.json`;
+  return `| ${id} (${label}) | ${code(golden)} | ${replay === undefined ? 'not-run' : code(replay)} | ${result} |`;
 }
 
 function shaLines(lines: readonly string[]): string[] {
@@ -594,7 +614,7 @@ describe('writeRollbackReport', () => {
     );
   });
 
-  it('reads the latest v0003 transition, parity outcomes, reconciliations, re-baseline and fixtures into a passing report', async () => {
+  it.each(['pass', 'excepted'])('reads the latest v0003 transition, parity outcomes, reconciliations, re-baseline and fixtures into a passing report (crossing %s)', async (crossing) => {
     await Promise.all([
       writeJson(reportFile('transitions.json'), {
         transitions: [
@@ -606,9 +626,11 @@ describe('writeRollbackReport', () => {
       writeJson(reportFile('parity.json'), {
         generatedAt: t(25),
         scenarios: [
-          ...OUTCOME_IDS.map((id) => ({ id, result: 'pass', evidence: { golden: `harness/golden/sets/${id}.json`, replay: replayPath(id) } })),
+          ...REHEARSAL_SCENARIOS.map((id) => ({ id, result: 'pass', evidence: { golden: `harness/golden/sets/${id}.json`, replay: replayPath(id) } })),
+          { id: SESSION_SCENARIO, result: 'withheld', evidence: { golden: `harness/golden/sets/${SESSION_SCENARIO}.json`, replay: replayPath(SESSION_SCENARIO) } },
           { id: 'GS-CO-01', result: 'fail' },
         ],
+        rehearsalCrossings: [crossingRow(SESSION_SCENARIO, crossing)],
       }),
       writeJson(reportFile(RECONCILIATION_REPORTS.before), {
         result: 'zero-difference',
@@ -635,9 +657,47 @@ describe('writeRollbackReport', () => {
         `Transition \`tr-rollback\` \`v0002\` → \`v0003\`, started ${t(0)}, finished ${t(8)}: activated`,
         reconciliationRow(reconciliation('before', 'zero-difference')),
         reconciliationRow(reconciliation('after', 'zero-difference')),
-        ...OUTCOME_IDS.map((id) => replayRow(id, replayPath(id), 'pass')),
+        ...REHEARSAL_SCENARIOS.map((id) => replayRow(id, replayPath(id), 'pass')),
+        replayRow(SESSION_SCENARIO, crossingPath(SESSION_SCENARIO), crossing),
         'Fixtures available: the rehearsal covers create, edit and the archive-to-blackout leg (GS-PE-RH-03).',
       ]),
+    );
+  });
+
+  it.each([
+    {
+      name: 'only its v0002 parity row exists, which is not the crossing',
+      parity: { scenarios: OUTCOME_IDS.map((id) => ({ id, result: 'pass' })) },
+      row: replayRow(SESSION_SCENARIO, undefined, 'not-run'),
+      result: 'incomplete',
+      exitCode: 0,
+    },
+    {
+      name: "its crossing's adopt-continue answers 503 under v0003 while its v0002 row passes",
+      parity: {
+        scenarios: OUTCOME_IDS.map((id) => ({ id, result: 'pass' })),
+        rehearsalCrossings: [
+          crossingRow(SESSION_SCENARIO, 'fail', {
+            reason: '1 unlisted difference',
+            differences: [
+              { step: 'adopt-continue', path: 'status', kind: 'status', expected: 200, actual: 503, classification: 'difference' },
+            ],
+            decisionListRef: ['opt2/decision-list.json#actionVariants/page:render'],
+          }),
+        ],
+      },
+      row: replayRow(SESSION_SCENARIO, crossingPath(SESSION_SCENARIO), 'fail'),
+      result: 'fail',
+      exitCode: 1,
+    },
+  ])('reads the rollback session step from its rehearsal crossing when $name', async ({ parity, row, result, exitCode }) => {
+    await writeJson(reportFile('parity.json'), parity);
+
+    const written = await writeRollbackReport(ctx);
+
+    expect(written).toMatchObject({ result, exitCode });
+    expect(await readLines(written.reportPath)).toEqual(
+      expect.arrayContaining([...REHEARSAL_SCENARIOS.map((id) => replayRow(id, undefined, 'pass')), row]),
     );
   });
 
@@ -655,7 +715,10 @@ describe('writeRollbackReport', () => {
       });
     await Promise.all([
       writeJson(reportFile('transitions.json'), { transitions: [transition('tr-rollback')] }),
-      writeJson(reportFile('parity.json'), { scenarios: OUTCOME_IDS.map((id) => ({ id, result: 'pass' })) }),
+      writeJson(reportFile('parity.json'), {
+        scenarios: OUTCOME_IDS.map((id) => ({ id, result: 'pass' })),
+        rehearsalCrossings: [crossingRow(SESSION_SCENARIO, 'pass')],
+      }),
       reconciliationFile('rollback-before', { startedAt: t(5, 30), generatedAt: t(5, 50), tableVersion: ROLLBACK_FROM_VERSION }),
       reconciliationFile('rollback-after', { startedAt: t(29), generatedAt: t(30), tableVersion: ROLLBACK_VERSION }),
       reconciliationFile('after-feed-1', { generatedAt: t(26) }),

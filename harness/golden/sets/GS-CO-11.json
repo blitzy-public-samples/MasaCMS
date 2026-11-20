@@ -1,10 +1,10 @@
 {
-  "capturedAt": "2026-11-18T14:24:17.009Z",
+  "capturedAt": "2026-11-20T03:02:10.887Z",
   "fixtures": {
     "available": true,
     "reason": "fixtures loaded"
   },
-  "generatedAt": "2026-11-18T14:24:25.486Z",
+  "generatedAt": "2026-11-20T03:02:18.350Z",
   "generatedBy": "harness/src/golden/capture.ts",
   "origin": "legacy",
   "scenarioId": "GS-CO-11",
@@ -125,7 +125,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "2534742da444f3db4fccbab2dc8007bf3489cc9f11529cded7814bc0f5c33d28",
+        "rawSha256": "a2fdb0253865a011d2553afe497e975146dbb5271319758788de22e381510c68",
         "status": 200
       },
       "routeKey": "api:comment.save"
@@ -781,7 +781,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "bdad8858fe5c77a56c8fc5a7d8c5c1dce6451ac3522efb70b250b63d19f82eb2",
+        "rawSha256": "c32af00fca9e81e91f12fa720641b0d708141f3444c24a48c06f3a51d1593e50",
         "status": 200
       },
       "routeKey": "admin:ccomments.default"
@@ -1342,7 +1342,7 @@
             },
             {
               "href": "#comment-<id:2>",
-              "text": "26/11/18"
+              "text": "<ts:admin-date-yymmdd>"
             },
             {
               "href": "#comment-<id:2>",
@@ -1426,7 +1426,7 @@
                 [
                   "Comments Email",
                   "",
-                  "26/11/18",
+                  "<ts:admin-date-yymmdd>",
                   "<ts:admin-time>",
                   "GS Commenter",
                   "GS-CO-11 comment",
@@ -2008,7 +2008,7 @@
             },
             {
               "href": "#comment-<id:2>",
-              "text": "26/11/18"
+              "text": "<ts:admin-date-yymmdd>"
             },
             {
               "href": "#comment-<id:2>",
@@ -2092,7 +2092,7 @@
                 [
                   "Comments Email",
                   "",
-                  "26/11/18",
+                  "<ts:admin-date-yymmdd>",
                   "<ts:admin-time>",
                   "GS Commenter",
                   "GS-CO-11 comment",
@@ -2110,7 +2110,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "474c5ca018258deff2d2dc61fcb1b87192c6bc56b895c95d8bd95964818d2ae2",
+        "rawSha256": "e8672cce744c66f9b7dae31664501fe55da4e75caee2ca7618d41f90402cab7a",
         "status": 200
       },
       "routeKey": "admin:ccomments.loadcomments"
@@ -2164,7 +2164,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "36bd1a9ead739c86e9ae7035ef4e8d0049a907844fd760d42d93d18a5e96bd95",
+        "rawSha256": "a2800ab4f83eea8a59bc1e7a67124985e63f355d252eb3301b452f6573aa1959",
         "status": 200
       },
       "routeKey": "admin:ccomments.loadcommentspage"
@@ -2557,7 +2557,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/?muraAction=cComments.approve&siteid=tenant-a&commentid=56713C9B-D7EB-CC42-0A6904A960C84DAE"
+        "url": "/admin/?muraAction=cComments.approve&siteid=tenant-a&commentid=A50B6814-D022-C4BB-9D2AC33C9FE21A8A"
       },
       "response": {
         "domModel": {
@@ -2884,7 +2884,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "3c07326fc046a2aa5832082eedfed81a59cba88eefd50d17c87f0be79cefb792",
+        "rawSha256": "fbabfe63813b0eaebc2e9dd72e781a816779303efe55c50e88957d707ae05f9f",
         "status": 200
       },
       "routeKey": "admin:ccomments.approve"
@@ -3223,7 +3223,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/?muraAction=cComments.unapprove&siteid=tenant-a&commentid=56713C9B-D7EB-CC42-0A6904A960C84DAE"
+        "url": "/admin/?muraAction=cComments.unapprove&siteid=tenant-a&commentid=A50B6814-D022-C4BB-9D2AC33C9FE21A8A"
       },
       "response": {
         "domModel": {
@@ -3550,7 +3550,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "8412b3eb5547d94890f06be1135a5841b273221e247c095aca835258e2d53581",
+        "rawSha256": "b58a0c06d0432786e26edf312049d3bcd73f261ce17b59004a34c77cfb2f7051",
         "status": 200
       },
       "routeKey": "admin:ccomments.unapprove"
@@ -3582,7 +3582,7 @@
           "kind": "form",
           "value": {
             "commentAction": "approve",
-            "commentid": "56713C9B-D7EB-CC42-0A6904A960C84DAE",
+            "commentid": "A50B6814-D022-C4BB-9D2AC33C9FE21A8A",
             "siteid": "tenant-a"
           }
         },
@@ -3643,7 +3643,7 @@
           "kind": "form",
           "value": {
             "bulkedit": "unapprove",
-            "ckUpdate": "56713C9B-D7EB-CC42-0A6904A960C84DAE",
+            "ckUpdate": "A50B6814-D022-C4BB-9D2AC33C9FE21A8A",
             "siteid": "tenant-a"
           }
         },
@@ -3703,7 +3703,7 @@
         "body": {
           "kind": "form",
           "value": {
-            "commentID": "56713C9B-D7EB-CC42-0A6904A960C84DAE",
+            "commentID": "A50B6814-D022-C4BB-9D2AC33C9FE21A8A",
             "method": "get",
             "siteid": "tenant-a"
           }
@@ -3732,7 +3732,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "d0062049a7a73fbd0730c1e5445623aa6c983612e4bf32b1469369307dd00857",
+        "rawSha256": "77ad4faed62d09a7a11198816b123b008732b8a03f675455357a16173485eb57",
         "status": 200
       },
       "routeKey": "cfc:/core/modules/v1/comments/ajax/commentsproxy.cfc?method=get"
@@ -3886,7 +3886,7 @@
         "body": {
           "kind": "form",
           "value": {
-            "commentID": "56713C9B-D7EB-CC42-0A6904A960C84DAE",
+            "commentID": "A50B6814-D022-C4BB-9D2AC33C9FE21A8A",
             "method": "flag",
             "siteid": "tenant-a"
           }
@@ -3944,7 +3944,7 @@
         },
         "headers": {},
         "method": "POST",
-        "url": "/_api/json/v1/tenant-a/comment/56713C9B-D7EB-CC42-0A6904A960C84DAE/flag"
+        "url": "/_api/json/v1/tenant-a/comment/A50B6814-D022-C4BB-9D2AC33C9FE21A8A/flag"
       },
       "response": {
         "body": {
@@ -3961,7 +3961,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "2a433203da1b9c99cf27d870c7a11d0e83810138a48ae17224cec4d22a159732",
+        "rawSha256": "a7d6b10b308ec162db4cae5ea1bb22f325c4263069576a2917d56fd7ddfecf46",
         "status": 500
       },
       "routeKey": "api:comment.~flag"
@@ -3990,7 +3990,7 @@
         },
         "headers": {},
         "method": "POST",
-        "url": "/_api/json/v1/tenant-a/comment/56713C9B-D7EB-CC42-0A6904A960C84DAE/markAsSpam"
+        "url": "/_api/json/v1/tenant-a/comment/A50B6814-D022-C4BB-9D2AC33C9FE21A8A/markAsSpam"
       },
       "response": {
         "body": {
@@ -4007,7 +4007,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "2a433203da1b9c99cf27d870c7a11d0e83810138a48ae17224cec4d22a159732",
+        "rawSha256": "a7d6b10b308ec162db4cae5ea1bb22f325c4263069576a2917d56fd7ddfecf46",
         "status": 500
       },
       "routeKey": "api:comment.~markasspam"
@@ -4036,7 +4036,7 @@
         },
         "headers": {},
         "method": "POST",
-        "url": "/_api/json/v1/tenant-a/comment/56713C9B-D7EB-CC42-0A6904A960C84DAE/unMarkAsSpam"
+        "url": "/_api/json/v1/tenant-a/comment/A50B6814-D022-C4BB-9D2AC33C9FE21A8A/unMarkAsSpam"
       },
       "response": {
         "body": {
@@ -4053,7 +4053,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "2a433203da1b9c99cf27d870c7a11d0e83810138a48ae17224cec4d22a159732",
+        "rawSha256": "a7d6b10b308ec162db4cae5ea1bb22f325c4263069576a2917d56fd7ddfecf46",
         "status": 500
       },
       "routeKey": "api:comment.~unmarkasspam"
@@ -4082,7 +4082,7 @@
         },
         "headers": {},
         "method": "POST",
-        "url": "/_api/json/v1/tenant-a/comment/56713C9B-D7EB-CC42-0A6904A960C84DAE/delete"
+        "url": "/_api/json/v1/tenant-a/comment/A50B6814-D022-C4BB-9D2AC33C9FE21A8A/delete"
       },
       "response": {
         "body": {
@@ -4099,7 +4099,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "5ec7ff94ce31916d9ba0edbefcd0841ae2b44ab7fb42035e1ab428d4bdd5ac19",
+        "rawSha256": "3a6ded157a3f78339179db80ab05592543764aa3376524ee6630549e04bb0619",
         "status": 500
       },
       "routeKey": "api:comment.~delete"
@@ -4128,7 +4128,7 @@
         },
         "headers": {},
         "method": "POST",
-        "url": "/_api/json/v1/tenant-a/comment/56713C9B-D7EB-CC42-0A6904A960C84DAE/undelete"
+        "url": "/_api/json/v1/tenant-a/comment/A50B6814-D022-C4BB-9D2AC33C9FE21A8A/undelete"
       },
       "response": {
         "body": {
@@ -4145,7 +4145,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "2a433203da1b9c99cf27d870c7a11d0e83810138a48ae17224cec4d22a159732",
+        "rawSha256": "a7d6b10b308ec162db4cae5ea1bb22f325c4263069576a2917d56fd7ddfecf46",
         "status": 500
       },
       "routeKey": "api:comment.~undelete"
@@ -4243,7 +4243,7 @@
         "headers": {
           "content-type": "text/html;charset=UTF-8"
         },
-        "rawSha256": "47da9aeaa9516f2ad3bf3a512f860524f75bd2431dd0ec7e1ef9ca095af7ba5a",
+        "rawSha256": "afc9ad73b19270b8db2b5121e14dacb16b0518030f512deb22edf317fd4ae3db",
         "status": 500
       },
       "routeKey": "rest:comment.save{siteid}"
@@ -4296,7 +4296,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "68ccec2a7a06000d4de45b5ec930d260650670319f5e0f6f4deafe5425daa256",
+        "rawSha256": "a986ea77e3cd40c685c2e3eaaba4f4bbb396b75e14f3fe9e9c6b42afe6de1f3d",
         "status": 500
       },
       "routeKey": "rest:comment.save"
@@ -4327,7 +4327,7 @@
           "authorization": "Basic <secret>"
         },
         "method": "POST",
-        "url": "/_api/rest/v1/tenant-a/comment/56713C9B-D7EB-CC42-0A6904A960C84DAE/flag"
+        "url": "/_api/rest/v1/tenant-a/comment/A50B6814-D022-C4BB-9D2AC33C9FE21A8A/flag"
       },
       "response": {
         "body": {
@@ -4344,7 +4344,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "68ccec2a7a06000d4de45b5ec930d260650670319f5e0f6f4deafe5425daa256",
+        "rawSha256": "a986ea77e3cd40c685c2e3eaaba4f4bbb396b75e14f3fe9e9c6b42afe6de1f3d",
         "status": 500
       },
       "routeKey": "rest:comment.~flag"
@@ -4375,7 +4375,7 @@
           "authorization": "Basic <secret>"
         },
         "method": "POST",
-        "url": "/_api/rest/v1/tenant-a/comment/56713C9B-D7EB-CC42-0A6904A960C84DAE/markAsSpam"
+        "url": "/_api/rest/v1/tenant-a/comment/A50B6814-D022-C4BB-9D2AC33C9FE21A8A/markAsSpam"
       },
       "response": {
         "body": {
@@ -4392,7 +4392,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "68ccec2a7a06000d4de45b5ec930d260650670319f5e0f6f4deafe5425daa256",
+        "rawSha256": "a986ea77e3cd40c685c2e3eaaba4f4bbb396b75e14f3fe9e9c6b42afe6de1f3d",
         "status": 500
       },
       "routeKey": "rest:comment.~markasspam"
@@ -4423,7 +4423,7 @@
           "authorization": "Basic <secret>"
         },
         "method": "POST",
-        "url": "/_api/rest/v1/tenant-a/comment/56713C9B-D7EB-CC42-0A6904A960C84DAE/unMarkAsSpam"
+        "url": "/_api/rest/v1/tenant-a/comment/A50B6814-D022-C4BB-9D2AC33C9FE21A8A/unMarkAsSpam"
       },
       "response": {
         "body": {
@@ -4440,7 +4440,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "68ccec2a7a06000d4de45b5ec930d260650670319f5e0f6f4deafe5425daa256",
+        "rawSha256": "a986ea77e3cd40c685c2e3eaaba4f4bbb396b75e14f3fe9e9c6b42afe6de1f3d",
         "status": 500
       },
       "routeKey": "rest:comment.~unmarkasspam"
@@ -4471,7 +4471,7 @@
           "authorization": "Basic <secret>"
         },
         "method": "POST",
-        "url": "/_api/rest/v1/tenant-a/comment/56713C9B-D7EB-CC42-0A6904A960C84DAE/delete"
+        "url": "/_api/rest/v1/tenant-a/comment/A50B6814-D022-C4BB-9D2AC33C9FE21A8A/delete"
       },
       "response": {
         "body": {
@@ -4488,7 +4488,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "68ccec2a7a06000d4de45b5ec930d260650670319f5e0f6f4deafe5425daa256",
+        "rawSha256": "a986ea77e3cd40c685c2e3eaaba4f4bbb396b75e14f3fe9e9c6b42afe6de1f3d",
         "status": 500
       },
       "routeKey": "rest:comment.~delete"
@@ -4519,7 +4519,7 @@
           "authorization": "Basic <secret>"
         },
         "method": "POST",
-        "url": "/_api/rest/v1/tenant-a/comment/56713C9B-D7EB-CC42-0A6904A960C84DAE/undelete"
+        "url": "/_api/rest/v1/tenant-a/comment/A50B6814-D022-C4BB-9D2AC33C9FE21A8A/undelete"
       },
       "response": {
         "body": {
@@ -4536,7 +4536,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "68ccec2a7a06000d4de45b5ec930d260650670319f5e0f6f4deafe5425daa256",
+        "rawSha256": "a986ea77e3cd40c685c2e3eaaba4f4bbb396b75e14f3fe9e9c6b42afe6de1f3d",
         "status": 500
       },
       "routeKey": "rest:comment.~undelete"
@@ -4567,7 +4567,7 @@
           "authorization": "Basic <secret>"
         },
         "method": "DELETE",
-        "url": "/_api/rest/v1/tenant-a/comment/56713C9B-D7EB-CC42-0A6904A960C84DAE"
+        "url": "/_api/rest/v1/tenant-a/comment/A50B6814-D022-C4BB-9D2AC33C9FE21A8A"
       },
       "response": {
         "body": {
@@ -4584,7 +4584,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "7b7ea8d7f3a1fffebcbb4f561d61b9a1641d38701289022680fe392802f94bbb",
+        "rawSha256": "1cd15797dde7b677b6e7716ca57d91f6aef3bd6aeb690dd439a7907ba910756b",
         "status": 500
       },
       "routeKey": "rest:comment.delete"
@@ -4641,7 +4641,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "9812c359790d5120f9706550540305548e6374295f387048bdef01ac4d530130",
+        "rawSha256": "02777942d134883199f2808a35ae98ed19ef6b3a55a6160c4d55ae03b7b973b2",
         "status": 500
       },
       "routeKey": "api:stats.save"
@@ -4697,7 +4697,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "e4d990f02128f55b8b3a7c5a3c4fc3adf91625cfb20da05db4a790a7e401f179",
+        "rawSha256": "22ee7fc8058ccb771ae70eaf0162de0de9008f89bf4332bce3b6c69f61bae96f",
         "status": 500
       },
       "routeKey": "api:stats.delete"
@@ -4791,7 +4791,7 @@
         "headers": {
           "content-type": "text/html;charset=UTF-8"
         },
-        "rawSha256": "47da9aeaa9516f2ad3bf3a512f860524f75bd2431dd0ec7e1ef9ca095af7ba5a",
+        "rawSha256": "afc9ad73b19270b8db2b5121e14dacb16b0518030f512deb22edf317fd4ae3db",
         "status": 500
       },
       "routeKey": "rest:stats.save{siteid}"
@@ -4840,7 +4840,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "68ccec2a7a06000d4de45b5ec930d260650670319f5e0f6f4deafe5425daa256",
+        "rawSha256": "a986ea77e3cd40c685c2e3eaaba4f4bbb396b75e14f3fe9e9c6b42afe6de1f3d",
         "status": 500
       },
       "routeKey": "rest:stats.save"
@@ -4888,7 +4888,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "7b7ea8d7f3a1fffebcbb4f561d61b9a1641d38701289022680fe392802f94bbb",
+        "rawSha256": "1cd15797dde7b677b6e7716ca57d91f6aef3bd6aeb690dd439a7907ba910756b",
         "status": 500
       },
       "routeKey": "rest:stats.delete"
@@ -5227,7 +5227,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/?muraAction=cComments.markAsSpam&siteid=tenant-a&commentid=56713C9B-D7EB-CC42-0A6904A960C84DAE"
+        "url": "/admin/?muraAction=cComments.markAsSpam&siteid=tenant-a&commentid=A50B6814-D022-C4BB-9D2AC33C9FE21A8A"
       },
       "response": {
         "domModel": {
@@ -5554,7 +5554,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "315df7455c81e300e3d5748b5d074523c1e2b8b17e625f95f77b6625369b274c",
+        "rawSha256": "fa980b2b6bc3b6d4be9dcfabe065af223eb72da8cc1a6117597057976decc104",
         "status": 200
       },
       "routeKey": "admin:ccomments.markasspam"
@@ -5893,7 +5893,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/?muraAction=cComments.delete&siteid=tenant-a&commentid=56713C9B-D7EB-CC42-0A6904A960C84DAE"
+        "url": "/admin/?muraAction=cComments.delete&siteid=tenant-a&commentid=A50B6814-D022-C4BB-9D2AC33C9FE21A8A"
       },
       "response": {
         "domModel": {
@@ -6220,7 +6220,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "f57ae99163ff83a06ace7a20a284eb19966534f81159c9c42721723b6144ee95",
+        "rawSha256": "242c42729acfa54c3adda000dc9ebb6a2f7cd7f04926dc3808bc6e76b4817b9a",
         "status": 200
       },
       "routeKey": "admin:ccomments.delete"
@@ -6245,7 +6245,7 @@
           "kind": "form",
           "value": {
             "entityname": "comment",
-            "id": "56713C9B-D7EB-CC42-0A6904A960C84DAE",
+            "id": "A50B6814-D022-C4BB-9D2AC33C9FE21A8A",
             "method": "delete",
             "siteid": "tenant-a"
           }
@@ -6936,7 +6936,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "12b6e204bc1d3d52111a371d39b14ba02b3687a686dc31836cb7d566696f4cd9",
+        "rawSha256": "b5058e443ef6275d34244ad64bf3478162be3f12e24dede0a4fc6c0495f981bf",
         "status": 200
       },
       "routeKey": "admin:ccomments.purgedeletedcomments"

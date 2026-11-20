@@ -43,8 +43,8 @@ export const SCHEDULED_TASK_KINDS = ['survey-launch', 'survey-reminder'] as cons
 /** One scheduled-task kind. */
 export type ScheduledTaskKind = (typeof SCHEDULED_TASK_KINDS)[number];
 
-/** Values of `scheduled_task.status`; a new task is `scheduled`. */
-export const SCHEDULED_TASK_STATUSES = ['scheduled', 'done', 'superseded', 'cancelled'] as const;
+/** Values of `scheduled_task.status`; a new task is `scheduled`, or `expired` when the legacy scheduler would misfire it. */
+export const SCHEDULED_TASK_STATUSES = ['scheduled', 'done', 'superseded', 'cancelled', 'expired'] as const;
 
 /** One scheduled-task status. */
 export type ScheduledTaskStatus = (typeof SCHEDULED_TASK_STATUSES)[number];

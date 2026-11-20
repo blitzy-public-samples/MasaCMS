@@ -47,6 +47,7 @@ import { RULES_PATH, loadRules, type NormaliseRules } from '../../src/golden/nor
 import { loadSecretStore, secretValues } from '../../src/golden/session.js';
 import type { TableOwnership } from '../../src/golden/side-effects.js';
 import { GAP_REASON } from '../../src/golden/steps.js';
+import { UsageError } from '../../src/lib/cli.js';
 import type { ReadOnlyMssql } from '../../src/lib/mssql.js';
 import { REPO_ROOT, isInsideRepo, type EnvLike } from '../../src/lib/paths.js';
 import { pinnedSha } from '../../src/lib/pin.js';
@@ -323,22 +324,29 @@ describe('golden set schema and locations', () => {
     expect(goldenSetSchema.safeParse(mutate(SAMPLE)).success).toBe(false);
   });
 
-  it('places a scenario set under harness/golden/sets of the checkout', () => {
+  it.each([
+    { label: 'a scenario set', id: 'GS-CO-05', crossing: false, tail: 'harness/golden/sets/GS-CO-05.json' },
+    { label: 'a rehearsal crossing set', id: 'GS-ID-09', crossing: true, tail: 'harness/golden/sets/rehearsal/GS-ID-09.json' },
+  ])('places $label under harness/golden/sets of the checkout', ({ id, crossing, tail }) => {
     redirect.enabled = false;
     try {
-      const file = goldenSetPath('GS-CO-05');
-      expect(file).toBe(path.join(REPO_ROOT, 'harness', 'golden', 'sets', 'GS-CO-05.json'));
-      expect(file.split(path.sep).join('/').endsWith('harness/golden/sets/GS-CO-05.json')).toBe(true);
+      const file = goldenSetPath(id, crossing);
+      expect(file).toBe(path.join(REPO_ROOT, ...tail.split('/')));
+      expect(file.split(path.sep).join('/').endsWith(tail)).toBe(true);
+      expect(haltEvidence(id, crossing).golden).toBe(tail);
     } finally {
       redirect.enabled = true;
     }
   });
 
-  it('keeps raw captures under the state directory, outside the checkout', () => {
-    const file = rawCapturePath('GS-CO-05', { OPT2_STATE_DIR: stateDir });
-    expect(file).toBe(path.join(stateDir, 'golden', 'raw', 'GS-CO-05.json'));
+  it.each([
+    { label: 'a scenario', crossing: false, segments: ['GS-CO-05.json'] },
+    { label: 'a rehearsal crossing', crossing: true, segments: ['rehearsal', 'GS-CO-05.json'] },
+  ])('keeps raw captures of $label under the state directory, outside the checkout', ({ crossing, segments }) => {
+    const file = rawCapturePath('GS-CO-05', { OPT2_STATE_DIR: stateDir }, crossing);
+    expect(file).toBe(path.join(stateDir, 'golden', 'raw', ...segments));
     expect(isInsideRepo(file)).toBe(false);
-    expect(() => rawCapturePath('GS-CO-05', { OPT2_STATE_DIR: path.join(REPO_ROOT, 'state') })).toThrow(
+    expect(() => rawCapturePath('GS-CO-05', { OPT2_STATE_DIR: path.join(REPO_ROOT, 'state') }, crossing)).toThrow(
       /outside the repository checkout/,
     );
   });
@@ -388,6 +396,32 @@ describe('captureScenario against legacy', () => {
       sha256: sha256Hex(FINDONE_BODY),
       headers: { date: ETAG_FIXTURE.headers.Date, server: ETAG_FIXTURE.headers.Server, etag: cfHash(FINDONE_BODY) },
     });
+  });
+
+  it("writes a rehearsal crossing's capture apart, leaving the scenario's own set and raw capture as they stand", async () => {
+    const env = envFor(stateDir);
+    const own = await writeCapture(await capture(catalogueCo05, captureDeps(fakeLegacy(), env)), env);
+    const ownText = await readFile(own, 'utf8');
+    const ownRaw = await readFile(rawCapturePath('GS-CO-05', env), 'utf8');
+    const logs: string[] = [];
+    const deps = { ...captureDeps(fakeLegacy(), env, logs), crossing: true };
+
+    const captured = await capture(catalogueCo05, deps);
+    const file = await writeCapture(captured, env);
+
+    expect(captured.crossing).toBe(true);
+    expect(logs).toStrictEqual(['GS-CO-05 rehearsal crossing: captured 1 exchanges']);
+    expect(file).toBe(path.join(redirect.setsDir, 'rehearsal', 'GS-CO-05.json'));
+    expect(file).toBe(goldenSetPath('GS-CO-05', true));
+    const crossingSet = await readGoldenSet('GS-CO-05', file);
+    expect(crossingSet).toMatchObject({ scenarioId: 'GS-CO-05', origin: 'legacy', tableVersion: null, sourceSha: SHA });
+    expect(crossingSet.steps.map((step) => step.routeKey)).toStrictEqual(['api:content.findone']);
+    await expect(readJsonFile<RawCapture>(rawCapturePath('GS-CO-05', env, true))).resolves.toMatchObject({
+      scenarioId: 'GS-CO-05',
+      origin: 'legacy',
+    });
+    expect(await readFile(own, 'utf8')).toBe(ownText);
+    expect(await readFile(rawCapturePath('GS-CO-05', env), 'utf8')).toBe(ownRaw);
   });
 
   it('stores no resolved secret in the set or the raw capture', async () => {
@@ -707,15 +741,10 @@ describe('skipped scenarios and Mailpit resets', () => {
     await expect(readGoldenSet('GS-TS-01')).resolves.toMatchObject({ skipped: FIXTURES_UNAVAILABLE, steps: [] });
   });
 
-  it.each([
-    { label: 'every scenario', only: [], order: ['GS-TS-04', 'GS-TS-01', 'GS-PE-RH-03', 'GS-PE-RH-01'] },
-    {
-      label: 'an --only selection',
-      only: ['--only', 'GS-PE-RH-01,GS-TS-01,GS-PE-RH-03'],
-      order: ['GS-TS-01', 'GS-PE-RH-03', 'GS-PE-RH-01'],
-    },
-  ])('captures $label in replay order, the rehearsal scenarios last', async ({ only, order }) => {
+  /** A temp catalogue of fixture scenarios: two rehearsal ones, two plain ones and GS-TS-02 crossing a transition. */
+  async function orderCatalogue(): Promise<string> {
     const rehearsal = { ...FIXTURE_SCENARIO, service: 'people', role: 'site-admin', tableVersion: 'v0003' };
+    const across = [{ before: 'sheets', from: 'v0001', to: 'v0002' }];
     const catalogue = path.join(stateDir, 'catalogue.yaml');
     await writeFile(
       catalogue,
@@ -725,14 +754,37 @@ describe('skipped scenarios and Mailpit resets', () => {
           { ...rehearsal, id: 'GS-PE-RH-03' },
           { ...FIXTURE_SCENARIO, id: 'GS-TS-04' },
           { ...rehearsal, id: 'GS-PE-RH-01' },
+          { ...FIXTURE_SCENARIO, id: 'GS-TS-02', acrossTransition: across },
           FIXTURE_SCENARIO,
         ],
       }),
     );
     await copyFile(FIXTURES_UNAVAILABLE_FILE, path.join(stateDir, 'fixtures.json'));
+    return catalogue;
+  }
+
+  it.each([
+    { label: 'every non-rehearsal scenario', flags: [], order: ['GS-TS-04', 'GS-TS-02', 'GS-TS-01'] },
+    {
+      label: 'an --only selection',
+      flags: ['--only', 'GS-PE-RH-01,GS-TS-01,GS-PE-RH-03'],
+      order: ['GS-TS-01', 'GS-PE-RH-03', 'GS-PE-RH-01'],
+    },
+    {
+      label: 'the rehearsal pass',
+      flags: ['--rehearsal'],
+      order: ['rehearsal/GS-TS-02', 'GS-PE-RH-03', 'GS-PE-RH-01'],
+    },
+    {
+      label: 'an --only selection of the rehearsal pass',
+      flags: ['--rehearsal', '--only', 'GS-PE-RH-01,GS-TS-02'],
+      order: ['rehearsal/GS-TS-02', 'GS-PE-RH-01'],
+    },
+  ])('captures $label in replay order, crossings before the rehearsal scenarios', async ({ flags, order }) => {
+    const catalogue = await orderCatalogue();
     const fake = fakeLegacy();
     const logs: string[] = [];
-    const outcome = await main([...only, '--catalogue', catalogue], envFor(stateDir), {
+    const outcome = await main([...flags, '--catalogue', catalogue], envFor(stateDir), {
       fetch: fake.fetch,
       logger: messageLogger(logs),
     });
@@ -741,9 +793,27 @@ describe('skipped scenarios and Mailpit resets', () => {
       code: 0,
       summary: { captured: 0, skipped: order.length, browser: 0, gaps: [], failed: [] },
     });
-    expect(logs).toStrictEqual(order.map((id) => `${id}: ${FIXTURES_UNAVAILABLE}`));
+    const label = (file: string): string => file.replace(/^rehearsal\/(.*)$/, '$1 rehearsal crossing');
+    expect(logs).toStrictEqual(order.map((file) => `${label(file)}: ${FIXTURES_UNAVAILABLE}`));
     expect(fake.events).toStrictEqual([RESET]);
-    expect((await readdir(redirect.setsDir)).sort()).toStrictEqual(order.map((id) => `${id}.json`).sort());
+    const written = (await readdir(redirect.setsDir, { recursive: true, withFileTypes: true }))
+      .filter((entry) => entry.isFile())
+      .map((entry) => path.relative(redirect.setsDir, path.join(entry.parentPath, entry.name)).split(path.sep).join('/'));
+    expect(written.sort()).toStrictEqual(order.map((file) => `${file}.json`).sort());
+  });
+
+  it('rejects --rehearsal naming a scenario that is neither a crossing nor a rehearsal one, capturing nothing', async () => {
+    const catalogue = await orderCatalogue();
+    const fake = fakeLegacy();
+    const run = main(['--rehearsal', '--only', 'GS-TS-02,GS-TS-01', '--catalogue', catalogue], envFor(stateDir), {
+      fetch: fake.fetch,
+      logger: messageLogger([]),
+    });
+
+    await expect(run).rejects.toBeInstanceOf(UsageError);
+    await expect(run).rejects.toThrow('captures only rehearsal crossings and GS-PE-RH scenarios, not GS-TS-01');
+    expect(fake.events).toStrictEqual([]);
+    expect(existsSync(redirect.setsDir)).toBe(false);
   });
 });
 

@@ -566,6 +566,9 @@ stage_capture() {
   run_step "golden:capture against legacy directly ($LEGACY_ORIGIN)" harness_run golden:capture || failures=1
   # Browser flows are captured by the interaction suite, not golden:capture, and need v0001 like the other captures.
   OPT2_UI_PHASE=capture run_e2e ui/interactions || failures=1
+  # In stage 8 order, after every other scenario: GS-ID-09 again as its rehearsal crossing, then the GS-PE-RH sets.
+  run_step "golden:capture of the rehearsal crossings and GS-PE-RH sets" harness_run golden:capture -- --rehearsal ||
+    failures=1
   note_evidence "$REPO/harness/golden/sets"
   # Reset even after a failed capture, so the stack is left at Ck with its background work resumed.
   run_step "reset legacy and target to Ck" checkpoint_restore || return 1
@@ -629,8 +632,9 @@ stage_rollback() {
   local failures=0
   run_step "rollback set R" "$MIGRATE" rollback-set || return 1
   # GS-ID-09 crosses the v0003 activation too, so its session survives the rollback's session-mode switch.
-  run_step "GS-ID-09 before the transition" harness_run golden:replay -- --only GS-ID-09 --phase pre-transition ||
-    failures=1
+  # --rehearsal keeps this crossing's sessions and output apart, so stage 7's v0002 replay stands.
+  run_step "GS-ID-09 before the transition" harness_run golden:replay -- --rehearsal --only GS-ID-09 \
+    --phase pre-transition || failures=1
   if run_step "transition to v0003" "$MIGRATE" transition --to v0003; then
     note_evidence "$RECON_DIR/rollback-before.json"
     run_step "GS-ID-09 after the transition" harness_run golden:replay -- --rehearsal --only GS-ID-09 --phase resume ||

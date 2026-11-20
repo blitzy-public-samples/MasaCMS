@@ -1,5 +1,5 @@
-// The session values target-served and legacy-served admin requests share: identity's carried into the legacy session
-// before a legacy-bound admin request, legacy's changes imported into identity after it.
+// The session values target-served and legacy-served requests share: identity's carried into the legacy session
+// before a legacy-bound request whose legacy code reads them, legacy's changes imported into identity after it.
 import { createHash } from 'node:crypto';
 import { systemClock, type Clock } from '@opt2/platform/service-kit';
 import {
@@ -83,7 +83,7 @@ export interface SessionCarry {
    */
   beforeLegacy(sessionId: string, mode: SessionMode, call?: CarryCall): Promise<void>;
   /**
-   * Stores in identity the shared values a completed legacy-bound admin request changed in the jar's legacy session; of a
+   * Stores in identity the shared values a completed legacy-bound request changed in the jar's legacy session; of a
    * `mura` struct carry installed, only legacy's changes against the installed struct.
    */
   afterLegacy(sessionId: string, mode: SessionMode, call?: CarryCall): Promise<void>;

@@ -30,8 +30,11 @@ export interface LoadedApprovalRequest {
   values: ApprovalRequestValues;
 }
 
-/** What approvalRequest.loadBy is called with: the request id, or a version's request (contentBean.getApprovalRequest). */
-export type ApprovalRequestKey = { requestId: string } | { contentHistId: string; chainId: string; siteId: string };
+/**
+ * What approvalRequest.loadBy is called with: the request id, with the site getBean gave the bean (none by default), or a
+ * version's request (contentBean.getApprovalRequest).
+ */
+export type ApprovalRequestKey = { requestId: string; siteId?: string } | { contentHistId: string; chainId: string; siteId: string };
 
 /** The crumb columns the approval walk reads (contentGateway crumbs join `tapprovalassignments`). */
 export interface ApprovalCrumb {
@@ -103,7 +106,10 @@ function cfSame(a: string, b: string): boolean {
   return a.toLowerCase() === b.toLowerCase();
 }
 
-/** approvalRequest.loadBy: the stored request for `key`, or a new bean holding the key and the ORM defaults. */
+/**
+ * approvalRequest.loadBy: the stored request for `key`, or a new bean holding the key and the ORM defaults; an empty
+ * request id keeps the bean's own new id, as `set` skips an empty primary key (bean.cfc:333).
+ */
 export async function loadRequest(tx: TenantTx, repository: ContentRepository, key: ApprovalRequestKey): Promise<LoadedApprovalRequest> {
   const row = 'requestId' in key ? await repository.approvals.findRequest(tx, key) : await repository.approvals.requestFor(tx, key);
   if (row !== null) {
@@ -121,7 +127,7 @@ export async function loadRequest(tx: TenantTx, repository: ContentRepository, k
   };
   const values =
     'requestId' in key
-      ? { ...defaults, requestid: key.requestId }
+      ? { ...defaults, requestid: key.requestId === '' ? defaults.requestid : key.requestId, siteid: key.siteId ?? '' }
       : { ...defaults, contenthistid: key.contentHistId, chainid: key.chainId, siteid: key.siteId };
   return { isNew: true, values };
 }

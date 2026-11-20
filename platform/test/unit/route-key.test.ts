@@ -610,6 +610,18 @@ describe('REST credentials', () => {
   it('ignores an Authorization scheme other than Basic and Bearer', () => {
     expect(keyOf('GET', '/_api/rest/v1/default/oauth', { headers: { Authorization: 'Digest abc' } })).toBe('rest:oauth');
   });
+
+  it.each<[string, string, string, Partial<RouteKeyRequest>, string, Record<string, string> | undefined]>([
+    ['without the path method resolution sets', 'POST', '/_api/rest/v1/default/login', { form: { username: 'admin' }, headers: { Authorization: basicAuth('admin', 'pw') } }, 'rest:login', { username: 'admin' }],
+    ['with a sent method and without the site resolution sets', 'GET', '/_api/rest/v1/default/?method=findAll&x=1', {}, 'rest:.findall', { method: 'findAll', x: '1' }],
+    ['empty for an entity route', 'GET', '/_api/rest/v1/default/content/', {}, 'rest:content.findall', {}],
+    ['absent when the body merge throws first', 'POST', '/_api/rest/v1/default/login', { jsonBody: [1], headers: JSON_TYPE }, 'rest:!server_error', undefined],
+    ['absent for the JSON API', 'POST', `${API}/login`, { form: { username: 'admin' } }, 'api:login', undefined],
+  ])('records the params the credential block reads: %s', (_label, method, url, extra, key, expected) => {
+    const result = resultOf(method, url, extra);
+    expect(result.key).toBe(key);
+    expect(result.credentialParams).toEqual(expected);
+  });
 });
 
 describe('consumed REST credentials', () => {
