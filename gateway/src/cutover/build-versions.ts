@@ -98,7 +98,12 @@ const SYNTHETIC_MODULES: readonly SyntheticModule[] = [
     v1: SYNTHETIC_V1_PREFIXES.finance,
     screenUnits: ['finance.attachment', 'finance.record', 'finance.record_version', 'finance.rollup'],
   },
-  { service: 'reporting', web: 'reporting', v1: SYNTHETIC_V1_PREFIXES.reporting, screenUnits: ['reporting.export_job'] },
+  {
+    service: 'reporting',
+    web: 'reporting',
+    v1: SYNTHETIC_V1_PREFIXES.reporting,
+    screenUnits: ['reporting.export_definition', 'reporting.export_job'],
+  },
   {
     service: 'surveys',
     web: 'surveys',
@@ -322,16 +327,35 @@ function nativeEntry(
 }
 
 /**
- * Entries of OPT-2's own paths and the legacy static assets, which the inventory does not list. A module's actions follow its
- * screens' units, since they re-render those screens; throws `CutoverBuildError` for a screen unit not in the ownership file.
+ * Units whose every legacy table the inventory lists with no writer. The screens still read them, but nothing writes them
+ * after backfill, so both sides read alike and they hold no screen on legacy; their groups stay legacy in every version.
+ */
+function writerlessUnits(ctx: ValidationContext): Set<string> {
+  const writers = new Map<string, number>();
+  for (const table of ctx.inventory.tables) {
+    const key = table.table.toLowerCase();
+    writers.set(key, (writers.get(key) ?? 0) + table.writers.length);
+  }
+  return new Set(
+    ctx.ownership.units
+      .filter(({ legacyTables }) => legacyTables.length > 0 && legacyTables.every((table) => writers.get(table.toLowerCase()) === 0))
+      .map(({ unit }) => unit),
+  );
+}
+
+/**
+ * Entries of OPT-2's own paths and the legacy static assets, which the inventory does not list. A module's screens and actions
+ * follow the screen units a writer can change, since the actions re-render those screens; throws `CutoverBuildError` for a
+ * screen unit not in the ownership file.
  */
 function nativeEntries(ctx: ValidationContext): PlannedEntry[] {
   const unitOwner = new Map(ctx.ownership.units.map((unit) => [unit.unit, unit.owner]));
+  const writerless = writerlessUnits(ctx);
   const modules = SYNTHETIC_MODULES.flatMap((module) => {
     const read = globRoute(`/opt2/admin/${module.web}`);
     const unknown = module.screenUnits.filter((unit) => !unitOwner.has(unit));
     if (unknown.length > 0) throw new CutoverBuildError(`${read}: units ${unknown.join(', ')} are not in opt2/table-ownership.json`);
-    const units = sorted(module.screenUnits);
+    const units = sorted(module.screenUnits.filter((unit) => !writerless.has(unit)));
     const rule: StateRule = { type: 'units', units };
     return [
       nativeEntry(read, 'web', 'read', units, rule),

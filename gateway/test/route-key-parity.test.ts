@@ -189,10 +189,10 @@ describe("v0002 routing through the gateway's route-key options", () => {
       'target',
     ],
     [
-      'the timesheet list, whose sheets no carry entry writes',
+      'the timesheet list, whose sheets nothing writes',
       bodiless('GET', '/opt2/admin/timesheets/sheets', TENANT, 'opt2:/opt2/admin/timesheets/sheets'),
-      { route: 'opt2:/opt2/admin/timesheets/**', state: 'legacy', kind: 'read' },
-      'legacy',
+      { route: 'opt2:/opt2/admin/timesheets/**', state: 'target', kind: 'read' },
+      'target',
     ],
     [
       'a compact-display feed save',

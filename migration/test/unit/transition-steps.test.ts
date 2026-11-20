@@ -15,6 +15,7 @@ import {
   loadGroups,
   loadVersion,
   type Authority,
+  type CutoverEntry,
   type CutoverStatusV2,
   type CutoverVersion,
 } from '../../src/cutover/index.js';
@@ -496,7 +497,12 @@ describe('deriveTransitionPlan', () => {
     expect(plan.owners).toEqual(R_OWNERS);
     expect(plan.siteMonitorEntryMoves).toBe(false);
     expect(plan.exportJobsWriteT).toBe(false);
-    expect(plan.entriesChanged.every((e) => e.entry.units.some((u) => plan.setT.includes(u)) || e.entry.kind !== 'write')).toBe(true);
+    // A module's actions follow its screens' units.
+    const v3ByRoute = new Map(v3.entries.map((e) => [e.route, e]));
+    const unitsOf = (entry: CutoverEntry): readonly string[] =>
+      (v3ByRoute.get(entry.route.replace('opt2:/opt2/admin-actions/', 'opt2:/opt2/admin/')) ?? entry).units;
+    expect(plan.entriesChanged.every((e) => unitsOf(e.entry).some((u) => plan.setT.includes(u)) || e.entry.kind !== 'write')).toBe(true);
+    expect(plan.frozenRoutes).toEqual(expect.arrayContaining(['opt2:/opt2/admin-actions/timesheets/**', 'opt2:/opt2/admin/timesheets/**']));
     // Every write entry of R's groups and every legacy-write entry meeting T is frozen, so no writer of R's units runs.
     const rWrites = v2.entries.filter((e) => e.kind === 'write' && R.groups.includes(e.group ?? '')).map((e) => e.route);
     const legacyWrites = v3.entries.filter((e) => e.kind === 'legacy-write' && e.units.some((u) => R.units.includes(u))).map((e) => e.route).sort();

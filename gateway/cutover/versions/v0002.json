@@ -17294,8 +17294,8 @@
     {
       "route": "opt2:/opt2/admin-actions/timesheets/**",
       "owningService": "web",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "write",
       "group": null,
       "units": [],
@@ -17376,14 +17376,13 @@
     {
       "route": "opt2:/opt2/admin/timesheets/**",
       "owningService": "web",
-      "tableVersion": "v0001",
-      "state": "legacy",
+      "tableVersion": "v0002",
+      "state": "target",
       "kind": "read",
       "group": null,
       "units": [
         "timesheets.approval_action",
         "timesheets.blackout",
-        "timesheets.timesheet",
         "timesheets.timesheet_day"
       ],
       "disposition": "carry"

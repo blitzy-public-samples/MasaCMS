@@ -17383,7 +17383,6 @@
       "units": [
         "timesheets.approval_action",
         "timesheets.blackout",
-        "timesheets.timesheet",
         "timesheets.timesheet_day"
       ],
       "disposition": "carry"

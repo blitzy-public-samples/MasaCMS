@@ -149,9 +149,12 @@ describe('committed versions', () => {
     const roster = new Set(rosterGroupSet(groups));
     const rosterUnits = new Set(groups.groups.filter((group) => roster.has(group.id)).flatMap((group) => group.units));
     const before = byRoute(versions.v0002);
+    const after = byRoute(versions.v0003);
     for (const entry of versions.v0003.entries) {
+      // A module's actions follow its screens' units.
+      const rule = after.get(entry.route.replace('opt2:/opt2/admin-actions/', 'opt2:/opt2/admin/')) ?? entry;
       const overRoster =
-        entry.kind === 'write' ? roster.has(entry.group ?? '') : entry.kind === 'read' && entry.units.some((unit) => rosterUnits.has(unit));
+        rule.kind === 'write' ? roster.has(rule.group ?? '') : rule.kind === 'read' && rule.units.some((unit) => rosterUnits.has(unit));
       expect(entry.state, entry.route).toBe(overRoster ? 'legacy' : before.get(entry.route)?.state);
     }
     expect([before.get(ARCHIVE)?.state, byRoute(versions.v0003).get(ARCHIVE)?.state]).toEqual(['target', 'legacy']);
