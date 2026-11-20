@@ -285,6 +285,11 @@ const STRUCTURE_CASES: Case[] = [
     expected: [{ check: 'content-words', slide: 7, detail: '41 words of body text; content slides allow at most 40' }],
   },
   {
+    name: 'does not count 41 words of visually hidden .sr-only text as body text',
+    html: editSlide(7, '<div class="icon-row">', `<p class="sr-only">${words(41)}</p><div class="icon-row">`),
+    expected: [],
+  },
+  {
     name: 'flags a two-word closing takeaway',
     html: editSlide(16, '<h2>Fixture deck ends here</h2>', '<h2>Fixture ends</h2>'),
     expected: [{ check: 'closing', slide: 16, detail: 'takeaway heading has 2 words; 3–6 required' }],

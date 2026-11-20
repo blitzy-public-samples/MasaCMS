@@ -707,7 +707,7 @@ interface Call {
 
 type Listener = (payload: never) => void;
 
-const DIAGRAM_SLIDES = SLIDES.flatMap((source, i) => (source.includes('<pre class="mermaid">') ? [i + 1] : []));
+const DIAGRAM_SLIDES = SLIDES.flatMap((source, i) => (/<pre class="mermaid"[\s>]/.test(source) ? [i + 1] : []));
 const DECLARED_ICONS = (DECK.match(/<i data-lucide="[^"]+"/g) ?? []).length;
 const RENDERED: RenderState = {
   slides: SLIDES.length,

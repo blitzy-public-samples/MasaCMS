@@ -207,7 +207,8 @@ const SLIDE_TYPE_CLASSES = [
 
 type SlideKind = 'title' | 'divider' | 'closing' | 'content';
 
-const BODY_TEXT_EXCLUDED = 'h1, h2, h3, h4, h5, h6, .eyebrow, pre.mermaid, table, .kpi-card, aside.notes, script, style';
+// .sr-only holds visually hidden text alternatives, not slide body text.
+const BODY_TEXT_EXCLUDED = 'h1, h2, h3, h4, h5, h6, .eyebrow, pre.mermaid, .sr-only, table, .kpi-card, aside.notes, script, style';
 // Text of these elements runs on into its neighbours; every other element separates words.
 const INLINE_TAGS = new Set([
   'a', 'abbr', 'b', 'bdi', 'bdo', 'cite', 'code', 'data', 'dfn', 'em', 'i', 'kbd', 'mark',

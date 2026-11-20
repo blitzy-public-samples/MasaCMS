@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
   <meta name="source-sha" content="696383140578f8dea3ece26f80cd7bfb370ddf0f">
   <title>OPT-2 Migration - Executive Summary</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -56,6 +57,12 @@
       background: var(--blitzy-surface-2); padding: 2px 10px; border-radius: 6px;
     }
     .reveal .controls { color: var(--blitzy-primary); }
+    .reveal .controls button:focus-visible { outline: 3px solid currentColor; outline-offset: 4px; border-radius: 6px; }
+    /* reveal.js marks only slides with a background colour as dark, so gradient slides are matched here; the overview shows the white page. */
+    .reveal:not(.overview):has(.slides > section.present[data-background-gradient]) .controls { color: var(--blitzy-text-invert); }
+    .reveal.overview .controls { color: var(--blitzy-primary); }
+    /* reveal.js fades the back arrow to 0.3, too faint on every slide background. */
+    .reveal:not(.rtl) .controls[data-controls-back-arrows=faded] .navigate-left.enabled { opacity: 0.7; }
     .reveal .progress { color: var(--blitzy-accent-teal); }
 
     .reveal .slides section.slide-title,
@@ -99,13 +106,17 @@
       color: var(--blitzy-primary);
     }
     .kpi-value.pending { font-size: 54px; color: var(--blitzy-primary-dark); }
-    .kpi-label { font-family: var(--ff-body); font-weight: 500; font-size: 26px; line-height: 1.3; color: var(--blitzy-text-muted); }
-    .kpi-note { font-family: var(--ff-mono); font-size: 18px; color: var(--blitzy-primary-light); }
-    .reveal .footnote { font-size: 22px; color: var(--blitzy-text-muted); margin: 40px 0 0; }
+    .kpi-label { font-family: var(--ff-body); font-weight: 500; font-size: 26px; line-height: 1.3; color: var(--blitzy-text); }
+    .kpi-note { font-family: var(--ff-mono); font-size: 18px; color: var(--blitzy-primary); }
+    .reveal .footnote { font-size: 22px; color: var(--blitzy-text); margin: 40px 0 0; }
     .reveal .caption { font-size: 26px; color: var(--blitzy-text); margin: 32px 0 0; }
 
     .accent-bar { height: 12px; background: var(--gradient-accent-bar); border-radius: 6px; }
-    .slide-closing .accent-bar { position: absolute; left: 0; right: 0; bottom: 0; border-radius: 0; }
+    .slide-closing .accent-bar { position: absolute; left: 0; right: 120px; bottom: 0; border-radius: 0 6px 6px 0; }
+    /* reveal.js keeps its controls fixed-size in the viewport corner while the canvas scales (scroll view hides them), so the bar also ends 120 screen px short of the viewport edge. */
+    .reveal-viewport:not(.reveal-scroll) .slide-closing .accent-bar {
+      right: max(120px, calc(960px + (120px - var(--viewport-width, 1920px) / 2) / var(--slide-scale, 1)));
+    }
     .closing-body { height: 1080px; display: flex; flex-direction: column; justify-content: center; }
     .slide-closing ul { margin-bottom: 64px; }
     .brand-lockup { display: flex; align-items: center; gap: 20px; }
@@ -139,6 +150,10 @@
     .mermaid-container svg { width: 100%; max-width: 100% !important; height: auto; max-height: 820px; }
     .mermaid-container.compact svg { max-height: 300px; }
     .mermaid-container.timeline svg { max-height: 560px; }
+    .reveal .sr-only {
+      position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; border: 0;
+      overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap;
+    }
 
     .deck-table { width: 100%; border-collapse: collapse; font-size: 26px; line-height: 1.3; }
     .deck-table th {
@@ -157,7 +172,7 @@
       background: var(--blitzy-surface-2); color: var(--blitzy-primary);
     }
     .pill-carry { background: rgba(148, 250, 213, 0.5); color: var(--blitzy-primary-dark); border-color: rgba(148, 250, 213, 0.9); }
-    .pill-new { background: var(--blitzy-primary-light); color: var(--blitzy-text-invert); border-color: var(--blitzy-primary-light); }
+    .pill-new { background: var(--blitzy-primary); color: var(--blitzy-text-invert); border-color: var(--blitzy-primary); }
     .pill-pending { background: var(--blitzy-surface-2); color: var(--blitzy-primary); }
     .pill-halted { background: var(--blitzy-primary-dark); color: var(--blitzy-text-invert); border-color: var(--blitzy-primary-dark); }
     .pill-neutral { background: var(--blitzy-surface-3); color: var(--blitzy-text); border-color: var(--blitzy-border); }
@@ -236,7 +251,8 @@
       <section>
         <h2>What changed architecturally</h2>
         <div class="mermaid-container">
-          <pre class="mermaid">
+          <p class="sr-only">Architecture diagram. Before: browsers use one Masa CMS application on ColdFusion with one SQL Server database. After: a gateway sends moved screens to a Next.js admin and moved routes to ten domain services, each with its own PostgreSQL schema and events; unmoved routes still reach legacy Masa; a migration orchestrator keeps legacy and service data in step.</p>
+          <pre class="mermaid" aria-hidden="true">
 flowchart LR
   subgraph BEFORE["Before: one monolith"]
     direction TB
@@ -307,7 +323,8 @@ flowchart LR
       <section>
         <h2>Moving data safely</h2>
         <div class="mermaid-container compact">
-          <pre class="mermaid">
+          <p class="sr-only">Data flow diagram: a consistent snapshot, then backfill, then the change feed, then zero-tolerance reconciliation, then reverse projection to legacy.</p>
+          <pre class="mermaid" aria-hidden="true">
 flowchart LR
   M1["Consistent snapshot"] --> M2["Backfill"]
   M2 --> M3["Change feed"]
@@ -415,7 +432,8 @@ flowchart LR
       <section>
         <h2>Cut-over sequence</h2>
         <div class="mermaid-container timeline">
-          <pre class="mermaid">
+          <p class="sr-only">Timeline diagram in two rows. Prove the foundation: 0 pin check, 1 legacy baseline, 2 platform on stub, 3 ten services, 4 migration. Then move and prove: 5 golden capture, 6 cut-over v0002, 7 equivalence, 8 rollback v0003, 9 reports.</p>
+          <pre class="mermaid" aria-hidden="true">
 flowchart TB
   subgraph PROVE["Prove the foundation"]
     direction LR
