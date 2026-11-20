@@ -69,7 +69,13 @@ import {
   type SubjectSession,
 } from '../helpers/admin-login.js';
 import { resetMailpit } from '../helpers/mailpit.js';
-import { readStack, requireTableVersion } from '../helpers/stack.js';
+import {
+  readStack,
+  requireTableVersion,
+  restartService,
+  withRestoredServices,
+  type ServiceName,
+} from '../helpers/stack.js';
 
 const TABLE_VERSION = 'v0002';
 const HOOK_TIMEOUT_MS = 45 * 60_000;
@@ -131,6 +137,9 @@ const RELAY_PROBE_SERVICE = 'identity';
 const EVIDENCE_WAIT_MS = 30_000;
 const EVIDENCE_POLL_MS = 1_000;
 const REACH_STATES: readonly ReachState[] = ['proven-by-control', 'proven-by-owner-denial', 'not-sent', 'failed'];
+
+/** Owners of probed routes that log answers below 400 at debug, so they run at LOG_LEVEL=debug while probed. */
+const DEBUG_SUCCESS_OWNERS: readonly ServiceName[] = ['gateway'];
 
 /** Session and credential headers one probe is sent with. */
 interface ProbeClient {
@@ -316,18 +325,23 @@ describe('gateway authorisation matrix', () => {
       .map((expectation) => ({ ...expectation, subject: FORGED_SUBJECT }));
     const { send, skipped } = sendPlan([...expected, ...forgedExpected], reach.probed);
     const owners = [...new Set(reach.probed.map((route) => route.package))];
-    const fromOffsets = capturedLogOffsets({ packages: owners });
-    probing = true;
-    const probes = await probeAll(send);
+    const observed = await withRestoredServices(DEBUG_SUCCESS_OWNERS, async () => {
+      for (const name of DEBUG_SUCCESS_OWNERS) await restartService(name, { extraEnv: { LOG_LEVEL: 'debug' } });
+      const fromOffsets = capturedLogOffsets({ packages: owners });
+      probing = true;
+      const observations = await probeAll(send);
+      const judge = (index: RequestRecordIndex): ReachVerdict[] =>
+        reachVerdicts(reach.probed, [...expected, ...forgedExpected], observations, skipped, index);
+      return { probes: observations, verdicts: await awaitVerdicts(judge, owners, fromOffsets) };
+    });
+    const { probes } = observed;
+    verdicts = observed.verdicts;
     const forged = (entry: { subject: string }): boolean => entry.subject === FORGED_SUBJECT;
     const role = (entry: { subject: string }): boolean => !forged(entry);
     // Only sent cells are judged; skipped and unreached cells are reported on their own, so `missing` names lost probes.
     const sent = [...new Set(send.map((cell) => cell.expectation))];
     diff = diffOutcomes(sent.filter(role), probes.filter(role));
     forgedDiff = diffOutcomes(sent.filter(forged), probes.filter(forged));
-    const judge = (index: RequestRecordIndex): ReachVerdict[] =>
-      reachVerdicts(reach.probed, [...expected, ...forgedExpected], probes, skipped, index);
-    verdicts = await awaitVerdicts(judge, owners, fromOffsets);
     const securityDir = join(stateDir(), 'security');
     await mkdir(securityDir, { recursive: true });
     const report = {
