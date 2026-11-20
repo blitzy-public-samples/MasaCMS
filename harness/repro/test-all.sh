@@ -570,6 +570,8 @@ stage_capture() {
   run_step "golden:capture of the rehearsal crossings and GS-PE-RH sets" harness_run golden:capture -- --rehearsal ||
     failures=1
   note_evidence "$REPO/harness/golden/sets"
+  # Talks to legacy directly at v0001; its admin login updates LastLogin, which the reset to Ck below wipes.
+  run_e2e session/bridge-shared-values || failures=1
   # Reset even after a failed capture, so the stack is left at Ck with its background work resumed.
   run_step "reset legacy and target to Ck" checkpoint_restore || return 1
   run_step "verify Ck" checkpoint_verify || return 1

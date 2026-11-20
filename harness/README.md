@@ -86,7 +86,7 @@ Needs the stack `up.sh` recorded. It exports the `cutoverDir` of `up.json` as `O
 | 2 Platform on stub | `npm test` in `platform`, `gateway` and `services/stub`; `test:e2e -- isolation/platform-proof` |
 | 3 Each service | `npm test` in identity, people, programs-sites, strategies-content, communications, reporting, surveys, timesheets, finance and e-signature, then `web`, `migration` and `harness` |
 | 4 Migration | Reconcile `after-backfill`; `golden:workload` through the gateway; feed and reconcile `after-feed-1`; each reconciling fault; snapshot `Sk`; `feed --snapshot` to `Sk` (reconciles `after-feed-<k>`); `opt2-ops drain-and-suspend`; checkpoint `Ck` |
-| 5 Capture | `golden:capture` against legacy directly, then the browser captures, then `golden:capture -- --rehearsal` (GS-ID-09 again as its rehearsal crossing, then the GS-PE-RH sets, as stage 8 replays them); reset legacy and target to `Ck`, verify, `opt2-ops resume` |
+| 5 Capture | `golden:capture` against legacy directly, then the browser captures, then `golden:capture -- --rehearsal` (GS-ID-09 again as its rehearsal crossing, then the GS-PE-RH sets, as stage 8 replays them), then `test:e2e -- session/bridge-shared-values` against legacy directly; reset legacy and target to `Ck`, verify, `opt2-ops resume` |
 | 6 Cut-over | `opt2-migrate transition --to v0002`, with GS-ID-09 crossing it; feed; reconcile `post-cutover` |
 | 7 Equivalence and cross-cutting | `golden:replay`, the browser replay, `golden:compare`, `golden:coverage`; e2e suites for tenant isolation, seams, dead-letter replay, trace, roster protocol, the gateway authorisation matrix and the synthetic modules' `/v1` writes; `security:scan`; `infra/terraform/plan.sh`; `opt2-migrate window report`, then `test:e2e -- performance/performance`; `report:isolation`, `report:events` |
 | 8 Rollback | People-roster rehearsal: `opt2-migrate rollback-set`, transition to `v0003` with GS-ID-09 crossing it (`--rehearsal`), `rollback rebaseline`, `golden:replay -- --rehearsal`, feed, reconcile `rollback-after`, `golden:compare`, `rollback report` |
@@ -210,7 +210,7 @@ npm run test:e2e    # e2e/** only, serially; needs the stack up.sh started; call
 - `security/`: the gitleaks configuration and its baseline, which holds pre-existing legacy findings only.
 - `src/`: the CLIs in the script table and their libraries (`baseline`, `events`, `golden` with the one normaliser in `golden/normalise/`, `inventory`, `isolation`, `lib`, `performance`, `reporting`, `repro`, `security`). `src/generated/` is build output.
 - `test/`: unit suites over `src/`, with recorded fixtures; no oracle or running stack.
-- `e2e/`: oracle and full-stack suites (`events`, `isolation`, `performance`, `security`, `synthetic`, `ui`), run only through `test:e2e`.
+- `e2e/`: oracle and full-stack suites (`events`, `isolation`, `performance`, `security`, `session`, `synthetic`, `ui`), run only through `test:e2e`.
 - `repro/`: the four commands, `ports.env`, `server.json.template`, `otelcol-config.yaml` and `lib/` (lock, process control, pristine baseline, checkpoint `Ck`, `legacy-start.sh`).
 
 ## Boundaries

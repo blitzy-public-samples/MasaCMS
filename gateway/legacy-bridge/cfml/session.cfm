@@ -283,12 +283,12 @@ try {
 				if (!structKeyExists(carried, "revision") || compare(carried.revision, entry.revision) != 0) {
 					if (entry.name == "__fw1") {
 						installContexts(entry.value, structKeyExists(carried, "json") ? deserializeJSON(carried.json) : {});
-						json = serializeJSON(entry.value);
+						json = app.toJson(entry.value);
 					} else {
 						writeShared(entry.name, entry.value);
 						// The value as op=export reads it back, so an unchanged value is never exported.
 						held = readShared(entry.name);
-						json = held.exists ? serializeJSON(held.value) : "";
+						json = held.exists ? app.toJson(held.value) : "";
 					}
 					session.opt2Carried[entry.name] = {"revision": entry.revision, "json": json};
 					arrayAppend(applied, entry.name);
@@ -314,7 +314,7 @@ try {
 					continue;
 				}
 				if (structKeyExists(session, "opt2Carried") && structKeyExists(session.opt2Carried, name)
-					&& compare(session.opt2Carried[name].json, serializeJSON(held.value)) == 0) {
+					&& compare(session.opt2Carried[name].json, app.toJson(held.value)) == 0) {
 					continue;
 				}
 				if (name == "blockLoginUntil") {

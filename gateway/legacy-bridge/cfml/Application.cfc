@@ -34,8 +34,13 @@ component extends="muraWRM.Application" output="false" {
 		}
 		cfheader(statuscode = arguments.status);
 		cfcontent(type = "application/json; charset=utf-8", reset = true);
-		writeOutput(serializeJSON(arguments.body));
+		writeOutput(toJson(arguments.body));
 		abort;
+	}
+
+	// serializeJSON of value, with each number it would write outside JSON's number grammar sent as a string of its text.
+	public string function toJson(any value) {
+		return isNull(arguments.value) ? "null" : serializeJSON(strictCopy(arguments.value));
 	}
 
 	// Ends the request with the error body {error, message, serverTime}.
@@ -206,6 +211,40 @@ component extends="muraWRM.Application" output="false" {
 		} catch (any e) {
 			return {};
 		}
+	}
+
+	// Copy of value for toJson, leaving value unchanged: arrays and structs member by member, nulls kept, struct order and key spelling kept.
+	private any function strictCopy(required any value) {
+		// isArray answers YES for binary, which serializeJSON refuses, so binary is left to fail as it did.
+		if (isArray(arguments.value) && !isBinary(arguments.value)) {
+			var items = [];
+			// arrayResize refuses 0; sizing first keeps trailing undefined elements as nulls.
+			if (arrayLen(arguments.value)) {
+				arrayResize(items, arrayLen(arguments.value));
+			}
+			for (var i = 1; i <= arrayLen(arguments.value); i++) {
+				if (arrayIsDefined(arguments.value, i)) {
+					items[i] = strictCopy(arguments.value[i]);
+				}
+			}
+			return items;
+		}
+		if (isStruct(arguments.value) && !isObject(arguments.value)) {
+			var copy = structCopy(arguments.value);
+			for (var key in structKeyArray(copy)) {
+				if (!isNull(copy[key])) {
+					copy[key] = strictCopy(copy[key]);
+				}
+			}
+			return copy;
+		}
+		// serializeJSON writes a number's source text, so an unquoted literal such as carch's module id
+		// 00000000000000000000000000000000000 (admin/core/controllers/carch.cfc:78) would go out as an invalid number.
+		if (isInstanceOf(arguments.value, "java.lang.Number")
+			&& !reFind("^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?$", serializeJSON(arguments.value))) {
+			return javaCast("string", arguments.value);
+		}
+		return arguments.value;
 	}
 
 	// URL key that makes Masa re-initialise.
