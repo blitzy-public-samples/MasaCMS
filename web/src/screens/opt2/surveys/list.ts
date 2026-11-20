@@ -55,6 +55,7 @@ function rowLinks(ctx: ScreenContext, survey: Survey): SafeHtml {
       href: surveysUrl(ctx, screen, { surveyid: survey.surveyId }),
       icon: SCREEN_ICONS[screen],
     })),
+    opt2Label(ctx, 'Actions'),
   );
 }
 

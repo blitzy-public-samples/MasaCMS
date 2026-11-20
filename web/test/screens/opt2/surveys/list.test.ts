@@ -149,21 +149,43 @@ describe('surveys list', () => {
       const cell = $(row).children('td.actions');
       const toggle = cell.children('a.show-actions');
       return {
-        toggle: [toggle.attr('href'), toggle.attr('onclick'), toggle.children('i').attr('class')],
+        toggle: {
+          href: toggle.attr('href'),
+          role: toggle.attr('role'),
+          expanded: toggle.attr('aria-expanded'),
+          name: toggle.attr('aria-label'),
+          handlers: ['onclick', 'onfocus', 'onkeydown'].filter((handler) => toggle.attr(handler) !== undefined),
+          opens: toggle.attr('onclick')?.includes('showTableControls(toggle);'),
+          listens: toggle.attr('onclick')?.includes("jQuery(document).off('click.opt2RowActions').on('click.opt2RowActions',"),
+          icon: [toggle.children('i').attr('class'), toggle.children('i').attr('aria-hidden')],
+        },
         menuClass: cell.children('div').attr('class'),
         items: cell
           .find('div.actions-menu > ul.actions-list > li > a')
           .toArray()
-          .map((link) => ({ href: $(link).attr('href'), icon: $(link).children('i').attr('class'), text: $(link).text() })),
+          .map((link) => ({
+            href: $(link).attr('href'),
+            icon: [$(link).children('i').attr('class'), $(link).children('i').attr('aria-hidden')],
+            text: $(link).text(),
+          })),
       };
     });
     expect(menus).toEqual(
       [SURVEY_IDS.singleSiteSurvey, SURVEY_IDS.multiSiteSurvey].map((surveyId) => ({
-        toggle: ['javascript:;', 'showTableControls(this);', 'mi-ellipsis-v'],
+        toggle: {
+          href: 'javascript:;',
+          role: 'button',
+          expanded: 'false',
+          name: 'Actions',
+          handlers: ['onclick', 'onkeydown'],
+          opens: true,
+          listens: true,
+          icon: ['mi-ellipsis-v', 'true'],
+        },
         menuClass: 'actions-menu hide',
         items: rowLinks(surveyId)
           .slice(1)
-          .map((link, index) => ({ ...link, icon: ROW_ICONS[index] })),
+          .map((link, index) => ({ ...link, icon: [ROW_ICONS[index], 'true'] })),
       })),
     );
   });

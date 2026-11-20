@@ -515,6 +515,22 @@ describe('finance record screen', () => {
     );
   });
 
+  it('breaks each attachment digest after every 24 hex digits, its text unchanged', async () => {
+    const { view } = await renderDetail(financeRequest(APPROVER, { id: RECORD_ID }));
+    const $ = cheerio.load(toString(view.body), null, false);
+    const digests = $('dt')
+      .toArray()
+      .filter((dt) => $(dt).text() === 'SHA-256')
+      .map((dt) => $(dt).next('dd'));
+
+    expect(digests.map((dd) => [dd.text(), dd.html()])).toEqual(
+      financeAttachments.map(({ sha256 }) => [
+        sha256,
+        `${sha256.slice(0, 24)}<wbr>${sha256.slice(24, 48)}<wbr>${sha256.slice(48)}`,
+      ]),
+    );
+  });
+
   it('encodes record text from the service', async () => {
     const hostile = { ...financeRecordDetail, title: '<script>alert(1)</script>', attachments: [] };
     const gateway = financeGateway({ [RECORD_ROUTE]: { status: 200, body: { data: hostile } } });

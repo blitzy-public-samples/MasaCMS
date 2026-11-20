@@ -187,23 +187,38 @@ describe('markup', () => {
   });
 
   describe('rowActionsMenu', () => {
-    const TOGGLE =
-      '<a class="show-actions" href="javascript:;" onclick="showTableControls(this);"><i class="mi-ellipsis-v"></i></a>';
+    const SYNC_ALL =
+      `jQuery('a.show-actions[aria-expanded]').each(function () {` +
+      ` this.setAttribute('aria-expanded', String(!jQuery(this).next('.actions-menu').hasClass('hide'))); });`;
+    const toggle = (name: string): string =>
+      `<a class="show-actions" href="javascript:;" role="button" aria-expanded="false" aria-label="${name}"` +
+      ` onclick="var toggle = this, open = !jQuery(this).next('.actions-menu').hasClass('hide'); setTimeout(function () {` +
+      ` if (open) jQuery(toggle).next('.actions-menu').addClass('hide'); else showTableControls(toggle); ${SYNC_ALL}` +
+      ` jQuery(document).off('click.opt2RowActions').on('click.opt2RowActions', function () {` +
+      ` setTimeout(function () { ${SYNC_ALL} }, 0); }); }, 0);"` +
+      ` onkeydown="if (event.key === ' ') { event.preventDefault(); if (!event.repeat) this.click(); }">` +
+      '<i class="mi-ellipsis-v" aria-hidden="true"></i></a>';
+    const EMPTY_MENU = '<div class="actions-menu hide"><ul class="actions-list"></ul></div>';
 
     it.each<Case>([
       [
         'the toggle and a hidden menu of icon links, labels and hrefs encoded',
-        rowActionsMenu([
-          { label: 'Edit', href: 'e?id=1', icon: 'mi-pencil' },
-          { label: raw('<b>A</b>'), href: 'a', icon: 'mi-calendar' },
-          { label: 'A<B', href: 'b', icon: 'x"y' },
-        ]),
-        `${TOGGLE}<div class="actions-menu hide"><ul class="actions-list">` +
-          '<li><a href="e&#x3f;id&#x3d;1"><i class="mi-pencil"></i>Edit</a></li>' +
-          '<li><a href="a"><i class="mi-calendar"></i><b>A</b></a></li>' +
-          '<li><a href="b"><i class="x&quot;y"></i>A&lt;B</a></li></ul></div>',
+        rowActionsMenu(
+          [
+            { label: 'Edit', href: 'e?id=1', icon: 'mi-pencil' },
+            { label: raw('<b>A</b>'), href: 'a', icon: 'mi-calendar' },
+            { label: 'A<B', href: 'b', icon: 'x"y' },
+          ],
+          'Actions',
+        ),
+        `${toggle('Actions')}<div class="actions-menu hide"><ul class="actions-list">` +
+          '<li><a href="e&#x3f;id&#x3d;1"><i class="mi-pencil" aria-hidden="true"></i>Edit</a></li>' +
+          '<li><a href="a"><i class="mi-calendar" aria-hidden="true"></i><b>A</b></a></li>' +
+          '<li><a href="b"><i class="x&quot;y" aria-hidden="true"></i>A&lt;B</a></li></ul></div>',
       ],
-      ['the toggle and an empty menu for no actions', rowActionsMenu([]), `${TOGGLE}<div class="actions-menu hide"><ul class="actions-list"></ul></div>`],
+      ['the toggle and an empty menu for no actions', rowActionsMenu([], 'Actions'), `${toggle('Actions')}${EMPTY_MENU}`],
+      ['a bundle label as the toggle name', rowActionsMenu([], raw('Aktionen')), `${toggle('Aktionen')}${EMPTY_MENU}`],
+      ['a string toggle name attribute-encoded', rowActionsMenu([], 'A"<B'), `${toggle('A&quot;&lt;B')}${EMPTY_MENU}`],
     ])('renders %s', (_, markup, expected) => {
       expect(toString(markup)).toBe(expected);
     });

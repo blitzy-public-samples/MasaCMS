@@ -178,7 +178,7 @@ function attachmentRows(ctx: ScreenContext, attachment: Attachment): SafeHtml {
     ['File Name', actionButton(attachment.file_name, url, {}, undefined, { download: true })],
     [opt2Label(ctx, 'Content Type'), attachment.content_type],
     ['Size (bytes)', attachment.size_bytes],
-    ['SHA-256', attachment.sha256],
+    ['SHA-256', wrappable(attachment.sha256)],
     [opt2Label(ctx, 'Created'), attachment.created],
   ]);
 }

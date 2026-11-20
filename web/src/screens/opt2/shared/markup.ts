@@ -1,5 +1,5 @@
 // SYNTHETIC: opt2-admin - no Masa equivalent; legacy oracle in legacy-fixtures/
-import { attr, html, join } from '@/lib/html';
+import { attr, html, join, raw } from '@/lib/html';
 import type { SafeHtml } from '@/lib/html';
 
 /** Label text: a string is encoded, markup (a bundle label) is kept. */
@@ -32,7 +32,16 @@ export type RowAction = { label: Label; href: string; icon: string };
 
 const VAR_WIDTH = html` class="var-width"`;
 
-const SHOW_ACTIONS = html`<a class="show-actions" href="javascript:;" onclick="showTableControls(this);"><i class="mi-ellipsis-v"></i></a>`;
+/** Sets the row-actions toggle `this` aria-expanded to whether its menu shows. */
+const SYNC_EXPANDED = raw(`this.setAttribute('aria-expanded', String(!jQuery(this).next('.actions-menu').hasClass('hide')));`);
+
+/** Sets every row-actions toggle's aria-expanded to whether its menu shows. */
+const SYNC_ALL = html`jQuery('a.show-actions[aria-expanded]').each(function () { ${SYNC_EXPANDED} });`;
+
+// The legacy document closer hides every menu after a click aimed at the toggle itself, as Enter and Space send, so the
+// toggle opens or closes its menu after the closer has run. The document listener it then adds syncs after every later
+// click's handlers, the closer's included, so a menu an outside click hides reads collapsed.
+const SHOW_ACTIONS_HANDLERS = html` onclick="var toggle = this, open = !jQuery(this).next('.actions-menu').hasClass('hide'); setTimeout(function () { if (open) jQuery(toggle).next('.actions-menu').addClass('hide'); else showTableControls(toggle); ${SYNC_ALL} jQuery(document).off('click.opt2RowActions').on('click.opt2RowActions', function () { setTimeout(function () { ${SYNC_ALL} }, 0); }); }, 0);" onkeydown="if (event.key === ' ') { event.preventDefault(); if (!event.repeat) this.click(); }"`;
 
 const ALERT_CLASS: Readonly<Record<AlertKind, SafeHtml>> = {
   error: html` class="alert alert-error"`,
@@ -98,14 +107,17 @@ export function gridTable(
 }
 
 /**
- * Legacy ⋮ row-actions cell content: the toggle legacy `showTableControls` opens and the hidden menu of `actions`.
- * Its grid column takes class `actions`, which that script looks for.
+ * Legacy ⋮ row-actions cell content: a disclosure button named `label` (a bundle label's text as written) that opens,
+ * through legacy `showTableControls`, and closes the hidden menu of `actions`. Its grid column takes class `actions`,
+ * which that script looks for.
  */
-export function rowActionsMenu(actions: readonly RowAction[]): SafeHtml {
+export function rowActionsMenu(actions: readonly RowAction[], label: Label): SafeHtml {
+  const name = attr('aria-label', typeof label === 'string' ? label : label.value);
+  const toggle = html`<a class="show-actions" href="javascript:;" role="button" aria-expanded="false"${name}${SHOW_ACTIONS_HANDLERS}><i class="mi-ellipsis-v" aria-hidden="true"></i></a>`;
   const items = actions.map(
-    (action) => html`<li><a${attr('href', action.href)}><i class="${action.icon}"></i>${action.label}</a></li>`,
+    (action) => html`<li><a${attr('href', action.href)}><i class="${action.icon}" aria-hidden="true"></i>${action.label}</a></li>`,
   );
-  return html`${SHOW_ACTIONS}<div class="actions-menu hide"><ul class="actions-list">${items}</ul></div>`;
+  return html`${toggle}<div class="actions-menu hide"><ul class="actions-list">${items}</ul></div>`;
 }
 
 /** Alert box of the given kind. */
