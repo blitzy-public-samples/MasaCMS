@@ -757,3 +757,64 @@ describe.skipIf(!schemaAvailable)(`backfill and feed authority over migration.sn
     expect(applyCount()).toBe(calls);
   });
 });
+
+describe.skipIf(!schemaAvailable)(`backfill after a feed to the same snapshot (skipped: ${MIGRATION_SCHEMA_SKIP_REASON})`, () => {
+  let test: TestContext;
+
+  /** Records ready seed snapshot `seq` of the fake's database under `databaseName`. */
+  const recordSnapshot = (seq: number, databaseName: string): Promise<unknown> =>
+    test.ctx.db.withMetadata((tx) =>
+      tx.query(INSERT_SNAPSHOT_SQL, [
+        seq,
+        databaseName,
+        `/var/opt/mssql/backup/snap-${String(seq)}.bak`,
+        SNAPSHOT.checkpointLsn,
+        SNAPSHOT.lastLsn,
+        'seed',
+        'ready',
+        false,
+        SNAPSHOT.takenAt,
+        TEST_SOURCE_SHA,
+      ]),
+    );
+
+  beforeAll(async () => {
+    test = await buildTestContext({ migrationDb: true, legacySeed: true, gateway: { active: null }, cutover: { versions: [V0001, V0002] } });
+    test.legacy.seed(TABLES['synthetic.person_archive'].qualified, [personArchiveRow()]);
+    test.legacy.seed(TABLES['Program_1.blackout'].qualified, [blackoutRow()]);
+    await recordSnapshot(SNAPSHOT_SEQ, SNAPSHOT.databaseName);
+  });
+
+  afterAll(() => test.close());
+
+  it('refuses a backfill of snapshot 2 after backfill(1) and feed(2) before any batch, so keyless tables keep their occurrences', async () => {
+    const second = SNAPSHOT_SEQ + 1;
+    const communications = test.owners?.owner('communications');
+    const tables = ['tmailinglist', 'tmailinglistmembers'] as const;
+    const keyless = (): (number | undefined)[] => tables.map((table) => communications?.rows.get(table)?.length);
+    const applies = (): number => ownerCalls(test).filter((call) => call.method === 'apply').length;
+    expect(await runBackfill(test.ctx, { snapshotSeq: SNAPSHOT_SEQ })).toMatchObject({ exitCode: 0 });
+    test.gateway.setActive(V0001.tableVersion);
+    // The upper-cased name opens the same fake database, so the feed to snapshot 2 finds no change and only moves the watermarks.
+    await recordSnapshot(second, SNAPSHOT.databaseName.toUpperCase());
+    expect(await runFeed(test.ctx, { snapshotSeq: second })).toMatchObject({ snapshotSeq: second, exitCode: 0 });
+    expect(communications?.watermarks.get('tmailinglist|forward')).toMatchObject({ snapshotSeq: second });
+    const occurrences = keyless();
+    const calls = applies();
+
+    const error = await runBackfill(test.ctx, { snapshotSeq: second }).catch((reason: unknown) => reason);
+
+    expect(error).toBeInstanceOf(BackfillBaselineError);
+    expect(error).toMatchObject({
+      baselineSeq: SNAPSHOT_SEQ,
+      message: expect.stringContaining(`Backfill of snapshot ${String(second)} refused: the target was backfilled from snapshot ${String(SNAPSHOT_SEQ)};`),
+    });
+    expect((error as BackfillBaselineError).held).toEqual(
+      expect.arrayContaining([{ owner: 'communications', table: 'tmailinglistmembers', snapshotSeq: second }]),
+    );
+    // One occurrence per legacy row, the duplicated member row included.
+    expect(occurrences).toEqual(tables.map((table) => test.legacy.rows(TABLES[table].qualified).length));
+    expect(keyless()).toEqual(occurrences);
+    expect(applies()).toBe(calls);
+  });
+});

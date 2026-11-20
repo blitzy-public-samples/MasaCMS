@@ -90,7 +90,7 @@ SQL Server is the only supported source: `MURA_DBTYPE` naming anything else (the
 
 ## Schema `migration`
 
-DDL in [`db/migrations/0001_migration.sql`](db/migrations/0001_migration.sql) and [`db/migrations/0002_projector_quarantine.sql`](db/migrations/0002_projector_quarantine.sql); roles `migration_owner`, `migration_app`, `migration_migrator`.
+DDL in [`db/migrations/0001_migration.sql`](db/migrations/0001_migration.sql), [`db/migrations/0002_projector_quarantine.sql`](db/migrations/0002_projector_quarantine.sql) and [`db/migrations/0003_backfill_baseline.sql`](db/migrations/0003_backfill_baseline.sql); roles `migration_owner`, `migration_app`, `migration_migrator`.
 
 | Table | Holds |
 |---|---|
@@ -102,6 +102,7 @@ DDL in [`db/migrations/0001_migration.sql`](db/migrations/0001_migration.sql) an
 | `projector_quarantine` | Changes the projector could not write into legacy (a SQL Server data error or a missing legacy row), and the other changes of their operation, each recorded before its batch commits without it: owner, tenant, changelog `xid`/`seq`, legacy table, op, legacy key, reason, batch. `repaired_at`, `repaired_xid` and `repaired_seq` are set once a later change of the same keyed row is written |
 | `scheduler_state` | Keys `sitemonitor`, `nativeTasks`, `surveyTasks` and `background` (the `opt2-ops` record) |
 | `file_manifest` | Per snapshot and site: path, `fileID`, variant, extension, size, SHA-256, orphan flag, object key, transfer time |
+| `backfill_baseline` | The one snapshot the target was backfilled from and when that backfill started, recorded before its first batch |
 
 ## Flows
 
@@ -117,7 +118,7 @@ DDL in [`db/migrations/0001_migration.sql`](db/migrations/0001_migration.sql) an
 - 1,000 rows per tenant per batch to the owner's `apply`, each with a deterministic `batchId`, so a repeated batch is a no-op. Split tables (`tusers`, `tclassextend*`, `ttrash`) go to every owner, which takes its own rows and columns.
 - `tenant_id = tenantIdForSite(siteID)`; pooled rows carry the umbrella tenant, child rows inherit their parent's, and rows with no resolvable parent load under the umbrella tenant and are reported as orphans.
 - Owners emit only `state` events for migration applies, never `process` events.
-- A backfill into owners holding a `forward` watermark from another snapshot is refused before any batch (`BackfillBaselineError`); the feed moves an already-backfilled target forward.
+- A backfill is refused before any batch (`BackfillBaselineError`) when owners hold a `forward` watermark from another snapshot, when `backfill_baseline` records another snapshot, or when owners hold watermarks at its snapshot with no baseline recorded (a feed or re-baseline wrote them). Only a re-run of the baseline snapshot is accepted, with the same batch ids; the feed moves an already-backfilled target forward.
 
 ### Change feed (`src/apply/feed.ts`, `src/diff/`)
 

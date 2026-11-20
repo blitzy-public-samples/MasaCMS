@@ -36,6 +36,7 @@ import {
   type OwnerBatchStats,
   type TenantResolver,
 } from './batch.js';
+import { backfillBaseline, recordBackfillBaseline } from './baseline.js';
 import { Acceptance, addTaken, chunksOf, planTarget, prepareTenants, type DiffSide, type TargetPlan } from './targets.js';
 
 /** Context members the backfill reads: the snapshot, both data sides, the gateway's authority and the report target. */
@@ -82,29 +83,40 @@ export class BackfillAuthorityError extends Error {
   }
 }
 
-/** A `forward` watermark an owner holds for a table from a snapshot other than the backfill's; a null sequence is unrecorded. */
+/** A `forward` watermark an owner holds for a table; a null sequence is unrecorded. */
 export interface HeldWatermark {
   owner: DataOwner;
   table: string;
   snapshotSeq: number | null;
 }
 
-/** Raised before any batch is sent when an owner already holds a `forward` watermark from another snapshot. */
+/** Why a backfill of `snapshotSeq` is refused: watermarks from other snapshots, another recorded baseline, or watermarks at it with none recorded. */
+function refusalOf(snapshotSeq: number, held: readonly HeldWatermark[], baselineSeq: number | null): string {
+  const foreign = held.some((mark) => mark.snapshotSeq !== snapshotSeq);
+  if (!foreign && baselineSeq !== null) return `the target was backfilled from snapshot ${String(baselineSeq)}`;
+  const from = [...new Set(held.map((mark) => mark.snapshotSeq))]
+    .sort((a, b) => (a ?? Number.MAX_SAFE_INTEGER) - (b ?? Number.MAX_SAFE_INTEGER))
+    .map((seq) => (seq === null ? 'no recorded snapshot' : `snapshot ${String(seq)}`));
+  const where = held.map((mark) => `${mark.table} at ${mark.owner}`);
+  const holds = `owners hold forward watermarks from ${from.join(' and ')} for ${where.join(', ')}`;
+  return foreign ? holds : `${holds}, but no backfill of snapshot ${String(snapshotSeq)} is recorded`;
+}
+
+/** Raised before any batch is sent when the owners' `forward` watermarks or the recorded baseline show the target was not backfilled from this snapshot. */
 export class BackfillBaselineError extends Error {
   override readonly name = 'BackfillBaselineError';
-  /** The watermarks from other snapshots, sorted by owner and table. */
+  /** The refusing watermarks, sorted by owner and table: those from other snapshots, else those at this one. */
   readonly held: HeldWatermark[];
+  /** The snapshot the target was backfilled from, or null when none is recorded. */
+  readonly baselineSeq: number | null;
 
-  constructor(snapshotSeq: number, held: HeldWatermark[]) {
-    const from = [...new Set(held.map((mark) => mark.snapshotSeq))]
-      .sort((a, b) => (a ?? Number.MAX_SAFE_INTEGER) - (b ?? Number.MAX_SAFE_INTEGER))
-      .map((seq) => (seq === null ? 'no recorded snapshot' : `snapshot ${String(seq)}`));
-    const where = held.map((mark) => `${mark.table} at ${mark.owner}`);
+  constructor(snapshotSeq: number, held: HeldWatermark[], baselineSeq: number | null = null) {
     super(
-      `Backfill of snapshot ${String(snapshotSeq)} refused: owners hold forward watermarks from ${from.join(' and ')} for ${where.join(', ')}; ` +
+      `Backfill of snapshot ${String(snapshotSeq)} refused: ${refusalOf(snapshotSeq, held, baselineSeq)}; ` +
         'run the feed to move an already-backfilled target forward, or bootstrap the target afresh',
     );
     this.held = held;
+    this.baselineSeq = baselineSeq;
   }
 }
 
@@ -381,28 +393,25 @@ async function backfillFiles(ctx: BackfillContext, snapshot: SnapshotRecord): Pr
   return { status: 'halted', reason };
 }
 
-/** `forward` watermarks the owners of `tables` hold from a snapshot other than `snapshotSeq`, sorted by owner and table. */
-async function heldWatermarks(
-  ctx: Pick<BackfillContext, 'catalog' | 'owners'>,
-  tables: readonly MigratableTable[],
-  snapshotSeq: number,
-): Promise<HeldWatermark[]> {
+/** `forward` watermarks the owners of `tables` hold, sorted by owner and table. */
+async function heldWatermarks(ctx: Pick<BackfillContext, 'catalog' | 'owners'>, tables: readonly MigratableTable[]): Promise<HeldWatermark[]> {
   const held: HeldWatermark[] = [];
   for (const table of tables) {
     for (const owner of ctx.catalog.ownersForLegacyTable(table.name)) {
       const mark = await ctx.owners.watermark(owner, table.name, 'forward');
-      if (mark !== null && mark.snapshotSeq !== snapshotSeq) held.push({ owner, table: table.name, snapshotSeq: mark.snapshotSeq });
+      if (mark !== null) held.push({ owner, table: table.name, snapshotSeq: mark.snapshotSeq });
     }
   }
   return held.sort((a, b) => (a.owner === b.owner ? compareTableNames(a.table, b.table) : a.owner < b.owner ? -1 : 1));
 }
 
 /**
- * Backfills the owners from snapshot `snapshotSeq`: loads every table in dependency order, then patches the deferred columns of
- * each table that has them in the same order, transfers its files and writes the `after-backfill` reconciliation; batch ids
- * repeat on a re-run, and the first failed batch fails the command.
+ * Backfills the owners from snapshot `snapshotSeq`: records it as the baseline on the first run, loads every table in dependency
+ * order, then patches the deferred columns of each table that has them in the same order, transfers its files and writes the
+ * `after-backfill` reconciliation; batch ids repeat on a re-run, and the first failed batch fails the command.
  * @throws SnapshotError when the snapshot is not ready; BackfillAuthorityError before any batch when a unit is target-authoritative;
- * BackfillBaselineError before any batch when an owner holds a `forward` watermark from another snapshot.
+ * BackfillBaselineError before any batch when an owner holds a `forward` watermark from another snapshot, another baseline is
+ * recorded, or the owners hold watermarks at this snapshot that no recorded backfill of it wrote.
  */
 export async function runBackfill(ctx: BackfillContext, options: BackfillOptions): Promise<BackfillResult> {
   const snapshot = await requireSnapshot(ctx, options.snapshotSeq);
@@ -414,8 +423,13 @@ export async function runBackfill(ctx: BackfillContext, options: BackfillOptions
   const authority = await currentAuthority({ gateway: ctx.gateway, config: ctx.config.paths });
   const targetUnits = units.filter((unit) => authority.isTargetAuthoritative(unit));
   if (targetUnits.length > 0) throw new BackfillAuthorityError(targetUnits);
-  const held = await heldWatermarks(ctx, tables, snapshot.seq);
-  if (held.length > 0) throw new BackfillBaselineError(snapshot.seq, held);
+  const marks = await heldWatermarks(ctx, tables);
+  const baseline = await backfillBaseline(ctx);
+  const held = marks.filter((mark) => mark.snapshotSeq !== snapshot.seq);
+  if (held.length > 0) throw new BackfillBaselineError(snapshot.seq, held, baseline);
+  // Watermarks at this snapshot with no baseline recorded were written by a feed or a re-baseline, not by its backfill.
+  const recorded = baseline ?? (marks.length === 0 ? await recordBackfillBaseline(ctx, snapshot.seq) : null);
+  if (recorded !== snapshot.seq) throw new BackfillBaselineError(snapshot.seq, marks, recorded);
 
   const order = await computeDependencyOrder({
     inventory: ctx.config.paths.inventory,

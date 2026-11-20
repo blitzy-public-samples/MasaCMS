@@ -13,6 +13,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 
 import { BackfillAuthorityError, BackfillBaselineError, runBackfill } from '../../src/apply/backfill.js';
 import type { BackfillContext, BackfillResult } from '../../src/apply/backfill.js';
+import { backfillBaseline, recordBackfillBaseline } from '../../src/apply/baseline.js';
 import { batchIdFor } from '../../src/apply/batch.js';
 import type { ApplyChange, BatchDirection, TenantResolver } from '../../src/apply/batch.js';
 import { loadConfig } from '../../src/config.js';
@@ -73,6 +74,11 @@ vi.mock('../../src/files/index.js', async (importOriginal) => ({
 vi.mock('../../src/order/index.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../src/order/index.js')>()),
   computeDependencyOrder: vi.fn(),
+}));
+
+vi.mock('../../src/apply/baseline.js', () => ({
+  backfillBaseline: vi.fn(),
+  recordBackfillBaseline: vi.fn(),
 }));
 
 type Row = Record<string, string | null>;
@@ -275,6 +281,8 @@ interface World {
   /** Watermarks the owners hold by {@link watermarkKey}: preset by a test, put alone, or carried on an apply. */
   readonly watermarks: Map<string, WatermarkRecord>;
   readonly targetUnits: Set<string>;
+  /** The `migration.backfill_baseline` snapshot, null until a backfill records one. */
+  baseline: number | null;
   snapshot: SnapshotRecord;
   order: readonly string[];
   deferred: readonly DeferredColumn[];
@@ -306,6 +314,7 @@ function createWorld(): World {
     puts: [],
     watermarks: new Map(),
     targetUnits: new Set(),
+    baseline: null,
     snapshot: snapshotRecord(),
     order: [],
     deferred: [],
@@ -470,6 +479,11 @@ function installFakes(): void {
     });
   });
   vi.mocked(requireSnapshot).mockImplementation(() => Promise.resolve(world.snapshot));
+  vi.mocked(backfillBaseline).mockImplementation(() => Promise.resolve(world.baseline));
+  vi.mocked(recordBackfillBaseline).mockImplementation((_ctx, snapshotSeq) => {
+    world.baseline ??= snapshotSeq;
+    return Promise.resolve(world.baseline);
+  });
   vi.mocked(listLegacyTables).mockImplementation((pool) => {
     if (pool.config?.database !== SNAPSHOT_DB) throw new Error('fake legacy: the backfill lists only the snapshot database');
     return Promise.resolve([...world.tables].flatMap(([name, stored]) => refsOf(name, stored.spec)));
@@ -529,6 +543,19 @@ function encode(table: TableName, row: Row): string {
 function forward(legacyTable: string): WatermarkRecord {
   return { legacyTable, direction: 'forward', snapshotSeq: 0, backupLsn: '1000', finishedAt: FINISHED_AT };
 }
+
+/** Holds the `forward` watermarks of every owner of `tusers` and `tcontent` at `snapshotSeq`, as a feed to it leaves them. */
+function holdFedTo(snapshotSeq: number): void {
+  holdWatermark('identity', { ...forward('tusers'), snapshotSeq });
+  holdWatermark('people', { ...forward('tusers'), snapshotSeq });
+  holdWatermark('strategies-content', { ...forward('tcontent'), snapshotSeq });
+}
+
+const FED_TO_1 = [
+  { owner: 'identity', table: 'tusers', snapshotSeq: 1 },
+  { owner: 'people', table: 'tusers', snapshotSeq: 1 },
+  { owner: 'strategies-content', table: 'tcontent', snapshotSeq: 1 },
+];
 
 const CARRIED = { direction: 'forward', snapshotSeq: 0, backupLsn: '1000', finishedAt: FINISHED_AT };
 
@@ -902,6 +929,21 @@ describe('runBackfill run', () => {
     expect(world.applies).toEqual([]);
   });
 
+  it("records the first backfill's snapshot as the baseline before the dependency order, and a re-run reads it", async () => {
+    world.order = ['tcontent'];
+    seed({ tcontent: [content('C1', 'tenant-a', null)] });
+
+    await runBackfill(contextFor(), { snapshotSeq: 0 });
+    await runBackfill(contextFor(), { snapshotSeq: 0 });
+
+    expect(world.baseline).toBe(0);
+    expect(recordBackfillBaseline).toHaveBeenCalledExactlyOnceWith(expect.anything(), 0);
+    const [recordedAt] = vi.mocked(recordBackfillBaseline).mock.invocationCallOrder;
+    const [orderedAt] = vi.mocked(computeDependencyOrder).mock.invocationCallOrder;
+    expect(recordedAt).toBeLessThan(orderedAt ?? 0);
+    expect(world.applies).toHaveLength(2);
+  });
+
   it.each([
     {
       name: "the watermarks of snapshot 0's backfill",
@@ -913,6 +955,7 @@ describe('runBackfill run', () => {
         { owner: 'people', table: 'tusers', snapshotSeq: 0 },
         { owner: 'strategies-content', table: 'tcontent', snapshotSeq: 0 },
       ],
+      baselineSeq: 0,
       message:
         'Backfill of snapshot 1 refused: owners hold forward watermarks from snapshot 0 for tusers at identity, tusers at people, ' +
         'tcontent at strategies-content; run the feed to move an already-backfilled target forward, or bootstrap the target afresh',
@@ -920,6 +963,7 @@ describe('runBackfill run', () => {
     {
       name: 'an unrecorded and a later sequence beside its own',
       prepare: (): Promise<void> => {
+        world.baseline = 1;
         holdWatermark('identity', { ...forward('tusers'), snapshotSeq: null });
         holdWatermark('people', { ...forward('tusers'), snapshotSeq: 1 });
         holdWatermark('strategies-content', { ...forward('tcontent'), snapshotSeq: 2 });
@@ -929,11 +973,53 @@ describe('runBackfill run', () => {
         { owner: 'identity', table: 'tusers', snapshotSeq: null },
         { owner: 'strategies-content', table: 'tcontent', snapshotSeq: 2 },
       ],
+      baselineSeq: 1,
       message:
         'Backfill of snapshot 1 refused: owners hold forward watermarks from snapshot 2 and no recorded snapshot for tusers at identity, ' +
         'tcontent at strategies-content; run the feed to move an already-backfilled target forward, or bootstrap the target afresh',
     },
-  ])('refuses a backfill of snapshot 1 into owners holding $name before any batch or order', async ({ prepare, held, message }) => {
+    {
+      name: "watermarks a feed moved to it from snapshot 0's baseline",
+      prepare: (): Promise<void> => {
+        world.baseline = 0;
+        holdFedTo(1);
+        return Promise.resolve();
+      },
+      held: FED_TO_1,
+      baselineSeq: 0,
+      message:
+        'Backfill of snapshot 1 refused: the target was backfilled from snapshot 0; ' +
+        'run the feed to move an already-backfilled target forward, or bootstrap the target afresh',
+    },
+    {
+      name: 'watermarks at it with no baseline recorded',
+      prepare: (): Promise<void> => {
+        holdFedTo(1);
+        return Promise.resolve();
+      },
+      held: FED_TO_1,
+      baselineSeq: null,
+      message:
+        'Backfill of snapshot 1 refused: owners hold forward watermarks from snapshot 1 for tusers at identity, tusers at people, ' +
+        'tcontent at strategies-content, but no backfill of snapshot 1 is recorded; ' +
+        'run the feed to move an already-backfilled target forward, or bootstrap the target afresh',
+    },
+    {
+      name: 'no watermark while a concurrent backfill of snapshot 2 records its baseline first',
+      prepare: (): Promise<void> => {
+        vi.mocked(recordBackfillBaseline).mockImplementationOnce(() => {
+          world.baseline = 2;
+          return Promise.resolve(2);
+        });
+        return Promise.resolve();
+      },
+      held: [],
+      baselineSeq: 2,
+      message:
+        'Backfill of snapshot 1 refused: the target was backfilled from snapshot 2; ' +
+        'run the feed to move an already-backfilled target forward, or bootstrap the target afresh',
+    },
+  ])('refuses a backfill of snapshot 1 into owners holding $name before any batch or order', async ({ prepare, held, baselineSeq, message }) => {
     world.order = ['tusers', 'tcontent'];
     seed({ tcontent: [content('C1', 'tenant-a', null)], tusers: USERS });
     await prepare();
@@ -945,7 +1031,8 @@ describe('runBackfill run', () => {
     const caught = await runBackfill(contextFor(), { snapshotSeq: 1 }).catch((reason: unknown) => reason);
 
     expect(caught).toBeInstanceOf(BackfillBaselineError);
-    expect(caught).toMatchObject({ message, held });
+    expect(caught).toMatchObject({ message, held, baselineSeq });
+    expect(world.baseline).toBe(baselineSeq);
     expect(world.applies).toEqual([]);
     expect(world.puts).toEqual([]);
     expect(computeDependencyOrder).not.toHaveBeenCalled();
