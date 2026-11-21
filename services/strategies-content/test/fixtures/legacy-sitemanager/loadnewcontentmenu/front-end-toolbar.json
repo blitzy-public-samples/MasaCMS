@@ -1,0 +1,75 @@
+{
+ "user": "admin",
+ "request": {
+  "siteid": "default",
+  "contentid": "00000000000000000000000000000000001",
+  "parentid": "00000000000000000000000000000000001",
+  "topid": "00000000000000000000000000000000001",
+  "ptype": "Page",
+  "moduleid": "00000000000000000000000000000000000",
+  "contenthistid": "A B&C",
+  "compactDisplay": "true",
+  "frontEndProxyLoc": "http://x"
+ },
+ "model": {
+  "siteId": "default",
+  "contentId": "00000000000000000000000000000000001",
+  "contentHistId": "A B&C",
+  "topId": "00000000000000000000000000000000001",
+  "moduleId": "00000000000000000000000000000000000",
+  "ptype": "Page",
+  "compactDisplay": "true",
+  "frontEndProxyLoc": true,
+  "powerUser": true,
+  "primaryContentTypes": "",
+  "availableSubTypes": "",
+  "subtypes": [
+   {
+    "type": "File",
+    "subtype": "Brochure",
+    "adminonly": 0,
+    "description": "PDF brochure"
+   },
+   {
+    "type": "Folder",
+    "subtype": "Locked",
+    "adminonly": 1,
+    "description": ""
+   },
+   {
+    "type": "Form",
+    "subtype": "Survey",
+    "adminonly": 0,
+    "description": "Survey form"
+   },
+   {
+    "type": "Page",
+    "subtype": "Special",
+    "adminonly": 0,
+    "description": "A \"special\" page"
+   }
+  ],
+  "allowSimpleHtmlForms": false,
+  "allowMultiUpload": true
+ },
+ "iconRows": [
+  {
+   "siteid": "default",
+   "type": "Folder",
+   "subtype": "Locked",
+   "iconclass": ""
+  },
+  {
+   "siteid": "default",
+   "type": "Page",
+   "subtype": "Special",
+   "iconclass": "mi-star"
+  },
+  {
+   "siteid": "default",
+   "type": "File",
+   "subtype": "Brochure",
+   "iconclass": ""
+  }
+ ]
+}

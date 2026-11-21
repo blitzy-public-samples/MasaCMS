@@ -1,0 +1,281 @@
+{
+ "user": "admin",
+ "model": {
+  "event": {
+   "startrow": "1",
+   "locking": "false",
+   "subtype": "",
+   "moduleid": "00000000000000000000000000000000000",
+   "categoryid": "",
+   "page": "1",
+   "report": "mylockedcontent",
+   "siteid": "default",
+   "sortby": "lastupdate",
+   "type": "",
+   "filtered": "false",
+   "sortdirection": "desc",
+   "keywords": "",
+   "tags": ""
+  },
+  "powerUser": true,
+  "customTagGroups": "Color^Size,Shape",
+  "subtypes": [
+   {
+    "type": "File",
+    "subtype": "Brochure",
+    "adminonly": 0,
+    "description": "PDF brochure"
+   },
+   {
+    "type": "Folder",
+    "subtype": "Locked",
+    "adminonly": 1,
+    "description": ""
+   },
+   {
+    "type": "Form",
+    "subtype": "Survey",
+    "adminonly": 0,
+    "description": "Survey form"
+   },
+   {
+    "type": "Page",
+    "subtype": "Special",
+    "adminonly": 0,
+    "description": "A \"special\" page"
+   }
+  ],
+  "totalRecords": 2,
+  "rows": [
+   {
+    "siteid": "default",
+    "contentid": "222A64E4-E65B-887D-E508AF9B84979E0F",
+    "contenthistid": "222A6579-D5A7-D6F6-77B131F7BB3E10B3",
+    "parentid": "00000000000000000000000000000000001",
+    "moduleid": "00000000000000000000000000000000000",
+    "type": "Page",
+    "subtype": "Default",
+    "menutitle": "Locked Page",
+    "filename": "locked-page",
+    "fileid": "",
+    "sortby": "orderno",
+    "sortdirection": "asc",
+    "islocked": 0,
+    "majorversion": 0,
+    "minorversion": 0,
+    "lastupdate": "2026-11-12T14:44:16.673",
+    "lastupdateby": "",
+    "created": "2026-11-12T14:44:16.000",
+    "expires": null,
+    "tags": "",
+    "fileext": "",
+    "filesize": null,
+    "lockid": "AF1841AB-0ED4-34A5-AF2596AB342BA3E6",
+    "locktype": "node",
+    "crumbs": [
+     {
+      "siteid": "default",
+      "contentid": "222A64E4-E65B-887D-E508AF9B84979E0F",
+      "type": "Page",
+      "subtype": "Default",
+      "menutitle": "Locked Page",
+      "restricted": 0,
+      "moduleid": "00000000000000000000000000000000000",
+      "parentarray": [
+       "222A64E4-E65B-887D-E508AF9B84979E0F",
+       "00000000000000000000000000000000001"
+      ]
+     },
+     {
+      "siteid": "default",
+      "contentid": "00000000000000000000000000000000001",
+      "type": "Page",
+      "subtype": "Default",
+      "menutitle": "Home",
+      "restricted": 0,
+      "moduleid": "00000000000000000000000000000000000"
+     }
+    ],
+    "verdict": "editor",
+    "categories": [],
+    "lockedBy": {
+     "lname": "User",
+     "fname": "Admin"
+    }
+   },
+   {
+    "siteid": "default",
+    "contentid": "222A56D5-0413-3807-D3CDEA0B68355AAE",
+    "contenthistid": "222A570D-AD69-EEA1-2A274383E407BC2E",
+    "parentid": "00000000000000000000000000000000001",
+    "moduleid": "00000000000000000000000000000000000",
+    "type": "File",
+    "subtype": "Default",
+    "menutitle": "Logo Image",
+    "filename": "logo-image",
+    "fileid": "222A57C1-C6F9-0F04-4A5C235C085C8117",
+    "sortby": "orderno",
+    "sortdirection": "asc",
+    "islocked": 0,
+    "majorversion": 1,
+    "minorversion": 0,
+    "lastupdate": "2026-11-12T14:44:16.590",
+    "lastupdateby": "",
+    "created": "2026-11-12T14:44:16.000",
+    "expires": null,
+    "tags": "",
+    "fileext": "png",
+    "filesize": 3963,
+    "lockid": "AF1841AB-0ED4-34A5-AF2596AB342BA3E6",
+    "locktype": "",
+    "crumbs": [
+     {
+      "siteid": "default",
+      "contentid": "222A56D5-0413-3807-D3CDEA0B68355AAE",
+      "type": "File",
+      "subtype": "Default",
+      "menutitle": "Logo Image",
+      "restricted": 0,
+      "moduleid": "00000000000000000000000000000000000",
+      "parentarray": [
+       "222A56D5-0413-3807-D3CDEA0B68355AAE",
+       "00000000000000000000000000000000001"
+      ]
+     },
+     {
+      "siteid": "default",
+      "contentid": "00000000000000000000000000000000001",
+      "type": "Page",
+      "subtype": "Default",
+      "menutitle": "Home",
+      "restricted": 0,
+      "moduleid": "00000000000000000000000000000000000"
+     }
+    ],
+    "verdict": "editor",
+    "categories": [],
+    "lockedBy": {
+     "lname": "User",
+     "fname": "Admin"
+    }
+   }
+  ],
+  "reportCounts": {
+   "myapprovals": 0,
+   "mylockedcontent": 2,
+   "myexpires": 0,
+   "mysubmissions": 0,
+   "mydrafts": 0
+  },
+  "categoryCount": 3,
+  "categories": [
+   {
+    "categoryid": "2229FB72-FC29-AE58-FA447A006770F27B",
+    "name": "Cat A",
+    "isopen": 1,
+    "kids": [
+     {
+      "categoryid": "2229FD3F-CCF9-DB0F-BBA4B1FE48B5C874",
+      "name": "Cat B",
+      "isopen": 1,
+      "kids": []
+     }
+    ]
+   },
+   {
+    "categoryid": "2229FE2F-A2AB-4BC0-335562F1956AC3B9",
+    "name": "Closed C",
+    "isopen": 0,
+    "kids": []
+   }
+  ]
+ },
+ "iconRows": [
+  {
+   "siteid": "default",
+   "type": "Folder",
+   "subtype": "Locked",
+   "iconclass": ""
+  },
+  {
+   "siteid": "default",
+   "type": "Page",
+   "subtype": "Special",
+   "iconclass": "mi-star"
+  },
+  {
+   "siteid": "default",
+   "type": "File",
+   "subtype": "Brochure",
+   "iconclass": ""
+  }
+ ],
+ "session": {
+  "userId": "AF1841AB-0ED4-34A5-AF2596AB342BA3E6",
+  "siteId": "default",
+  "memberships": "S2IsPrivate;default,S2IsPrivate,S2,admin;username;default",
+  "dateKeyFormat": "MM/DD/YYYY",
+  "rb": "en_US",
+  "nextN": 20,
+  "openSectionList": "",
+  "flatViewArgs": {
+   "default": {
+    "SUBTYPE": "",
+    "Colortags": "",
+    "MODULEID": "00000000000000000000000000000000000",
+    "CATEGORYID": "",
+    "Sizetags": "",
+    "Shapetags": "round",
+    "PAGE": "1",
+    "REPORT": "",
+    "LOCKID": "",
+    "TAB": 1,
+    "SORTBY": "lastupdate",
+    "Color^Sizetags": "",
+    "TYPE": "",
+    "SORTDIRECTION": "desc",
+    "ASSIGNMENTS": "",
+    "TAGS": "alpha",
+    "KEYWORDS": "",
+    "FILTERED": "Yes"
+   }
+  },
+  "copyContentId": "",
+  "copySiteId": "",
+  "copyAll": false
+ },
+ "siteSettings": {
+  "locking": "none",
+  "hasComments": false,
+  "hasLockableNodes": true,
+  "privateUserPoolId": "default",
+  "extranet": false
+ },
+ "config": {
+  "sortPermission": "",
+  "adminDir": "/admin",
+  "context": ""
+ },
+ "sessionAfter": {
+  "default": {
+   "SUBTYPE": "",
+   "Colortags": "",
+   "MODULEID": "00000000000000000000000000000000000",
+   "CATEGORYID": "",
+   "Sizetags": "",
+   "Shapetags": "",
+   "PAGE": "1",
+   "REPORT": "mylockedcontent",
+   "LOCKID": "",
+   "TAB": 1,
+   "SORTBY": "lastupdate",
+   "Color^Sizetags": "",
+   "TYPE": "",
+   "SORTDIRECTION": "desc",
+   "ASSIGNMENTS": "",
+   "TAGS": "",
+   "KEYWORDS": "",
+   "FILTERED": "No"
+  }
+ }
+}

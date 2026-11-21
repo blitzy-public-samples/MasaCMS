@@ -1,0 +1,50 @@
+{
+  "seed": 20260601,
+  "businessDate": "2026-06-30",
+  "sites": {
+    "tenant-a": {
+      "site": "Tenant A",
+      "programId": 1,
+      "pools": {
+        "publicUserPoolID": "umbrella",
+        "privateUserPoolID": "tenant-a",
+        "categoryPoolID": "umbrella",
+        "filePoolID": "umbrella",
+        "displayPoolID": "umbrella"
+      },
+      "counts": {
+        "systemUsers": 1,
+        "timesheetDays": 1
+      }
+    }
+  },
+  "reserved": {
+    "rehearsal": {
+      "site": "tenant-a",
+      "persons": [
+        "99999999-0000-0000-0000000000000001",
+        "99999999-0000-0000-0000000000000002",
+        "99999999-0000-0000-0000000000000003",
+        "99999999-0000-0000-0000000000000004",
+        "99999999-0000-0000-0000000000000005",
+        "99999999-0000-0000-0000000000000006",
+        "99999999-0000-0000-0000000000000007",
+        "99999999-0000-0000-0000000000000008",
+        "99999999-0000-0000-0000000000000009",
+        "99999999-0000-0000-0000000000000010"
+      ],
+      "usernames": [
+        "rehearsal-01",
+        "rehearsal-02",
+        "rehearsal-03",
+        "rehearsal-04",
+        "rehearsal-05",
+        "rehearsal-06",
+        "rehearsal-07",
+        "rehearsal-08",
+        "rehearsal-09",
+        "rehearsal-10"
+      ]
+    }
+  }
+}

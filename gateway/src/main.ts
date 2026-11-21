@@ -1,0 +1,26 @@
+// Gateway process entry: tracing must start before Fastify, pg and undici load, so the service-kit and the app are imported dynamically.
+import { startTracing } from '@opt2/platform/tracing';
+
+const SERVICE = 'gateway';
+const VERSION = '1.0.0';
+
+let app: Awaited<ReturnType<typeof import('./app.js').buildApp>> | undefined;
+try {
+  await startTracing({ serviceName: SERVICE, version: VERSION });
+  const { loadEnv } = await import('@opt2/platform/service-kit');
+  const { buildApp, gatewayEnvSchema } = await import('./app.js');
+  const env = loadEnv(gatewayEnvSchema);
+  app = await buildApp({ env });
+  await app.listen({ port: env.PORT, host: '0.0.0.0' });
+} catch (err) {
+  process.exitCode = 1;
+  // The logging barrel loads Fastify, so it is imported only once tracing has started or failed.
+  const { logStartupFailure, serializeError } = await import('@opt2/platform/logging');
+  if (app === undefined) {
+    await logStartupFailure(err, { service: SERVICE, version: VERSION });
+  } else {
+    app.log.error({ error: serializeError(err) }, 'start-up failed');
+    // A built app holds its pool and background loops open, so the process would never exit without the kit's shutdown.
+    await app.opt2.shutdown();
+  }
+}

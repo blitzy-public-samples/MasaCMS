@@ -1,0 +1,137 @@
+name: services
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    if: github.event_name == 'pull_request' || github.ref_name == github.event.repository.default_branch
+    strategy:
+      fail-fast: false
+      matrix:
+        package:
+          - platform
+          - gateway
+          - web
+          - migration
+          - harness
+          - legacy-fixtures/seed
+          - services/identity
+          - services/people
+          - services/programs-sites
+          - services/strategies-content
+          - services/communications
+          - services/reporting
+          - services/surveys
+          - services/timesheets
+          - services/finance
+          - services/e-signature
+          - services/stub
+    services:
+      postgres:
+        image: postgres:16.15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: opt2_test
+        ports:
+          - '5432:5432'
+        options: >-
+          --health-cmd "pg_isready -U postgres -d opt2_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      PG_HOST: localhost
+      PG_PORT: '5432'
+      PG_USER: postgres
+      PG_PASSWORD: postgres
+      PG_DATABASE: opt2_test
+      PUBSUB_EMULATOR_HOST: localhost:8085
+      GOOGLE_CLOUD_PROJECT: opt2-ci
+      OPT2_TEST_REQUIRE_PG: '1'
+      OPT2_TEST_REQUIRE_PUBSUB: '1'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+      - name: Start Pub/Sub emulator
+        run: >-
+          docker run -d --name pubsub-emulator -p 8085:8085
+          gcr.io/google.com/cloudsdktool/google-cloud-cli:591.0.0-emulators
+          gcloud beta emulators pubsub start --host-port=0.0.0.0:8085 --project=opt2-ci
+      - name: Wait for Pub/Sub emulator
+        run: |
+          deadline=$((SECONDS + 120))
+          while remaining=$((deadline - SECONDS)); ((remaining > 0)); do
+            if curl -sf --connect-timeout 2 --max-time $((remaining < 5 ? remaining : 5)) http://localhost:8085 >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::Pub/Sub emulator not ready"
+          docker logs pubsub-emulator
+          exit 1
+      - name: Set up Node
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 22.23.4
+      - name: Install npm
+        run: npm install -g npm@11.21.0
+      - name: Verify toolchain
+        run: |
+          test "$(node -v)" = "v22.23.4"
+          test "$(npm -v)" = "11.21.0"
+      - name: Install
+        working-directory: ${{ matrix.package }}
+        run: npm ci
+      - name: Lint
+        working-directory: ${{ matrix.package }}
+        run: npm run lint --if-present
+      - name: Build
+        working-directory: ${{ matrix.package }}
+        run: npm run build
+      - name: Typecheck
+        working-directory: ${{ matrix.package }}
+        run: npm run typecheck --if-present
+      - name: Test
+        working-directory: ${{ matrix.package }}
+        run: npm test
+
+  docker:
+    runs-on: ubuntu-24.04
+    if: github.event_name == 'pull_request' || github.ref_name == github.event.repository.default_branch
+    strategy:
+      fail-fast: false
+      matrix:
+        package:
+          - gateway
+          - web
+          - migration
+          - services/identity
+          - services/people
+          - services/programs-sites
+          - services/strategies-content
+          - services/communications
+          - services/reporting
+          - services/surveys
+          - services/timesheets
+          - services/finance
+          - services/e-signature
+          - services/stub
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+      # Context is the clean repository root: each Dockerfile copies platform/ and sibling contracts.
+      - name: Build image
+        env:
+          PKG: ${{ matrix.package }}
+        run: docker build -f "$PKG/Dockerfile" -t "opt2-ci/$(echo "$PKG" | tr '/' '-'):ci" .

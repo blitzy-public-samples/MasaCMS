@@ -1,0 +1,60 @@
+{
+  "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
+  "recordedBy": "generating run",
+  "runTotal": {
+    "start": null,
+    "end": null
+  },
+  "services": {
+    "identity": {
+      "start": null,
+      "end": null,
+      "folder": "services/identity"
+    },
+    "people": {
+      "start": null,
+      "end": null,
+      "folder": "services/people"
+    },
+    "programs-sites": {
+      "start": null,
+      "end": null,
+      "folder": "services/programs-sites"
+    },
+    "strategies-content": {
+      "start": null,
+      "end": null,
+      "folder": "services/strategies-content"
+    },
+    "communications": {
+      "start": null,
+      "end": null,
+      "folder": "services/communications"
+    },
+    "reporting": {
+      "start": null,
+      "end": null,
+      "folder": "services/reporting"
+    },
+    "surveys": {
+      "start": null,
+      "end": null,
+      "folder": "services/surveys"
+    },
+    "timesheets": {
+      "start": null,
+      "end": null,
+      "folder": "services/timesheets"
+    },
+    "finance": {
+      "start": null,
+      "end": null,
+      "folder": "services/finance"
+    },
+    "e-signature": {
+      "start": null,
+      "end": null,
+      "folder": "services/e-signature"
+    }
+  }
+}

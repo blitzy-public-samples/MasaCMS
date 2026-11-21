@@ -1,0 +1,234 @@
+{
+  "numTotalTestSuites": 5,
+  "numPassedTestSuites": 4,
+  "numFailedTestSuites": 1,
+  "numPendingTestSuites": 0,
+  "numTotalTests": 14,
+  "numPassedTests": 13,
+  "numFailedTests": 1,
+  "numPendingTests": 0,
+  "numTodoTests": 0,
+  "snapshot": {
+    "added": 0,
+    "failure": false,
+    "filesAdded": 0,
+    "filesRemoved": 0,
+    "filesRemovedList": [],
+    "filesUnmatched": 0,
+    "filesUpdated": 0,
+    "matched": 0,
+    "total": 0,
+    "unchecked": 0,
+    "uncheckedKeysByFile": [],
+    "unmatched": 0,
+    "updated": 0,
+    "didUpdate": false
+  },
+  "startTime": 1780214400000,
+  "success": false,
+  "testResults": [
+    {
+      "assertionResults": [
+        {
+          "ancestorTitles": [
+            "people isolation"
+          ],
+          "fullName": "people isolation tenant B sees only its own rows in person",
+          "status": "passed",
+          "title": "tenant B sees only its own rows in person",
+          "duration": 12,
+          "failureMessages": [],
+          "meta": {},
+          "tags": [],
+          "benchmarks": []
+        },
+        {
+          "ancestorTitles": [
+            "people isolation"
+          ],
+          "fullName": "people isolation tenant B cannot insert, move into, update or delete rows of tenant A in person",
+          "status": "passed",
+          "title": "tenant B cannot insert, move into, update or delete rows of tenant A in person",
+          "duration": 18,
+          "failureMessages": [],
+          "meta": {},
+          "tags": [],
+          "benchmarks": []
+        },
+        {
+          "ancestorTitles": [
+            "people isolation"
+          ],
+          "fullName": "people isolation a pooled connection reused after a tenant A transaction sees no rows of person and cannot write it",
+          "status": "passed",
+          "title": "a pooled connection reused after a tenant A transaction sees no rows of person and cannot write it",
+          "duration": 9,
+          "failureMessages": [],
+          "meta": {},
+          "tags": [],
+          "benchmarks": []
+        },
+        {
+          "ancestorTitles": [
+            "people isolation"
+          ],
+          "fullName": "people isolation every tenant table has forced RLS with USING and WITH CHECK, and no schema role can bypass it",
+          "status": "passed",
+          "title": "every tenant table has forced RLS with USING and WITH CHECK, and no schema role can bypass it",
+          "duration": 7,
+          "failureMessages": [],
+          "meta": {},
+          "tags": [],
+          "benchmarks": []
+        },
+        {
+          "ancestorTitles": [
+            "people isolation"
+          ],
+          "fullName": "people isolation an event without a tenant on people.programs-sites.site.changed.v1 is acked, dead-lettered as missing-tenant and changes no rows",
+          "status": "passed",
+          "title": "an event without a tenant on people.programs-sites.site.changed.v1 is acked, dead-lettered as missing-tenant and changes no rows",
+          "duration": 6,
+          "failureMessages": [],
+          "meta": {},
+          "tags": [],
+          "benchmarks": []
+        },
+        {
+          "ancestorTitles": [
+            "people isolation"
+          ],
+          "fullName": "people isolation a people.person.archived.v1 fan-out from umbrella reaches tenant A and tenant umbrella once each and never tenant B",
+          "status": "passed",
+          "title": "a people.person.archived.v1 fan-out from umbrella reaches tenant A and tenant umbrella once each and never tenant B",
+          "duration": 11,
+          "failureMessages": [],
+          "meta": {},
+          "tags": [],
+          "benchmarks": []
+        },
+        {
+          "ancestorTitles": [
+            "people isolation"
+          ],
+          "fullName": "people isolation a tenant A survey-response grant to tenant B admits tenant B and not tenant umbrella",
+          "status": "passed",
+          "title": "a tenant A survey-response grant to tenant B admits tenant B and not tenant umbrella",
+          "duration": 5,
+          "failureMessages": [],
+          "meta": {},
+          "tags": [],
+          "benchmarks": []
+        },
+        {
+          "ancestorTitles": [
+            "people isolation"
+          ],
+          "fullName": "people isolation identity.group.changed.v1 from tenant A changes no group projection rows of tenant B",
+          "status": "passed",
+          "title": "identity.group.changed.v1 from tenant A changes no group projection rows of tenant B",
+          "duration": 8,
+          "failureMessages": [],
+          "meta": {},
+          "tags": [],
+          "benchmarks": []
+        }
+      ],
+      "startTime": 1780214400120,
+      "endTime": 1780214400310,
+      "status": "passed",
+      "message": "",
+      "name": "/workspace/opt2/services/people/test/isolation/tenant-isolation.test.ts"
+    },
+    {
+      "assertionResults": [
+        {
+          "ancestorTitles": [],
+          "fullName": "[events:duplicateDelivery] duplicate delivery causes one effect",
+          "status": "passed",
+          "title": "[events:duplicateDelivery] duplicate delivery causes one effect",
+          "duration": 4,
+          "failureMessages": [],
+          "meta": {},
+          "tags": [],
+          "benchmarks": []
+        },
+        {
+          "ancestorTitles": [],
+          "fullName": "[events:outOfOrderProcess] no process effect is lost out of order",
+          "status": "failed",
+          "title": "[events:outOfOrderProcess] no process effect is lost out of order",
+          "duration": 6,
+          "failureMessages": [
+            "AssertionError: expected 1 to be 2 // Object.is equality"
+          ],
+          "meta": {},
+          "tags": [],
+          "benchmarks": []
+        },
+        {
+          "ancestorTitles": [],
+          "fullName": "[events:unpublishedRowSwept] a committed unpublished outbox row is published by the next sweep",
+          "status": "passed",
+          "title": "[events:unpublishedRowSwept] a committed unpublished outbox row is published by the next sweep",
+          "duration": 5,
+          "failureMessages": [],
+          "meta": {},
+          "tags": [],
+          "benchmarks": []
+        },
+        {
+          "ancestorTitles": [],
+          "fullName": "[events:fanoutRedelivery] interrupted fan-out redelivered applies once per destination",
+          "status": "passed",
+          "title": "[events:fanoutRedelivery] interrupted fan-out redelivered applies once per destination",
+          "duration": 7,
+          "failureMessages": [],
+          "meta": {},
+          "tags": [],
+          "benchmarks": []
+        }
+      ],
+      "startTime": 1780214400125,
+      "endTime": 1780214400190,
+      "status": "failed",
+      "message": "",
+      "name": "/workspace/opt2/services/people/test/events/archive-events.test.ts"
+    },
+    {
+      "assertionResults": [
+        {
+          "ancestorTitles": [
+            "person"
+          ],
+          "fullName": "person joins first and last name into the display name",
+          "status": "passed",
+          "title": "joins first and last name into the display name",
+          "duration": 2,
+          "failureMessages": [],
+          "meta": {},
+          "tags": [],
+          "benchmarks": []
+        },
+        {
+          "ancestorTitles": [
+            "person"
+          ],
+          "fullName": "person keeps an empty email as an empty string",
+          "status": "passed",
+          "title": "keeps an empty email as an empty string",
+          "duration": 1,
+          "failureMessages": [],
+          "meta": {},
+          "tags": [],
+          "benchmarks": []
+        }
+      ],
+      "startTime": 1780214400118,
+      "endTime": 1780214400130,
+      "status": "passed",
+      "message": "",
+      "name": "/workspace/opt2/services/people/test/unit/person.test.ts"
+    }
+  ]
+}

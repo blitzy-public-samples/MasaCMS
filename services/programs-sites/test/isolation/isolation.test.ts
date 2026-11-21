@@ -1,0 +1,588 @@
+/** Tenant isolation of the programs-sites schema, its site routes and its site registry consumer against PostgreSQL. */
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { parse } from 'yaml';
+import { CONSUMER_AGGREGATE_VERSION_TABLE, INBOX_TABLE, type EventEnvelope } from '@opt2/platform/events';
+import {
+  PLATFORM_TABLE_GROUPS,
+  TENANT_A,
+  TENANT_B,
+  TENANT_LIST,
+  TENANT_UMBRELLA,
+  assertResponseMatchesOpenApi,
+  createCapturingPublisher,
+  createThrowawaySchema,
+  crossTenantPairs,
+  defineIsolationSuite,
+  expectPlatformTables,
+  fixtureForTenant,
+  pgAvailable,
+  pushTo,
+  registryPayloads,
+  seedRegistry,
+  testEnvelope,
+  withoutTenant,
+  type IsolationSuiteOptions,
+  type PlatformTableGroup,
+  type TenantFixture,
+  type ThrowawaySchema,
+} from '@opt2/platform/testing';
+import { SITE_CHANGED_SUBSCRIPTION } from '../../src/events/consumers.js';
+import { OWNED_TABLES, SITE, SITE_MONITOR_STATE, UNITS } from '../../src/repo/tables.js';
+import { buildTestApp, headersFor } from '../helpers/app.js';
+
+type Tx = Parameters<IsolationSuiteOptions['writeAs']>[0];
+type Row = Record<string, unknown>;
+type ColumnType = (typeof SITE.columns)[number]['type'];
+/** NOT NULL columns without a default, per table, mapped to their `char(n)` length or null. */
+type RequiredColumns = Map<string, Map<string, number | null>>;
+
+const MIGRATIONS_DIR = fileURLToPath(new URL('../../db/migrations/', import.meta.url));
+const SITE_CHANGED_TOPIC = 'programs-sites.site.changed.v1';
+const RLS_VIOLATION = '42501';
+const TIMESTAMP = '2026-06-30 12:00:00.000';
+const FORM = { 'content-type': 'application/x-www-form-urlencoded' };
+const ALL_PLATFORM_GROUPS = Object.keys(PLATFORM_TABLE_GROUPS) as PlatformTableGroup[];
+const DEFINITIONS = new Map([...OWNED_TABLES, SITE_MONITOR_STATE].map((definition) => [definition.table, definition]));
+const MONITOR = SITE_MONITOR_STATE.table;
+const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
+
+const REQUIRED_COLUMNS_SQL = `
+SELECT c.relname::text AS table, a.attname::text AS column,
+       CASE WHEN a.atttypid = 'bpchar'::regtype THEN a.atttypmod - 4 END AS length
+  FROM pg_attribute a
+  JOIN pg_class c ON c.oid = a.attrelid
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+ WHERE n.nspname = $1 AND c.relkind = 'r' AND a.attnum > 0 AND NOT a.attisdropped AND a.attnotnull AND NOT a.atthasdef`;
+
+const available = await pgAvailable();
+
+let schema: ThrowawaySchema | undefined;
+let required: RequiredColumns = new Map();
+/** Last site.changed version built for a push; seedRegistry stores version 1. */
+let siteVersion = 1;
+/** The app's publisher, created up front because the shared suite's event case takes it at registration. */
+const publisher = createCapturingPublisher();
+
+/** The schema the outer beforeAll created; throws when its creation failed. */
+function created(): ThrowawaySchema {
+  if (schema === undefined) {
+    throw new Error('The throwaway programs-sites schema was not created; see the beforeAll failure');
+  }
+  return schema;
+}
+
+/** Reads the NOT NULL columns without a default of every table of `db`. */
+async function requiredColumns(db: ThrowawaySchema): Promise<RequiredColumns> {
+  const { rows } = await db.app.withMetadata((tx) =>
+    tx.query<{ table: string; column: string; length: number | null }>(REQUIRED_COLUMNS_SQL, [db.schema]),
+  );
+  const tables: RequiredColumns = new Map();
+  for (const { table, column, length } of rows) {
+    tables.set(table, (tables.get(table) ?? new Map<string, number | null>()).set(column, length));
+  }
+  return tables;
+}
+
+/** SHA-256 hex digest of `seed`. */
+function digest(seed: string): string {
+  return createHash('sha256').update(seed).digest('hex');
+}
+
+/** A 35-character CF-format id derived from `seed`. */
+function cfId(seed: string): string {
+  const hex = digest(seed).toUpperCase();
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 32)}`;
+}
+
+/** A uuid-formatted value derived from `seed`. */
+function uuidOf(seed: string): string {
+  const hex = digest(seed);
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+}
+
+/** Rows derived from a seed of the platform tables a site.changed delivery writes in its tenant: receipt and ordering progress. */
+const CONSUMER_ROWS: ReadonlyMap<string, (seed: string) => Row> = new Map<string, (seed: string) => Row>([
+  [INBOX_TABLE, (seed) => ({ event_id: uuidOf(seed), subscription: SITE_CHANGED_SUBSCRIPTION, status: 'applied' })],
+  [CONSUMER_AGGREGATE_VERSION_TABLE, (seed) => ({ subscription: SITE_CHANGED_SUBSCRIPTION, aggregate_type: 'site', aggregate_id: cfId(seed), last_version: 1 })],
+]);
+/** Tables of the shared suite, so a delivery's effect in another tenant shows in its counts. */
+const SUITE_TABLES: readonly string[] = [...OWNED_TABLES.map(({ table }) => table), ...CONSUMER_ROWS.keys()];
+
+/** A value of canonical type `type` derived from `seed`; text exactly fills a `char(length)` column. */
+function valueFor(type: ColumnType, seed: string, length: number | null): unknown {
+  switch (type) {
+    case 's':
+      return length === null || length === 35 ? cfId(seed) : digest(seed).repeat(Math.ceil(length / 64)).slice(0, length);
+    case 'i':
+      return Number.parseInt(digest(seed).slice(0, 7), 16) + 1;
+    case 'f':
+      return 1.5;
+    case 'd':
+      return '1.0000';
+    case 't':
+      return TIMESTAMP;
+    case 'b':
+      return Buffer.from(digest(seed), 'hex');
+  }
+}
+
+/** A `table` row of `tenant` with only its NOT NULL columns without a default set; `variant` keeps rows of one tenant distinct. */
+function rowOf(table: string, tenant: TenantFixture, variant: string): Row {
+  const consumerRow = CONSUMER_ROWS.get(table);
+  if (consumerRow !== undefined) return consumerRow(`${tenant.key}:${table}:${variant}`);
+  const definition = DEFINITIONS.get(table);
+  const columns = required.get(table);
+  if (definition === undefined || columns === undefined) {
+    throw new TypeError(`programs-sites has no table ${table} in schema ${created().schema}`);
+  }
+  const row: Row = {};
+  for (const { name, type } of definition.columns) {
+    if (name !== 'tenant_id' && columns.has(name)) {
+      row[name] = valueFor(type, `${tenant.key}:${table}:${name}:${variant}`, columns.get(name) ?? null);
+    }
+  }
+  return row;
+}
+
+/** The parameterised INSERT of `row` into `<schemaName>.<table>`. */
+function insertOf(schemaName: string, table: string, row: Row): { text: string; values: unknown[] } {
+  const names = Object.keys(row);
+  const columns = names.map((name) => `"${name}"`).join(', ');
+  const placeholders = names.map((_, index) => `$${String(index + 1)}`).join(', ');
+  return { text: `INSERT INTO "${schemaName}"."${table}" (${columns}) VALUES (${placeholders})`, values: Object.values(row) };
+}
+
+/** Inserts `row` into `table` under the tenant of `tx`. */
+async function insertRow(tx: Tx, table: string, row: Row): Promise<void> {
+  const { text, values } = insertOf(tx.schema, table, { tenant_id: tx.tenantId, ...row });
+  await tx.query(text, values);
+}
+
+/** Writes the seeded row of `table` for `tenant`. */
+async function writeAs(tx: Tx, table: string, tenant: TenantFixture): Promise<void> {
+  await insertRow(tx, table, rowOf(table, tenant, 'seed'));
+}
+
+/** Every row of `table` visible in `tx`. */
+async function readAs(tx: Tx, table: string): Promise<unknown[]> {
+  return (await tx.query(`SELECT * FROM "${tx.schema}"."${table}"`)).rows;
+}
+
+/** Number of rows of `table` visible in `tx` that match `where`. */
+async function countIn(tx: Pick<Tx, 'query' | 'schema'>, table: string, where = 'true', values: unknown[] = []): Promise<number> {
+  const { rows } = await tx.query<{ n: number }>(`SELECT count(*)::int AS n FROM "${tx.schema}"."${table}" WHERE ${where}`, values);
+  return rows[0]?.n ?? 0;
+}
+
+/** The SQLSTATE `work` fails with, or 'no error'. */
+async function sqlStateOf(work: Promise<unknown>): Promise<string> {
+  try {
+    await work;
+    return 'no error';
+  } catch (err) {
+    const code = typeof err === 'object' && err !== null ? (err as { code?: unknown }).code : undefined;
+    return typeof code === 'string' ? code : `non-SQL error: ${String(err)}`;
+  }
+}
+
+/** The SQLSTATE of a statement run in `tx` inside a savepoint that undoes it and keeps `tx` usable. */
+async function sqlStateIn(tx: Tx, text: string, values: unknown[]): Promise<string> {
+  await tx.query('SAVEPOINT isolation_case');
+  const state = await sqlStateOf(tx.query(text, values));
+  await tx.query('ROLLBACK TO SAVEPOINT isolation_case');
+  return state;
+}
+
+/** A fixture's own site row with every integer setting 0, as backfilled Masa defaults. */
+function fixtureSiteRow(fixture: TenantFixture): Row {
+  const integers = SITE.columns.filter(({ type }) => type === 'i').map(({ name }) => [name, 0] as const);
+  return {
+    ...rowOf(SITE.table, fixture, 'app'),
+    ...Object.fromEntries(integers),
+    siteid: fixture.siteId,
+    site: `Isolation site ${fixture.key}`,
+  };
+}
+
+/** Builds the programs-sites app over the throwaway schema, publishing through `publisher`. */
+function startApp(db: ThrowawaySchema['app']) {
+  return buildTestApp({ db, publisher });
+}
+
+type AppContext = Awaited<ReturnType<typeof startApp>>;
+
+let ctx: AppContext | undefined;
+
+/** The app the outer beforeAll built; throws when building it failed. */
+function service(): AppContext {
+  if (ctx === undefined) {
+    throw new Error('The programs-sites app was not built; see the beforeAll failure');
+  }
+  return ctx;
+}
+
+/** `tenantId`'s fixture registry state as the next site.changed version, so the consumer applies it rather than ignoring it as stale. */
+function siteChanged(tenantId: string): EventEnvelope {
+  const fixture = fixtureForTenant(tenantId);
+  const payload = registryPayloads().find(({ siteId }) => siteId === fixture?.siteId);
+  if (fixture === undefined || payload === undefined) {
+    throw new TypeError(`The fixture registry has no tenant ${tenantId}`);
+  }
+  siteVersion += 1;
+  return testEnvelope({ topic: SITE_CHANGED_TOPIC, tenantId, aggregateType: 'site', aggregateId: fixture.siteId, aggregateVersion: siteVersion, payload });
+}
+
+describe.skipIf(!available)('programs-sites tenant isolation', () => {
+  beforeAll(async () => {
+    schema = await createThrowawaySchema({ service: 'programs-sites', migrationsDir: MIGRATIONS_DIR });
+    await seedRegistry(schema.app);
+    required = await requiredColumns(schema);
+    ctx = await startApp(schema.app);
+  });
+
+  afterAll(async () => {
+    try {
+      await ctx?.app.close();
+    } finally {
+      await schema?.drop();
+    }
+  });
+
+  it('creates the outbox, event, migration-kit, task and tenancy tables with RLS forced on the tenant-owned ones', async () => {
+    await expectPlatformTables(created(), { groups: ALL_PLATFORM_GROUPS });
+  });
+
+  // The shared suite also asserts the catalog: forced RLS with USING and WITH CHECK on every tenant table, sitemonitor_state
+  // included, and no schema role that is or inherits SUPERUSER or BYPASSRLS; plus the site.changed tenantless and tenant A delivery cases.
+  defineIsolationSuite(
+    { describe, it, expect, beforeAll },
+    {
+      db: () => schema,
+      name: 'programs-sites owned tables',
+      tables: SUITE_TABLES,
+      writeAs,
+      readAs,
+      rowFor: (table, tenant) => rowOf(table, tenant, 'probe'),
+      events: [{ app: () => ctx?.app, subscription: SITE_CHANGED_SUBSCRIPTION, envelopeFor: siteChanged, publisher }],
+    },
+  );
+
+  // sitemonitor_state holds one row per tenant (CHECK id = 1), so the shared suite's fresh-row insert beside a seeded
+  // row cannot succeed; its cases run here against the seeded row itself.
+  describe(`${MONITOR}, one row per tenant`, () => {
+    beforeAll(async () => {
+      for (const tenant of TENANT_LIST) {
+        await created().app.withTenant(tenant.tenantId, (tx) => writeAs(tx, MONITOR, tenant));
+      }
+    });
+
+    for (const tenant of TENANT_LIST) {
+      it(`tenant ${tenant.key} sees only its own ${MONITOR} row`, async () => {
+        const rows = await created().app.withTenant(tenant.tenantId, (tx) => readAs(tx, MONITOR));
+        expect(rows.map((row) => (row as Row).tenant_id)).toEqual([tenant.tenantId]);
+      });
+    }
+
+    for (const { writer, reader } of crossTenantPairs()) {
+      it(`tenant ${writer.key} cannot insert, move into, update or delete the ${MONITOR} row of tenant ${reader.key}`, async () => {
+        await created().app.withTenant(writer.tenantId, async (tx) => {
+          const target = `"${tx.schema}"."${MONITOR}"`;
+          const foreign = insertOf(tx.schema, MONITOR, { tenant_id: reader.tenantId, ...rowOf(MONITOR, reader, 'probe') });
+          const move = `UPDATE ${target} SET tenant_id = $1 WHERE tenant_id = $2`;
+          const touch = `UPDATE ${target} SET last_monitored = last_monitored WHERE tenant_id = $1`;
+          expect(await sqlStateIn(tx, foreign.text, foreign.values), 'INSERT of a foreign row').toBe(RLS_VIOLATION);
+          expect(await sqlStateIn(tx, move, [reader.tenantId, writer.tenantId]), 'UPDATE moving the own row').toBe(RLS_VIOLATION);
+          // Asserted inside the transaction, so an UPDATE or DELETE that did reach a foreign row is rolled back.
+          const own = await tx.query(touch, [writer.tenantId]);
+          const updated = await tx.query(touch, [reader.tenantId]);
+          const deleted = await tx.query(`DELETE FROM ${target} WHERE tenant_id = $1`, [reader.tenantId]);
+          expect([own.rowCount, updated.rowCount, deleted.rowCount], 'own, foreign updated, foreign deleted').toEqual([1, 0, 0]);
+        });
+      });
+    }
+
+    it(`a pooled connection reused after a tenant A transaction sees no ${MONITOR} row and cannot write it`, async () => {
+      const db = created();
+      const target = `"${db.schema}"."${MONITOR}"`;
+      const insert = insertOf(db.schema, MONITOR, { tenant_id: TENANT_A.tenantId, ...rowOf(MONITOR, TENANT_A, 'probe') });
+      const count = `SELECT pg_backend_pid() AS pid, (SELECT count(*)::int FROM ${target}) AS n`;
+      const pool = db.connect('app', { max: 1 });
+      try {
+        const client = await pool.connect();
+        try {
+          await client.query('BEGIN');
+          await client.query("SELECT set_config('app.tenant_id', $1, true)", [TENANT_A.tenantId]);
+          const inside = (await client.query<{ pid: number; n: number }>(count)).rows[0];
+          await client.query('COMMIT');
+          const after = (await client.query<{ pid: number; n: number }>(count)).rows[0];
+          const write = await sqlStateOf(client.query(insert.text, insert.values));
+          expect({ inside: inside?.n, after, write }).toEqual({ inside: 1, after: { pid: inside?.pid, n: 0 }, write: RLS_VIOLATION });
+        } finally {
+          client.release();
+        }
+      } finally {
+        await pool.end();
+      }
+    });
+  });
+
+  describe('site access through the app', () => {
+    /** Injects a request carrying a tenant A token of the ROLE_SET subject `subject`, with `form` as its urlencoded body. */
+    async function inject(method: 'GET' | 'POST', url: string, subject: string, form?: Record<string, string>) {
+      const headers = await headersFor(subject, { site: TENANT_A.siteId });
+      if (form === undefined) {
+        return service().app.inject({ method, url, headers });
+      }
+      return service().app.inject({ method, url, headers: { ...headers, ...FORM }, payload: new URLSearchParams(form).toString() });
+    }
+
+    /** Site ids stored under `tenant`. */
+    async function storedSiteIds(tenant: TenantFixture): Promise<string[]> {
+      const rows = await created().app.withTenant(tenant.tenantId, (tx) => readAs(tx, SITE.table));
+      return rows.map((row) => String((row as Row).siteid));
+    }
+
+    /** Changelog and outbox rows stored under `tenant`. */
+    function auditRows(tenant: TenantFixture): Promise<{ changelog: number; outbox: number }> {
+      return created().app.withTenant(tenant.tenantId, async (tx) => ({
+        changelog: await countIn(tx, 'changelog'),
+        outbox: await countIn(tx, 'outbox'),
+      }));
+    }
+
+    /** GETs `path`'s user pool sites with a `token` site token of ROLE_SET subject `subject`, checked against the contract. */
+    async function getUserPoolSites(subject: string, token: TenantFixture, path: TenantFixture) {
+      const url = `/v1/sites/${path.siteId}/user-pool-sites`;
+      const res = await service().app.inject({ method: 'GET', url, headers: await headersFor(subject, { site: token.siteId }) });
+      const { statusCode: status, body } = res;
+      assertResponseMatchesOpenApi(OPENAPI, { method: 'GET', path: url, status, contentType: res.headers['content-type'], body });
+      return res;
+    }
+
+    /** The layout settings of `fixture`'s site as its own site-admin reads them in its own tenant. */
+    async function ownShellSite(fixture: TenantFixture): Promise<unknown> {
+      const headers = await headersFor('site-admin', { site: fixture.siteId });
+      const res = await service().app.inject({ method: 'GET', url: `/v1/sites/${fixture.siteId}/shell`, headers });
+      expect(res.statusCode).toBe(200);
+      return res.json<{ site: unknown }>().site;
+    }
+
+    beforeAll(async () => {
+      const db = created().app;
+      // Opened after the build, whose onReady inserts every missing gate as `legacy`.
+      await db.withMetadata((tx) =>
+        tx.query(
+          `INSERT INTO "${tx.schema}".unit_gate (unit, state, holder_id, phase) SELECT unnest($1::text[]), 'open', NULL, 'quiet'
+           ON CONFLICT (unit) DO UPDATE SET state = 'open', holder_id = NULL, phase = 'quiet'`,
+          [[...UNITS]],
+        ),
+      );
+    });
+
+    // Every case starts from each fixture's seeded site row, row_version 0.
+    beforeEach(async () => {
+      const db = created().app;
+      for (const fixture of TENANT_LIST) {
+        await db.withTenant(fixture.tenantId, async (tx) => {
+          await tx.query(`DELETE FROM "${tx.schema}"."${SITE.table}" WHERE siteid = $1`, [fixture.siteId]);
+          await insertRow(tx, SITE.table, fixtureSiteRow(fixture));
+        });
+      }
+    });
+
+    it('lists the site of every registered tenant for an s2 token', async () => {
+      const res = await inject('GET', '/v1/sites', 's2');
+      expect(res.statusCode).toBe(200);
+      const listed = res
+        .json<Array<{ siteid: string }>>()
+        .map(({ siteid }) => siteid)
+        .sort();
+      const stored: string[] = [];
+      for (const tenant of TENANT_LIST) {
+        stored.push(...(await storedSiteIds(tenant)));
+      }
+      expect(listed).toEqual(expect.arrayContaining([TENANT_A.siteId, TENANT_B.siteId, TENANT_UMBRELLA.siteId]));
+      expect(listed).toEqual(stored.sort());
+    });
+
+    it('refuses the site list to a tenant A site-admin', async () => {
+      const res = await inject('GET', '/v1/sites', 'site-admin');
+      expect(res.statusCode).toBe(403);
+    });
+
+    it("pages the sites of every registered tenant for an s2 token, each page holding its tenants' rows of the full list", async () => {
+      type Item = { siteid: string };
+      const pageAfter = async (after: string | null): Promise<{ items: Item[]; next: string | null }> => {
+        const res = await inject('GET', `/v2/sites?limit=2${after === null ? '' : `&after=${encodeURIComponent(after)}`}`, 's2');
+        const { statusCode: status, body } = res;
+        assertResponseMatchesOpenApi(OPENAPI, { method: 'GET', path: '/v2/sites', status, contentType: res.headers['content-type'], body });
+        expect(status).toBe(200);
+        return res.json();
+      };
+      const ids = (items: Item[]): string[] => items.map(({ siteid }) => siteid).sort();
+      const stored = async (...tenants: TenantFixture[]): Promise<string[]> => (await Promise.all(tenants.map(storedSiteIds))).flat().sort();
+
+      const first = await pageAfter(null);
+      const last = await pageAfter(first.next);
+      const full = (await inject('GET', '/v1/sites', 's2')).json<Item[]>();
+
+      expect([first.next, last.next]).toEqual([TENANT_B.siteId, null]);
+      expect(ids(first.items)).toEqual(await stored(TENANT_A, TENANT_B));
+      expect(ids(last.items)).toEqual(await stored(TENANT_UMBRELLA));
+      expect([...first.items, ...last.items]).toEqual(expect.arrayContaining(full));
+      expect(full).toHaveLength(first.items.length + last.items.length);
+      expect((await inject('GET', '/v2/sites', 'site-admin')).statusCode).toBe(403);
+    });
+
+    it("pages the user sites of every registered tenant for an s2 token, each page holding its tenants' rows of the /v1 list", async () => {
+      type Item = { siteid: string };
+      const pageAfter = async (after: string | null): Promise<{ items: Item[]; next: string | null }> => {
+        const res = await inject('GET', `/v2/user-sites?limit=2${after === null ? '' : `&after=${encodeURIComponent(after)}`}`, 's2');
+        const { statusCode: status, body } = res;
+        assertResponseMatchesOpenApi(OPENAPI, { method: 'GET', path: '/v2/user-sites', status, contentType: res.headers['content-type'], body });
+        expect(status).toBe(200);
+        return res.json();
+      };
+      const ids = (items: Item[]): string[] => items.map(({ siteid }) => siteid).sort();
+      const stored = async (...tenants: TenantFixture[]): Promise<string[]> => (await Promise.all(tenants.map(storedSiteIds))).flat().sort();
+
+      const first = await pageAfter(null);
+      const last = await pageAfter(first.next);
+      const full = (await inject('GET', '/v1/user-sites', 's2')).json<{ sites: Item[] }>().sites;
+
+      expect([first.next, last.next]).toEqual([TENANT_B.siteId, null]);
+      expect(ids(first.items)).toEqual(await stored(TENANT_A, TENANT_B));
+      expect(ids(last.items)).toEqual(await stored(TENANT_UMBRELLA));
+      expect([...first.items, ...last.items]).toEqual(expect.arrayContaining(full));
+      expect(full).toHaveLength(first.items.length + last.items.length);
+    });
+
+    it("pages a tenant A site-admin's user sites over its session's site only", async () => {
+      const session = { sites: [{ siteID: TENANT_A.siteId, site: TENANT_A.siteId }] };
+      service().client.on('identity', 'GET', '/v1/sessions/current/sites', () => ({ status: 200, headers: {}, body: session }));
+      const res = await inject('GET', '/v2/user-sites', 'site-admin');
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ items: [expect.objectContaining({ siteid: TENANT_A.siteId })], next: null });
+    });
+
+    it('answers a tenant A site-admin the image size page of its own site only, refusing that of tenant B', async () => {
+      const own = await inject('GET', `/v2/sites/${TENANT_A.siteId}/image-sizes`, 'site-admin');
+      const other = await inject('GET', `/v2/sites/${TENANT_B.siteId}/image-sizes`, 'site-admin');
+      expect(own.statusCode).toBe(200);
+      const { items, next } = own.json<{ items: Array<{ siteID: string }>; next: string | null }>();
+      expect(items.filter(({ siteID }) => siteID.toLowerCase() !== TENANT_A.siteId)).toEqual([]);
+      expect(next).toBeNull();
+      expect(other.statusCode).toBe(403);
+      expect(other.json()).not.toHaveProperty('items');
+    });
+
+    it('lets a tenant A site-admin read its own site and refuses the site of tenant B', async () => {
+      const own = await inject('GET', `/v1/sites/${TENANT_A.siteId}`, 'site-admin');
+      const other = await inject('GET', `/v1/sites/${TENANT_B.siteId}`, 'site-admin');
+      expect(own.statusCode).toBe(200);
+      expect(own.json()).toMatchObject({ isNew: 0, site: { SiteID: TENANT_A.siteId, Site: `Isolation site ${TENANT_A.key}` } });
+      expect(other.statusCode).toBe(403);
+    });
+
+    it.each([
+      { subject: 'system-user', fixture: TENANT_A, pools: [TENANT_A, TENANT_UMBRELLA] },
+      { subject: 'editor', fixture: TENANT_A, pools: [TENANT_A, TENANT_UMBRELLA] },
+      { subject: 'site-admin', fixture: TENANT_A, pools: [TENANT_A, TENANT_UMBRELLA] },
+      { subject: 'site-admin', fixture: TENANT_B, pools: [TENANT_B] },
+    ])('gives a tenant $fixture.key $subject its private then public user pool sites, each read in its own tenant', async ({
+      subject,
+      fixture,
+      pools,
+    }) => {
+      const res = await getUserPoolSites(subject, fixture, fixture);
+      expect(res.statusCode).toBe(200);
+      const { sites } = res.json<{ sites: Array<{ SiteID: string; Site: string | null }> }>();
+      expect(sites.map(({ SiteID, Site }) => ({ SiteID, Site }))).toEqual(
+        pools.map(({ siteId, key }) => ({ SiteID: siteId, Site: `Isolation site ${key}` })),
+      );
+      expect(sites).toEqual(await Promise.all(pools.map(ownShellSite)));
+      // Of the pool sites the token's tenant sees only its own, so the others were read in their pool tenants.
+      const visible = await storedSiteIds(fixture);
+      expect(pools.filter(({ siteId }) => visible.includes(siteId))).toEqual([fixture]);
+    });
+
+    it('refuses the tenant B user pool sites to a tenant A site-admin and returns no tenant B data', async () => {
+      const res = await getUserPoolSites('site-admin', TENANT_A, TENANT_B);
+      expect(res.statusCode).toBe(403);
+      expect(res.json()).not.toHaveProperty('sites');
+      expect(res.body).not.toContain(`Isolation site ${TENANT_B.key}`);
+    });
+
+    it('refuses a tenant A site-admin the withheld Update of its own site with the legacy 503 and of tenant B with 403, writing neither', async () => {
+      const db = created().app;
+      const siteRows = (fixture: TenantFixture): Promise<unknown[]> => db.withTenant(fixture.tenantId, (tx) => readAs(tx, SITE.table));
+      const ownBefore = await siteRows(TENANT_A);
+      const otherBefore = await siteRows(TENANT_B);
+      const ownAuditBefore = await auditRows(TENANT_A);
+      const otherAuditBefore = await auditRows(TENANT_B);
+      const form = (siteId: string, name: string): Record<string, string> => ({
+        siteid: siteId,
+        action: 'Update',
+        site: name,
+        csrf_token: 'isolation-token',
+        csrf_token_expires: '260630130000000',
+      });
+
+      const own = await inject('POST', `/v1/sites/${TENANT_A.siteId}/update`, 'site-admin', form(TENANT_A.siteId, 'Renamed A'));
+      const other = await inject('POST', `/v1/sites/${TENANT_B.siteId}/update`, 'site-admin', form(TENANT_B.siteId, 'Renamed B'));
+
+      expect(own.statusCode).toBe(503);
+      expect(own.json()).toMatchObject({ apiversion: 'v1', error: { code: 'server_error' } });
+      expect(other.statusCode).toBe(403);
+      expect(other.body).not.toContain(`Isolation site ${TENANT_B.key}`);
+      expect(await siteRows(TENANT_A)).toEqual(ownBefore);
+      expect(await siteRows(TENANT_B)).toEqual(otherBefore);
+      expect(await auditRows(TENANT_A)).toEqual(ownAuditBefore);
+      expect(await auditRows(TENANT_B)).toEqual(otherAuditBefore);
+    });
+
+    it('dead-letters and acks a site.changed event without a tenant and records nothing', async () => {
+      const { app, publisher } = service();
+      const db = created().app;
+      const siteId = 'iso-unregistered';
+      publisher.clear();
+      const envelope = withoutTenant(
+        testEnvelope({
+          topic: SITE_CHANGED_TOPIC,
+          tenantId: TENANT_A.tenantId,
+          aggregateId: siteId,
+          aggregateVersion: 1,
+          payload: {
+            siteId,
+            publicUserPoolId: siteId,
+            privateUserPoolId: siteId,
+            categoryPoolId: siteId,
+            filePoolId: siteId,
+            displayPoolId: siteId,
+            contentPoolIds: [siteId],
+            domains: [],
+          },
+        }),
+      );
+
+      const res = await pushTo(app, SITE_CHANGED_SUBSCRIPTION, envelope);
+
+      expect(res.statusCode).toBe(204);
+      expect(publisher.raw.map(({ topic, message }) => ({ topic, reason: message.attributes.reason }))).toEqual([
+        { topic: `${SITE_CHANGED_SUBSCRIPTION}.dlq`, reason: 'missing-tenant' },
+      ]);
+      expect(publisher.published).toEqual([]);
+      for (const tenant of TENANT_LIST) {
+        const receipts = await db.withTenant(tenant.tenantId, (tx) => countIn(tx, 'inbox', 'event_id = $1', [envelope.eventId]));
+        expect(receipts, `inbox receipts of tenant ${tenant.key}`).toBe(0);
+      }
+      const registry = await db.withMetadata((tx) =>
+        tx.query<{ site_id: string }>(`SELECT site_id FROM "${tx.schema}".tenant_registry ORDER BY site_id`),
+      );
+      expect(registry.rows.map(({ site_id }) => site_id)).toEqual([TENANT_A.siteId, TENANT_B.siteId, TENANT_UMBRELLA.siteId]);
+    });
+  });
+});

@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:opt2:contract-sample:event:people.person.archived.v1",
+  "$comment": "source-sha: 696383140578f8dea3ece26f80cd7bfb370ddf0f",
+  "title": "Person archived payload",
+  "x-opt2-kind": "process",
+  "x-opt2-tenant-fanout": "userPool",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "personId",
+    "siteId",
+    "effectiveFrom"
+  ],
+  "properties": {
+    "personId": {
+      "$ref": "#/$defs/cfUuid"
+    },
+    "siteId": {
+      "$ref": "#/$defs/siteId"
+    },
+    "effectiveFrom": {
+      "$ref": "#/$defs/localTimestamp"
+    }
+  },
+  "$defs": {
+    "cfUuid": {
+      "type": "string",
+      "pattern": "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{16}$"
+    },
+    "siteId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 50
+    },
+    "localTimestamp": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d{3}$"
+    }
+  }
+}

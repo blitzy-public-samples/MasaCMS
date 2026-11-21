@@ -1,0 +1,16 @@
+{
+  "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
+  "scope": "privateUserPool",
+  "groups": [
+    { "groupName": "timesheets.employee", "role": "timesheets.employee" },
+    { "groupName": "timesheets.primary-approver", "role": "timesheets.primary-approver" },
+    { "groupName": "timesheets.secondary-approver", "role": "timesheets.secondary-approver" },
+    { "groupName": "finance.preparer", "role": "finance.preparer" },
+    { "groupName": "finance.approver", "role": "finance.approver" },
+    { "groupName": "esignature.signer", "role": "esignature.signer" },
+    { "groupName": "esignature.auditor", "role": "esignature.auditor" },
+    { "groupName": "reporting.exporter", "role": "reporting.exporter" },
+    { "groupName": "surveys.manager", "role": "surveys.manager" },
+    { "groupName": "communications.sender", "role": "communications.sender" }
+  ]
+}

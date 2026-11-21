@@ -1,0 +1,854 @@
+{
+  "capturedAt": "2026-11-21T04:45:59.482Z",
+  "fixtures": {
+    "available": true,
+    "reason": "fixtures loaded"
+  },
+  "generatedAt": "2026-11-21T04:46:01.555Z",
+  "generatedBy": "harness/src/golden/capture.ts",
+  "origin": "legacy",
+  "scenarioId": "GS-FI-03",
+  "sideEffects": {
+    "files": [],
+    "mail": [],
+    "rows": {
+      "finance.record_version": {
+        "checksum": "587904c870c511e869df0c6ef1fe6fdfabb442d70b3421efd226c88bdaa7d581",
+        "columns": [
+          {
+            "name": "version_id",
+            "type": "s"
+          },
+          {
+            "name": "record_id",
+            "type": "s"
+          },
+          {
+            "name": "version",
+            "type": "i"
+          },
+          {
+            "name": "state",
+            "type": "s"
+          },
+          {
+            "name": "title",
+            "type": "s"
+          },
+          {
+            "name": "amount",
+            "scale": 4,
+            "type": "d"
+          },
+          {
+            "name": "period",
+            "type": "s"
+          },
+          {
+            "name": "action",
+            "type": "s"
+          },
+          {
+            "name": "actor_user_id",
+            "type": "s"
+          },
+          {
+            "name": "created",
+            "type": "s"
+          }
+        ],
+        "entries": [
+          {
+            "count": 1,
+            "encoding": "s6:<id:4>s6:<id:2>i1:1s11:IN-PROGRESSs15:GS-FI-03 recordd8:500.0000s7:2026-06s6:creates6:<id:1>s14:<ts:iso-local>"
+          },
+          {
+            "count": 1,
+            "encoding": "s6:<id:5>s6:<id:2>i1:2s11:IN-PROGRESSs15:GS-FI-03 recordd8:525.2500s7:2026-06s4:edits6:<id:1>s14:<ts:iso-local>"
+          },
+          {
+            "count": 1,
+            "encoding": "s6:<id:6>s6:<id:2>i1:3s9:SUBMITTEDs15:GS-FI-03 recordd8:525.2500s7:2026-06s6:submits6:<id:1>s14:<ts:iso-local>"
+          },
+          {
+            "count": 1,
+            "encoding": "s6:<id:7>s6:<id:2>i1:4s8:REJECTEDs15:GS-FI-03 recordd8:525.2500s7:2026-06s6:rejects6:<id:3>s14:<ts:iso-local>"
+          },
+          {
+            "count": 1,
+            "encoding": "s6:<id:8>s6:<id:2>i1:5s8:REJECTEDs25:GS-FI-03 record correctedd8:520.0000s7:2026-05s4:edits6:<id:1>s14:<ts:iso-local>"
+          }
+        ],
+        "legacyTable": "Program_N.finance_record_version",
+        "unit": "finance.record_version"
+      }
+    },
+    "tasks": [],
+    "transitions": [
+      {
+        "aggregate": "<id:2>",
+        "states": [
+          "IN-PROGRESS",
+          "SUBMITTED",
+          "REJECTED",
+          "IN-PROGRESS",
+          "SUBMITTED",
+          "REJECTED"
+        ]
+      },
+      {
+        "aggregate": "<id:10>",
+        "states": [
+          "RE-SUBMITTED"
+        ]
+      },
+      {
+        "aggregate": "<id:13>",
+        "states": [
+          "REJECTED"
+        ]
+      },
+      {
+        "aggregate": "<id:14>",
+        "states": [
+          "REJECTED"
+        ]
+      },
+      {
+        "aggregate": "<id:17>",
+        "states": [
+          "APPROVED"
+        ]
+      },
+      {
+        "aggregate": "<id:19>",
+        "states": [
+          "APPROVED"
+        ]
+      }
+    ]
+  },
+  "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
+  "steps": [
+    {
+      "index": 0,
+      "name": "record",
+      "normalised": {
+        "envelope": {
+          "apiversion": "v1",
+          "data": {
+            "amount": "500.0000",
+            "created": "<ts:serializer>",
+            "createdbyid": "<id:1>",
+            "lastupdate": "",
+            "lastupdatebyid": "",
+            "period": "2026-06",
+            "record_id": "<id:2>",
+            "siteid": "tenant-a",
+            "state": "IN-PROGRESS",
+            "title": "GS-FI-03 record",
+            "version": 1
+          },
+          "method": "finance.records"
+        },
+        "index": 0,
+        "maskedPaths": {},
+        "name": "record",
+        "routeKey": "fixture:finance/records@post",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "json",
+          "value": {
+            "amount": "500.0000",
+            "period": "2026-06",
+            "title": "GS-FI-03 record"
+          }
+        },
+        "headers": {
+          "content-type": "application/json",
+          "x-csrf_token": "<token>",
+          "x-csrf_token_expires": "<token>"
+        },
+        "method": "POST",
+        "url": "/legacy-fixtures/cfml/api.cfm/finance/records?siteid=tenant-a"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "data": {
+            "amount": "500.0000",
+            "created": "<ts:serializer>",
+            "createdbyid": "<id:1>",
+            "lastupdate": "",
+            "lastupdatebyid": "",
+            "period": "2026-06",
+            "record_id": "<id:2>",
+            "siteid": "tenant-a",
+            "state": "IN-PROGRESS",
+            "title": "GS-FI-03 record",
+            "version": 1
+          },
+          "method": "finance.records"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "0266e5e231e9500a32b2187c115bda5d467a233fbcbeacb6f08f809a4f0a0c95",
+        "status": 200
+      },
+      "routeKey": "fixture:finance/records@post"
+    },
+    {
+      "index": 1,
+      "name": "edit-1",
+      "normalised": {
+        "envelope": {
+          "apiversion": "v1",
+          "data": {
+            "amount": "525.2500",
+            "created": "<ts:serializer>",
+            "createdbyid": "<id:1>",
+            "lastupdate": "<ts:serializer>",
+            "lastupdatebyid": "<id:1>",
+            "period": "2026-06",
+            "record_id": "<id:2>",
+            "siteid": "tenant-a",
+            "state": "IN-PROGRESS",
+            "title": "GS-FI-03 record",
+            "version": 2
+          },
+          "method": "finance.records.edit"
+        },
+        "index": 1,
+        "maskedPaths": {},
+        "name": "edit-1",
+        "routeKey": "fixture:finance/records/{id}/edit@post",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "json",
+          "value": {
+            "amount": "525.2500",
+            "period": "2026-06",
+            "title": "GS-FI-03 record"
+          }
+        },
+        "headers": {
+          "content-type": "application/json",
+          "x-csrf_token": "<token>",
+          "x-csrf_token_expires": "<token>"
+        },
+        "method": "POST",
+        "url": "/legacy-fixtures/cfml/api.cfm/finance/records/DC41736D-BE17-3E81-EEECDC019337886F/edit?siteid=tenant-a"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "data": {
+            "amount": "525.2500",
+            "created": "<ts:serializer>",
+            "createdbyid": "<id:1>",
+            "lastupdate": "<ts:serializer>",
+            "lastupdatebyid": "<id:1>",
+            "period": "2026-06",
+            "record_id": "<id:2>",
+            "siteid": "tenant-a",
+            "state": "IN-PROGRESS",
+            "title": "GS-FI-03 record",
+            "version": 2
+          },
+          "method": "finance.records.edit"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "f90c3eef0a10f4302903cee5d31d1cacec96310ad4824187af5f03a668f8e56c",
+        "status": 200
+      },
+      "routeKey": "fixture:finance/records/{id}/edit@post"
+    },
+    {
+      "index": 2,
+      "name": "submit",
+      "normalised": {
+        "envelope": {
+          "apiversion": "v1",
+          "data": {
+            "amount": "525.2500",
+            "created": "<ts:serializer>",
+            "createdbyid": "<id:1>",
+            "lastupdate": "<ts:serializer>",
+            "lastupdatebyid": "<id:1>",
+            "period": "2026-06",
+            "record_id": "<id:2>",
+            "siteid": "tenant-a",
+            "state": "SUBMITTED",
+            "title": "GS-FI-03 record",
+            "version": 3
+          },
+          "method": "finance.records.submit"
+        },
+        "index": 2,
+        "maskedPaths": {},
+        "name": "submit",
+        "routeKey": "fixture:finance/records/{id}/submit@post",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {
+          "x-csrf_token": "<token>",
+          "x-csrf_token_expires": "<token>"
+        },
+        "method": "POST",
+        "url": "/legacy-fixtures/cfml/api.cfm/finance/records/DC41736D-BE17-3E81-EEECDC019337886F/submit?siteid=tenant-a"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "data": {
+            "amount": "525.2500",
+            "created": "<ts:serializer>",
+            "createdbyid": "<id:1>",
+            "lastupdate": "<ts:serializer>",
+            "lastupdatebyid": "<id:1>",
+            "period": "2026-06",
+            "record_id": "<id:2>",
+            "siteid": "tenant-a",
+            "state": "SUBMITTED",
+            "title": "GS-FI-03 record",
+            "version": 3
+          },
+          "method": "finance.records.submit"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "13c4e733e58d245057b75e1047b5b86cb4eb7b1c7f4bbbef9ba2fea38c1f14ba",
+        "status": 200
+      },
+      "routeKey": "fixture:finance/records/{id}/submit@post"
+    },
+    {
+      "index": 3,
+      "name": "reject",
+      "normalised": {
+        "envelope": {
+          "apiversion": "v1",
+          "data": {
+            "amount": "525.2500",
+            "created": "<ts:serializer>",
+            "createdbyid": "<id:1>",
+            "lastupdate": "<ts:serializer>",
+            "lastupdatebyid": "<id:3>",
+            "period": "2026-06",
+            "record_id": "<id:2>",
+            "siteid": "tenant-a",
+            "state": "REJECTED",
+            "title": "GS-FI-03 record",
+            "version": 4
+          },
+          "method": "finance.records.reject"
+        },
+        "index": 3,
+        "maskedPaths": {},
+        "name": "reject",
+        "routeKey": "fixture:finance/records/{id}/reject@post",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {
+          "x-csrf_token": "<token>",
+          "x-csrf_token_expires": "<token>"
+        },
+        "method": "POST",
+        "url": "/legacy-fixtures/cfml/api.cfm/finance/records/DC41736D-BE17-3E81-EEECDC019337886F/reject?siteid=tenant-a"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "data": {
+            "amount": "525.2500",
+            "created": "<ts:serializer>",
+            "createdbyid": "<id:1>",
+            "lastupdate": "<ts:serializer>",
+            "lastupdatebyid": "<id:3>",
+            "period": "2026-06",
+            "record_id": "<id:2>",
+            "siteid": "tenant-a",
+            "state": "REJECTED",
+            "title": "GS-FI-03 record",
+            "version": 4
+          },
+          "method": "finance.records.reject"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "7f3a3679a729ff70e3011bd4f987c5a93875ec47fccc2ed2c16f58b3f5e07583",
+        "status": 200
+      },
+      "routeKey": "fixture:finance/records/{id}/reject@post"
+    },
+    {
+      "index": 4,
+      "name": "edit-rejected",
+      "normalised": {
+        "envelope": {
+          "apiversion": "v1",
+          "data": {
+            "amount": "520.0000",
+            "created": "<ts:serializer>",
+            "createdbyid": "<id:1>",
+            "lastupdate": "<ts:serializer>",
+            "lastupdatebyid": "<id:1>",
+            "period": "2026-05",
+            "record_id": "<id:2>",
+            "siteid": "tenant-a",
+            "state": "REJECTED",
+            "title": "GS-FI-03 record corrected",
+            "version": 5
+          },
+          "method": "finance.records.edit"
+        },
+        "index": 4,
+        "maskedPaths": {},
+        "name": "edit-rejected",
+        "routeKey": "fixture:finance/records/{id}/edit@post",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "json",
+          "value": {
+            "amount": "520.0000",
+            "period": "2026-05",
+            "title": "GS-FI-03 record corrected"
+          }
+        },
+        "headers": {
+          "content-type": "application/json",
+          "x-csrf_token": "<token>",
+          "x-csrf_token_expires": "<token>"
+        },
+        "method": "POST",
+        "url": "/legacy-fixtures/cfml/api.cfm/finance/records/DC41736D-BE17-3E81-EEECDC019337886F/edit?siteid=tenant-a"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "data": {
+            "amount": "520.0000",
+            "created": "<ts:serializer>",
+            "createdbyid": "<id:1>",
+            "lastupdate": "<ts:serializer>",
+            "lastupdatebyid": "<id:1>",
+            "period": "2026-05",
+            "record_id": "<id:2>",
+            "siteid": "tenant-a",
+            "state": "REJECTED",
+            "title": "GS-FI-03 record corrected",
+            "version": 5
+          },
+          "method": "finance.records.edit"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "26bec238ec9f7982476b90f75c53a9282cc0ea3c23c0eb2c89ca80cff7af1f54",
+        "status": 200
+      },
+      "routeKey": "fixture:finance/records/{id}/edit@post"
+    },
+    {
+      "index": 5,
+      "name": "versions",
+      "normalised": {
+        "envelope": {
+          "apiversion": "v1",
+          "data": {
+            "endindex": 5,
+            "items": [
+              {
+                "action": "create",
+                "actor_user_id": "<id:1>",
+                "amount": "500.0000",
+                "created": "<ts:serializer>",
+                "period": "2026-06",
+                "record_id": "<id:2>",
+                "state": "IN-PROGRESS",
+                "title": "GS-FI-03 record",
+                "version": 1,
+                "version_id": "<id:4>"
+              },
+              {
+                "action": "edit",
+                "actor_user_id": "<id:1>",
+                "amount": "525.2500",
+                "created": "<ts:serializer>",
+                "period": "2026-06",
+                "record_id": "<id:2>",
+                "state": "IN-PROGRESS",
+                "title": "GS-FI-03 record",
+                "version": 2,
+                "version_id": "<id:5>"
+              },
+              {
+                "action": "submit",
+                "actor_user_id": "<id:1>",
+                "amount": "525.2500",
+                "created": "<ts:serializer>",
+                "period": "2026-06",
+                "record_id": "<id:2>",
+                "state": "SUBMITTED",
+                "title": "GS-FI-03 record",
+                "version": 3,
+                "version_id": "<id:6>"
+              },
+              {
+                "action": "reject",
+                "actor_user_id": "<id:3>",
+                "amount": "525.2500",
+                "created": "<ts:serializer>",
+                "period": "2026-06",
+                "record_id": "<id:2>",
+                "state": "REJECTED",
+                "title": "GS-FI-03 record",
+                "version": 4,
+                "version_id": "<id:7>"
+              },
+              {
+                "action": "edit",
+                "actor_user_id": "<id:1>",
+                "amount": "520.0000",
+                "created": "<ts:serializer>",
+                "period": "2026-05",
+                "record_id": "<id:2>",
+                "state": "REJECTED",
+                "title": "GS-FI-03 record corrected",
+                "version": 5,
+                "version_id": "<id:8>"
+              }
+            ],
+            "itemsperpage": 50,
+            "pageindex": 1,
+            "startindex": 1,
+            "totalitems": 5,
+            "totalpages": 1
+          },
+          "method": "finance.records.versions"
+        },
+        "index": 5,
+        "maskedPaths": {},
+        "name": "versions",
+        "routeKey": "fixture:finance/records/{id}/versions@get",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {},
+        "method": "GET",
+        "url": "/legacy-fixtures/cfml/api.cfm/finance/records/DC41736D-BE17-3E81-EEECDC019337886F/versions?siteid=tenant-a"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "data": {
+            "endindex": 5,
+            "items": [
+              {
+                "action": "create",
+                "actor_user_id": "<id:1>",
+                "amount": "500.0000",
+                "created": "<ts:serializer>",
+                "period": "2026-06",
+                "record_id": "<id:2>",
+                "state": "IN-PROGRESS",
+                "title": "GS-FI-03 record",
+                "version": 1,
+                "version_id": "<id:4>"
+              },
+              {
+                "action": "edit",
+                "actor_user_id": "<id:1>",
+                "amount": "525.2500",
+                "created": "<ts:serializer>",
+                "period": "2026-06",
+                "record_id": "<id:2>",
+                "state": "IN-PROGRESS",
+                "title": "GS-FI-03 record",
+                "version": 2,
+                "version_id": "<id:5>"
+              },
+              {
+                "action": "submit",
+                "actor_user_id": "<id:1>",
+                "amount": "525.2500",
+                "created": "<ts:serializer>",
+                "period": "2026-06",
+                "record_id": "<id:2>",
+                "state": "SUBMITTED",
+                "title": "GS-FI-03 record",
+                "version": 3,
+                "version_id": "<id:6>"
+              },
+              {
+                "action": "reject",
+                "actor_user_id": "<id:3>",
+                "amount": "525.2500",
+                "created": "<ts:serializer>",
+                "period": "2026-06",
+                "record_id": "<id:2>",
+                "state": "REJECTED",
+                "title": "GS-FI-03 record",
+                "version": 4,
+                "version_id": "<id:7>"
+              },
+              {
+                "action": "edit",
+                "actor_user_id": "<id:1>",
+                "amount": "520.0000",
+                "created": "<ts:serializer>",
+                "period": "2026-05",
+                "record_id": "<id:2>",
+                "state": "REJECTED",
+                "title": "GS-FI-03 record corrected",
+                "version": 5,
+                "version_id": "<id:8>"
+              }
+            ],
+            "itemsperpage": 50,
+            "pageindex": 1,
+            "startindex": 1,
+            "totalitems": 5,
+            "totalpages": 1
+          },
+          "method": "finance.records.versions"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "5bc337ee0c6d3592d349ec666af721f88fe9eb0fac7a8ede00de50956fece209",
+        "status": 200
+      },
+      "routeKey": "fixture:finance/records/{id}/versions@get"
+    },
+    {
+      "index": 6,
+      "name": "list",
+      "normalised": {
+        "envelope": {
+          "apiversion": "v1",
+          "data": {
+            "endindex": 5,
+            "items": [
+              {
+                "amount": "643.7600",
+                "created": "<ts:serializer>",
+                "createdbyid": "<id:9>",
+                "lastupdate": "<ts:serializer>",
+                "lastupdatebyid": "<id:9>",
+                "period": "2026-03",
+                "record_id": "<id:10>",
+                "siteid": "tenant-a",
+                "state": "RE-SUBMITTED",
+                "title": "Invoice - Rustic Rubber Mouse",
+                "version": 7
+              },
+              {
+                "amount": "6351.3100",
+                "created": "<ts:serializer>",
+                "createdbyid": "<id:11>",
+                "lastupdate": "<ts:serializer>",
+                "lastupdatebyid": "<id:12>",
+                "period": "2026-03",
+                "record_id": "<id:13>",
+                "siteid": "tenant-a",
+                "state": "REJECTED",
+                "title": "Invoice - Generic Concrete Shirt",
+                "version": 4
+              },
+              {
+                "amount": "3726.0800",
+                "created": "<ts:serializer>",
+                "createdbyid": "<id:9>",
+                "lastupdate": "<ts:serializer>",
+                "lastupdatebyid": "<id:3>",
+                "period": "2026-03",
+                "record_id": "<id:14>",
+                "siteid": "tenant-a",
+                "state": "REJECTED",
+                "title": "Purchase order - Fantastic Silk Pants",
+                "version": 3
+              },
+              {
+                "amount": "11933.5800",
+                "created": "<ts:serializer>",
+                "createdbyid": "<id:15>",
+                "lastupdate": "<ts:serializer>",
+                "lastupdatebyid": "<id:16>",
+                "period": "2026-03",
+                "record_id": "<id:17>",
+                "siteid": "tenant-a",
+                "state": "APPROVED",
+                "title": "Vendor payment - Oriental Gold Table",
+                "version": 4
+              },
+              {
+                "amount": "11971.9100",
+                "created": "<ts:serializer>",
+                "createdbyid": "<id:15>",
+                "lastupdate": "<ts:serializer>",
+                "lastupdatebyid": "<id:18>",
+                "period": "2026-03",
+                "record_id": "<id:19>",
+                "siteid": "tenant-a",
+                "state": "APPROVED",
+                "title": "Reimbursement - Licensed Aluminum Chips",
+                "version": 3
+              }
+            ],
+            "itemsperpage": 5,
+            "pageindex": 1,
+            "startindex": 1,
+            "totalitems": 3005,
+            "totalpages": 601
+          },
+          "method": "finance.records"
+        },
+        "index": 6,
+        "maskedPaths": {},
+        "name": "list",
+        "routeKey": "fixture:finance/records@get",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {},
+        "method": "GET",
+        "url": "/legacy-fixtures/cfml/api.cfm/finance/records?siteid=tenant-a&itemsPerPage=5"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "data": {
+            "endindex": 5,
+            "items": [
+              {
+                "amount": "643.7600",
+                "created": "<ts:serializer>",
+                "createdbyid": "<id:9>",
+                "lastupdate": "<ts:serializer>",
+                "lastupdatebyid": "<id:9>",
+                "period": "2026-03",
+                "record_id": "<id:10>",
+                "siteid": "tenant-a",
+                "state": "RE-SUBMITTED",
+                "title": "Invoice - Rustic Rubber Mouse",
+                "version": 7
+              },
+              {
+                "amount": "6351.3100",
+                "created": "<ts:serializer>",
+                "createdbyid": "<id:11>",
+                "lastupdate": "<ts:serializer>",
+                "lastupdatebyid": "<id:12>",
+                "period": "2026-03",
+                "record_id": "<id:13>",
+                "siteid": "tenant-a",
+                "state": "REJECTED",
+                "title": "Invoice - Generic Concrete Shirt",
+                "version": 4
+              },
+              {
+                "amount": "3726.0800",
+                "created": "<ts:serializer>",
+                "createdbyid": "<id:9>",
+                "lastupdate": "<ts:serializer>",
+                "lastupdatebyid": "<id:3>",
+                "period": "2026-03",
+                "record_id": "<id:14>",
+                "siteid": "tenant-a",
+                "state": "REJECTED",
+                "title": "Purchase order - Fantastic Silk Pants",
+                "version": 3
+              },
+              {
+                "amount": "11933.5800",
+                "created": "<ts:serializer>",
+                "createdbyid": "<id:15>",
+                "lastupdate": "<ts:serializer>",
+                "lastupdatebyid": "<id:16>",
+                "period": "2026-03",
+                "record_id": "<id:17>",
+                "siteid": "tenant-a",
+                "state": "APPROVED",
+                "title": "Vendor payment - Oriental Gold Table",
+                "version": 4
+              },
+              {
+                "amount": "11971.9100",
+                "created": "<ts:serializer>",
+                "createdbyid": "<id:15>",
+                "lastupdate": "<ts:serializer>",
+                "lastupdatebyid": "<id:18>",
+                "period": "2026-03",
+                "record_id": "<id:19>",
+                "siteid": "tenant-a",
+                "state": "APPROVED",
+                "title": "Reimbursement - Licensed Aluminum Chips",
+                "version": 3
+              }
+            ],
+            "itemsperpage": 5,
+            "pageindex": 1,
+            "startindex": 1,
+            "totalitems": 3005,
+            "totalpages": 601
+          },
+          "method": "finance.records"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "06615a2565eb5c5dfc7222d94ef88cd622605eaf59aa4a116e9d81d2b99babaf",
+        "status": 200
+      },
+      "routeKey": "fixture:finance/records@get"
+    }
+  ],
+  "tableVersion": null
+}

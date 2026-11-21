@@ -1,0 +1,275 @@
+{
+  "capturedAt": "2026-11-21T04:46:06.585Z",
+  "fixtures": {
+    "available": true,
+    "reason": "fixtures loaded"
+  },
+  "generatedAt": "2026-11-21T04:46:08.011Z",
+  "generatedBy": "harness/src/golden/capture.ts",
+  "origin": "legacy",
+  "scenarioId": "GS-SU-02",
+  "sideEffects": {
+    "files": [],
+    "mail": [],
+    "rows": {
+      "surveys.survey_response": {
+        "checksum": "0c0fca18b0578e3d3ffc21fcdc4971c7d707f7bf10d5c855bc8715a159e6d9cb",
+        "columns": [
+          {
+            "name": "response_id",
+            "type": "s"
+          },
+          {
+            "name": "survey_id",
+            "type": "s"
+          },
+          {
+            "name": "siteID",
+            "type": "s"
+          },
+          {
+            "name": "respondentSiteID",
+            "type": "s"
+          },
+          {
+            "name": "respondent_user_id",
+            "type": "s"
+          },
+          {
+            "name": "answers",
+            "type": "s"
+          },
+          {
+            "name": "created",
+            "type": "s"
+          }
+        ],
+        "entries": [
+          {
+            "count": 1,
+            "encoding": "s6:<id:4>s6:<id:2>s8:tenant-as8:tenant-as6:<id:3>s21:{\"q1\":\"yes\",\"q2\":\"4\"}s14:<ts:iso-local>"
+          }
+        ],
+        "legacyTable": "synthetic.survey_response",
+        "unit": "surveys.survey_response"
+      }
+    },
+    "tasks": []
+  },
+  "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
+  "steps": [
+    {
+      "index": 0,
+      "name": "survey",
+      "normalised": {
+        "envelope": {
+          "apiversion": "v1",
+          "data": {
+            "created": "<ts:serializer>",
+            "createdbyid": "<id:1>",
+            "lastupdate": "",
+            "lastupdatebyid": "",
+            "launched_at": "",
+            "reminders": [],
+            "schedule": {},
+            "siteid": "tenant-a",
+            "status": "DRAFT",
+            "survey_id": "<id:2>",
+            "targets": [],
+            "title": "GS-SU-02 Survey"
+          },
+          "method": "surveys.surveys"
+        },
+        "index": 0,
+        "maskedPaths": {},
+        "name": "survey",
+        "routeKey": "fixture:surveys/surveys@post",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "json",
+          "value": {
+            "title": "GS-SU-02 Survey"
+          }
+        },
+        "headers": {
+          "content-type": "application/json",
+          "x-csrf_token": "<token>",
+          "x-csrf_token_expires": "<token>"
+        },
+        "method": "POST",
+        "url": "/legacy-fixtures/cfml/api.cfm/surveys/surveys?siteid=tenant-a"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "data": {
+            "created": "<ts:serializer>",
+            "createdbyid": "<id:1>",
+            "lastupdate": "",
+            "lastupdatebyid": "",
+            "launched_at": "",
+            "reminders": [],
+            "schedule": {},
+            "siteid": "tenant-a",
+            "status": "DRAFT",
+            "survey_id": "<id:2>",
+            "targets": [],
+            "title": "GS-SU-02 Survey"
+          },
+          "method": "surveys.surveys"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "b4ee53c20878d745dbbe9eed069145cf3cf59795c7b23d219d59d88abf61aeba",
+        "status": 200
+      },
+      "routeKey": "fixture:surveys/surveys@post"
+    },
+    {
+      "index": 1,
+      "name": "respond",
+      "normalised": {
+        "envelope": {
+          "apiversion": "v1",
+          "data": {
+            "answers": "{\"q1\":\"yes\",\"q2\":\"4\"}",
+            "created": "<ts:serializer>",
+            "respondent_user_id": "<id:3>",
+            "respondentsiteid": "tenant-a",
+            "response_id": "<id:4>",
+            "siteid": "tenant-a",
+            "survey_id": "<id:2>"
+          },
+          "method": "surveys.surveys.responses"
+        },
+        "index": 1,
+        "maskedPaths": {},
+        "name": "respond",
+        "routeKey": "fixture:surveys/surveys/{id}/responses@post",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "json",
+          "value": {
+            "answers": "{\"q1\":\"yes\",\"q2\":\"4\"}"
+          }
+        },
+        "headers": {
+          "content-type": "application/json",
+          "x-csrf_token": "<token>",
+          "x-csrf_token_expires": "<token>"
+        },
+        "method": "POST",
+        "url": "/legacy-fixtures/cfml/api.cfm/surveys/surveys/DC428BCE-0002-B958-98F8EBD36D1739ED/responses?siteid=tenant-a"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "data": {
+            "answers": "{\"q1\":\"yes\",\"q2\":\"4\"}",
+            "created": "<ts:serializer>",
+            "respondent_user_id": "<id:3>",
+            "respondentsiteid": "tenant-a",
+            "response_id": "<id:4>",
+            "siteid": "tenant-a",
+            "survey_id": "<id:2>"
+          },
+          "method": "surveys.surveys.responses"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "0320520acabbc1ae5de7c40bf3e2e9a14cf8d6d7931aee47f902f2e2bec1acdf",
+        "status": 200
+      },
+      "routeKey": "fixture:surveys/surveys/{id}/responses@post"
+    },
+    {
+      "index": 2,
+      "name": "responses",
+      "normalised": {
+        "envelope": {
+          "apiversion": "v1",
+          "data": {
+            "endindex": 1,
+            "items": [
+              {
+                "answers": "{\"q1\":\"yes\",\"q2\":\"4\"}",
+                "created": "<ts:serializer>",
+                "respondent_user_id": "<id:3>",
+                "respondentsiteid": "tenant-a",
+                "response_id": "<id:4>",
+                "siteid": "tenant-a",
+                "survey_id": "<id:2>"
+              }
+            ],
+            "itemsperpage": 50,
+            "pageindex": 1,
+            "startindex": 1,
+            "totalitems": 1,
+            "totalpages": 1
+          },
+          "method": "surveys.surveys.responses"
+        },
+        "index": 2,
+        "maskedPaths": {},
+        "name": "responses",
+        "routeKey": "fixture:surveys/surveys/{id}/responses@get",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {},
+        "method": "GET",
+        "url": "/legacy-fixtures/cfml/api.cfm/surveys/surveys/DC428BCE-0002-B958-98F8EBD36D1739ED/responses?siteid=tenant-a"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "data": {
+            "endindex": 1,
+            "items": [
+              {
+                "answers": "{\"q1\":\"yes\",\"q2\":\"4\"}",
+                "created": "<ts:serializer>",
+                "respondent_user_id": "<id:3>",
+                "respondentsiteid": "tenant-a",
+                "response_id": "<id:4>",
+                "siteid": "tenant-a",
+                "survey_id": "<id:2>"
+              }
+            ],
+            "itemsperpage": 50,
+            "pageindex": 1,
+            "startindex": 1,
+            "totalitems": 1,
+            "totalpages": 1
+          },
+          "method": "surveys.surveys.responses"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "eec60ee6a7d2f4418baec7539e324425d2ff13c6c4ec019ba576bcdd5359c298",
+        "status": 200
+      },
+      "routeKey": "fixture:surveys/surveys/{id}/responses@get"
+    }
+  ],
+  "tableVersion": null
+}

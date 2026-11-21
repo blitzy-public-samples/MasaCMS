@@ -1,0 +1,69 @@
+
+
+
+		<script>
+		jQuery(document).ready(function($){
+
+			$('a.nextN').click(function(e){
+				e.preventDefault();
+				actionModal();
+				$('form#frmNextN input[name="recordsperpage"]').val($(this).attr('data-nextn'));
+				$('form#frmNextN input[name="pageno"]').val(1);
+				$('form#frmNextN').submit();
+			});
+
+			$('a.pageNo').click(function(e){
+				e.preventDefault();
+				actionModal();
+				$('form#frmNextN input[name="startrow"]').val($(this).attr('data-pageno'));
+				$('form#frmNextN').submit();
+			});
+
+		});
+		</script>
+
+		<form id="frmNextN" action="" method="post">
+			<input type="hidden" name="muraAction" value="core&#x3a;cusers.list">
+			<input type="hidden" name="siteid" value="default">
+			<input type="hidden" name="ispublic" value="0">
+			<input type="hidden" name="unassigned" value="0">
+			<input type="hidden" name="recordsperpage" value="25">
+			<input type="hidden" name="startrow" value="1">
+		</form>
+
+		<div class="container">
+			<div class="mura-layout-row">
+
+				
+					<div class="btn-group">
+						<a class="btn dropdown-toggle" data-toggle="dropdown" href="#">
+							Records Per Page
+							<span class="caret"></span>
+						</a>
+						
+						<ul class="dropdown-menu next-n pull-right">
+							
+								<li ><a href="#" class="nextN" data-nextn="5">5</a></li>
+							
+								<li ><a href="#" class="nextN" data-nextn="10">10</a></li>
+							
+								<li  class="active"><a href="#" class="nextN" data-nextn="25">25</a></li>
+							
+								<li ><a href="#" class="nextN" data-nextn="50">50</a></li>
+							
+								<li ><a href="#" class="nextN" data-nextn="100">100</a></li>
+							
+								<li ><a href="#" class="nextN" data-nextn="250">250</a></li>
+							
+								<li ><a href="#" class="nextN" data-nextn="500">500</a></li>
+							
+								<li ><a href="#" class="nextN" data-nextn="1000">1000</a></li>
+							
+							<li ><a href="#" class="nextN" data-nextn="100000">All</a></li>
+						</ul>
+					</div>
+
+				
+			</div>
+		</div>
+	

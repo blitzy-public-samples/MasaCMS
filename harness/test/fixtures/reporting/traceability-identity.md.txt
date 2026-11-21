@@ -1,0 +1,9 @@
+# identity — traceability
+
+Source SHA: 696383140578f8dea3ece26f80cd7bfb370ddf0f
+
+| Inventory id / route key | Legacy source (path:lines) | Disposition | Target code | Proof (test file › test name, or GS id) |
+|---|---|---|---|---|
+| `ctl:clogin.login`, `admin:clogin.login` | `admin/core/controllers/clogin.cfc:101-113` | carry; write group `grp:identity.credential`, `legacy` in `v0001`–`v0003` | `services/identity/src/routes/admin-sessions.ts` (`POST /v1/sessions/login`, CSRF context `login`); `services/identity/src/domain/login.ts` | `services/identity/test/unit/admin-sessions.test.ts` › "redirects a successful login with a return URL %s, %j, to %j"; GS-ID-01 |
+| `ctl:clogin.logout`, `admin:clogin.logout` | `admin/core/controllers/clogin.cfc:115-118` | carry; read, `legacy` in `v0001`–`v0003` | `services/identity/src/routes/admin-sessions.ts` (`POST /v1/sessions/logout`); `services/identity/src/domain/login.ts` | GS-ID-01 |
+| `ctl:cperm.updatemodule`, `admin:cperm.updatemodule` | `admin/core/controllers/cperm.cfc:119-160` | carry; write group `grp:identity.permission`, `legacy` in `v0001`–`v0003` | `services/identity/src/routes/admin-permissions.ts` (`PUT /v1/permissions/modules/{moduleId}`); `services/identity/src/domain/permissions.ts` | GS-ID-07 |

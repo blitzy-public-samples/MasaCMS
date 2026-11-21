@@ -1,0 +1,123 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:opt2:surveys:event:surveys.survey.scheduled.v1",
+  "$comment": "source-sha: 696383140578f8dea3ece26f80cd7bfb370ddf0f",
+  "title": "SurveyScheduledPayload",
+  "description": "SYNTHETIC: surveys - no Masa equivalent; legacy oracle in legacy-fixtures/",
+  "x-opt2-kind": "process",
+  "x-opt2-supersedes": true,
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "surveyId",
+    "siteId",
+    "scheduleVersion",
+    "launchAt",
+    "launchTaskName",
+    "reminders",
+    "targets"
+  ],
+  "$defs": {
+    "cfUuid": {
+      "title": "CfUuid",
+      "description": "ColdFusion createUUID() id: 35 uppercase hex characters grouped 8-4-4-16.",
+      "type": "string",
+      "pattern": "^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16}$"
+    },
+    "SurveyScheduledReminder": {
+      "title": "SurveyScheduledReminder",
+      "description": "One reminder task of the schedule.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "n",
+        "offsetMinutes",
+        "taskName"
+      ],
+      "properties": {
+        "n": {
+          "description": "Reminder ordinal, 1-based in request order; the taskName suffix.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "offsetMinutes": {
+          "description": "Minutes after launchAt; the legacy fixture rejects negative offsets.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "taskName": {
+          "description": "Reminder task name on queue communications-reminders; at most 100 characters, as synthetic.survey_reminder.task_name.",
+          "type": "string",
+          "maxLength": 100,
+          "pattern": "^opt2-survey-[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16}-reminder-[1-9][0-9]*$"
+        }
+      }
+    },
+    "SurveyScheduledTarget": {
+      "title": "SurveyScheduledTarget",
+      "description": "A targeted site, optionally narrowed to one group.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "siteId",
+        "groupName"
+      ],
+      "properties": {
+        "siteId": {
+          "description": "Legacy site id, as tsettings.SiteID.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 25
+        },
+        "groupName": {
+          "description": "Group name within the site, as tusers.GroupName; null targets every user of the site.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 255
+        }
+      }
+    }
+  },
+  "properties": {
+    "surveyId": {
+      "$ref": "#/$defs/cfUuid"
+    },
+    "siteId": {
+      "description": "Legacy site id owning the survey, for example tenant-a; never a tenant UUID.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 25
+    },
+    "scheduleVersion": {
+      "description": "Schedule version: 1 when first scheduled, incremented on each reschedule.",
+      "type": "integer",
+      "minimum": 1
+    },
+    "launchAt": {
+      "description": "Launch time in the legacy server's local time zone, with milliseconds and no offset.",
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}$"
+    },
+    "launchTaskName": {
+      "description": "Launch task name on queue surveys-launch.",
+      "type": "string",
+      "pattern": "^opt2-survey-[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16}-launch$"
+    },
+    "reminders": {
+      "description": "Reminder tasks in ordinal order; empty when none are scheduled.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/SurveyScheduledReminder"
+      }
+    },
+    "targets": {
+      "description": "Sites and groups the survey targets; empty when none are set.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/SurveyScheduledTarget"
+      }
+    }
+  }
+}

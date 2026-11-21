@@ -1,0 +1,253 @@
+{
+  "shared-folder": {
+    "user": "admin",
+    "rcType": "Folder",
+    "subType": "Default",
+    "contentId": "3F5CB194-966D-155F-82F36C84DF36D682",
+    "contentHistId": "3F5CB365-F8E5-9F1D-51BB94BAC43E7582",
+    "subtypeFilter": "",
+    "subTypes": [],
+    "html": "\n\t\t<div class=\"mura-control-group\">\n\t\t\t<label>\n\t\t\t\tType\n\t\t\t</label>\n\t\t\t\t<select name=\"typeSelector\" onchange=\"siteManager.resetExtendedAttributes('3F5CB194-966D-155F-82F36C84DF36D682','3F5CB365-F8E5-9F1D-51BB94BAC43E7582',this.value,'default','','/themes/default');\">\n\t\t\t\t\n\t\t\t\t\t<option value=\"Page^Default\" >Page</option>\n\t\t\t\t\n\t\t\t\t\t<option value=\"Folder^Default\" selected>Folder</option>\n\t\t\t\t\n\t\t\t\t\t<option value=\"Calendar^Default\" >Calendar</option>\n\t\t\t\t\n\t\t\t</select>\n\t\t\t</div>\n\t"
+  },
+  "admin-page-default": {
+    "user": "admin",
+    "rcType": "Page",
+    "subType": "Default",
+    "contentId": "3F9C0E94-CBC3-E299-96F4A3E3A742729B",
+    "contentHistId": "3F9C17F4-ADFF-4315-EDC313D868A2EEE1",
+    "subtypeFilter": "",
+    "subTypes": [
+      {"type": "Component", "subtype": "Widget", "adminonly": 1},
+      {"type": "File", "subtype": "Doc", "adminonly": 0},
+      {"type": "Folder", "subtype": "Archive", "adminonly": 0},
+      {"type": "Form", "subtype": "Survey", "adminonly": 0},
+      {"type": "Link", "subtype": "External", "adminonly": 0},
+      {"type": "Page", "subtype": "Article", "adminonly": 0},
+      {"type": "Page", "subtype": "Product", "adminonly": 1}
+    ],
+    "html": "\n\t\t<div class=\"mura-control-group\">\n\t\t\t<label>\n\t\t\t\tType\n\t\t\t</label>\n\t\t\t\t<select name=\"typeSelector\" onchange=\"siteManager.resetExtendedAttributes('3F9C0E94-CBC3-E299-96F4A3E3A742729B','3F9C17F4-ADFF-4315-EDC313D868A2EEE1',this.value,'default','','/themes/default');\">\n\t\t\t\t\n\t\t\t\t\t<option value=\"Page^Default\" selected>Page</option>\n\t\t\t\t\n\t\t\t\t\t\t\t\t<option value=\"Page^Article\" >Page  / Article</option>\n\t\t\t\t\t\t\t\n\t\t\t\t\t\t\t\t<option value=\"Page^Product\" >Page  / Product</option>\n\t\t\t\t\t\t\t\n\t\t\t\t\t<option value=\"Folder^Default\" >Folder</option>\n\t\t\t\t\n\t\t\t\t\t\t\t\t<option value=\"Folder^Archive\" >Folder  / Archive</option>\n\t\t\t\t\t\t\t\n\t\t\t\t\t<option value=\"Calendar^Default\" >Calendar</option>\n\t\t\t\t\n\t\t\t</select>\n\t\t\t</div>\n\t"
+  },
+  "admin-page-product": {
+    "user": "admin",
+    "rcType": "Page",
+    "subType": "Product",
+    "contentId": "3F9C91A7-A102-AC3A-0AA9A33AAA97D43B",
+    "contentHistId": "3F9C94CE-EEC0-7964-E9F9DC949A5039C0",
+    "subtypeFilter": "",
+    "subTypes": [
+      {"type": "Component", "subtype": "Widget", "adminonly": 1},
+      {"type": "File", "subtype": "Doc", "adminonly": 0},
+      {"type": "Folder", "subtype": "Archive", "adminonly": 0},
+      {"type": "Form", "subtype": "Survey", "adminonly": 0},
+      {"type": "Link", "subtype": "External", "adminonly": 0},
+      {"type": "Page", "subtype": "Article", "adminonly": 0},
+      {"type": "Page", "subtype": "Product", "adminonly": 1}
+    ],
+    "html": "\n\t\t<div class=\"mura-control-group\">\n\t\t\t<label>\n\t\t\t\tType\n\t\t\t</label>\n\t\t\t\t<select name=\"typeSelector\" onchange=\"siteManager.resetExtendedAttributes('3F9C91A7-A102-AC3A-0AA9A33AAA97D43B','3F9C94CE-EEC0-7964-E9F9DC949A5039C0',this.value,'default','','/themes/default');\">\n\t\t\t\t\n\t\t\t\t\t<option value=\"Page^Default\" >Page</option>\n\t\t\t\t\n\t\t\t\t\t\t\t\t<option value=\"Page^Article\" >Page  / Article</option>\n\t\t\t\t\t\t\t\n\t\t\t\t\t\t\t\t<option value=\"Page^Product\" selected>Page  / Product</option>\n\t\t\t\t\t\t\t\n\t\t\t\t\t<option value=\"Folder^Default\" >Folder</option>\n\t\t\t\t\n\t\t\t\t\t\t\t\t<option value=\"Folder^Archive\" >Folder  / Archive</option>\n\t\t\t\t\t\t\t\n\t\t\t\t\t<option value=\"Calendar^Default\" >Calendar</option>\n\t\t\t\t\n\t\t\t</select>\n\t\t\t</div>\n\t"
+  },
+  "editor-page-default": {
+    "user": "editor",
+    "rcType": "Page",
+    "subType": "Default",
+    "contentId": "3F9CDB1B-BE3E-B78C-80262DEC1D93F513",
+    "contentHistId": "3F9CDC81-F3AF-E0AE-7B5CD1EE2847463B",
+    "subtypeFilter": "",
+    "subTypes": [
+      {"type": "Component", "subtype": "Widget", "adminonly": 1},
+      {"type": "File", "subtype": "Doc", "adminonly": 0},
+      {"type": "Folder", "subtype": "Archive", "adminonly": 0},
+      {"type": "Form", "subtype": "Survey", "adminonly": 0},
+      {"type": "Link", "subtype": "External", "adminonly": 0},
+      {"type": "Page", "subtype": "Article", "adminonly": 0},
+      {"type": "Page", "subtype": "Product", "adminonly": 1}
+    ],
+    "html": "\n\t\t<div class=\"mura-control-group\">\n\t\t\t<label>\n\t\t\t\tType\n\t\t\t</label>\n\t\t\t\t<select name=\"typeSelector\" onchange=\"siteManager.resetExtendedAttributes('3F9CDB1B-BE3E-B78C-80262DEC1D93F513','3F9CDC81-F3AF-E0AE-7B5CD1EE2847463B',this.value,'default','','/themes/default');\">\n\t\t\t\t\n\t\t\t\t\t<option value=\"Page^Default\" selected>Page</option>\n\t\t\t\t\n\t\t\t\t\t\t\t\t<option value=\"Page^Article\" >Page  / Article</option>\n\t\t\t\t\t\t\t\n\t\t\t\t\t<option value=\"Folder^Default\" >Folder</option>\n\t\t\t\t\n\t\t\t\t\t\t\t\t<option value=\"Folder^Archive\" >Folder  / Archive</option>\n\t\t\t\t\t\t\t\n\t\t\t\t\t<option value=\"Calendar^Default\" >Calendar</option>\n\t\t\t\t\n\t\t\t</select>\n\t\t\t</div>\n\t"
+  },
+  "editor-page-product": {
+    "user": "editor",
+    "rcType": "Page",
+    "subType": "Product",
+    "contentId": "3F9CE28B-FFC7-27A8-859A3EE4CB8EDA06",
+    "contentHistId": "3F9CE3A3-E460-E03A-BE7AF11C05212F7F",
+    "subtypeFilter": "",
+    "subTypes": [
+      {"type": "Component", "subtype": "Widget", "adminonly": 1},
+      {"type": "File", "subtype": "Doc", "adminonly": 0},
+      {"type": "Folder", "subtype": "Archive", "adminonly": 0},
+      {"type": "Form", "subtype": "Survey", "adminonly": 0},
+      {"type": "Link", "subtype": "External", "adminonly": 0},
+      {"type": "Page", "subtype": "Article", "adminonly": 0},
+      {"type": "Page", "subtype": "Product", "adminonly": 1}
+    ],
+    "html": "\n\t\t<div class=\"mura-control-group\">\n\t\t\t<label>\n\t\t\t\tType\n\t\t\t</label>\n\t\t\t\t<select name=\"typeSelector\" onchange=\"siteManager.resetExtendedAttributes('3F9CE28B-FFC7-27A8-859A3EE4CB8EDA06','3F9CE3A3-E460-E03A-BE7AF11C05212F7F',this.value,'default','','/themes/default');\">\n\t\t\t\t\n\t\t\t\t\t<option value=\"Page^Default\" >Page</option>\n\t\t\t\t\n\t\t\t\t\t\t\t\t<option value=\"Page^Article\" >Page  / Article</option>\n\t\t\t\t\t\t\t\n\t\t\t\t\t\t\t\t<option value=\"Page^Product\" selected>Page  / Product</option>\n\t\t\t\t\t\t\t\n\t\t\t\t\t<option value=\"Folder^Default\" >Folder</option>\n\t\t\t\t\n\t\t\t\t\t\t\t\t<option value=\"Folder^Archive\" >Folder  / Archive</option>\n\t\t\t\t\t\t\t\n\t\t\t\t\t<option value=\"Calendar^Default\" >Calendar</option>\n\t\t\t\t\n\t\t\t</select>\n\t\t\t</div>\n\t"
+  },
+  "admin-file": {
+    "user": "admin",
+    "rcType": "File",
+    "subType": "Default",
+    "contentId": "3F9CA5AA-EAED-56AD-889E2CA99582413D",
+    "contentHistId": "3F9CA6ED-B559-50DB-8943E6BCFA086F45",
+    "subtypeFilter": "",
+    "subTypes": [
+      {"type": "Component", "subtype": "Widget", "adminonly": 1},
+      {"type": "File", "subtype": "Doc", "adminonly": 0},
+      {"type": "Folder", "subtype": "Archive", "adminonly": 0},
+      {"type": "Form", "subtype": "Survey", "adminonly": 0},
+      {"type": "Link", "subtype": "External", "adminonly": 0},
+      {"type": "Page", "subtype": "Article", "adminonly": 0},
+      {"type": "Page", "subtype": "Product", "adminonly": 1}
+    ],
+    "html": "\n\t\t\t<div class=\"mura-control-group\">\n\t\t\t\t<label>\n\t\t\t\t\tType\n\t\t\t\t</label>\n\t\t\t\t\t<select name=\"typeSelector\" onchange=\"siteManager.resetExtendedAttributes('3F9CA5AA-EAED-56AD-889E2CA99582413D','3F9CA6ED-B559-50DB-8943E6BCFA086F45',this.value,'default','','/themes/default');\">\n\t\t\t\t\t\t\n\t\t\t\t\t\t\t<option value=\"File^Default\" selected>File</option>\n\t\t\t\t\t\t\n\t\t\t\t\t\t\t\t\t<option value=\"File^Doc\" >File / Doc</option>\n\t\t\t\t\t\t\t\t\n\t\t\t\t</select>\n\t\t\t\t</div>\n\t\t"
+  },
+  "admin-link": {
+    "user": "admin",
+    "rcType": "Link",
+    "subType": "Default",
+    "contentId": "3F9CAC22-FD14-C062-1EDF98A061ECB939",
+    "contentHistId": "3F9CAD0F-AEB6-8524-09D795637435B534",
+    "subtypeFilter": "",
+    "subTypes": [
+      {"type": "Component", "subtype": "Widget", "adminonly": 1},
+      {"type": "File", "subtype": "Doc", "adminonly": 0},
+      {"type": "Folder", "subtype": "Archive", "adminonly": 0},
+      {"type": "Form", "subtype": "Survey", "adminonly": 0},
+      {"type": "Link", "subtype": "External", "adminonly": 0},
+      {"type": "Page", "subtype": "Article", "adminonly": 0},
+      {"type": "Page", "subtype": "Product", "adminonly": 1}
+    ],
+    "html": "\n\t\t\t<div class=\"mura-control-group\">\n\t\t\t\t<label>Type</label>\n\t\t\t\t<select name=\"typeSelector\"  onchange=\"siteManager.resetExtendedAttributes('3F9CAC22-FD14-C062-1EDF98A061ECB939','3F9CAD0F-AEB6-8524-09D795637435B534',this.value,'default','','/themes/default');\">\n\t\t\t\t\t\n\t\t\t\t\t\t<option value=\"Link^Default\" selected>Link</option>\n\t\t\t\t\t<option value=\"Link^External\" >Link  / External</option> \n\t\t\t\t</select>\n\t\t\t</div>\n\t\t"
+  },
+  "admin-component": {
+    "user": "admin",
+    "rcType": "Component",
+    "subType": "Default",
+    "contentId": "3F9CB0D1-B0AD-31B6-EA7EEB5684FDBCE4",
+    "contentHistId": "3F9CB1A2-9009-C966-C069AB43D8D8B3ED",
+    "subtypeFilter": "",
+    "subTypes": [
+      {"type": "Component", "subtype": "Widget", "adminonly": 1},
+      {"type": "File", "subtype": "Doc", "adminonly": 0},
+      {"type": "Folder", "subtype": "Archive", "adminonly": 0},
+      {"type": "Form", "subtype": "Survey", "adminonly": 0},
+      {"type": "Link", "subtype": "External", "adminonly": 0},
+      {"type": "Page", "subtype": "Article", "adminonly": 0},
+      {"type": "Page", "subtype": "Product", "adminonly": 1}
+    ],
+    "html": "\n\t\t\t<div class=\"mura-control-group\">\n\t\t\t\t<label>Type</label>\n\t\t\t\t<select name=\"typeSelector\"  onchange=\"siteManager.resetExtendedAttributes('3F9CB0D1-B0AD-31B6-EA7EEB5684FDBCE4','3F9CB1A2-9009-C966-C069AB43D8D8B3ED',this.value,'default','','/themes/default');\">\n\t\t\t\t\t<option value=\"Component^Default\" selected>Component</option>\n\t\t\t\t\t<option value=\"Component^Widget\" >Component  / Widget</option> \n\t\t\t\t</select>\n\t\t\t</div>\n\t\t"
+  },
+  "editor-component": {
+    "user": "editor",
+    "rcType": "Component",
+    "subType": "Default",
+    "contentId": "3F9CE8A5-0270-4C40-82A0D04043D448A2",
+    "contentHistId": "3F9CE98E-D23B-4693-2CB978FF97FE47D2",
+    "subtypeFilter": "",
+    "subTypes": [
+      {"type": "Component", "subtype": "Widget", "adminonly": 1},
+      {"type": "File", "subtype": "Doc", "adminonly": 0},
+      {"type": "Folder", "subtype": "Archive", "adminonly": 0},
+      {"type": "Form", "subtype": "Survey", "adminonly": 0},
+      {"type": "Link", "subtype": "External", "adminonly": 0},
+      {"type": "Page", "subtype": "Article", "adminonly": 0},
+      {"type": "Page", "subtype": "Product", "adminonly": 1}
+    ],
+    "html": "\n\t\t\t<div class=\"mura-control-group\">\n\t\t\t\t<label>Type</label>\n\t\t\t\t<select name=\"typeSelector\"  onchange=\"siteManager.resetExtendedAttributes('3F9CE8A5-0270-4C40-82A0D04043D448A2','3F9CE98E-D23B-4693-2CB978FF97FE47D2',this.value,'default','','/themes/default');\">\n\t\t\t\t\t<option value=\"Component^Default\" selected>Component</option>\n\t\t\t\t\t<option value=\"Component^Widget\" >Component  / Widget</option> \n\t\t\t\t</select>\n\t\t\t</div>\n\t\t"
+  },
+  "filter-admin-page-default": {
+    "user": "admin",
+    "rcType": "Page",
+    "subType": "Default",
+    "contentId": "3FA5E249-956E-1CCA-5EDCAD256D0CFAA8",
+    "contentHistId": "3FA5E3C1-DF78-3CA0-BAB8436E1CFF65BA",
+    "subtypeFilter": "Page/Product,Folder/Default,Link/External",
+    "subTypes": [
+      {"type": "Link", "subtype": "External", "adminonly": 0},
+      {"type": "Page", "subtype": "Product", "adminonly": 1}
+    ],
+    "html": "\n\t\t<div class=\"mura-control-group\">\n\t\t\t<label>\n\t\t\t\tType\n\t\t\t</label>\n\t\t\t\t<select name=\"typeSelector\" onchange=\"siteManager.resetExtendedAttributes('3FA5E249-956E-1CCA-5EDCAD256D0CFAA8','3FA5E3C1-DF78-3CA0-BAB8436E1CFF65BA',this.value,'default','','/themes/default');\">\n\t\t\t\t\n\t\t\t\t\t\t\t\t<option value=\"Page^Product\" >Page  / Product</option>\n\t\t\t\t\t\t\t\n\t\t\t\t\t<option value=\"Folder^Default\" >Folder</option>\n\t\t\t\t\n\t\t\t</select>\n\t\t\t</div>\n\t"
+  },
+  "filter-admin-page-product": {
+    "user": "admin",
+    "rcType": "Page",
+    "subType": "Product",
+    "contentId": "3FA5F109-E199-EF8E-18E3A790D5100D2D",
+    "contentHistId": "3FA5F1C7-B0DD-054A-86C69544CE035E80",
+    "subtypeFilter": "Page/Product,Folder/Default,Link/External",
+    "subTypes": [
+      {"type": "Link", "subtype": "External", "adminonly": 0},
+      {"type": "Page", "subtype": "Product", "adminonly": 1}
+    ],
+    "html": "\n\t\t<div class=\"mura-control-group\">\n\t\t\t<label>\n\t\t\t\tType\n\t\t\t</label>\n\t\t\t\t<select name=\"typeSelector\" onchange=\"siteManager.resetExtendedAttributes('3FA5F109-E199-EF8E-18E3A790D5100D2D','3FA5F1C7-B0DD-054A-86C69544CE035E80',this.value,'default','','/themes/default');\">\n\t\t\t\t\n\t\t\t\t\t\t\t\t<option value=\"Page^Product\" selected>Page  / Product</option>\n\t\t\t\t\t\t\t\n\t\t\t\t\t<option value=\"Folder^Default\" >Folder</option>\n\t\t\t\t\n\t\t\t</select>\n\t\t\t</div>\n\t"
+  },
+  "filter-editor-page-default": {
+    "user": "editor",
+    "rcType": "Page",
+    "subType": "Default",
+    "contentId": "3FA63B74-BBF0-8684-ABB1C32C285F7B16",
+    "contentHistId": "3FA63C8E-CA2D-3FF2-F8227A6E4476BD35",
+    "subtypeFilter": "Page/Product,Folder/Default,Link/External",
+    "subTypes": [
+      {"type": "Link", "subtype": "External", "adminonly": 0},
+      {"type": "Page", "subtype": "Product", "adminonly": 1}
+    ],
+    "html": "\n\t\t<div class=\"mura-control-group\">\n\t\t\t<label>\n\t\t\t\tType\n\t\t\t</label>\n\t\t\t\t<select name=\"typeSelector\" onchange=\"siteManager.resetExtendedAttributes('3FA63B74-BBF0-8684-ABB1C32C285F7B16','3FA63C8E-CA2D-3FF2-F8227A6E4476BD35',this.value,'default','','/themes/default');\">\n\t\t\t\t\n\t\t\t\t\t<option value=\"Folder^Default\" >Folder</option>\n\t\t\t\t\n\t\t\t</select>\n\t\t\t</div>\n\t"
+  },
+  "filter-editor-page-product": {
+    "user": "editor",
+    "rcType": "Page",
+    "subType": "Product",
+    "contentId": "3FA6428B-A2FB-DEEA-22847EA20AB60F9D",
+    "contentHistId": "3FA6435D-99D5-C819-C3E165B1055B6F84",
+    "subtypeFilter": "Page/Product,Folder/Default,Link/External",
+    "subTypes": [
+      {"type": "Link", "subtype": "External", "adminonly": 0},
+      {"type": "Page", "subtype": "Product", "adminonly": 1}
+    ],
+    "html": "\n\t\t<div class=\"mura-control-group\">\n\t\t\t<label>\n\t\t\t\tType\n\t\t\t</label>\n\t\t\t\t<select name=\"typeSelector\" onchange=\"siteManager.resetExtendedAttributes('3FA6428B-A2FB-DEEA-22847EA20AB60F9D','3FA6435D-99D5-C819-C3E165B1055B6F84',this.value,'default','','/themes/default');\">\n\t\t\t\t\n\t\t\t\t\t\t\t\t<option value=\"Page^Product\" selected>Page  / Product</option>\n\t\t\t\t\t\t\t\n\t\t\t\t\t<option value=\"Folder^Default\" >Folder</option>\n\t\t\t\t\n\t\t\t</select>\n\t\t\t</div>\n\t"
+  },
+  "filter-admin-file": {
+    "user": "admin",
+    "rcType": "File",
+    "subType": "Default",
+    "contentId": "3FA5F571-E3F6-EE2E-877C8B33F6D2C634",
+    "contentHistId": "3FA5F639-F8BA-150C-31D86B4406D1B831",
+    "subtypeFilter": "Page/Product,Folder/Default,Link/External",
+    "subTypes": [
+      {"type": "Link", "subtype": "External", "adminonly": 0},
+      {"type": "Page", "subtype": "Product", "adminonly": 1}
+    ],
+    "html": ""
+  },
+  "filter-admin-link": {
+    "user": "admin",
+    "rcType": "Link",
+    "subType": "Default",
+    "contentId": "3FA60995-D392-FB18-466C159966229081",
+    "contentHistId": "3FA60BCB-F1E1-84E2-9903C7DF0DFDC620",
+    "subtypeFilter": "Page/Product,Folder/Default,Link/External",
+    "subTypes": [
+      {"type": "Link", "subtype": "External", "adminonly": 0},
+      {"type": "Page", "subtype": "Product", "adminonly": 1}
+    ],
+    "html": "\n\t\t\t<div class=\"mura-control-group\">\n\t\t\t\t<label>Type</label>\n\t\t\t\t<select name=\"typeSelector\"  onchange=\"siteManager.resetExtendedAttributes('3FA60995-D392-FB18-466C159966229081','3FA60BCB-F1E1-84E2-9903C7DF0DFDC620',this.value,'default','','/themes/default');\">\n\t\t\t\t\t<option value=\"Link^External\" >Link  / External</option> \n\t\t\t\t</select>\n\t\t\t</div>\n\t\t"
+  },
+  "filter-admin-component": {
+    "user": "admin",
+    "rcType": "Component",
+    "subType": "Default",
+    "contentId": "3FA618EB-EE55-6892-204DECFBEFAF2061",
+    "contentHistId": "3FA619AE-A92C-388E-4B0F2A8BD5AFBB9A",
+    "subtypeFilter": "",
+    "subTypes": [
+      {"type": "Component", "subtype": "Widget", "adminonly": 1},
+      {"type": "File", "subtype": "Doc", "adminonly": 0},
+      {"type": "Folder", "subtype": "Archive", "adminonly": 0},
+      {"type": "Form", "subtype": "Survey", "adminonly": 0},
+      {"type": "Link", "subtype": "External", "adminonly": 0},
+      {"type": "Page", "subtype": "Article", "adminonly": 0},
+      {"type": "Page", "subtype": "Default", "adminonly": 0},
+      {"type": "Page", "subtype": "Product", "adminonly": 1}
+    ],
+    "html": "\n\t\t\t<div class=\"mura-control-group\">\n\t\t\t\t<label>Type</label>\n\t\t\t\t<select name=\"typeSelector\"  onchange=\"siteManager.resetExtendedAttributes('3FA618EB-EE55-6892-204DECFBEFAF2061','3FA619AE-A92C-388E-4B0F2A8BD5AFBB9A',this.value,'default','','/themes/default');\">\n\t\t\t\t\t<option value=\"Component^Default\" selected>Component</option>\n\t\t\t\t\t<option value=\"Component^Widget\" >Component  / Widget</option> \n\t\t\t\t</select>\n\t\t\t</div>\n\t\t"
+  }
+}

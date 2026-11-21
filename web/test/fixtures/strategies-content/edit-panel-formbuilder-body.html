@@ -1,0 +1,80 @@
+
+				<div class="mura-control-group">
+					<div id="bodyContainer" class="mura-control justify">
+						
+<script>
+	isFormBuilder = true;
+
+	jQuery(document).ready(function() {
+		jQuery("#mura-templatebuilder").templatebuilder();
+	});
+</script>
+
+	<div id="mura-templatebuilder" data-url="/admin/">
+		<div class="mura-tb-menu">
+			<ul class="mura-tb-form-menu">
+			<li><div class="ui-button button-field" id="button-form" data-object="section-form" title="Click to change general form attributes"><span class="ui-button-text">Form</span></div></li>
+			<li class="spacer"></li>
+			</ul>
+			<ul class="mura-tb-field-menu">
+			<li><div class="ui-button button-field" id="button-section" data-object="section-section" title="Click to insert a Section (Fieldset)"><span class="ui-button-text ui-icon-formfield-section">Section</span></div></li>
+			<li class="spacer"></li>
+			<li><div class="ui-button button-field" id="button-textfield" data-object="field-textfield" title="Click to insert a Text Field"><span class="ui-icon ui-icon-formfield ui-icon-formfield-textfield"></span></div></li>
+			<li><div class="ui-button button-field" id="button-textarea" data-object="field-textarea" title="Click to insert a Text Area"><span class="ui-icon ui-icon-formfield ui-icon-formfield-textarea"></span></div></li>
+			<li><div class="ui-button button-field" id="button-hidden" data-object="field-hidden" title="Click to insert a Hidden field"><span class="ui-icon ui-icon-formfield ui-icon-formfield-hidden"></span></div></li>
+			<li><div class="ui-button button-field" id="button-radio" data-object="field-radio" title="Click to insert a Radio Button Group"><span class="ui-icon ui-icon-formfield ui-icon-formfield-radiobox"></span></div></li>
+			<li><div class="ui-button button-field" id="button-checkbox" data-object="field-checkbox" title="Click to insert Checkboxes"><span class="ui-icon ui-icon-formfield ui-icon-formfield-checkbox"></span></div></li>
+			<li><div class="ui-button button-field" id="button-dropdown" data-object="field-dropdown" title="Click to insert a Dropdown Menu"><span class="ui-icon ui-icon-formfield ui-icon-formfield-select"></span></div></li>
+			<li><div class="ui-button button-field" id="button-file" data-object="field-file" title="Click to insert a File Upload field"><span class="ui-icon ui-icon-formfield ui-icon-formfield-file"></span></div></li>
+			<li><div class="ui-button button-field" id="button-textblock" data-object="field-textblock" title="Click to insert a block of static text"><span class="ui-icon ui-icon-formfield ui-icon-formfield-textblock"></span></div></li>
+			<li><div class="ui-button button-field" id="button-nested" data-object="field-nested" title="Click to insert a nested form"><span class="ui-icon ui-icon-formfield ui-icon-formfield-nested"></span></div></li>
+			</ul>
+		</div>
+		<div id="mura-tb-form">
+			<div id="mura-tb-form-pages">
+					Page
+				<ul id="mura-form-pages">
+				</ul>
+				<div id="mura-form-addpage">+</div>
+			</div>
+			<div id="mura-tb-form-fields">
+				<div id="mura-tb-fields-empty" class="help-block">Add a form element using the toolbar above.</div>
+				<ul id="mura-tb-fields">
+				</ul>
+			</div>
+			<div id="mura-tb-fields-settings">
+				<div id="mura-tb-field-form" class="mura-tb-data-form">
+					<div id="mura-tb-field-empty" class="help-block">Select a form element on the left to edit its properties.</div>
+					<div id="mura-tb-field">
+					</div>
+				</div>
+				<div id="mura-tb-dataset-form" class="mura-tb-data-form">
+				</div>
+				<div id="mura-tb-grid">
+				</div>
+			</div>
+			<div style="clear:both;"></div>
+		</div>
+
+	</div>
+	<textarea id="mura-formdata" name="body">{"form":{"datecreate":"","fields":{},"pages":[],"statuscode":0,"datelastupdate":"","formattributes":{},"siteid":"","formid":"45400F13-0A3C-69A3-BFC1FBD7CA5CC123","isactive":0,"name":"","config":{},"notes":"","remoteid":"","iscurrent":0,"package":"","deletedfields":{},"fieldorder":[]},"datasets":{}}</textarea>
+
+	<script>
+		hideBodyEditor=function(){
+			jQuery("#mura-templatebuilder").hide();
+		}
+
+		showBodyEditor=function(){
+			jQuery("#mura-templatebuilder").show();
+		}
+
+		
+		jQuery(document).ready(function(){
+			showBodyEditor();
+		});
+		
+	</script>
+
+					</div>
+				</div>
+			

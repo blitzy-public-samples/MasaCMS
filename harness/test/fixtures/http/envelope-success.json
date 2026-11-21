@@ -1,0 +1,80 @@
+{
+  "apiversion": "v1",
+  "method": "findQuery",
+  "params": {
+    "entityname": "content",
+    "siteid": "tenant-a",
+    "type": "Page"
+  },
+  "data": {
+    "csrf_token": "ABABABABABABABABABABABABABABABAB",
+    "csrf_token_expires": "260630131500000",
+    "endindex": 2,
+    "entityname": "content",
+    "items": [
+      {
+        "active": 1,
+        "approved": 1,
+        "changesetid": "",
+        "contenthistid": "8A9B0C1D-2E3F-4A5B-9C6D7E8F9A0B1C2D",
+        "contentid": "6E1D3B2A-C2F4-4B6A-9D8E7F6A5B4C3D2E",
+        "created": "2026-06-01T09:00:00",
+        "filename": "about-us",
+        "isnew": 0,
+        "lastupdate": "2026-06-30T10:15:00",
+        "links": {
+          "crumbs": "http://127.0.0.1:8500/_api/json/v1/tenant-a/content/6E1D3B2A-C2F4-4B6A-9D8E7F6A5B4C3D2E/crumbs",
+          "history": "http://127.0.0.1:8500/_api/json/v1/tenant-a/content/6E1D3B2A-C2F4-4B6A-9D8E7F6A5B4C3D2E/history",
+          "parent": "http://127.0.0.1:8500/_api/json/v1/tenant-a/content/1A2B3C4D-5E6F-4A7B-8C9D0E1F2A3B4C5D",
+          "rendered": "http://127.0.0.1:8500/_api/json/v1/tenant-a/content/_path/about-us",
+          "self": "http://127.0.0.1:8500/_api/json/v1/tenant-a/content/6E1D3B2A-C2F4-4B6A-9D8E7F6A5B4C3D2E"
+        },
+        "menutitle": "About Us",
+        "moduleid": "00000000000000000000000000000000000",
+        "parentid": "1A2B3C4D-5E6F-4A7B-8C9D0E1F2A3B4C5D",
+        "path": "00000000000000000000000000000000001,1A2B3C4D-5E6F-4A7B-8C9D0E1F2A3B4C5D,6E1D3B2A-C2F4-4B6A-9D8E7F6A5B4C3D2E",
+        "siteid": "tenant-a",
+        "title": "About Us",
+        "type": "Page",
+        "url": "/tenant-a/about-us/"
+      },
+      {
+        "active": 1,
+        "approved": 1,
+        "changesetid": "",
+        "contenthistid": "9B0C1D2E-3F4A-4B5C-8D7E8F9A0B1C2D3E",
+        "contentid": "7F2E4C3B-D3A5-4C7B-8E9F0A1B2C3D4E5F",
+        "created": "2026-06-02T09:30:00",
+        "filename": "contact-us",
+        "isnew": 0,
+        "lastupdate": "2026-06-29T16:45:30",
+        "links": {
+          "crumbs": "http://127.0.0.1:8500/_api/json/v1/tenant-a/content/7F2E4C3B-D3A5-4C7B-8E9F0A1B2C3D4E5F/crumbs",
+          "history": "http://127.0.0.1:8500/_api/json/v1/tenant-a/content/7F2E4C3B-D3A5-4C7B-8E9F0A1B2C3D4E5F/history",
+          "parent": "http://127.0.0.1:8500/_api/json/v1/tenant-a/content/1A2B3C4D-5E6F-4A7B-8C9D0E1F2A3B4C5D",
+          "rendered": "http://127.0.0.1:8500/_api/json/v1/tenant-a/content/_path/contact-us",
+          "self": "http://127.0.0.1:8500/_api/json/v1/tenant-a/content/7F2E4C3B-D3A5-4C7B-8E9F0A1B2C3D4E5F"
+        },
+        "menutitle": "Contact Us",
+        "moduleid": "00000000000000000000000000000000000",
+        "parentid": "1A2B3C4D-5E6F-4A7B-8C9D0E1F2A3B4C5D",
+        "path": "00000000000000000000000000000000001,1A2B3C4D-5E6F-4A7B-8C9D0E1F2A3B4C5D,7F2E4C3B-D3A5-4C7B-8E9F0A1B2C3D4E5F",
+        "siteid": "tenant-a",
+        "title": "Contact Us",
+        "type": "Page",
+        "url": "/tenant-a/contact-us/"
+      }
+    ],
+    "itemsperpage": 10,
+    "links": {
+      "entities": "http://127.0.0.1:8500/_api/json/v1/tenant-a",
+      "permissions": "http://127.0.0.1:8500/_api/json/v1/tenant-a/content/permissions",
+      "properties": "http://127.0.0.1:8500/_api/json/v1/tenant-a/content/properties",
+      "self": "http://127.0.0.1:8500/_api/json/v1/tenant-a/?&entityname=content&siteid=tenant-a&type=Page&authToken=FIXTURE-TOKEN-1&method=findQuery&pageIndex=1"
+    },
+    "pageindex": 1,
+    "startindex": 1,
+    "totalitems": 2,
+    "totalpages": 1
+  }
+}

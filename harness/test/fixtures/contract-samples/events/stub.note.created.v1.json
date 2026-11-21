@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:opt2:contract-sample:event:stub.note.created.v1",
+  "$comment": "source-sha: 696383140578f8dea3ece26f80cd7bfb370ddf0f",
+  "title": "Note created payload",
+  "x-opt2-kind": "state",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "noteId",
+    "title",
+    "body",
+    "created",
+    "rowVersion"
+  ],
+  "properties": {
+    "noteId": {
+      "$ref": "#/$defs/cfUuid"
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255
+    },
+    "body": {
+      "type": "string",
+      "maxLength": 10000
+    },
+    "created": {
+      "$ref": "#/$defs/localTimestamp"
+    },
+    "rowVersion": {
+      "type": "integer",
+      "minimum": 1
+    }
+  },
+  "$defs": {
+    "cfUuid": {
+      "type": "string",
+      "pattern": "^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16}$"
+    },
+    "siteId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 25
+    },
+    "localTimestamp": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}[ T]\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,3})?$"
+    }
+  }
+}

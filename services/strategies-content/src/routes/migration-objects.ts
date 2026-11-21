@@ -1,0 +1,94 @@
+/** `/internal/v1/migration/objects`: the migration service's transfer of legacy file-store objects into `content-files`, its read of them back, and their removal. */
+import { Roles, type Opt2RouteConfig } from '@opt2/platform/auth';
+import { LegacyApiError } from '@opt2/platform/legacy-compat';
+import { z, type Clock, type FastifyInstance } from '@opt2/platform/service-kit';
+import type { StoragePort } from '@opt2/platform/storage';
+import type { components, operations } from '../generated/openapi.js';
+import {
+  deleteMigrationObject,
+  openMigrationObject,
+  storeMigrationObject,
+  type FileVariant,
+  type MigrationObjectRequest,
+  type StoreObjectDeps,
+  type StoredObjectResult,
+} from '../migration/objects.js';
+import { recoverAllStagedObjects } from '../migration/staged-objects.js';
+
+type PutObjectQuery = operations['migrationPutObject']['parameters']['query'];
+type GetObjectQuery = operations['migrationGetObject']['parameters']['query'];
+type DeleteObjectQuery = operations['migrationDeleteObject']['parameters']['query'];
+type FileObject = components['schemas']['FileObject'];
+type DeletedFileObject = components['schemas']['DeletedFileObject'];
+
+/** The route context these routes read: a structural subset of `ContentRouteContext`, so this module needs nothing from the `routes/index.ts` that registers it. */
+export interface MigrationObjectRouteContext {
+  domain: Pick<StoreObjectDeps, 'db' | 'repository'>;
+  storage: StoragePort;
+  clock: Clock;
+}
+
+const OBJECTS_PATH = '/internal/v1/migration/objects';
+const ROUTE: { opt2: Opt2RouteConfig } = { opt2: { transport: 'service', requires: [Roles.platformMigration] } };
+const OCTET_STREAM = 'application/octet-stream';
+
+// The contract's parameter patterns: a CF UUID file id, a variant suffix that cannot leave the key's directory, the extension, and
+// the object key, which reuses the variant and extension fragments so every stored key is readable.
+const TENANT_UUID = '[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}';
+const VARIANT_BODY = String.raw`_[^/\\\u0000-\u001F\u007F]+`;
+const EXT = '[A-Za-z0-9]+';
+const CF_ID = /^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{16}$/;
+const VARIANT = new RegExp(`^(${VARIANT_BODY})?$`);
+const EXTENSION = new RegExp(`^${EXT}$`);
+const OBJECT_KEY = new RegExp(String.raw`^${TENANT_UUID}/[A-Za-z0-9-]{35}(${VARIANT_BODY})?\.${EXT}$`);
+
+const putQuerySchema = z.strictObject({
+  tenantId: z.guid(),
+  fileId: z.string().regex(CF_ID),
+  variant: z.custom<FileVariant>((value) => typeof value === 'string' && VARIANT.test(value)),
+  ext: z.string().regex(EXTENSION),
+  contentType: z.string().min(1),
+  sha256: z.string().regex(/^[0-9a-f]{64}$/),
+}) satisfies z.ZodType<PutObjectQuery>;
+
+const getQuerySchema = z.strictObject({ key: z.string().regex(OBJECT_KEY) }) satisfies z.ZodType<GetObjectQuery>;
+const deleteQuerySchema = getQuerySchema satisfies z.ZodType<DeleteObjectQuery>;
+
+/** The contract's `FileObject` of a stored object; the other result fields are the service's own. */
+function fileObjectOf(stored: StoredObjectResult): FileObject {
+  return { key: stored.key, size: stored.size, sha256: stored.sha256, created: stored.created };
+}
+
+/** Registers the `platform.migration` object upload, read and deletion of `content-files`. */
+export function registerMigrationObjectRoutes(app: FastifyInstance, ctx: MigrationObjectRouteContext): void {
+  const deps: StoreObjectDeps = { db: ctx.domain.db, repository: ctx.domain.repository, storage: ctx.storage, clock: ctx.clock };
+  app.addHook('onReady', () => recoverAllStagedObjects(deps));
+
+  /** Stores the raw body as the object the query names, once per SHA-256. */
+  app.post(OBJECTS_PATH, { config: ROUTE }, async (request): Promise<FileObject> => {
+    const query = putQuerySchema.safeParse(request.query);
+    if (!query.success || !Buffer.isBuffer(request.body)) throw new LegacyApiError('invalidParameters');
+    const req: MigrationObjectRequest = { ...query.data, bytes: request.body };
+    return fileObjectOf(await storeMigrationObject(deps, req));
+  });
+
+  // The reverse projection reads object bytes here: the export manifest carries no URL and signed downloads need a user token.
+  /** Streams the stored bytes of the object under `key`; the legacy 404 envelope when the key's tenant records none. */
+  app.get(OBJECTS_PATH, { config: ROUTE }, async (request, reply) => {
+    const query = getQuerySchema.safeParse(request.query);
+    if (!query.success) throw new LegacyApiError('invalidParameters');
+    const opened = await openMigrationObject(deps, query.data.key);
+    if (opened === null) {
+      reply.callNotFound();
+      return reply;
+    }
+    return reply.code(200).headers({ 'Content-Type': OCTET_STREAM, 'Content-Length': String(opened.head.size) }).send(opened.body);
+  });
+
+  /** Deletes the object under `key` with its manifest row; a repeat, or a key never stored, answers `deleted: false`. */
+  app.delete(OBJECTS_PATH, { config: ROUTE }, async (request): Promise<DeletedFileObject> => {
+    const query = deleteQuerySchema.safeParse(request.query);
+    if (!query.success) throw new LegacyApiError('invalidParameters');
+    return deleteMigrationObject(deps, query.data.key);
+  });
+}

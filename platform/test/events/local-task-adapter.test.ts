@@ -1,0 +1,1231 @@
+import { execFile } from 'node:child_process';
+import { createServer, type Server } from 'node:http';
+import { createServer as createNetServer, type AddressInfo } from 'node:net';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
+import pg from 'pg';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import {
+  LEASE_MARGIN_S,
+  LOCAL_TOMBSTONE_RETENTION_S,
+  SCHEDULED_TASK_QUEUE_STATE_TABLE,
+  SCHEDULED_TASK_QUEUE_TABLE,
+  createLocalTaskAdapter,
+  scheduledTaskQueueSql,
+  type LocalTaskPort,
+} from '../../src/tasks/local-adapter.js';
+import { MAX_TASK_PAGE_SIZE, createTaskPort, type CreateTaskInput, type TaskLogger } from '../../src/tasks/port.js';
+import { RECURRING_RETRY, UnknownQueueError, UnknownTaskTargetError, queueDefinition, retryDelayS } from '../../src/tasks/queues.js';
+import {
+  SYSTEM_TENANT_ID,
+  registeredTenants,
+  rlsSql,
+  tenantDbFromPool,
+  tenantIdForSite,
+  tenantRegistrySql,
+  type TenantDb,
+} from '../../src/tenancy/index.js';
+import { createLocalCloudTasksTransport } from '../../src/auth/index.js';
+import { MemorySpanExporter, SpanKind, activeSpanIds, flushTracing, shutdownTracing, startSpan, startTracing } from '../../src/tracing/index.js';
+import { createThrowawaySchema, pgAvailable, testPgConfig, type ThrowawaySchema } from '../../src/testing/schema.js';
+import { TENANT_A, TENANT_B, TENANT_LIST, TENANT_UMBRELLA, seedRegistry } from '../../src/testing/fixtures.js';
+import { testSigningKeys, writeTestSecrets } from '../../src/testing/tokens.js';
+import { REDACTED } from '../../src/logging/index.js';
+
+const SERVICE_URLS: Readonly<Record<string, string>> = {
+  surveys: 'http://127.0.0.1:8117',
+  communications: 'http://127.0.0.1:8115',
+  stub: 'http://127.0.0.1:8199',
+};
+
+const PLATFORM_DIR = fileURLToPath(new URL('../..', import.meta.url));
+
+// Run in a separate Node process from PLATFORM_DIR: creates OPT2_WRITER's task through its own adapter and pool, as
+// the throwaway app role (the bootstrap user may SET ROLE to it), and prints the create result.
+const EXTERNAL_WRITER = `
+const { createLocalTaskAdapter } = await import('./src/tasks/local-adapter.ts');
+const { tenantDbFromPool } = await import('./src/tenancy/index.ts');
+const { testPgConfig } = await import('./src/testing/schema.ts');
+const { default: pg } = await import('pg');
+const { schema, role, serviceUrls, input } = JSON.parse(process.env.OPT2_WRITER);
+const db = tenantDbFromPool(new pg.Pool({ ...testPgConfig(), options: '-c role=' + role, max: 1 }), { schema });
+const silent = { info() {}, warn() {}, error() {} };
+const port = await createLocalTaskAdapter({ db, stateDir: 'unused', serviceUrls, logger: silent, autoStart: false, signer: async () => 'unused' });
+try {
+  process.stdout.write(JSON.stringify(await port.create({ ...input, scheduleTime: new Date(input.scheduleTime) })));
+} finally {
+  await port.close();
+  await db.end();
+}
+`;
+
+describe('scheduledTaskQueueSql', () => {
+  it('returns both tables, the tenant-leading queue indexes and each table RLS block, newline-terminated', () => {
+    expect(scheduledTaskQueueSql('stub')).toBe(
+      [
+        'CREATE TABLE stub.scheduled_task_queue (',
+        '  tenant_id uuid NOT NULL,',
+        '  queue text NOT NULL,',
+        '  name text NOT NULL,',
+        '  schedule_time timestamp(3) without time zone NOT NULL,',
+        '  url text NOT NULL,',
+        '  body jsonb NOT NULL,',
+        "  headers jsonb NOT NULL DEFAULT '{}'::jsonb,",
+        '  deadline_s integer NOT NULL,',
+        "  status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','running','done','failed','deleted')),",
+        '  attempts integer NOT NULL DEFAULT 0,',
+        '  lease_until timestamp(3) without time zone,',
+        '  last_status integer,',
+        '  created_at timestamp(3) without time zone NOT NULL,',
+        '  updated_at timestamp(3) without time zone NOT NULL,',
+        '  PRIMARY KEY (tenant_id, queue, name)',
+        ');',
+        "CREATE INDEX scheduled_task_queue_pending_due ON stub.scheduled_task_queue (tenant_id, schedule_time) WHERE status = 'pending';",
+        "CREATE INDEX scheduled_task_queue_lease_expiry ON stub.scheduled_task_queue (tenant_id, lease_until) WHERE status = 'running';",
+        "CREATE INDEX scheduled_task_queue_live ON stub.scheduled_task_queue (tenant_id, queue, schedule_time, name) WHERE status IN ('pending','running');",
+        "CREATE INDEX scheduled_task_queue_tombstone_expiry ON stub.scheduled_task_queue (tenant_id, updated_at) WHERE status IN ('done','failed','deleted');",
+        rlsSql('stub', 'scheduled_task_queue'),
+        'CREATE TABLE stub.scheduled_task_queue_state (',
+        '  tenant_id uuid NOT NULL,',
+        '  queue text NOT NULL,',
+        '  paused boolean NOT NULL DEFAULT false,',
+        '  updated_at timestamp(3) without time zone NOT NULL,',
+        '  PRIMARY KEY (tenant_id, queue)',
+        ');',
+        rlsSql('stub', 'scheduled_task_queue_state'),
+        '',
+      ].join('\n'),
+    );
+  });
+
+  it('names the tables and fixes the retention and lease margin', () => {
+    expect([SCHEDULED_TASK_QUEUE_TABLE, SCHEDULED_TASK_QUEUE_STATE_TABLE]).toEqual(['scheduled_task_queue', 'scheduled_task_queue_state']);
+    expect([LOCAL_TOMBSTONE_RETENTION_S, LEASE_MARGIN_S]).toEqual([3600, 30]);
+  });
+
+  it.each(['Stub', 'stub.queue', 'stub; DROP TABLE x', 'programs-sites', '', 42 as unknown as string])('rejects schema %j', (schema) => {
+    expect(() => scheduledTaskQueueSql(schema)).toThrow(TypeError);
+  });
+});
+
+const available = await pgAvailable();
+
+interface Call {
+  url: string;
+  headers: Record<string, string>;
+  body: unknown;
+  headersTimeout: number;
+}
+
+describe.skipIf(!available)('local task adapter', () => {
+  let handle: ThrowawaySchema;
+  let db: TenantDb;
+  let stateDir: string;
+  let port: LocalTaskPort;
+  let nowMs = new Date(2026, 5, 30, 12, 0, 0, 0).getTime();
+  const clock = { now: () => new Date(nowMs) };
+  let calls: Call[] = [];
+  let respond: (call: Call) => Promise<number> = () => Promise.resolve(200);
+  const warnings: Array<{ obj: object; msg?: string }> = [];
+  const errors: Array<{ obj: object; msg?: string }> = [];
+  const logger: TaskLogger = {
+    info: () => undefined,
+    warn: (obj, msg) => warnings.push({ obj, msg }),
+    error: (obj, msg) => errors.push({ obj, msg }),
+  };
+
+  /** Stands in for undici `request`: records the call and answers with `respond`'s status. */
+  const stubRequest = (async (url: string, opts: { headers: Record<string, string>; body: string; headersTimeout: number }) => {
+    const call: Call = { url, headers: opts.headers, body: JSON.parse(opts.body), headersTimeout: opts.headersTimeout };
+    calls.push(call);
+    return { statusCode: await respond(call), body: { dump: () => Promise.resolve() } };
+  }) as unknown as typeof import('undici').request;
+
+  /** Task input for the surveys launch route, named `name`, due a second ago. */
+  function launch(name: string, tenantId: string | undefined, extra: Partial<CreateTaskInput> = {}): CreateTaskInput {
+    return {
+      queue: 'surveys-launch',
+      name,
+      scheduleTime: new Date(nowMs - 1000),
+      url: `${SERVICE_URLS.surveys}/internal/v1/tasks/surveys/launch`,
+      deadlineS: 60,
+      ...(tenantId === undefined ? {} : { tenantId }),
+      ...extra,
+    };
+  }
+
+  /** Number of queue rows named `name` visible under `tenant`. */
+  async function visible(tenant: string, name: string): Promise<number> {
+    return db.withTenant(tenant, async (tx) => {
+      const { rows } = await tx.query<{ n: number }>(
+        `SELECT count(*)::int AS n FROM ${handle.schema}.scheduled_task_queue WHERE name = $1`,
+        [name],
+      );
+      return rows[0]?.n ?? 0;
+    });
+  }
+
+  /** The stored queue row of `name` under `tenant`. */
+  async function rowOf(tenant: string, name: string): Promise<Record<string, unknown> | undefined> {
+    return db.withTenant(tenant, async (tx) => {
+      const { rows } = await tx.query(`SELECT * FROM ${handle.schema}.scheduled_task_queue WHERE name = $1`, [name]);
+      return rows[0];
+    });
+  }
+
+  beforeAll(async () => {
+    handle = await createThrowawaySchema({ service: 'tasks', extraSql: [tenantRegistrySql('tasks'), scheduledTaskQueueSql('tasks')] });
+    db = handle.app;
+    await seedRegistry(db);
+    stateDir = await mkdtemp(join(tmpdir(), 'opt2-local-tasks-'));
+    await writeTestSecrets(stateDir);
+    port = await createLocalTaskAdapter({ db, stateDir, serviceUrls: SERVICE_URLS, clock, logger, autoStart: false, request: stubRequest });
+  });
+
+  afterAll(async () => {
+    await port?.close();
+    await handle?.drop();
+    if (stateDir !== undefined) await rm(stateDir, { recursive: true, force: true });
+  });
+
+  beforeEach(async () => {
+    respond = () => Promise.resolve(200);
+    nowMs += 10 * 3600 * 1000;
+    await port.dispatchDue();
+    calls = [];
+    warnings.length = 0;
+    errors.length = 0;
+  });
+
+  it('dispatches tenant A, tenant B and system tasks, each stored under its own tenant only', async () => {
+    const created = [
+      await port.create(launch('iso-a', TENANT_A.tenantId, { body: { surveyId: 'S1' } })),
+      await port.create(launch('iso-b', TENANT_B.tenantId)),
+      await port.create({
+        queue: 'stub-outbox-sweep',
+        name: 'stub-outbox-sweep-1',
+        scheduleTime: new Date(nowMs - 1000),
+        url: `${SERVICE_URLS.stub}/internal/v1/outbox/sweep`,
+        deadlineS: 60,
+      }),
+    ];
+    expect(created.map((result) => result.created)).toEqual([true, true, true]);
+    expect([await visible(TENANT_A.tenantId, 'iso-a'), await visible(TENANT_B.tenantId, 'iso-a')]).toEqual([1, 0]);
+    expect([await visible(TENANT_B.tenantId, 'iso-b'), await visible(TENANT_A.tenantId, 'iso-b')]).toEqual([1, 0]);
+    expect(await visible(SYSTEM_TENANT_ID, 'iso-a')).toBe(0);
+    expect((await port.list('surveys-launch')).tasks.map((task) => [task.name, task.tenantId])).toEqual([
+      ['iso-a', TENANT_A.tenantId],
+      ['iso-b', TENANT_B.tenantId],
+    ]);
+    const [sweep] = (await port.list('stub-outbox-sweep')).tasks;
+    expect(sweep).toMatchObject({ queue: 'stub-outbox-sweep', name: 'stub-outbox-sweep-1', status: 'pending', attempts: 0 });
+    expect(sweep).not.toHaveProperty('tenantId');
+
+    expect(await port.dispatchDue()).toBe(3);
+    expect(calls.map((call) => call.body)).toEqual(
+      expect.arrayContaining([
+        { queue: 'surveys-launch', name: 'iso-a', tenantId: TENANT_A.tenantId, payload: { surveyId: 'S1' } },
+        { queue: 'surveys-launch', name: 'iso-b', tenantId: TENANT_B.tenantId, payload: null },
+        { queue: 'stub-outbox-sweep', name: 'stub-outbox-sweep-1', tenantId: null, payload: null },
+      ]),
+    );
+    expect(await rowOf(TENANT_A.tenantId, 'iso-a')).toMatchObject({ status: 'done', attempts: 1, last_status: 200, lease_until: null });
+    expect(await port.list('surveys-launch')).toEqual({ tasks: [] });
+  });
+
+  it('leaves no rows visible to a pooled connection reused after a tenant scan', async () => {
+    await port.create(launch('reuse-a', TENANT_A.tenantId));
+    await port.dispatchDue();
+    for (let i = 0; i < 8; i += 1) {
+      const { rows } = await handle.appPool.query<{ n: number }>(`SELECT count(*)::int AS n FROM ${handle.schema}.scheduled_task_queue`);
+      expect(rows[0]?.n).toBe(0);
+    }
+  });
+
+  it('sends the Cloud Tasks headers and a token the local cloud-tasks transport accepts for the target service', async () => {
+    const scheduleTime = new Date(nowMs - 1500);
+    await port.create(launch('hdr-a', TENANT_A.tenantId, { scheduleTime, deadlineS: 45 }));
+    expect(await port.dispatchDue()).toBe(1);
+    const [call] = calls;
+    expect(call?.headers).toMatchObject({
+      'content-type': 'application/json',
+      'x-cloudtasks-taskname': 'hdr-a',
+      'x-cloudtasks-queuename': 'surveys-launch',
+      'x-cloudtasks-taskretrycount': '0',
+      'x-cloudtasks-taskexecutioncount': '0',
+      'x-cloudtasks-tasketa': String(scheduleTime.getTime() / 1000),
+    });
+    expect(call?.headersTimeout).toBe(45_000);
+    const { publicKey } = await testSigningKeys();
+    const request = { headers: { authorization: call?.headers.authorization }, path: '/internal/v1/tasks/surveys/launch' };
+    const surveys = createLocalCloudTasksTransport({ publicKey, callee: 'surveys' });
+    expect((await surveys.authenticate(request, { optional: false })).service?.name).toBe('tasks-invoker');
+    const other = createLocalCloudTasksTransport({ publicKey, callee: 'communications' });
+    await expect(other.authenticate(request, { optional: false })).rejects.toThrow();
+  });
+
+  it('holds a paused queue and dispatches it after resume', async () => {
+    const queue = 'communications-reminders';
+    await port.create({
+      queue,
+      name: 'pause-b',
+      scheduleTime: new Date(nowMs),
+      url: `${SERVICE_URLS.communications}/internal/v1/tasks/reminders`,
+      deadlineS: 60,
+      tenantId: TENANT_B.tenantId,
+    });
+    expect(await port.queueState(queue)).toEqual({ queue, paused: false });
+    await port.pauseQueue(queue);
+    expect(await port.queueState(queue)).toEqual({ queue, paused: true });
+    expect(await port.dispatchDue()).toBe(0);
+    await port.resumeQueue(queue);
+    expect(await port.queueState(queue)).toEqual({ queue, paused: false });
+    expect(await port.dispatchDue()).toBe(1);
+    await expect(port.pauseQueue('no-such-queue')).rejects.toThrow('Unknown task queue');
+  });
+
+  it('reschedules a non-2xx answer with backoff and fails the task at maxAttempts', async () => {
+    respond = () => Promise.resolve(503);
+    await port.create({
+      queue: 'stub-outbox-sweep',
+      name: 'retry-sys',
+      scheduleTime: new Date(nowMs),
+      url: `${SERVICE_URLS.stub}/internal/v1/outbox/sweep`,
+      deadlineS: 60,
+    });
+    for (let attempt = 1; attempt <= RECURRING_RETRY.maxAttempts; attempt += 1) {
+      expect(await port.dispatchDue()).toBe(1);
+      const row = await rowOf(SYSTEM_TENANT_ID, 'retry-sys');
+      expect(row).toMatchObject({ attempts: attempt, last_status: 503 });
+      if (attempt === RECURRING_RETRY.maxAttempts) {
+        expect(row?.status).toBe('failed');
+      } else {
+        const delayMs = retryDelayS(RECURRING_RETRY, attempt) * 1000;
+        expect(row?.status).toBe('pending');
+        expect((row?.schedule_time as Date).getTime()).toBe(nowMs + delayMs);
+        expect(await port.dispatchDue()).toBe(0);
+        nowMs += delayMs;
+      }
+    }
+    expect(await port.dispatchDue()).toBe(0);
+    expect(calls.map((call) => call.headers['x-cloudtasks-taskretrycount'])).toEqual(['0', '1', '2', '3', '4']);
+    expect(warnings.at(-1)?.obj).toMatchObject({
+      queue: 'stub-outbox-sweep',
+      name: 'retry-sys',
+      tenantId: SYSTEM_TENANT_ID,
+      attempts: 5,
+      status: 'failed',
+      statusCode: 503,
+    });
+    expect(JSON.stringify(warnings)).not.toMatch(/Bearer|payload/);
+  });
+
+  it('logs a failed dispatch with its error serialized, never its raw message', async () => {
+    respond = () => Promise.reject(new Error('connect failed https://user:pw@h/?X-Goog-Signature=abc'));
+    await port.create({
+      queue: 'stub-outbox-sweep',
+      name: 'raw-error-sys',
+      scheduleTime: new Date(nowMs),
+      url: `${SERVICE_URLS.stub}/internal/v1/outbox/sweep`,
+      deadlineS: 60,
+    });
+    expect(await port.dispatchDue()).toBe(1);
+    const logged = warnings.at(-1)?.obj as { error?: Record<string, unknown> } | undefined;
+    expect(logged).toMatchObject({ name: 'raw-error-sys', status: 'pending', error: { type: 'Error', message: REDACTED } });
+    expect(logged?.error).not.toBeInstanceOf(Error);
+    expect(Object.keys(logged?.error ?? {}).every((key) => ['type', 'message', 'stack'].includes(key))).toBe(true);
+    expect(JSON.stringify(warnings)).not.toMatch(/connect failed|user:pw|X-Goog-Signature/);
+  });
+
+  it('answers created:false for a duplicate name and for a deleted name until its tombstone expires', async () => {
+    const input = launch('dup-a', TENANT_A.tenantId, { scheduleTime: new Date(nowMs + 600_000) });
+    expect(await port.create(input)).toEqual({ name: 'dup-a', created: true });
+    expect(await port.create(input)).toEqual({ name: 'dup-a', created: false });
+    expect(await port.delete('surveys-launch', 'dup-a')).toEqual({ name: 'dup-a', deleted: true });
+    expect(await port.delete('surveys-launch', 'dup-a')).toEqual({ name: 'dup-a', deleted: false });
+    expect(await port.list('surveys-launch')).toEqual({ tasks: [] });
+    expect(await port.create(input)).toEqual({ name: 'dup-a', created: false });
+    nowMs += (LOCAL_TOMBSTONE_RETENTION_S - 10) * 1000;
+    await port.dispatchDue();
+    expect(await port.create(input)).toEqual({ name: 'dup-a', created: false });
+    nowMs += 120_000;
+    await port.dispatchDue();
+    const again = { ...input, scheduleTime: new Date(nowMs + 600_000) };
+    expect(await port.create(again)).toEqual({ name: 'dup-a', created: true });
+    expect(await port.delete('surveys-launch', 'dup-a', { tenantId: TENANT_B.tenantId })).toEqual({ name: 'dup-a', deleted: false });
+    expect(await port.delete('surveys-launch', 'dup-a', { tenantId: TENANT_A.tenantId })).toEqual({ name: 'dup-a', deleted: true });
+  });
+
+  describe('paged list and get', () => {
+    const queue = 'content-scheduled-publish';
+    const url = `${SERVICE_URLS.stub}/internal/v1/tasks/content/publish`;
+    let seeded = 0;
+
+    /** Creates a task due an hour from now plus `offsetMs`, under `tenantId` or as a system task. */
+    async function createAt(name: string, tenantId: string | undefined, offsetMs: number, onQueue = queue): Promise<void> {
+      const scheduleTime = new Date(nowMs + 3_600_000 + offsetMs);
+      await port.create({ queue: onQueue, name, scheduleTime, url, deadlineS: 60, ...(tenantId === undefined ? {} : { tenantId }) });
+    }
+
+    /** Seeds live tasks of the system tenant, tenant A and tenant B, a tombstone and another queue's task; returns the live ones in list order. */
+    async function seedPages(): Promise<Array<[string, string | undefined]>> {
+      seeded += 1;
+      const at = (suffix: string): string => `page${String(seeded)}-${suffix}`;
+      for (const [suffix, tenantId, offsetMs] of [
+        ['sys-2', undefined, 1_567],
+        ['sys-1', undefined, 1_234],
+        ['a-3', TENANT_A.tenantId, 3_001],
+        ['a-2', TENANT_A.tenantId, 1_234],
+        ['a-1', TENANT_A.tenantId, 1_234],
+        ['b-1', TENANT_B.tenantId, 5],
+      ] as const) {
+        await createAt(at(suffix), tenantId, offsetMs);
+      }
+      await createAt(at('a-dead'), TENANT_A.tenantId, 0);
+      await port.delete(queue, at('a-dead'), { tenantId: TENANT_A.tenantId });
+      await createAt(at('other'), undefined, 0, 'content-feed-import');
+      return [
+        [at('sys-1'), undefined],
+        [at('sys-2'), undefined],
+        [at('a-1'), TENANT_A.tenantId],
+        [at('a-2'), TENANT_A.tenantId],
+        [at('a-3'), TENANT_A.tenantId],
+        [at('b-1'), TENANT_B.tenantId],
+      ];
+    }
+
+    it.each([1, 2, 4, 5, 6, MAX_TASK_PAGE_SIZE])('pages every live task once, in order, without tombstones, at pageSize %i', async (pageSize) => {
+      const expected = await seedPages();
+      const seen: Array<[string, string | undefined]> = [];
+      const sizes: number[] = [];
+      let pageToken: string | undefined;
+      do {
+        const page = await port.list(queue, { pageSize, ...(pageToken === undefined ? {} : { pageToken }) });
+        sizes.push(page.tasks.length);
+        seen.push(...page.tasks.map((task): [string, string | undefined] => [task.name, task.tenantId]));
+        pageToken = page.nextPageToken;
+      } while (pageToken !== undefined && sizes.length <= expected.length + 1);
+      expect(seen).toEqual(expected);
+      const fullPages = Math.floor(expected.length / pageSize);
+      expect(sizes.every((size) => size <= pageSize)).toBe(true);
+      expect(sizes.slice(0, fullPages)).toEqual(Array.from({ length: fullPages }, () => pageSize));
+      expect(sizes.length).toBeLessThanOrEqual(Math.ceil(expected.length / pageSize) + 1);
+    });
+
+    let getCase = 0;
+    it.each([
+      { label: 'a system task looked up without a tenant', creator: undefined, lookup: undefined, remove: false, found: true },
+      { label: 'a tenant task looked up under its tenant', creator: TENANT_A.tenantId, lookup: TENANT_A.tenantId, remove: false, found: true },
+      { label: 'a tenant task looked up as a system task', creator: TENANT_A.tenantId, lookup: undefined, remove: false, found: false },
+      { label: 'a tenant task looked up under another tenant', creator: TENANT_A.tenantId, lookup: TENANT_B.tenantId, remove: false, found: false },
+      { label: 'a system task looked up under a tenant', creator: undefined, lookup: TENANT_B.tenantId, remove: false, found: false },
+      { label: 'a deleted task, whose name is a tombstone', creator: TENANT_B.tenantId, lookup: TENANT_B.tenantId, remove: true, found: false },
+      { label: 'a name never created', creator: null, lookup: undefined, remove: false, found: false },
+    ])('get answers $label', async ({ creator, lookup, remove, found }) => {
+      getCase += 1;
+      const name = `get-${String(getCase)}`;
+      const tenantId = creator ?? undefined;
+      if (creator !== null) await createAt(name, tenantId, 7);
+      if (remove) await port.delete(queue, name, { tenantId });
+      const expected = {
+        queue,
+        name,
+        scheduleTime: new Date(nowMs + 3_600_000 + 7),
+        ...(tenantId === undefined ? {} : { tenantId }),
+        status: 'pending',
+        attempts: 0,
+      };
+      expect(await port.get(queue, name, lookup === undefined ? undefined : { tenantId: lookup })).toStrictEqual(found ? expected : undefined);
+      expect(await port.get('content-feed-import', name, lookup === undefined ? undefined : { tenantId: lookup })).toBeUndefined();
+    });
+
+    const token = (cursor: unknown): string => Buffer.from(JSON.stringify(cursor)).toString('base64url');
+    it.each([
+      { label: 'list of an unknown queue', call: () => port.list('no-such-queue'), error: UnknownQueueError },
+      { label: 'get of an unknown queue', call: () => port.get('no-such-queue', 'x'), error: UnknownQueueError },
+      ...[0, -1, 1.5, MAX_TASK_PAGE_SIZE + 1, Number.NaN].map((pageSize) => ({
+        label: `pageSize ${String(pageSize)}`,
+        call: () => port.list(queue, { pageSize }),
+        error: RangeError,
+      })),
+      ...[
+        ['a token that is not base64url JSON', 'not-a-token'],
+        ['a token of the wrong shape', token({ tenant: SYSTEM_TENANT_ID })],
+        ['a token with a malformed schedule time', token({ tenant: SYSTEM_TENANT_ID, scheduleTime: 'yesterday', name: 'x' })],
+        [
+          'a token of an unregistered tenant',
+          token({ tenant: '0b8f6c1e-5b7d-5e8a-9c3f-0d1e2f3a4b5c', scheduleTime: '2026-06-30 12:00:00.000', name: 'x' }),
+        ],
+      ].map(([label, pageToken]) => ({ label: String(label), call: () => port.list(queue, { pageToken: String(pageToken) }), error: TypeError })),
+    ])('rejects $label', async ({ call, error }) => {
+      await expect(call()).rejects.toBeInstanceOf(error);
+    });
+  });
+
+
+  it('rejects a task URL outside the configured service origins before storing it', async () => {
+    await expect(port.create(launch('unknown-a', TENANT_A.tenantId, { url: 'http://127.0.0.1:1/internal/v1/tasks/x' }))).rejects.toBeInstanceOf(
+      UnknownTaskTargetError,
+    );
+    await expect(port.create(launch('bad name', TENANT_A.tenantId))).rejects.toThrow('Invalid task name');
+    expect(await visible(TENANT_A.tenantId, 'unknown-a')).toBe(0);
+  });
+
+  it('reclaims a lease left running by a dead dispatcher and ignores that attempt late outcome', async () => {
+    let release: () => void = () => undefined;
+    respond = () =>
+      new Promise<number>((resolve) => {
+        release = () => resolve(200);
+      });
+    const dead = await createLocalTaskAdapter({ db, stateDir, serviceUrls: SERVICE_URLS, clock, logger, autoStart: false, request: stubRequest });
+    await port.create(launch('lease-b', TENANT_B.tenantId));
+    const stale = dead.dispatchDue();
+    for (let i = 0; i < 50 && calls.length === 0; i += 1) await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(await rowOf(TENANT_B.tenantId, 'lease-b')).toMatchObject({ status: 'running', attempts: 1 });
+    respond = () => Promise.resolve(200);
+    expect(await port.dispatchDue()).toBe(0);
+    nowMs += (60 + LEASE_MARGIN_S + 1) * 1000;
+    expect(await port.dispatchDue()).toBe(1);
+    expect(calls.at(-1)?.headers['x-cloudtasks-taskretrycount']).toBe('1');
+    release();
+    await stale;
+    expect(await rowOf(TENANT_B.tenantId, 'lease-b')).toMatchObject({ status: 'done', attempts: 2 });
+  });
+
+  it('polls after start(), logs a failed scan, keeps polling and drains on stop()', async () => {
+    let failNext = true;
+    const flaky: TenantDb = {
+      schema: db.schema,
+      withTenant: (tenantId, fn) => {
+        if (failNext) {
+          failNext = false;
+          return Promise.reject(new Error('database unavailable'));
+        }
+        return db.withTenant(tenantId, fn);
+      },
+      withMetadata: (fn) => db.withMetadata(fn),
+      end: () => db.end(),
+    };
+    // Created through another adapter, so only the polling adapter's start-up full scan can find it.
+    await port.create(launch('poll-a', TENANT_A.tenantId));
+    const polling = await createLocalTaskAdapter({
+      db: flaky,
+      stateDir,
+      serviceUrls: SERVICE_URLS,
+      clock,
+      logger,
+      pollIntervalMs: 25,
+      request: stubRequest,
+    });
+    polling.start();
+    for (let i = 0; i < 200 && calls.length === 0; i += 1) await new Promise((resolve) => setTimeout(resolve, 25));
+    await polling.stop();
+    expect(calls.map((call) => call.headers['x-cloudtasks-taskname'])).toEqual(['poll-a']);
+    expect(errors[0]?.msg).toBe('Local tasks scan failed');
+    expect(errors[0]?.obj).toEqual({ error: expect.objectContaining({ type: 'Error', message: REDACTED }) as unknown });
+    expect(JSON.stringify(errors)).not.toContain('database unavailable');
+    expect(await rowOf(TENANT_A.tenantId, 'poll-a')).toMatchObject({ status: 'done' });
+  });
+
+  it('can start again after opening the listener throws synchronously', async () => {
+    let attempts = 0;
+    const retryDb: TenantDb = {
+      ...db,
+      listen: (channel, handlers) => {
+        attempts += 1;
+        if (attempts === 1) throw new Error('listener not ready');
+        const listener = db.listen?.(channel, handlers);
+        if (listener === undefined) throw new Error('TenantDb has no listener');
+        return listener;
+      },
+    };
+    const polling = await createLocalTaskAdapter({
+      db: retryDb, stateDir, serviceUrls: SERVICE_URLS, clock, logger, autoStart: false, pollIntervalMs: 25, request: stubRequest,
+    });
+    try {
+      expect(() => polling.start()).toThrow('listener not ready');
+      await port.create(launch('retry-start-a', TENANT_A.tenantId));
+      polling.start();
+      for (let i = 0; i < 200 && calls.length === 0; i += 1) await new Promise((resolve) => setTimeout(resolve, 25));
+    } finally {
+      await polling.stop();
+    }
+    expect(attempts).toBe(2);
+    expect(await rowOf(TENANT_A.tenantId, 'retry-start-a')).toMatchObject({ status: 'done' });
+  });
+
+
+  it('dispatches by full scans once a first LISTEN the server never answers times out', async () => {
+    // Answers the startup with AuthenticationOk and ReadyForQuery, then nothing.
+    const stalled = createNetServer((socket) => {
+      socket.once('data', () => socket.write(Buffer.from([0x52, 0, 0, 0, 8, 0, 0, 0, 0, 0x5a, 0, 0, 0, 5, 0x49])));
+      socket.resume();
+    });
+    await new Promise<void>((resolve) => stalled.listen(0, '127.0.0.1', resolve));
+    const { port: stalledPort } = stalled.address() as AddressInfo;
+    const silent = tenantDbFromPool(
+      new pg.Pool({ ...testPgConfig(), host: '127.0.0.1', port: stalledPort, connectionTimeoutMillis: 200, max: 1 }),
+      { schema: db.schema },
+    );
+    // Transactions reach the database; only the LISTEN session goes to the server that never answers.
+    const stalling: TenantDb = {
+      schema: db.schema,
+      withTenant: (tenantId, fn) => db.withTenant(tenantId, fn),
+      withMetadata: (fn, options) => db.withMetadata(fn, options),
+      listen: (channel, handlers) => {
+        const listener = silent.listen?.(channel, handlers);
+        if (listener === undefined) throw new Error('The stalled TenantDb cannot listen');
+        return listener;
+      },
+      end: () => db.end(),
+    };
+    await port.create(launch('stalled-listen-a', TENANT_A.tenantId));
+    const polling = await createLocalTaskAdapter({ db: stalling, stateDir, serviceUrls: SERVICE_URLS, clock, logger, pollIntervalMs: 25, request: stubRequest });
+    try {
+      for (let i = 0; i < 200 && calls.length === 0; i += 1) await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(calls.map((call) => call.headers['x-cloudtasks-taskname'])).toEqual(['stalled-listen-a']);
+      expect(warnings.map((warning) => warning.msg)).toEqual(['Local tasks listener lost; every check scans all tenants until it listens again']);
+    } finally {
+      await polling.stop();
+      await silent.end();
+      await new Promise((resolve) => stalled.close(resolve));
+    }
+    expect(await rowOf(TENANT_A.tenantId, 'stalled-listen-a')).toMatchObject({ status: 'done' });
+  });
+
+  it('drains its in-flight dispatch on stop() although its listener fails to close, then rejects with that failure', async () => {
+    const failure = new Error('listener close failed');
+    const failing: TenantDb = {
+      schema: db.schema,
+      withTenant: (tenantId, fn) => db.withTenant(tenantId, fn),
+      withMetadata: (fn, options) => db.withMetadata(fn, options),
+      listen: (_channel, handlers) => {
+        setImmediate(() => handlers.onListening());
+        return { close: () => Promise.reject(failure) };
+      },
+      end: () => db.end(),
+    };
+    let answer: (status: number) => void = () => undefined;
+    respond = () =>
+      new Promise<number>((resolve) => {
+        answer = resolve;
+      });
+    await port.create(launch('close-failure-a', TENANT_A.tenantId));
+    const polling = await createLocalTaskAdapter({ db: failing, stateDir, serviceUrls: SERVICE_URLS, clock, logger, pollIntervalMs: 25, request: stubRequest });
+    for (let i = 0; i < 200 && calls.length === 0; i += 1) await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(calls).toHaveLength(1);
+
+    let settled = false;
+    const stopped = polling.stop().then(
+      () => {
+        settled = true;
+      },
+      (err: unknown) => {
+        settled = true;
+        return err;
+      },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(settled).toBe(false);
+    answer(200);
+
+    expect(await stopped).toBe(failure);
+    expect(await rowOf(TENANT_A.tenantId, 'close-failure-a')).toMatchObject({ status: 'done' });
+  });
+
+  describe('maxConcurrentDispatches', () => {
+    /** Adapter over the shared schema with the stub request and the given dispatch cap. */
+    const cappedAdapter = (maxConcurrentDispatches: number): Promise<LocalTaskPort> =>
+      createLocalTaskAdapter({ db, stateDir, serviceUrls: SERVICE_URLS, clock, logger, autoStart: false, request: stubRequest, maxConcurrentDispatches });
+
+    it('claims only free slots, leaves the rest pending while saturated and drains them as slots free', async () => {
+      let open: () => void = () => undefined;
+      const gate = new Promise<void>((resolve) => {
+        open = resolve;
+      });
+      let active = 0;
+      let peak = 0;
+      respond = async () => {
+        active += 1;
+        peak = Math.max(peak, active);
+        await gate;
+        active -= 1;
+        return 200;
+      };
+      const capped = await cappedAdapter(3);
+      const names = Array.from({ length: 7 }, (_, i) => `cap-a-${String(i)}`);
+      for (const name of names) await capped.create(launch(name, TENANT_A.tenantId));
+      const first = capped.dispatchDue();
+      for (let i = 0; i < 50 && calls.length < 3; i += 1) await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(await capped.dispatchDue()).toBe(0);
+      expect(calls).toHaveLength(3);
+      const statuses = await Promise.all(names.map(async (name) => (await rowOf(TENANT_A.tenantId, name))?.status));
+      expect(statuses.filter((status) => status === 'running')).toHaveLength(3);
+      expect(statuses.filter((status) => status === 'pending')).toHaveLength(4);
+      open();
+      expect(await first).toBe(3);
+      expect([await capped.dispatchDue(), await capped.dispatchDue(), await capped.dispatchDue()]).toEqual([3, 1, 0]);
+      expect(peak).toBe(3);
+      expect(new Set(calls.map((call) => call.headers['x-cloudtasks-taskname']))).toEqual(new Set(names));
+      await capped.close();
+    });
+
+    it('rotates the starting tenant so a busy tenant cannot hold every slot', async () => {
+      const capped = await cappedAdapter(1);
+      for (const tenant of [TENANT_A, TENANT_B]) {
+        for (const n of [1, 2]) await capped.create(launch(`fair-${tenant.siteId}-${String(n)}`, tenant.tenantId));
+      }
+      const counts: number[] = [];
+      for (let scan = 0; scan < 5; scan += 1) counts.push(await capped.dispatchDue());
+      expect(counts).toEqual([1, 1, 1, 1, 0]);
+      expect(calls.map((call) => (call.body as { tenantId: string }).tenantId)).toEqual([
+        TENANT_A.tenantId,
+        TENANT_B.tenantId,
+        TENANT_A.tenantId,
+        TENANT_B.tenantId,
+      ]);
+      await capped.close();
+    });
+
+    it.each([0, -1, 1.5])('rejects %s with RangeError, directly and through createTaskPort', async (value) => {
+      await expect(cappedAdapter(value)).rejects.toBeInstanceOf(RangeError);
+      await expect(
+        createTaskPort(
+          { OPT2_TASKS_ADAPTER: 'local', OPT2_STATE_DIR: stateDir, OPT2_SERVICE_URLS: { ...SERVICE_URLS } },
+          { db, clock, logger, local: { autoStart: false, maxConcurrentDispatches: value } },
+        ),
+      ).rejects.toBeInstanceOf(RangeError);
+    });
+  });
+
+  it('is built by createTaskPort and refuses a state directory without signing keys', async () => {
+    const viaFactory = await createTaskPort(
+      { OPT2_TASKS_ADAPTER: 'local', OPT2_STATE_DIR: stateDir, OPT2_SERVICE_URLS: { ...SERVICE_URLS } },
+      { db, clock, logger, local: { autoStart: false } },
+    );
+    expect(viaFactory.kind).toBe('local');
+    await viaFactory.close();
+    await expect(
+      createLocalTaskAdapter({ db, stateDir: join(stateDir, 'missing'), serviceUrls: SERVICE_URLS, logger, autoStart: false }),
+    ).rejects.toThrow();
+  });
+
+  describe('against an HTTP target', () => {
+    let server: Server;
+    let hang = true;
+    const received: Array<Record<string, string | string[] | undefined>> = [];
+    let target: Record<string, string>;
+    let real: LocalTaskPort;
+
+    beforeAll(async () => {
+      server = createServer((req, res) => {
+        received.push(req.headers);
+        req.resume();
+        if (!hang) res.writeHead(204).end();
+      });
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      target = { ...SERVICE_URLS, reporting: `http://127.0.0.1:${String((server.address() as AddressInfo).port)}` };
+      real = await createLocalTaskAdapter({ db, stateDir, serviceUrls: target, clock, logger, autoStart: false });
+    });
+
+    afterAll(async () => {
+      await real?.close();
+      server.closeAllConnections();
+      await new Promise((resolve) => server.close(resolve));
+      await shutdownTracing();
+    });
+
+    it('cuts a hung target off at the dispatch deadline and retries it', async () => {
+      await real.create({
+        queue: 'reporting-export-run',
+        name: 'hung-a',
+        scheduleTime: new Date(nowMs),
+        url: `${target.reporting}/internal/v1/tasks/exports/run`,
+        deadlineS: 15,
+        tenantId: TENANT_A.tenantId,
+      });
+      const startedAt = Date.now();
+      expect(await real.dispatchDue()).toBe(1);
+      expect(Date.now() - startedAt).toBeGreaterThanOrEqual(14_500);
+      expect(await rowOf(TENANT_A.tenantId, 'hung-a')).toMatchObject({ status: 'pending', attempts: 1, last_status: null });
+      expect(warnings.at(-1)?.msg).toContain('got no response');
+      hang = false;
+      nowMs += 10_000;
+      expect(await real.dispatchDue()).toBe(1);
+      expect(await rowOf(TENANT_A.tenantId, 'hung-a')).toMatchObject({ status: 'done', attempts: 2, last_status: 204 });
+      expect(received.at(-1)?.['x-cloudtasks-taskretrycount']).toBe('1');
+    }, 40_000);
+
+    it('carries the creating trace in exactly one traceparent, instrumented or not', async () => {
+      const exporter = new MemorySpanExporter();
+      await startTracing({ serviceName: 'local-tasks-test', version: '1.0.0', exporter });
+      let traceId = '';
+      const create = (name: string, url: string): Promise<void> =>
+        startSpan('create-task', SpanKind.INTERNAL, async (span) => {
+          traceId = span.spanContext().traceId;
+          await real.create({ queue: 'reporting-export-run', name, scheduleTime: new Date(nowMs - 1000), url, deadlineS: 30, tenantId: TENANT_B.tenantId });
+        });
+      await create('trace-b', `${target.reporting}/internal/v1/tasks/exports/run`);
+      const instrumentedTrace = traceId;
+      expect(await real.dispatchDue()).toBe(1);
+      const traceparent = received.at(-1)?.traceparent;
+      expect(typeof traceparent).toBe('string');
+      expect(String(traceparent).split('-')[1]).toBe(instrumentedTrace);
+      await flushTracing();
+      const dispatched = exporter.getFinishedSpans().find((span) => span.spanContext().spanId === String(traceparent).split('-')[2]);
+      expect(dispatched).toMatchObject({ name: 'POST reporting', kind: SpanKind.CLIENT });
+
+      await create('trace-stub-b', `${target.reporting}/internal/v1/tasks/exports/run`);
+      const stored = (await rowOf(TENANT_B.tenantId, 'trace-stub-b'))?.headers as { traceparent?: string };
+      await shutdownTracing();
+      const stubbed = await createLocalTaskAdapter({ db, stateDir, serviceUrls: target, clock, logger, autoStart: false, request: stubRequest });
+      expect(await stubbed.dispatchDue()).toBe(1);
+      expect(calls.at(-1)?.headers.traceparent).toBe(stored.traceparent);
+      expect(String(stored.traceparent).split('-')[1]).toBe(traceId);
+    });
+
+    it('checks for due tasks in an unsampled trace and sends each task with only its stored trace context', async () => {
+      hang = false;
+      const exporter = new MemorySpanExporter();
+      await startTracing({ serviceName: 'local-tasks-timer-test', version: '1.0.0', exporter });
+      // Sampling flag of the active span at each transaction the timer-driven adapter opens.
+      const sampled: (boolean | undefined)[] = [];
+      const observed: TenantDb = {
+        schema: db.schema,
+        withTenant: (tenantId, fn) => {
+          sampled.push(activeSpanIds()?.traceSampled);
+          return db.withTenant(tenantId, fn);
+        },
+        withMetadata: (fn, options) => {
+          sampled.push(activeSpanIds()?.traceSampled);
+          return db.withMetadata(fn, options);
+        },
+        end: () => Promise.resolve(),
+      };
+      const task = (name: string): CreateTaskInput => ({
+        queue: 'reporting-export-run',
+        name,
+        scheduleTime: new Date(nowMs - 1000),
+        url: `${target.reporting}/internal/v1/tasks/exports/${name}/run`,
+        deadlineS: 30,
+        tenantId: TENANT_A.tenantId,
+      });
+      const traceparentOf = (name: string): string =>
+        String(received.find((headers) => headers['x-cloudtasks-taskname'] === name)?.traceparent);
+      const createdTrace = await startSpan('create-task', SpanKind.INTERNAL, async (span) => {
+        await real.create(task('timer-traced'));
+        return span.spanContext().traceId;
+      });
+      await real.create(task('timer-untraced'));
+      const timed = await createLocalTaskAdapter({ db: observed, stateDir, serviceUrls: target, clock, logger, pollIntervalMs: 20 });
+      try {
+        for (let i = 0; i < 250 && received.filter((headers) => String(headers['x-cloudtasks-taskname']).startsWith('timer-')).length < 2; i += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+      } finally {
+        await timed.close();
+        await flushTracing();
+        await shutdownTracing();
+      }
+      const untraced = traceparentOf('timer-untraced').split('-');
+      const dispatched = exporter.getFinishedSpans().find((span) => span.spanContext().spanId === untraced[2]);
+
+      expect(sampled.length).toBeGreaterThan(0);
+      expect(new Set(sampled)).toStrictEqual(new Set([false]));
+      expect(traceparentOf('timer-traced')).toMatch(new RegExp(`^00-${createdTrace}-[0-9a-f]{16}-01$`));
+      expect(untraced[3]).toBe('01');
+      expect(dispatched).toMatchObject({ name: 'POST reporting', kind: SpanKind.CLIENT });
+      expect(dispatched?.parentSpanContext).toBeUndefined();
+    });
+  });
+
+  describe('timer dispatch by tenant wake time', () => {
+    const POLL_MS = 20;
+    let wake: ThrowawaySchema;
+    let counted: TenantDb;
+    // Tenant of every withTenant transaction the adapter opened, in order, and the count of its metadata transactions.
+    let opened: string[] = [];
+    let metadataTx = 0;
+    // Each LISTEN session start ('listening') and loss ('lost') the polling adapter's listener reported, in order.
+    let listenEvents: string[] = [];
+    // A non-polling adapter over its own pool, standing in for another writer of the schema.
+    let writerDb: TenantDb;
+    let writer: LocalTaskPort;
+    // Each dispatcher check that finds no full scan pending reads the clock once.
+    let clockReads = 0;
+    const countedClock = {
+      now: (): Date => {
+        clockReads += 1;
+        return clock.now();
+      },
+    };
+    let adapter: LocalTaskPort | undefined;
+
+    const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+    /** Re-evaluates `ready` every poll interval until it holds; throws after five seconds. */
+    async function until(ready: () => boolean | Promise<boolean>): Promise<void> {
+      for (let i = 0; i < 250; i += 1) {
+        if (await ready()) return;
+        await sleep(POLL_MS);
+      }
+      throw new Error('Condition not met within 5 s');
+    }
+
+    /** Resolves once five poll intervals pass without a new transaction; throws after five seconds. */
+    async function quiet(): Promise<void> {
+      for (let round = 0; round < 50; round += 1) {
+        const seen = opened.length;
+        await sleep(POLL_MS * 5);
+        if (opened.length === seen) return;
+      }
+      throw new Error('Transactions kept opening for 5 s');
+    }
+
+    /** The stored queue row named `name` under `tenant`, read outside the counted handle. */
+    async function storedRow(tenant: string, name: string): Promise<Record<string, unknown> | undefined> {
+      return wake.app.withTenant(tenant, async (tx) => {
+        const { rows } = await tx.query(`SELECT * FROM ${wake.schema}.scheduled_task_queue WHERE name = $1`, [name]);
+        return rows[0];
+      });
+    }
+
+    /** The system tenant and each registered one, in the order a full scan opens them. */
+    async function scanOrder(): Promise<string[]> {
+      return [SYSTEM_TENANT_ID, ...(await registeredTenants(wake.app)).map((entry) => entry.tenantId)];
+    }
+
+    /** Registers generated sites until the registry holds `count` tenants; returns `scanOrder()`. */
+    async function registerUpTo(count: number): Promise<string[]> {
+      const sites = Array.from({ length: Math.max(0, count - TENANT_LIST.length) }, (_, n) => `wake-site-${String(n).padStart(3, '0')}`);
+      await wake.app.withMetadata((tx) =>
+        tx.query(
+          `INSERT INTO ${wake.schema}.tenant_registry (site_id, tenant_id, aggregate_version, updated_at)
+SELECT site_id, tenant_id, 1, LOCALTIMESTAMP(3) FROM unnest($1::text[], $2::uuid[]) AS s(site_id, tenant_id) ON CONFLICT DO NOTHING`,
+          [sites, sites.map((site) => tenantIdForSite(site))],
+        ),
+      );
+      return scanOrder();
+    }
+
+    /** Starts a polling adapter over the counted handle and resolves once it listens and its start-up full scan has opened every transaction. */
+    async function startPolling(tenants: readonly string[]): Promise<LocalTaskPort> {
+      opened = [];
+      metadataTx = 0;
+      listenEvents = [];
+      adapter = await createLocalTaskAdapter({
+        db: counted,
+        stateDir,
+        serviceUrls: SERVICE_URLS,
+        clock: countedClock,
+        logger,
+        pollIntervalMs: POLL_MS,
+        request: stubRequest,
+      });
+      // Checks wait for LISTEN; then the paused read, then one claim transaction per tenant.
+      await until(() => listenEvents.includes('listening') && opened.length >= tenants.length + 1);
+      return adapter;
+    }
+
+    /** `startPolling` over the current registry, with the counters cleared once its start-up scan has finished. */
+    async function startQuiet(): Promise<LocalTaskPort> {
+      const started = await startPolling(await scanOrder());
+      await sleep(POLL_MS * 3);
+      opened = [];
+      metadataTx = 0;
+      return started;
+    }
+
+    const taskNames = (): string[] => calls.map((call) => call.headers['x-cloudtasks-taskname'] ?? '');
+
+    beforeAll(async () => {
+      wake = await createThrowawaySchema({ service: 'taskwake', extraSql: [tenantRegistrySql('taskwake'), scheduledTaskQueueSql('taskwake')] });
+      await seedRegistry(wake.app);
+      counted = {
+        schema: wake.app.schema,
+        withTenant: (tenantId, fn) => {
+          opened.push(tenantId);
+          return wake.app.withTenant(tenantId, fn);
+        },
+        withMetadata: (fn, options) => {
+          metadataTx += 1;
+          return wake.app.withMetadata(fn, options);
+        },
+        listen: (channel, handlers) => {
+          const listener = wake.app.listen?.(channel, {
+            onNotification: (payload) => handlers.onNotification(payload),
+            onListening: () => {
+              listenEvents.push('listening');
+              handlers.onListening();
+            },
+            onLost: (err) => {
+              listenEvents.push('lost');
+              handlers.onLost(err);
+            },
+          });
+          if (listener === undefined) throw new Error('The throwaway TenantDb cannot listen');
+          return listener;
+        },
+        end: () => wake.app.end(),
+      };
+      writerDb = tenantDbFromPool(wake.connect('app'), { schema: wake.schema });
+      writer = await createLocalTaskAdapter({
+        db: writerDb,
+        stateDir,
+        serviceUrls: SERVICE_URLS,
+        clock,
+        logger,
+        autoStart: false,
+        request: stubRequest,
+      });
+    });
+
+    afterEach(async () => {
+      await adapter?.close();
+      adapter = undefined;
+      expect(errors).toEqual([]);
+    });
+
+    afterAll(async () => {
+      await writer?.close();
+      await wake?.drop();
+    });
+
+    it.each([3, 74])('opens no transaction on idle checks after its start-up full scan, with %i registered tenants', async (count) => {
+      const tenants = await registerUpTo(count);
+      expect(tenants).toHaveLength(count + 1);
+      await startPolling(tenants);
+      await sleep(POLL_MS * 3);
+      expect(opened).toEqual([SYSTEM_TENANT_ID, ...tenants]);
+      expect(metadataTx).toBe(1);
+      clockReads = 0;
+      await sleep(POLL_MS * 15);
+      expect(clockReads).toBeGreaterThanOrEqual(3);
+      expect(opened).toHaveLength(tenants.length + 1);
+      expect(metadataTx).toBe(1);
+    });
+
+    // The create when the polling adapter makes it, the paused read, tenant A's claim and the settle, plus one registry read.
+    it.each([
+      ['the polling adapter', 'wake-due-a', true, [TENANT_A.tenantId, SYSTEM_TENANT_ID, TENANT_A.tenantId, TENANT_A.tenantId]],
+      ['another adapter over its own pool', 'wake-cross-a', false, [SYSTEM_TENANT_ID, TENANT_A.tenantId, TENANT_A.tenantId]],
+    ])('dispatches a due task %s creates after the start-up scan at the next check, scanning only its tenant', async (_by, name, itself, expected) => {
+      const polling = await startQuiet();
+      await (itself ? polling : writer).create(launch(name, TENANT_A.tenantId));
+      await until(async () => (await storedRow(TENANT_A.tenantId, name))?.status === 'done');
+      await sleep(POLL_MS * 5);
+      expect(taskNames()).toEqual([name]);
+      expect(opened).toEqual(expected);
+      expect(metadataTx).toBe(1);
+    });
+
+    it('dispatches a due task another process creates after the start-up scan, scanning only its tenant', async () => {
+      await startQuiet();
+      const input = launch('wake-process-a', TENANT_A.tenantId);
+      const writerInput = { ...input, scheduleTime: input.scheduleTime.toISOString() };
+      const { stdout } = await promisify(execFile)(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', EXTERNAL_WRITER], {
+        cwd: PLATFORM_DIR,
+        env: { ...process.env, OPT2_WRITER: JSON.stringify({ schema: wake.schema, role: wake.roles.app, serviceUrls: SERVICE_URLS, input: writerInput }) },
+      });
+      expect(JSON.parse(stdout)).toEqual({ name: 'wake-process-a', created: true });
+      await until(async () => (await storedRow(TENANT_A.tenantId, 'wake-process-a'))?.status === 'done');
+      expect(taskNames()).toEqual(['wake-process-a']);
+      expect(opened).toEqual([SYSTEM_TENANT_ID, TENANT_A.tenantId, TENANT_A.tenantId]);
+    });
+
+    it('opens nothing for a future task until the clock reaches it, then dispatches it', async () => {
+      const polling = await startQuiet();
+      await polling.create(launch('wake-later-b', TENANT_B.tenantId, { scheduleTime: new Date(nowMs + 60_000) }));
+      await sleep(POLL_MS * 10);
+      expect(calls).toEqual([]);
+      expect(opened).toEqual([TENANT_B.tenantId]);
+      nowMs += 60_000;
+      await until(async () => (await storedRow(TENANT_B.tenantId, 'wake-later-b'))?.status === 'done');
+      expect(taskNames()).toEqual(['wake-later-b']);
+    });
+
+    it('redispatches a non-2xx answer once the clock reaches its retry time', async () => {
+      const polling = await startQuiet();
+      const statuses = [503];
+      respond = () => Promise.resolve(statuses.shift() ?? 200);
+      await polling.create(launch('wake-retry-a', TENANT_A.tenantId));
+      await until(async () => (await storedRow(TENANT_A.tenantId, 'wake-retry-a'))?.last_status === 503);
+      await sleep(POLL_MS * 5);
+      expect(calls).toHaveLength(1);
+      nowMs += retryDelayS(queueDefinition('surveys-launch').retry, 1) * 1000;
+      await until(async () => (await storedRow(TENANT_A.tenantId, 'wake-retry-a'))?.status === 'done');
+      expect(calls.map((call) => call.headers['x-cloudtasks-taskretrycount'])).toEqual(['0', '1']);
+    });
+
+    // The pause and the create when the polling adapter makes them, then one scan of tenant B: its paused read and claim.
+    it.each([
+      ['the polling adapter', 'wake-paused-b', true, [SYSTEM_TENANT_ID, TENANT_B.tenantId, SYSTEM_TENANT_ID, TENANT_B.tenantId]],
+      ['another adapter', 'wake-paused-cross-b', false, [SYSTEM_TENANT_ID, TENANT_B.tenantId]],
+    ])('holds a paused queue task without rescanning its tenant and dispatches it after %s resumes the queue', async (_by, name, itself, expected) => {
+      const polling = await startQuiet();
+      const control = itself ? polling : writer;
+      const queue = 'communications-reminders';
+      await control.pauseQueue(queue);
+      try {
+        await control.create({
+          queue,
+          name,
+          scheduleTime: new Date(nowMs),
+          url: `${SERVICE_URLS.communications}/internal/v1/tasks/reminders`,
+          deadlineS: 60,
+          tenantId: TENANT_B.tenantId,
+        });
+        await until(() => opened.length >= expected.length);
+        await sleep(POLL_MS * 10);
+        expect(calls).toEqual([]);
+        expect(opened).toEqual(expected);
+      } finally {
+        await control.resumeQueue(queue);
+      }
+      await until(async () => (await storedRow(TENANT_B.tenantId, name))?.status === 'done');
+      expect(taskNames()).toEqual([name]);
+    });
+
+    it('redispatches at its retry time a task another adapter attempted while holding its lease', async () => {
+      await startQuiet();
+      const dueAt = nowMs + 60_000;
+      let otherNowMs = nowMs;
+      const other = await createLocalTaskAdapter({
+        db: writerDb,
+        stateDir,
+        serviceUrls: SERVICE_URLS,
+        clock: { now: () => new Date(otherNowMs) },
+        logger,
+        autoStart: false,
+        request: stubRequest,
+      });
+      let answer: (status: number) => void = () => undefined;
+      respond = () =>
+        new Promise<number>((resolve) => {
+          answer = resolve;
+        });
+      try {
+        await other.create(launch('wake-other-retry-a', TENANT_A.tenantId, { scheduleTime: new Date(dueAt) }));
+        // Only the other adapter's clock has reached the task, so it alone claims and attempts it.
+        otherNowMs = dueAt;
+        const attempt = other.dispatchDue();
+        await until(() => calls.length === 1);
+        nowMs = dueAt;
+        await until(() => opened.length >= 2);
+        await sleep(POLL_MS * 5);
+        // The scan at the create's wake time finds the task leased, so its wake time becomes the lease expiry.
+        expect(opened).toEqual([SYSTEM_TENANT_ID, TENANT_A.tenantId]);
+        respond = () => Promise.resolve(200);
+        answer(503);
+        expect(await attempt).toBe(1);
+        nowMs = dueAt + retryDelayS(queueDefinition('surveys-launch').retry, 1) * 1000;
+        await until(async () => (await storedRow(TENANT_A.tenantId, 'wake-other-retry-a'))?.status === 'done');
+      } finally {
+        await other.close();
+      }
+      expect(calls.map((call) => call.headers['x-cloudtasks-taskretrycount'])).toEqual(['0', '1']);
+      expect(opened).toEqual([SYSTEM_TENANT_ID, TENANT_A.tenantId, SYSTEM_TENANT_ID, TENANT_A.tenantId, TENANT_A.tenantId]);
+    });
+
+    it('purges at its retention a tombstone another adapter left after the start-up scan', async () => {
+      await startQuiet();
+      const tenant = TENANT_B.tenantId;
+      const name = 'wake-other-delete-b';
+      await writer.create(launch(name, tenant, { scheduleTime: new Date(nowMs + 10 * 3600 * 1000) }));
+      expect(await writer.delete('surveys-launch', name, { tenantId: tenant })).toEqual({ name, deleted: true });
+      nowMs += LOCAL_TOMBSTONE_RETENTION_S * 1000 + 60_000;
+      await until(async () => (await storedRow(tenant, name)) === undefined);
+      expect(opened).toEqual([SYSTEM_TENANT_ID, tenant]);
+      expect(calls).toEqual([]);
+    });
+
+    it('scans every tenant at each check while its listener is down, then listens again and wakes by notification', async () => {
+      await startQuiet();
+      const { rows } = await wake.adminPool.query<{ n: number }>(
+        "SELECT count(pg_terminate_backend(pid))::int AS n FROM pg_stat_activity WHERE usename = $1 AND query LIKE 'LISTEN %'",
+        [wake.roles.app],
+      );
+      expect(rows[0]?.n).toBe(1);
+      await until(() => listenEvents.includes('lost'));
+      expect(warnings.map((warning) => warning.msg)).toEqual(['Local tasks listener lost; every check scans all tenants until it listens again']);
+      // Committed while nothing listens, so only a scan of every tenant can find it.
+      await writer.create(launch('wake-lost-a', TENANT_A.tenantId));
+      await until(async () => (await storedRow(TENANT_A.tenantId, 'wake-lost-a'))?.status === 'done');
+      await until(() => listenEvents.length === 3);
+      expect(listenEvents).toEqual(['listening', 'lost', 'listening']);
+      // At least one scan while polling and the full scan after listening again reach a tenant that holds no task.
+      await quiet();
+      expect(opened.filter((tenant) => tenant === TENANT_UMBRELLA.tenantId).length).toBeGreaterThanOrEqual(2);
+
+      opened = [];
+      metadataTx = 0;
+      await sleep(POLL_MS * 15);
+      expect(opened).toEqual([]);
+      await writer.create(launch('wake-relisten-a', TENANT_A.tenantId));
+      await until(async () => (await storedRow(TENANT_A.tenantId, 'wake-relisten-a'))?.status === 'done');
+      expect(opened).toEqual([SYSTEM_TENANT_ID, TENANT_A.tenantId, TENANT_A.tenantId]);
+      expect(taskNames()).toEqual(['wake-lost-a', 'wake-relisten-a']);
+    });
+
+    it('rechecks a tenant outside the registry once per purge interval and never dispatches its task', async () => {
+      await startQuiet();
+      await writer.create(launch('wake-unregistered', tenantIdForSite('wake-unregistered-site')));
+      await until(() => opened.length >= 1);
+      await sleep(POLL_MS * 15);
+      // The paused read and the registry read, then nothing until the purge interval has passed.
+      expect([opened, metadataTx]).toEqual([[SYSTEM_TENANT_ID], 1]);
+      nowMs += 60_000;
+      await until(() => opened.length >= 2);
+      await sleep(POLL_MS * 5);
+      expect([opened, metadataTx, calls]).toEqual([[SYSTEM_TENANT_ID, SYSTEM_TENANT_ID], 2, []]);
+    });
+
+    it('purges a tombstone at the check after its retention and the purge interval have passed', async () => {
+      const polling = await startQuiet();
+      const tenant = TENANT_UMBRELLA.tenantId;
+      await polling.create(launch('wake-purge-u', tenant));
+      await until(async () => (await storedRow(tenant, 'wake-purge-u'))?.status === 'done');
+      const doneAt = nowMs;
+      nowMs = doneAt + (LOCAL_TOMBSTONE_RETENTION_S - 1) * 1000;
+      await sleep(POLL_MS * 5);
+      expect(await storedRow(tenant, 'wake-purge-u')).toMatchObject({ status: 'done' });
+      nowMs = doneAt + LOCAL_TOMBSTONE_RETENTION_S * 1000 + 60_000;
+      await until(async () => (await storedRow(tenant, 'wake-purge-u')) === undefined);
+      expect(taskNames()).toEqual(['wake-purge-u']);
+    });
+
+    it('keeps a paused queue tombstone past its retention without rescanning its tenant, and purges it after resume', async () => {
+      const polling = await startQuiet();
+      const tenant = TENANT_B.tenantId;
+      const queue = 'communications-reminders';
+      const name = 'wake-paused-purge-b';
+      await polling.create({
+        queue,
+        name,
+        scheduleTime: new Date(nowMs),
+        url: `${SERVICE_URLS.communications}/internal/v1/tasks/reminders/3`,
+        deadlineS: 60,
+        tenantId: tenant,
+      });
+      await until(async () => (await storedRow(tenant, name))?.status === 'done');
+      await polling.pauseQueue(queue);
+      try {
+        await sleep(POLL_MS * 5);
+        opened = [];
+        nowMs += LOCAL_TOMBSTONE_RETENTION_S * 1000 + 60_000;
+        // One scan at tenant B's wake time, its paused read and claim, and none after it.
+        await until(() => opened.length >= 2);
+        await sleep(POLL_MS * 10);
+        expect(opened).toEqual([SYSTEM_TENANT_ID, tenant]);
+        expect(await storedRow(tenant, name)).toMatchObject({ status: 'done' });
+      } finally {
+        await polling.resumeQueue(queue);
+      }
+      await until(async () => (await storedRow(tenant, name)) === undefined);
+      expect(taskNames()).toEqual([name]);
+    });
+  });
+});

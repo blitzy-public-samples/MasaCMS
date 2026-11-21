@@ -1,0 +1,49 @@
+{
+ "user": "admin",
+ "model": {
+  "siteId": "default",
+  "contentId": "x",
+  "parentId": "00000000000000000000000000000000004",
+  "keywords": "",
+  "isNew": false,
+  "parent": {
+   "moduleId": "00000000000000000000000000000000004",
+   "crumbs": [
+    {
+     "siteid": "default",
+     "contentid": "00000000000000000000000000000000004",
+     "type": "Module",
+     "subtype": "Default",
+     "menutitle": "Forms",
+     "restricted": null,
+     "moduleid": "00000000000000000000000000000000004",
+     "parentarray": [
+      "00000000000000000000000000000000004"
+     ]
+    }
+   ]
+  },
+  "moduleTopTitle": "Forms",
+  "rows": []
+ },
+ "iconRows": [
+  {
+   "siteid": "default",
+   "type": "Folder",
+   "subtype": "Locked",
+   "iconclass": ""
+  },
+  {
+   "siteid": "default",
+   "type": "Page",
+   "subtype": "Special",
+   "iconclass": "mi-star"
+  },
+  {
+   "siteid": "default",
+   "type": "File",
+   "subtype": "Brochure",
+   "iconclass": ""
+  }
+ ]
+}

@@ -1,0 +1,180 @@
+{
+ "user": "admin",
+ "request": {
+  "topid": "36CA00A1-D498-36EB-CC57035D25B0D023",
+  "moduleid": "00000000000000000000000000000000000",
+  "sortby": "",
+  "sortdirection": "",
+  "ptype": "Page",
+  "startrow": "1",
+  "type": "Page"
+ },
+ "session": {
+  "nextN": "20",
+  "rb": "en_US",
+  "dateKeyFormat": "MM/DD/YYYY",
+  "locale": "English (US)",
+  "userid": "AF1841AB-0ED4-34A5-AF2596AB342BA3E6",
+  "memberships": "S2IsPrivate;default,S2IsPrivate,S2,admin;username;default",
+  "siteid": "default",
+  "openSectionList": "",
+  "flatViewArgs": {
+   "default": {
+    "SUBTYPE": "",
+    "MODULEID": "00000000000000000000000000000000000",
+    "CATEGORYID": "",
+    "PAGE": "1",
+    "REPORT": "",
+    "LOCKID": "",
+    "TAB": 0,
+    "SORTBY": "lastupdate",
+    "TYPE": "",
+    "SORTDIRECTION": "desc",
+    "ASSIGNMENTS": "false",
+    "TAGS": "",
+    "KEYWORDS": "",
+    "FILTERED": false
+   }
+  }
+ },
+ "site": {
+  "hasLockableNodes": 0,
+  "webPathComplete": "http://localhost:23280",
+  "hasComments": "1",
+  "locking": "none",
+  "privateUserPoolId": "default"
+ },
+ "config": {
+  "sortPermission": "editor",
+  "coreVersion": "7.6.1",
+  "adminDir": "/admin",
+  "context": ""
+ },
+ "marketing": false,
+ "tabAssignments": "",
+ "rsExtend": [
+  {
+   "attribute": "formOwner",
+   "attributeid": "2",
+   "basekeyfield": "contentHistID",
+   "basetable": "tcontent",
+   "datatable": "tclassextenddata",
+   "label": "formOwner",
+   "subtype": "Default",
+   "type": "Form"
+  },
+  {
+   "attribute": "heroColor",
+   "attributeid": "1",
+   "basekeyfield": "contentHistID",
+   "basetable": "tcontent",
+   "datatable": "tclassextenddata",
+   "label": "heroColor",
+   "subtype": "Landing",
+   "type": "Page"
+  }
+ ],
+ "icons": [
+  {
+   "iconclass": "mi-star",
+   "siteid": "default",
+   "subtype": "Landing",
+   "type": "Page"
+  },
+  {
+   "iconclass": "",
+   "siteid": "default",
+   "subtype": "Default",
+   "type": "Form"
+  }
+ ],
+ "model": {
+  "rsTop": {
+   "siteid": "default",
+   "contentid": "36CA00A1-D498-36EB-CC57035D25B0D023",
+   "contenthistid": "36CA00D4-AE20-47BD-BCF039C8B8CCF979",
+   "parentid": "36C9B348-A043-1E39-91D8811A37C142F5",
+   "moduleid": "00000000000000000000000000000000000",
+   "type": "Page",
+   "subtype": "Default",
+   "title": "Gallery Child",
+   "menutitle": "Gallery Child",
+   "filename": "photos/gallery-child",
+   "fileid": "",
+   "fileext": "",
+   "assocfilename": "",
+   "display": "1",
+   "displaystart": "",
+   "displaystop": "",
+   "approved": "1",
+   "isnav": "1",
+   "inheritobjects": "Inherit",
+   "template": "",
+   "childtemplate": "",
+   "lastupdate": "2026-11-13T00:20:57.100",
+   "targetparams": "",
+   "remoteurl": "",
+   "sortby": "orderno",
+   "sortdirection": "asc",
+   "restricted": "0",
+   "islocked": "0",
+   "lockid": ""
+  },
+  "crumbs": [
+   {
+    "siteid": "default",
+    "contentid": "36CA00A1-D498-36EB-CC57035D25B0D023",
+    "type": "Page",
+    "subtype": "Default",
+    "menutitle": "Gallery Child",
+    "restricted": "0",
+    "moduleid": "00000000000000000000000000000000000"
+   },
+   {
+    "siteid": "default",
+    "contentid": "36C9B348-A043-1E39-91D8811A37C142F5",
+    "type": "Gallery",
+    "subtype": "Default",
+    "menutitle": "Photos",
+    "restricted": "0",
+    "moduleid": "00000000000000000000000000000000000"
+   },
+   {
+    "siteid": "default",
+    "contentid": "00000000000000000000000000000000001",
+    "type": "Page",
+    "subtype": "Default",
+    "menutitle": "Home",
+    "restricted": "0",
+    "moduleid": "00000000000000000000000000000000000"
+   }
+  ],
+  "perm": "editor",
+  "restricted": 0,
+  "hasKids": 0,
+  "nest": []
+ },
+ "status": 200,
+ "contentType": "application/json;charset=utf-8",
+ "sessionAfter": {
+  "openSectionList": "",
+  "flatViewArgs": {
+   "default": {
+    "SUBTYPE": "",
+    "MODULEID": "00000000000000000000000000000000000",
+    "CATEGORYID": "",
+    "PAGE": "1",
+    "REPORT": "",
+    "LOCKID": "",
+    "TAB": 0,
+    "SORTBY": "lastupdate",
+    "TYPE": "",
+    "SORTDIRECTION": "desc",
+    "ASSIGNMENTS": "false",
+    "TAGS": "",
+    "KEYWORDS": "",
+    "FILTERED": false
+   }
+  }
+ }
+}

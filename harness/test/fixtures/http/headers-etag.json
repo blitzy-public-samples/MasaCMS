@@ -1,0 +1,14 @@
+{
+  "body": "{\"apiversion\":\"v1\",\"method\":\"findOne\",\"data\":{\"contentid\":\"6E1D3B2A-C2F4-4B6A-9D8E7F6A5B4C3D2E\",\"siteid\":\"tenant-a\",\"title\":\"Café\"}}",
+  "etag": "B4F93C04AA468CC21564B02D3BD91C8DCA57CB94B15E9A4F33A6BF985F3C9382",
+  "mismatchingEtag": "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF",
+  "headers": {
+    "Content-Type": "application/json;charset=utf-8",
+    "Date": "Tue, 30 Jun 2026 13:15:00 GMT",
+    "ETag": "B4F93C04AA468CC21564B02D3BD91C8DCA57CB94B15E9A4F33A6BF985F3C9382",
+    "Generator": "Masa CMS 7.6.1",
+    "Server": "FIXTURE-SERVER",
+    "Strict-Transport-Security": "max-age=1200",
+    "X-Request-Id": "fixture-request-0001"
+  }
+}

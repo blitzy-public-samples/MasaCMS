@@ -1,0 +1,758 @@
+// SYNTHETIC: surveys - no Masa equivalent; legacy oracle in legacy-fixtures/
+/** The surveys fixture routes over a throwaway `surveys` schema: declarations, api.cfm check order, method override, envelopes and every route's answer; ids no stored survey has over the recording db. */
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { INVOCATION_HEADER, Roles, collectRouteMatrix } from '@opt2/platform/auth';
+import { createLogger } from '@opt2/platform/logging';
+import { createOutbox, resetOutboxRuntimes } from '@opt2/platform/outbox';
+import { ensureUnitGates, sha256Hex } from '@opt2/platform/migration-kit';
+import {
+  IDENTITY_SERVICE,
+  createService,
+  fixedClock,
+  loadEnv,
+  type FastifyInstance,
+  type ServiceRequest,
+  type ServiceResponse,
+} from '@opt2/platform/service-kit';
+import { siteForTenant, tenantForRegisteredSite, tenantIdForSite, withMetadata } from '@opt2/platform/tenancy';
+import {
+  createCapturingPublisher,
+  createThrowawaySchema,
+  mintServiceToken,
+  mintUserToken,
+  pgAvailable,
+  testVerifier,
+  writeTestSecrets,
+  type CapturingPublisher,
+  type ThrowawaySchema,
+} from '@opt2/platform/testing';
+import { SURVEY_SCHEDULED_TOPIC, surveyScheduledValidator } from '../../src/events/survey-scheduled.js';
+import { FIXTURE_AUTHORIZATION_HEADER } from '../../src/legacy/fixture-auth.js';
+import { FIXTURE_ERROR_MAP } from '../../src/legacy/fixture-envelope.js';
+import type { ScheduledTaskRecord } from '../../src/legacy/tasks-view.js';
+import { createSurveysRepository, type SurveysRepository } from '../../src/repo/repository.js';
+import { UNITS } from '../../src/repo/tables.js';
+import { FIXTURE_BASE, registerFixtureRoutes } from '../../src/routes/fixture.js';
+import { buildTestApp, headersFor, type TestApp } from '../helpers/app.js';
+
+const NOW = new Date(2026, 5, 30, 14, 5, 9);
+const MANAGER_ID = '11111111-2222-3333-4444555566667777';
+const RESPONDENT_ID = '22222222-3333-4444-5555666677778888';
+const UNKNOWN_ID = '00000000-0000-0000-0000000000000000';
+const TOKEN = 'launch-token-1';
+const JSON_HEADERS = { 'content-type': 'application/json' };
+const CSRF_HEADERS = { 'x-csrf_token': 'CSRF-TOKEN', 'x-csrf_token_expires': '260630140509000' };
+const SITE_A = '?siteid=tenant-a';
+/** `Basic` credentials of `text`, as an ACF task run sends them. */
+const basic = (text: string): string => `Basic ${Buffer.from(text, 'utf8').toString('base64')}`;
+/** The relayed task-run `Authorization` header holding `value`. */
+const taskAuthorization = (value: string): Record<string, string> => ({ [FIXTURE_AUTHORIZATION_HEADER]: value });
+const TASK_AUTHORIZATION = taskAuthorization(basic(`opt2-task:${TOKEN}`));
+const UNREGISTERED_TENANT_SITE = 'ghost';
+
+const INVALID_PARAMETERS = { code: 'invalid_request', message: 'Invalid parameters' };
+const AUTHORIZATION = { code: 'invalid_request', message: 'Insufficient Account Permissions' };
+const INVALID_TOKENS = { code: 'invalid_request', message: 'Invalid CSRF tokens' };
+const FORBIDDEN = { code: FIXTURE_ERROR_MAP.forbidden.code, message: FIXTURE_ERROR_MAP.forbidden.message };
+const NOT_FOUND = { code: FIXTURE_ERROR_MAP.notFound.code, message: FIXTURE_ERROR_MAP.notFound.message };
+const CONFLICT = { code: FIXTURE_ERROR_MAP.conflict.code, message: FIXTURE_ERROR_MAP.conflict.message };
+
+type Method = 'GET' | 'POST';
+
+const silentLogger = () => createLogger({ service: 'surveys', version: '1.0.0', env: 'local', destination: { write: () => undefined } });
+
+/** The gateway's invocation credential, which accompanies every user request it forwards. */
+async function gatewayInvocation(): Promise<Record<string, string>> {
+  return { [INVOCATION_HEADER]: `Bearer ${await mintServiceToken({ caller: 'gateway', audience: 'surveys' })}` };
+}
+
+interface Call {
+  method: Method;
+  url: string;
+  roles?: string[];
+  site?: string;
+  body?: unknown;
+  headers?: Record<string, string>;
+}
+
+const available = Boolean(process.env.PG_HOST) && (await pgAvailable());
+
+describe.skipIf(!available)('surveys fixture routes', () => {
+  let handle: ThrowawaySchema;
+  let repository: SurveysRepository;
+  let app: FastifyInstance;
+  let stateDir: string;
+  let csrfValid: boolean;
+  let communications: (req: ServiceRequest) => ServiceResponse;
+  let calls: ServiceRequest[];
+  let publisher: CapturingPublisher;
+
+  function admin(sql: string, params: unknown[] = []): Promise<unknown> {
+    return withMetadata(handle.app, (tx) => tx.query(sql.replaceAll('$schema', handle.schema), params));
+  }
+
+  function tenantA(sql: string, params: unknown[] = []): Promise<unknown> {
+    return handle.app.withTenant(tenantIdForSite('tenant-a'), (tx) => tx.query(sql.replaceAll('$schema', handle.schema), params));
+  }
+
+  /** Injects `call` as the gateway forwards it, with a user token when `roles` is given. */
+  async function inject({ method, url, roles, site = 'tenant-a', body, headers = {} }: Call) {
+    const user: Record<string, string> =
+      roles === undefined ? {} : { authorization: `Bearer ${await mintUserToken({ site, roles, sub: roles.includes(Roles.surveysManager) ? MANAGER_ID : RESPONDENT_ID })}` };
+    const auth = { ...user, ...(await gatewayInvocation()) };
+    return app.inject({
+      method,
+      url,
+      headers: { ...auth, ...CSRF_HEADERS, ...(body === undefined ? {} : JSON_HEADERS), ...headers },
+      payload: body === undefined ? undefined : JSON.stringify(body),
+    });
+  }
+
+  const asManager = (call: Omit<Call, 'roles'>) => inject({ ...call, roles: [Roles.surveysManager, Roles.systemUser] });
+
+  async function createSurvey(title = 'Survey'): Promise<string> {
+    const res = await asManager({ method: 'POST', url: `${FIXTURE_BASE}${SITE_A}`, body: { title } });
+    expect(res.statusCode).toBe(200);
+    return (res.json() as { data: { survey_id: string } }).data.survey_id;
+  }
+
+  function record(surveyId: string, n: number | null, over: Partial<ScheduledTaskRecord> = {}): ScheduledTaskRecord {
+    const launch = n === null;
+    return {
+      taskName: `opt2-survey-${surveyId}-${launch ? 'launch' : `reminder-${n}`}`,
+      kind: launch ? 'survey-launch' : 'survey-reminder',
+      n,
+      targetRoute: launch ? '/internal/v1/tasks/surveys/launch' : '/internal/v1/tasks/reminders',
+      scheduleTime: '2026-07-01T09:00:00.000',
+      status: 'scheduled',
+      scheduleVersion: 1,
+      queue: launch ? 'surveys-launch' : 'communications-reminders',
+      ...over,
+    };
+  }
+
+  beforeAll(async () => {
+    stateDir = await mkdtemp(path.join(process.env.TMPDIR ?? tmpdir(), 'opt2-surveys-fixture-routes-'));
+    await writeTestSecrets(stateDir);
+    handle = await createThrowawaySchema({ service: 'surveys', migrationsDir: fileURLToPath(new URL('../../db/migrations', import.meta.url)) });
+    const clock = fixedClock(NOW);
+    repository = createSurveysRepository({ clock, schema: handle.schema });
+    await ensureUnitGates(handle.app, UNITS);
+    for (const site of ['tenant-a', 'tenant-b', 'umbrella']) {
+      await admin('INSERT INTO $schema.tenant_registry (site_id, tenant_id, aggregate_version, updated_at) VALUES ($1, $2, 1, $3)', [
+        site,
+        tenantIdForSite(site),
+        NOW,
+      ]);
+    }
+    const db = handle.app;
+    app = await createService({
+      name: 'surveys',
+      version: '1.0.0',
+      env: loadEnv(undefined, {
+        PORT: '8117',
+        OPT2_SERVICE_NAME: 'surveys',
+        OPT2_ENV: 'local',
+        OPT2_JWKS_URL: 'http://127.0.0.1:9/jwks',
+        OPT2_TOKEN_ISSUER: 'opt2-local-identity',
+        OPT2_TOKEN_AUDIENCE: 'opt2-local',
+        OPT2_STATE_DIR: stateDir,
+        TZ: 'UTC',
+      }),
+      pool: db,
+      clock,
+      verifierOverride: testVerifier('surveys'),
+      logger: silentLogger(),
+      legacyFixturePaths: true,
+    });
+    await registerFixtureRoutes(app, {
+      db,
+      repository,
+      clock,
+      siteLookup: {
+        registeredSite: async (site) => {
+          // `ghost` stands for a site the registry drops between the site check and the tenant lookup.
+          if (site === UNREGISTERED_TENANT_SITE) return site;
+          const tenant = await tenantForRegisteredSite(db, site);
+          return tenant === null ? undefined : ((await siteForTenant(db, tenant)) ?? undefined);
+        },
+      },
+    });
+    await app.ready();
+    publisher = createCapturingPublisher();
+    createOutbox({
+      service: 'surveys',
+      db,
+      publisher,
+      logger: silentLogger(),
+      clock,
+      payloadValidators: { [SURVEY_SCHEDULED_TOPIC]: surveyScheduledValidator },
+    });
+    vi.spyOn(app.opt2.client, 'request').mockImplementation((async (req: ServiceRequest) => {
+      calls.push(req);
+      if (req.service === IDENTITY_SERVICE) return { status: 200, headers: {}, body: { valid: csrfValid } };
+      return communications(req);
+    }) as typeof app.opt2.client.request);
+  });
+
+  afterAll(async () => {
+    resetOutboxRuntimes();
+    await app?.close();
+    await handle?.drop();
+    await rm(stateDir, { recursive: true, force: true });
+  });
+
+  beforeEach(async () => {
+    await admin("UPDATE $schema.unit_gate SET state = 'open', holder_id = NULL, phase = 'quiet'");
+    csrfValid = true;
+    calls = [];
+    communications = () => ({ status: 200, headers: {}, body: { items: [] } });
+  });
+
+  it('declares exactly the contract operations, each public with the site checked in the handler', () => {
+    const routes = collectRouteMatrix(app).routes.filter((route) => route.url.startsWith(FIXTURE_BASE));
+    const declared = { transport: 'service', public: true, siteCheck: false };
+    expect(routes.map(({ method, url, ...declaration }) => [`${method} ${url.slice(FIXTURE_BASE.length)}`, declaration])).toEqual(
+      expect.arrayContaining(
+        [
+          'GET ',
+          'POST ',
+          'GET /:id',
+          'POST /:id/schedule',
+          'POST /:id/targets/bulk',
+          'GET /:id/responses',
+          'POST /:id/responses',
+          'GET /:id/tasks',
+          'GET /:id/launch',
+          'POST /:id/launch',
+        ].map((key) => [key, declared]),
+      ),
+    );
+    expect(routes).toHaveLength(10);
+  });
+
+  describe('api.cfm check order', () => {
+    it.each<[string, Call, number, object]>([
+      ['an unknown site before login', { method: 'GET', url: `${FIXTURE_BASE}?siteid=nowhere` }, 400, INVALID_PARAMETERS],
+      ['login after the site', { method: 'GET', url: `${FIXTURE_BASE}${SITE_A}` }, 401, AUTHORIZATION],
+      ['another site than the token', { method: 'GET', url: `${FIXTURE_BASE}?siteid=tenant-b`, roles: [Roles.surveysManager] }, 403, FORBIDDEN],
+      ['the manager role group', { method: 'GET', url: `${FIXTURE_BASE}${SITE_A}`, roles: [Roles.systemUser, Roles.s2] }, 403, FORBIDDEN],
+      ['the role before existence', { method: 'GET', url: `${FIXTURE_BASE}/${UNKNOWN_ID}${SITE_A}`, roles: [Roles.systemUser] }, 403, FORBIDDEN],
+      ['an undeclared override after the site', { method: 'GET', url: `${FIXTURE_BASE}${SITE_A}`, headers: { 'x-http-method-override': 'delete' } }, 404, NOT_FOUND],
+      ['the site before an undeclared override', { method: 'GET', url: `${FIXTURE_BASE}?siteid=nowhere`, headers: { 'x-http-method-override': 'delete' } }, 400, INVALID_PARAMETERS],
+      ['site membership of a respondent', { method: 'POST', url: `${FIXTURE_BASE}/${UNKNOWN_ID}/responses${SITE_A}`, roles: [Roles.surveysManager], body: { answers: 'a' } }, 403, FORBIDDEN],
+    ])('checks %s', async (_case, call, status, error) => {
+      const res = await inject(call);
+      expect(res.statusCode).toBe(status);
+      expect(res.json()).toEqual({ apiversion: 'v1', method: 'surveys.surveys' + (call.url.includes('/responses') ? '.responses' : ''), error });
+    });
+
+    it.each<[string, boolean]>([
+      ['a manager token', true],
+      ['a call with no credential at all', false],
+    ])('answers 401 to %s without the gateway invocation credential, creating nothing', async (_case, withUserToken) => {
+      const title = 'created without invocation credential';
+      const user: Record<string, string> = withUserToken
+        ? { authorization: `Bearer ${await mintUserToken({ site: 'tenant-a', roles: [Roles.surveysManager], sub: MANAGER_ID })}` }
+        : {};
+      const res = await app.inject({
+        method: 'POST',
+        url: `${FIXTURE_BASE}${SITE_A}`,
+        headers: { ...user, ...CSRF_HEADERS, ...JSON_HEADERS },
+        payload: JSON.stringify({ title }),
+      });
+      expect(res.statusCode).toBe(401);
+      expect(res.json()).toEqual({ apiversion: 'v1', method: 'invalid', error: AUTHORIZATION });
+      expect(calls).toEqual([]);
+      expect(await tenantA('SELECT survey_id FROM $schema.survey WHERE title = $1', [title])).toMatchObject({ rows: [] });
+    });
+
+    it('answers the CSRF failure of a write with invalidTokens before the title check', async () => {
+      csrfValid = false;
+      const res = await asManager({ method: 'POST', url: `${FIXTURE_BASE}${SITE_A}`, body: { title: '' } });
+      expect(res.statusCode).toBe(400);
+      expect(res.json()).toMatchObject({ method: 'surveys.surveys', error: INVALID_TOKENS });
+      expect(calls).toEqual([expect.objectContaining({ service: IDENTITY_SERVICE, json: expect.objectContaining({ context: '' }) })]);
+    });
+  });
+
+  describe('api.cfm path letter case', () => {
+    const API = '/legacy-fixtures/cfml/api.cfm';
+    const MANAGER = [Roles.surveysManager, Roles.systemUser];
+
+    // No row writes, so both calls of a row see the same data.
+    it.each<[Method, string, string, string[] | undefined, number, string]>([
+      ['GET', '/Surveys/surveys', '/surveys/surveys', undefined, 401, 'surveys.surveys'],
+      ['GET', '/SURVEYS/SURVEYS/', '/surveys/surveys', undefined, 401, 'surveys.surveys'],
+      ['GET', '/%53URVEYS/surveys', '/surveys/surveys', undefined, 401, 'surveys.surveys'],
+      ['GET', '/SURVEYS/Surveys', '/surveys/surveys', MANAGER, 200, 'surveys.surveys'],
+      ['GET', '/Surveys/SURVEYS/{id}', '/surveys/surveys/{id}', MANAGER, 200, 'surveys.surveys'],
+      ['GET', '/surveys/surveys/{id}/RESPONSES', '/surveys/surveys/{id}/responses', MANAGER, 200, 'surveys.surveys.responses'],
+      ['GET', '/SURVEYS/surveys/{lowerId}/Tasks', '/surveys/surveys/{lowerId}/tasks', MANAGER, 200, 'surveys.surveys.tasks'],
+      ['POST', '/surveys/surveys/{id}/Targets/BULK', '/surveys/surveys/{id}/targets/bulk', undefined, 401, 'surveys.surveys.targets.bulk'],
+    ])('dispatches %s %s as %s (roles %j) with %i %s', async (method, variant, lower, roles, status, envelopeMethod) => {
+      const id = await createSurvey('Letter case');
+      const send = (tail: string) =>
+        inject({ method, roles, url: `${API}${tail.replace('{id}', id).replace('{lowerId}', id.toLowerCase())}${SITE_A}`, body: method === 'POST' ? {} : undefined });
+      const cased = await send(variant);
+      const expected = await send(lower);
+      expect(cased.statusCode).toBe(status);
+      expect(cased.json()).toMatchObject({ method: envelopeMethod });
+      expect([cased.statusCode, cased.json()]).toEqual([expected.statusCode, expected.json()]);
+    });
+
+    it.each(['/LEGACY-FIXTURES/cfml/api.cfm/surveys/surveys', '/legacy-fixtures/cfml/API.cfm/Surveys/surveys'])(
+      'answers %s, whose front controller differs in case, with the not-found 404',
+      async (url) => {
+        const res = await asManager({ method: 'GET', url: `${url}${SITE_A}` });
+        expect(res.statusCode).toBe(404);
+        expect(res.json()).toMatchObject({ apiversion: 'v1', method: 'invalid' });
+      },
+    );
+  });
+
+  it('creates, reads and lists surveys in the fixture envelope, params suppressed as Masa suppresses them', async () => {
+    const res = await asManager({ method: 'POST', url: `${FIXTURE_BASE}${SITE_A}&method=ignored`, body: { Title: 'First' } });
+    expect(res.statusCode).toBe(200);
+    const created = res.json() as { data: { survey_id: string } };
+    expect(created).toEqual({
+      apiversion: 'v1',
+      method: 'surveys.surveys',
+      data: {
+        survey_id: expect.stringMatching(/^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16}$/),
+        siteid: 'tenant-a',
+        title: 'First',
+        status: 'DRAFT',
+        created: '2026-06-30T14:05:09',
+        createdbyid: MANAGER_ID,
+        lastupdate: '',
+        lastupdatebyid: '',
+        launched_at: '',
+        schedule: {},
+        reminders: [],
+        targets: [],
+      },
+    });
+    const id = created.data.survey_id;
+
+    const detail = await asManager({ method: 'GET', url: `${FIXTURE_BASE}/${id.toLowerCase()}${SITE_A}` });
+    expect(detail.statusCode).toBe(200);
+    expect(detail.json()).toMatchObject({ method: 'surveys.surveys', data: { survey_id: id, schedule: {} } });
+
+    const listed = await asManager({ method: 'GET', url: `${FIXTURE_BASE}${SITE_A}&itemsPerPage=1000` });
+    expect(listed.statusCode).toBe(200);
+    expect(listed.json()).toMatchObject({
+      method: 'surveys.surveys',
+      data: { startindex: 1, itemsperpage: 1000, pageindex: 1, items: expect.arrayContaining([expect.objectContaining({ survey_id: id })]) },
+    });
+    expect((listed.json() as { data: { items: object[] } }).data.items[0]).not.toHaveProperty('schedule');
+
+    const badPage = await asManager({ method: 'GET', url: `${FIXTURE_BASE}${SITE_A}&pageIndex=0` });
+    expect(badPage.statusCode).toBe(400);
+    expect(badPage.json()).toMatchObject({ error: INVALID_PARAMETERS });
+  });
+
+  it('dispatches on X-HTTP-Method-Override to the path\'s other declared method', async () => {
+    const id = await createSurvey('Override');
+    const listed = await asManager({ method: 'POST', url: `${FIXTURE_BASE}${SITE_A}`, headers: { 'x-http-method-override': 'GET' } });
+    expect(listed.statusCode).toBe(200);
+    expect(listed.json()).toMatchObject({ data: { totalitems: expect.any(Number) } });
+
+    const responses = await asManager({ method: 'POST', url: `${FIXTURE_BASE}/${id}/responses${SITE_A}`, headers: { 'x-http-method-override': 'get' } });
+    expect(responses.statusCode).toBe(200);
+    expect(responses.json()).toMatchObject({ method: 'surveys.surveys.responses', data: { items: [], totalitems: 0 } });
+
+    const scheduleAsGet = await asManager({ method: 'POST', url: `${FIXTURE_BASE}/${id}/schedule${SITE_A}`, headers: { 'x-http-method-override': 'GET' } });
+    expect(scheduleAsGet.statusCode).toBe(404);
+    expect(scheduleAsGet.json()).toMatchObject({ method: 'surveys.surveys.schedule', error: NOT_FOUND });
+  });
+
+  it('answers notFound for a survey outside the tenant on every per-survey route', async () => {
+    const id = await createSurvey('Tenant A only');
+    const asB = { roles: [Roles.surveysManager, Roles.systemUser], site: 'tenant-b' };
+    for (const [method, tail, body] of [
+      ['GET', '', undefined],
+      ['POST', '/schedule', { launchAt: '2026-07-01T09:00:00' }],
+      ['POST', '/targets/bulk', { targets: [{ siteID: 'tenant-a' }] }],
+      ['GET', '/responses', undefined],
+      ['GET', '/tasks', undefined],
+    ] as const) {
+      const res = await inject({ method, url: `${FIXTURE_BASE}/${id}${tail}?siteid=tenant-b`, body, ...asB });
+      expect(res.statusCode, `${method} ${tail}`).toBe(404);
+      expect(res.json()).toMatchObject({ error: NOT_FOUND });
+    }
+    expect(calls.filter((call) => call.service !== IDENTITY_SERVICE)).toEqual([]);
+  });
+
+  it('schedules a survey, lists its tasks from communications and refuses a reschedule once launched', async () => {
+    const id = await createSurvey('Scheduled');
+    calls = [];
+    publisher.clear();
+    const res = await asManager({
+      method: 'POST',
+      url: `${FIXTURE_BASE}/${id}/schedule${SITE_A}`,
+      body: { launchAt: '2026-07-01T09:00:00', reminders: [{ offsetMinutes: 1440 }, { offsetMinutes: '30' }] },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({
+      method: 'surveys.surveys.schedule',
+      data: {
+        status: 'SCHEDULED',
+        schedule: { survey_id: id, launch_at: '2026-07-01T09:00:00', schedule_version: 1, task_name: `opt2-survey-${id}-launch` },
+        reminders: [
+          { offset_minutes: 1440, remind_at: '2026-07-02T09:00:00', task_name: `opt2-survey-${id}-reminder-1`, sent_at: '' },
+          { offset_minutes: 30, remind_at: '2026-07-01T09:30:00', task_name: `opt2-survey-${id}-reminder-2`, sent_at: '' },
+        ],
+      },
+    });
+    expect(calls).toEqual([expect.objectContaining({ service: IDENTITY_SERVICE, json: expect.objectContaining({ context: id }) })]);
+    // The scheduled event is flushed in the request, before the response.
+    expect(publisher.published.filter(({ topic }) => topic === SURVEY_SCHEDULED_TOPIC)).toEqual([
+      expect.objectContaining({ envelope: expect.objectContaining({ aggregateId: id, tenantId: tenantIdForSite('tenant-a') }) }),
+    ]);
+
+    communications = () => ({ status: 200, headers: {}, body: { items: [record(id, 1), record(id, null), record(id, 2)] } });
+    const tasks = await asManager({ method: 'GET', url: `${FIXTURE_BASE}/${id}/tasks${SITE_A}` });
+    expect(tasks.statusCode).toBe(200);
+    const route = `${FIXTURE_BASE}/${id}`;
+    expect(tasks.json()).toMatchObject({
+      method: 'surveys.surveys.tasks',
+      data: {
+        items: [
+          { taskname: `opt2-survey-${id}-launch`, kind: 'launch', route: `${route}/launch`, offsetminutes: 0 },
+          { taskname: `opt2-survey-${id}-reminder-2`, kind: 'reminder', route: `${route}/remind`, offsetminutes: 30 },
+          { taskname: `opt2-survey-${id}-reminder-1`, kind: 'reminder', route: `${route}/remind`, offsetminutes: 1440 },
+        ],
+        totalitems: 3,
+      },
+    });
+
+    communications = () => ({ status: 500, headers: {}, body: undefined });
+    const unavailable = await asManager({ method: 'GET', url: `${FIXTURE_BASE}/${id}/tasks${SITE_A}` });
+    expect(unavailable.statusCode).toBe(503);
+
+    await tenantA("UPDATE $schema.survey SET status = 'LAUNCHED', launched_at = $2 WHERE survey_id = $1", [id, NOW]);
+    const conflict = await asManager({ method: 'POST', url: `${FIXTURE_BASE}/${id}/schedule${SITE_A}`, body: { launchAt: '2026-07-01T09:00:00' } });
+    expect(conflict.statusCode).toBe(409);
+    expect(conflict.json()).toMatchObject({ method: 'surveys.surveys.schedule', error: CONFLICT });
+  });
+
+  // Legacy answers of the oracle probe: no stored survey id matches one holding a NUL, siteExists, isValid and the launchAt
+  // pattern refuse one, and isJSON trims a NUL off the edges of the reminders text and keeps one inside its strings.
+  const LAUNCH = '2026-07-01T09:00:00';
+  it.each<[string, (id: string) => { tail?: string; body: Record<string, unknown> }, boolean, number, object, number[]]>([
+    ['a path id ending in a NUL', (id) => ({ tail: `${id}%00`, body: { launchAt: LAUNCH } }), true, 404, NOT_FOUND, []],
+    ['a path id holding a NUL inside', (id) => ({ tail: `${id.slice(0, 8)}%00${id.slice(8)}`, body: { launchAt: LAUNCH } }), true, 404, NOT_FOUND, []],
+    ['a path id holding a NUL, without a valid CSRF token', (id) => ({ tail: `${id}%00`, body: { launchAt: LAUNCH } }), false, 400, INVALID_TOKENS, []],
+    ['a siteid holding a NUL, before CSRF', () => ({ body: { siteid: 'tenant-a\u0000', launchAt: LAUNCH } }), true, 400, INVALID_PARAMETERS, []],
+    ['a launchAt ending in a NUL', () => ({ body: { launchAt: `${LAUNCH}\u0000` } }), true, 400, INVALID_PARAMETERS, []],
+    ['an offsetMinutes ending in a NUL', () => ({ body: { launchAt: LAUNCH, reminders: [{ offsetMinutes: '5\u0000' }] } }), true, 400, INVALID_PARAMETERS, []],
+    ['an offsetMinutes key ending in a NUL', () => ({ body: { launchAt: LAUNCH, reminders: [{ 'offsetMinutes\u0000': 5 }] } }), true, 400, INVALID_PARAMETERS, []],
+    ['reminders text holding a NUL between tokens', () => ({ body: { launchAt: LAUNCH, reminders: '[\u0000{"offsetMinutes":5}]' } }), true, 400, INVALID_PARAMETERS, []],
+    ['reminders text of only a NUL', () => ({ body: { launchAt: LAUNCH, reminders: '\u0000' } }), true, 400, INVALID_PARAMETERS, []],
+    ['reminders text holding a NUL inside a string', () => ({ body: { launchAt: LAUNCH, reminders: '[{"offsetMinutes":5,"x\u0000":"a\u0000b\tc"}]' } }), true, 200, {}, [5]],
+    ['reminders text with NULs and controls at its edges', () => ({ body: { launchAt: LAUNCH, reminders: '\u0000\u0001 [{"offsetMinutes":5},{"offsetMinutes":"60"}] \u0000' } }), true, 200, {}, [5, 60]],
+    ['an unread key and value holding a NUL', () => ({ body: { launchAt: LAUNCH, 'no\u0000te': 'a\u0000b', reminders: [{ offsetMinutes: 5, x: '\u0000' }] } }), true, 200, {}, [5]],
+  ])('answers a schedule with %s as the fixture does, binding no NUL', async (_case, build, csrf, status, error, offsets) => {
+    const id = await createSurvey('NUL schedule');
+    const { tail = id, body } = build(id);
+    calls = [];
+    csrfValid = csrf;
+    const res = await asManager({ method: 'POST', url: `${FIXTURE_BASE}/${tail}/schedule${SITE_A}`, body });
+    expect(res.statusCode).toBe(status);
+    if (status === 200) {
+      expect(res.json()).toMatchObject({ method: 'surveys.surveys.schedule', data: { survey_id: id, status: 'SCHEDULED' } });
+      expect((res.json() as { data: { reminders: { offset_minutes: number }[] } }).data.reminders.map((row) => row.offset_minutes)).toEqual(offsets);
+    } else {
+      expect(res.json()).toEqual({ apiversion: 'v1', method: 'surveys.surveys.schedule', error });
+      expect(await tenantA('SELECT status FROM $schema.survey WHERE survey_id = $1', [id])).toMatchObject({ rows: [{ status: 'DRAFT' }] });
+    }
+    // The site check answers before CSRF; every other case consumes the token for the path id as sent.
+    const context = decodeURIComponent(tail);
+    expect(calls.filter((call) => call.service === IDENTITY_SERVICE).map((call) => (call.json as { context: string }).context)).toEqual(error === INVALID_PARAMETERS && 'siteid' in body ? [] : [context]);
+  });
+
+  // The gateway mints for the siteid it reads, and identity grants no role on a site that is not registered.
+  it.each<[string, string[] | undefined]>([
+    ['a signed-in session', []],
+    ['an anonymous caller', undefined],
+  ])('answers a schedule whose siteid holds a NUL with invalidParameters under the token minted for that site, for %s', async (_case, roles) => {
+    const id = await createSurvey('NUL site schedule');
+    calls = [];
+    const res = await inject({ method: 'POST', url: `${FIXTURE_BASE}/${id}/schedule`, roles, site: 'tenant-a\u0000', body: { siteid: 'tenant-a\u0000', launchAt: LAUNCH } });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toEqual({ apiversion: 'v1', method: 'surveys.surveys.schedule', error: INVALID_PARAMETERS });
+    expect(await tenantA('SELECT status FROM $schema.survey WHERE survey_id = $1', [id])).toMatchObject({ rows: [{ status: 'DRAFT' }] });
+    expect(calls.filter((call) => call.service === IDENTITY_SERVICE)).toEqual([]);
+  });
+
+  it.each<[string, string, boolean]>([
+    ['false then a NUL, which isBoolean refuses', 'false\u0000', true],
+    ['false', 'false', false],
+  ])('answers a schedule with a useDataNamespace of %s inside the data namespace exactly when the fixture does', async (_case, useDataNamespace, namespaced) => {
+    const id = await createSurvey('NUL namespace');
+    const res = await asManager({ method: 'POST', url: `${FIXTURE_BASE}/${id}/schedule${SITE_A}`, body: { launchAt: LAUNCH, useDataNamespace } });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as Record<string, unknown>;
+    expect(Object.hasOwn(body, 'data')).toBe(namespaced);
+    expect(namespaced ? body.data : body).toMatchObject({ survey_id: id, status: 'SCHEDULED' });
+  });
+
+  it('bulk-targets a survey and lets a targeted site respond under the survey\'s site', async () => {
+    const id = await createSurvey('Targeted');
+    const bulk = await asManager({
+      method: 'POST',
+      url: `${FIXTURE_BASE}/${id}/targets/bulk${SITE_A}`,
+      body: { targets: [{ siteID: 'tenant-b' }, { siteID: 'TENANT-B' }, { siteID: 'umbrella', groupName: 'Staff' }] },
+    });
+    expect(bulk.statusCode).toBe(200);
+    expect(bulk.json()).toMatchObject({ method: 'surveys.surveys.targets.bulk', data: { inserted: 2, total: 2 } });
+
+    const own = await inject({ method: 'POST', url: `${FIXTURE_BASE}/${id}/responses${SITE_A}`, roles: [Roles.systemUser], body: { answers: 'own' } });
+    expect(own.statusCode).toBe(200);
+    expect(own.json()).toMatchObject({
+      method: 'surveys.surveys.responses',
+      data: { survey_id: id, siteid: 'tenant-a', respondentsiteid: 'tenant-a', respondent_user_id: RESPONDENT_ID, answers: 'own', created: '2026-06-30T14:05:09' },
+    });
+
+    const other = await inject({
+      method: 'POST',
+      url: `${FIXTURE_BASE}/${id}/responses?siteid=tenant-b`,
+      roles: [Roles.member],
+      site: 'tenant-b',
+      body: { answers: 'other' },
+    });
+    expect(other.statusCode).toBe(200);
+    expect(other.json()).toMatchObject({ data: { siteid: 'tenant-a', respondentsiteid: 'tenant-b', answers: 'other' } });
+
+    const empty = await inject({ method: 'POST', url: `${FIXTURE_BASE}/${id}/responses${SITE_A}`, roles: [Roles.systemUser], body: { answers: '' } });
+    expect(empty.statusCode).toBe(400);
+    expect(empty.json()).toMatchObject({ error: INVALID_PARAMETERS });
+
+    const listed = await asManager({ method: 'GET', url: `${FIXTURE_BASE}/${id}/responses${SITE_A}&itemsPerPage=1` });
+    expect(listed.statusCode).toBe(200);
+    expect(listed.json()).toMatchObject({
+      // Both responses share the fixed clock's `created`, so the page's one item is either of them.
+      data: { items: [expect.objectContaining({ survey_id: id, siteid: 'tenant-a' })], totalitems: 2, totalpages: 2, endindex: 1 },
+    });
+
+    const detail = await asManager({ method: 'GET', url: `${FIXTURE_BASE}/${id}${SITE_A}` });
+    expect((detail.json() as { data: { targets: unknown[] } }).data.targets).toEqual([
+      { target_id: expect.any(String), survey_id: id, siteid: 'tenant-b', group_name: '', created: '2026-06-30T14:05:09' },
+      { target_id: expect.any(String), survey_id: id, siteid: 'umbrella', group_name: 'Staff', created: '2026-06-30T14:05:09' },
+    ]);
+  });
+
+  /** A tenant-a POST of `fields` as a urlencoded form body, as a manager unless `roles` says otherwise. */
+  async function formPost(url: string, fields: Record<string, string>, roles = [Roles.surveysManager, Roles.systemUser]) {
+    const sub = roles.includes(Roles.surveysManager) ? MANAGER_ID : RESPONDENT_ID;
+    const headers = {
+      authorization: `Bearer ${await mintUserToken({ site: 'tenant-a', roles, sub })}`,
+      ...(await gatewayInvocation()),
+      ...CSRF_HEADERS,
+      'content-type': 'application/x-www-form-urlencoded',
+    };
+    return app.inject({ method: 'POST', url, headers, payload: new URLSearchParams(fields).toString() });
+  }
+
+  // Expected values are Masa's start-up scan of the same form values on the legacy oracle: markup to [INVALID], text trimmed,
+  // JSON text re-serialized as ACF writes it (struct keys reordered, 1.50 as 1.5, struct strings untrimmed).
+  it('stores form-encoded params as the script-protected legacy fixture does', async () => {
+    const created = await formPost(`${FIXTURE_BASE}${SITE_A}`, { title: '  <script>x</script>Staff survey  ' });
+    expect(created.statusCode).toBe(200);
+    const { survey_id: id, title } = created.json<{ data: { survey_id: string; title: string } }>().data;
+    expect(title).toBe('[INVALID]Staff survey');
+    expect(await tenantA('SELECT title FROM $schema.survey WHERE survey_id = $1', [id])).toMatchObject({ rows: [{ title: '[INVALID]Staff survey' }] });
+
+    const scheduled = await formPost(`${FIXTURE_BASE}/${id}/schedule${SITE_A}`, { launchAt: ' 2026-07-01T09:00:00 ', reminders: '[{"offsetMinutes":60}]' });
+    expect(scheduled.statusCode).toBe(200);
+    expect(scheduled.json()).toMatchObject({
+      data: { schedule: { launch_at: '2026-07-01T09:00:00' }, reminders: [{ offset_minutes: 60, remind_at: '2026-07-01T10:00:00' }] },
+    });
+
+    const targeted = await formPost(`${FIXTURE_BASE}/${id}/targets/bulk${SITE_A}`, { targets: '[{"siteID":"tenant-b","groupName":"<script>x</script>Staff"}]' });
+    expect([targeted.statusCode, targeted.json()]).toMatchObject([200, { data: { inserted: 1, total: 1 } }]);
+    expect(await tenantA('SELECT siteid, group_name FROM $schema.survey_target WHERE survey_id = $1', [id])).toMatchObject({
+      rows: [{ siteid: 'tenant-b', group_name: '[INVALID]Staff' }],
+    });
+
+    const answered = await formPost(`${FIXTURE_BASE}/${id}/responses${SITE_A}`, { answers: '{"q2":" <b>no</b> ","q1":"yes","Q0":1.50}' }, [Roles.systemUser]);
+    expect([answered.statusCode, answered.json()]).toMatchObject([200, { data: { answers: '{"q1":"yes","q2":" <b>no</b> ","Q0":1.5}' } }]);
+    expect(await tenantA('SELECT answers FROM $schema.survey_response WHERE survey_id = $1', [id])).toMatchObject({
+      rows: [{ answers: '{"q1":"yes","q2":" <b>no</b> ","Q0":1.5}' }],
+    });
+  });
+
+  it('stores and answers a title and answers holding a url or form NUL without it, as the legacy fixture does', async () => {
+    const titled = async (query: string, fields: Record<string, string>): Promise<string> => {
+      const res = await formPost(`${FIXTURE_BASE}${SITE_A}${query}`, fields);
+      const { survey_id: id, title } = res.json<{ data: { survey_id: string; title: string } }>().data;
+      expect(await tenantA('SELECT title FROM $schema.survey WHERE survey_id = $1', [id])).toMatchObject({ rows: [{ title }] });
+      return title;
+    };
+    expect([await titled('', { title: 'a\u0000b' }), await titled('&title=c%00d', {})]).toEqual(['ab', 'cd']);
+    const untitled = await formPost(`${FIXTURE_BASE}${SITE_A}`, { title: '\u0000' });
+    expect([untitled.statusCode, untitled.json()]).toMatchObject([400, { method: 'surveys.surveys', error: INVALID_PARAMETERS }]);
+
+    const id = await createSurvey('NUL answers');
+    const answer = (query: string, fields: Record<string, string>) => formPost(`${FIXTURE_BASE}/${id}/responses${SITE_A}${query}`, fields, [Roles.systemUser]);
+    const answered = [await answer('', { answers: 'a\u0000b' }), await answer('&answers=c%00d', {}), await answer('', { answers: '{"q1":"a\\u0000b"}' })];
+    const stored = ['ab', 'cd', '{"q1":"a\\u0000b"}'];
+    expect(answered.map((res) => [res.statusCode, res.json<{ data: { answers: string } }>().data.answers])).toEqual(stored.map((answers) => [200, answers]));
+    const rows = (await tenantA('SELECT answers FROM $schema.survey_response WHERE survey_id = $1', [id])) as { rows: { answers: string }[] };
+    expect(rows.rows.map((row) => row.answers).sort()).toEqual([...stored].sort());
+    const unanswered = await answer('', { answers: '\u0000' });
+    expect([unanswered.statusCode, unanswered.json()]).toMatchObject([400, { method: 'surveys.surveys.responses', error: INVALID_PARAMETERS }]);
+  });
+
+  describe('launch task callback', () => {
+    async function scheduled(): Promise<string> {
+      const id = await createSurvey('Launch');
+      const res = await asManager({ method: 'POST', url: `${FIXTURE_BASE}/${id}/schedule${SITE_A}`, body: { launchAt: '2026-07-01T09:00:00' } });
+      expect(res.statusCode).toBe(200);
+      await tenantA('UPDATE $schema.survey_schedule SET task_token_hash = $2 WHERE survey_id = $1', [id, sha256Hex(TOKEN)]);
+      return id;
+    }
+
+    it.each<[string, string, Record<string, string>]>([
+      ['no task token', '', {}],
+      ['another task token', '', taskAuthorization(basic('opt2-task:wrong'))],
+      ['the task token only in the query', `&opt2TaskToken=${TOKEN}`, {}],
+      ['the task token in a header the gateway does not author', '', { 'x-opt2tasktoken': TOKEN }],
+      ['the task token in malformed Basic credentials', '', taskAuthorization(basic(`opt2-task:${TOKEN}`).slice(0, -1))],
+      ['the task token under another scheme', '', taskAuthorization(`Bearer ${basic(`opt2-task:${TOKEN}`).slice('Basic '.length)}`)],
+      ['the task token without the colon before it', '', taskAuthorization(basic(TOKEN))],
+    ])('answers forbidden with %s and leaves the survey scheduled', async (_case, query, headers) => {
+      const id = await scheduled();
+      const res = await inject({ method: 'GET', url: `${FIXTURE_BASE}/${id}/launch${SITE_A}${query}`, headers });
+      expect(res.statusCode).toBe(403);
+      expect(res.json()).toMatchObject({ method: 'surveys.surveys.launch', error: FORBIDDEN });
+      const detail = await asManager({ method: 'GET', url: `${FIXTURE_BASE}/${id}${SITE_A}` });
+      expect(detail.json()).toMatchObject({ data: { status: 'SCHEDULED', launched_at: '' } });
+    });
+
+    it('launches once by GET with the task token and answers a repeat POST with the same row', async () => {
+      const id = await scheduled();
+      const first = await inject({ method: 'GET', url: `${FIXTURE_BASE}/${id.toLowerCase()}/launch${SITE_A}`, headers: TASK_AUTHORIZATION });
+      expect(first.statusCode).toBe(200);
+      expect(first.json()).toEqual({
+        apiversion: 'v1',
+        method: 'surveys.surveys.launch',
+        data: expect.objectContaining({ survey_id: id, status: 'LAUNCHED', launched_at: '2026-06-30T14:05:09' }),
+      });
+      const repeat = await inject({ method: 'POST', url: `${FIXTURE_BASE}/${id}/launch${SITE_A}`, body: {}, headers: TASK_AUTHORIZATION });
+      expect(repeat.statusCode).toBe(200);
+      expect((repeat.json() as { data: unknown }).data).toEqual((first.json() as { data: unknown }).data);
+    });
+
+    it.each<[string, string]>([
+      ['the scheme in another case', `bASIC ${basic(`opt2-task:${TOKEN}`).slice('Basic '.length)}`],
+      ['an empty user name', basic(`:${TOKEN}`)],
+      ['the task user name', basic(`opt2-task:${TOKEN}`)],
+    ])('launches with Basic credentials holding the task token after %s, whatever the query token', async (_case, authorization) => {
+      const id = await scheduled();
+      const res = await inject({ method: 'GET', url: `${FIXTURE_BASE}/${id}/launch${SITE_A}&opt2TaskToken=wrong`, headers: taskAuthorization(authorization) });
+      expect([res.statusCode, res.json()]).toMatchObject([200, { method: 'surveys.surveys.launch', data: { survey_id: id, status: 'LAUNCHED' } }]);
+    });
+
+    it.each<[string, string, Record<string, string>, number, object]>([
+      ['an unknown site', '?siteid=nowhere', {}, 400, INVALID_PARAMETERS],
+      ['a site without a registered tenant', `?siteid=${UNREGISTERED_TENANT_SITE}`, {}, 400, INVALID_PARAMETERS],
+      ['an undeclared override', SITE_A, { 'x-http-method-override': 'PUT' }, 404, NOT_FOUND],
+      ['a survey of another site', '?siteid=tenant-b', {}, 403, FORBIDDEN],
+    ])('answers %s as the fixture does', async (_case, query, headers, status, error) => {
+      const id = await scheduled();
+      const res = await inject({ method: 'GET', url: `${FIXTURE_BASE}/${id}/launch${query}`, headers: { ...TASK_AUTHORIZATION, ...headers } });
+      expect(res.statusCode).toBe(status);
+      expect(res.json()).toMatchObject({ method: 'surveys.surveys.launch', error });
+    });
+  });
+});
+
+describe('surveys fixture ids no stored survey has, over the recording db', () => {
+  let harness: TestApp;
+
+  beforeEach(async () => {
+    harness = await buildTestApp();
+  });
+
+  afterEach(async () => {
+    await harness.app.close();
+  });
+
+  // Every stored survey id is a CF UUID, so surveys.cfc's lookup of any other id matches no row: notFound, or forbidden for a task callback.
+  const IDS = ['x%00.cfm', `${UNKNOWN_ID}%00`, `%20${UNKNOWN_ID}`, 'not-a-uuid', '0f8fad5b-d9cb-469f-a165-70867728950e'];
+  const ROUTES: ReadonlyArray<{ method: Method; tail: string; caller: string | null; body?: unknown; status: number; envelope: string; error: object }> = [
+    { method: 'GET', tail: '', caller: Roles.surveysManager, status: 404, envelope: 'surveys.surveys', error: NOT_FOUND },
+    { method: 'POST', tail: '/schedule', caller: Roles.surveysManager, body: { launchAt: '2026-07-01T09:00:00' }, status: 404, envelope: 'surveys.surveys.schedule', error: NOT_FOUND },
+    { method: 'POST', tail: '/targets/bulk', caller: Roles.surveysManager, body: { targets: [{ siteID: 'tenant-b' }] }, status: 404, envelope: 'surveys.surveys.targets.bulk', error: NOT_FOUND },
+    { method: 'GET', tail: '/responses', caller: Roles.surveysManager, status: 404, envelope: 'surveys.surveys.responses', error: NOT_FOUND },
+    { method: 'POST', tail: '/responses', caller: Roles.systemUser, body: { answers: 'a' }, status: 404, envelope: 'surveys.surveys.responses', error: NOT_FOUND },
+    { method: 'GET', tail: '/tasks', caller: Roles.surveysManager, status: 404, envelope: 'surveys.surveys.tasks', error: NOT_FOUND },
+    { method: 'GET', tail: `/launch${SITE_A}&opt2TaskToken=${TOKEN}`, caller: null, status: 403, envelope: 'surveys.surveys.launch', error: FORBIDDEN },
+    { method: 'POST', tail: `/remind${SITE_A}&opt2TaskToken=${TOKEN}&reminder=1`, caller: null, status: 403, envelope: 'surveys.surveys.remind', error: FORBIDDEN },
+  ];
+
+  it.each(ROUTES.flatMap((route) => IDS.map((id) => ({ ...route, id }))))(
+    'answers $method $tail with id $id as a lookup that matches no row, never querying the id',
+    async ({ method, tail, caller, body, status, envelope, error, id }) => {
+      const sent = decodeURIComponent(id);
+      const user = caller === null ? await gatewayInvocation() : await headersFor(caller);
+      const before = harness.db.transactions.length;
+      const res = await harness.app.inject({
+        method,
+        url: `${FIXTURE_BASE}/${id}${tail.includes('?') ? tail : `${tail}${SITE_A}`}`,
+        headers: { ...user, ...CSRF_HEADERS, ...(body === undefined ? {} : JSON_HEADERS) },
+        payload: body === undefined ? undefined : JSON.stringify(body),
+      });
+      expect([res.statusCode, res.json()]).toEqual([status, { apiversion: 'v1', method: envelope, error }]);
+      const bound = harness.db.transactions.slice(before).flatMap(({ statements }) => statements.flatMap(({ values }) => values.flat(Infinity)));
+      expect(bound.filter((value) => value === sent || value === sent.toUpperCase())).toEqual([]);
+      expect(harness.client.requests.filter((req) => req.service !== IDENTITY_SERVICE)).toEqual([]);
+    },
+  );
+
+  // The oracle's answers to a NUL path id (EX-UNSTORABLE-TEXT-NUL): no user 401, a write without a CSRF token 400, else notFound; a task callback is forbidden to every caller.
+  const NUL_IDS = ['abc%00def', `${UNKNOWN_ID}%00`, `${UNKNOWN_ID.slice(0, 8)}%00${UNKNOWN_ID.slice(8)}`];
+  const NUL_ROUTES: ReadonlyArray<{ method: Method; tail: string; body?: unknown; envelope: string; task: boolean }> = [
+    { method: 'GET', tail: '', envelope: 'surveys.surveys', task: false },
+    { method: 'GET', tail: '/responses', envelope: 'surveys.surveys.responses', task: false },
+    { method: 'GET', tail: '/tasks', envelope: 'surveys.surveys.tasks', task: false },
+    { method: 'POST', tail: '/responses', body: { answers: '{"q1":"a"}' }, envelope: 'surveys.surveys.responses', task: false },
+    { method: 'POST', tail: '/schedule', body: { launchAt: '2030-01-01T00:00:00' }, envelope: 'surveys.surveys.schedule', task: false },
+    { method: 'POST', tail: '/targets/bulk', body: { targets: [{ siteID: 'tenant-a' }] }, envelope: 'surveys.surveys.targets.bulk', task: false },
+    { method: 'GET', tail: '/launch', envelope: 'surveys.surveys.launch', task: true },
+    { method: 'POST', tail: '/launch', body: {}, envelope: 'surveys.surveys.launch', task: true },
+    { method: 'GET', tail: '/remind', envelope: 'surveys.surveys.remind', task: true },
+    { method: 'POST', tail: '/remind', body: {}, envelope: 'surveys.surveys.remind', task: true },
+  ];
+
+  it.each(NUL_ROUTES.flatMap((route) => NUL_IDS.map((id) => ({ ...route, id }))))(
+    'answers $method $tail with id $id as the oracle does for every caller',
+    async ({ method, tail, body, envelope, task, id }) => {
+      const answer = async (headers: Record<string, string>): Promise<[number, unknown]> => {
+        const res = await harness.app.inject({
+          method,
+          url: `${FIXTURE_BASE}/${id}${tail}${SITE_A}`,
+          headers: { ...headers, ...(body === undefined ? {} : JSON_HEADERS) },
+          payload: body === undefined ? undefined : JSON.stringify(body),
+        });
+        return [res.statusCode, res.json()];
+      };
+      const expected = (status: number, error: object): [number, unknown] => [status, { apiversion: 'v1', method: envelope, error }];
+      const user = await headersFor(Roles.surveysManager);
+      const before = harness.db.transactions.length;
+
+      expect(await answer(await gatewayInvocation())).toEqual(task ? expected(403, FORBIDDEN) : expected(401, AUTHORIZATION));
+      if (method === 'POST') expect(await answer(user)).toEqual(task ? expected(403, FORBIDDEN) : expected(400, INVALID_TOKENS));
+      expect(await answer({ ...user, ...(method === 'POST' ? CSRF_HEADERS : {}) })).toEqual(task ? expected(403, FORBIDDEN) : expected(404, NOT_FOUND));
+      const sent = decodeURIComponent(id);
+      const bound = harness.db.transactions.slice(before).flatMap(({ statements }) => statements.flatMap(({ values }) => values.flat(Infinity)));
+      expect(bound.filter((value) => value === sent || value === sent.toUpperCase())).toEqual([]);
+    },
+  );
+});

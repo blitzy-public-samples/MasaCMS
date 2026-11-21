@@ -1,0 +1,841 @@
+{
+  "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
+  "generatedBy": "services/timesheets/scripts/export-transitions.ts",
+  "generatedAt": null,
+  "provenance": "planning",
+  "service": "timesheets",
+  "aggregate": "timesheet_day",
+  "states": [
+    "DRAFT",
+    "SUBMITTED",
+    "RESUBMITTED",
+    "PRIMARY_APPROVED",
+    "APPROVED",
+    "RETURNED"
+  ],
+  "terminal": [
+    "APPROVED"
+  ],
+  "roles": [
+    "timesheets.employee",
+    "timesheets.primary-approver",
+    "timesheets.secondary-approver"
+  ],
+  "actions": [
+    "submit",
+    "primary-approve",
+    "secondary-approve",
+    "return",
+    "resubmit"
+  ],
+  "blackout": {
+    "appliesTo": "any action on a blackout day",
+    "outcome": "illegal-state",
+    "status": "409",
+    "error": "blackout"
+  },
+  "rows": [
+    {
+      "from": "DRAFT",
+      "action": "submit",
+      "role": "timesheets.employee",
+      "outcome": "legal",
+      "status": "2xx",
+      "to": "SUBMITTED"
+    },
+    {
+      "from": "DRAFT",
+      "action": "submit",
+      "role": "timesheets.primary-approver",
+      "outcome": "wrong-role",
+      "status": "403",
+      "to": null,
+      "error": "authorization"
+    },
+    {
+      "from": "DRAFT",
+      "action": "submit",
+      "role": "timesheets.secondary-approver",
+      "outcome": "wrong-role",
+      "status": "403",
+      "to": null,
+      "error": "authorization"
+    },
+    {
+      "from": "DRAFT",
+      "action": "primary-approve",
+      "role": "timesheets.employee",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "DRAFT",
+      "action": "primary-approve",
+      "role": "timesheets.primary-approver",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "DRAFT",
+      "action": "primary-approve",
+      "role": "timesheets.secondary-approver",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "DRAFT",
+      "action": "secondary-approve",
+      "role": "timesheets.employee",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "DRAFT",
+      "action": "secondary-approve",
+      "role": "timesheets.primary-approver",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "DRAFT",
+      "action": "secondary-approve",
+      "role": "timesheets.secondary-approver",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "DRAFT",
+      "action": "return",
+      "role": "timesheets.employee",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "DRAFT",
+      "action": "return",
+      "role": "timesheets.primary-approver",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "DRAFT",
+      "action": "return",
+      "role": "timesheets.secondary-approver",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "DRAFT",
+      "action": "resubmit",
+      "role": "timesheets.employee",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "DRAFT",
+      "action": "resubmit",
+      "role": "timesheets.primary-approver",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "DRAFT",
+      "action": "resubmit",
+      "role": "timesheets.secondary-approver",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "SUBMITTED",
+      "action": "submit",
+      "role": "timesheets.employee",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "SUBMITTED",
+      "action": "submit",
+      "role": "timesheets.primary-approver",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "SUBMITTED",
+      "action": "submit",
+      "role": "timesheets.secondary-approver",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "SUBMITTED",
+      "action": "primary-approve",
+      "role": "timesheets.employee",
+      "outcome": "wrong-role",
+      "status": "403",
+      "to": null,
+      "error": "authorization"
+    },
+    {
+      "from": "SUBMITTED",
+      "action": "primary-approve",
+      "role": "timesheets.primary-approver",
+      "outcome": "legal",
+      "status": "2xx",
+      "to": "PRIMARY_APPROVED"
+    },
+    {
+      "from": "SUBMITTED",
+      "action": "primary-approve",
+      "role": "timesheets.secondary-approver",
+      "outcome": "wrong-role",
+      "status": "403",
+      "to": null,
+      "error": "authorization"
+    },
+    {
+      "from": "SUBMITTED",
+      "action": "secondary-approve",
+      "role": "timesheets.employee",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "SUBMITTED",
+      "action": "secondary-approve",
+      "role": "timesheets.primary-approver",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "SUBMITTED",
+      "action": "secondary-approve",
+      "role": "timesheets.secondary-approver",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "SUBMITTED",
+      "action": "return",
+      "role": "timesheets.employee",
+      "outcome": "wrong-role",
+      "status": "403",
+      "to": null,
+      "error": "authorization"
+    },
+    {
+      "from": "SUBMITTED",
+      "action": "return",
+      "role": "timesheets.primary-approver",
+      "outcome": "legal",
+      "status": "2xx",
+      "to": "RETURNED"
+    },
+    {
+      "from": "SUBMITTED",
+      "action": "return",
+      "role": "timesheets.secondary-approver",
+      "outcome": "wrong-role",
+      "status": "403",
+      "to": null,
+      "error": "authorization"
+    },
+    {
+      "from": "SUBMITTED",
+      "action": "resubmit",
+      "role": "timesheets.employee",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "SUBMITTED",
+      "action": "resubmit",
+      "role": "timesheets.primary-approver",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "SUBMITTED",
+      "action": "resubmit",
+      "role": "timesheets.secondary-approver",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "RESUBMITTED",
+      "action": "submit",
+      "role": "timesheets.employee",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "RESUBMITTED",
+      "action": "submit",
+      "role": "timesheets.primary-approver",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "RESUBMITTED",
+      "action": "submit",
+      "role": "timesheets.secondary-approver",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "RESUBMITTED",
+      "action": "primary-approve",
+      "role": "timesheets.employee",
+      "outcome": "wrong-role",
+      "status": "403",
+      "to": null,
+      "error": "authorization"
+    },
+    {
+      "from": "RESUBMITTED",
+      "action": "primary-approve",
+      "role": "timesheets.primary-approver",
+      "outcome": "legal",
+      "status": "2xx",
+      "to": "PRIMARY_APPROVED"
+    },
+    {
+      "from": "RESUBMITTED",
+      "action": "primary-approve",
+      "role": "timesheets.secondary-approver",
+      "outcome": "wrong-role",
+      "status": "403",
+      "to": null,
+      "error": "authorization"
+    },
+    {
+      "from": "RESUBMITTED",
+      "action": "secondary-approve",
+      "role": "timesheets.employee",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "RESUBMITTED",
+      "action": "secondary-approve",
+      "role": "timesheets.primary-approver",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "RESUBMITTED",
+      "action": "secondary-approve",
+      "role": "timesheets.secondary-approver",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "RESUBMITTED",
+      "action": "return",
+      "role": "timesheets.employee",
+      "outcome": "wrong-role",
+      "status": "403",
+      "to": null,
+      "error": "authorization"
+    },
+    {
+      "from": "RESUBMITTED",
+      "action": "return",
+      "role": "timesheets.primary-approver",
+      "outcome": "legal",
+      "status": "2xx",
+      "to": "RETURNED"
+    },
+    {
+      "from": "RESUBMITTED",
+      "action": "return",
+      "role": "timesheets.secondary-approver",
+      "outcome": "wrong-role",
+      "status": "403",
+      "to": null,
+      "error": "authorization"
+    },
+    {
+      "from": "RESUBMITTED",
+      "action": "resubmit",
+      "role": "timesheets.employee",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "RESUBMITTED",
+      "action": "resubmit",
+      "role": "timesheets.primary-approver",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "RESUBMITTED",
+      "action": "resubmit",
+      "role": "timesheets.secondary-approver",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "PRIMARY_APPROVED",
+      "action": "submit",
+      "role": "timesheets.employee",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "PRIMARY_APPROVED",
+      "action": "submit",
+      "role": "timesheets.primary-approver",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "PRIMARY_APPROVED",
+      "action": "submit",
+      "role": "timesheets.secondary-approver",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "PRIMARY_APPROVED",
+      "action": "primary-approve",
+      "role": "timesheets.employee",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "PRIMARY_APPROVED",
+      "action": "primary-approve",
+      "role": "timesheets.primary-approver",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "PRIMARY_APPROVED",
+      "action": "primary-approve",
+      "role": "timesheets.secondary-approver",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "PRIMARY_APPROVED",
+      "action": "secondary-approve",
+      "role": "timesheets.employee",
+      "outcome": "wrong-role",
+      "status": "403",
+      "to": null,
+      "error": "authorization"
+    },
+    {
+      "from": "PRIMARY_APPROVED",
+      "action": "secondary-approve",
+      "role": "timesheets.primary-approver",
+      "outcome": "wrong-role",
+      "status": "403",
+      "to": null,
+      "error": "authorization"
+    },
+    {
+      "from": "PRIMARY_APPROVED",
+      "action": "secondary-approve",
+      "role": "timesheets.secondary-approver",
+      "outcome": "legal",
+      "status": "2xx",
+      "to": "APPROVED"
+    },
+    {
+      "from": "PRIMARY_APPROVED",
+      "action": "return",
+      "role": "timesheets.employee",
+      "outcome": "wrong-role",
+      "status": "403",
+      "to": null,
+      "error": "authorization"
+    },
+    {
+      "from": "PRIMARY_APPROVED",
+      "action": "return",
+      "role": "timesheets.primary-approver",
+      "outcome": "wrong-role",
+      "status": "403",
+      "to": null,
+      "error": "authorization"
+    },
+    {
+      "from": "PRIMARY_APPROVED",
+      "action": "return",
+      "role": "timesheets.secondary-approver",
+      "outcome": "legal",
+      "status": "2xx",
+      "to": "RETURNED"
+    },
+    {
+      "from": "PRIMARY_APPROVED",
+      "action": "resubmit",
+      "role": "timesheets.employee",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "PRIMARY_APPROVED",
+      "action": "resubmit",
+      "role": "timesheets.primary-approver",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "PRIMARY_APPROVED",
+      "action": "resubmit",
+      "role": "timesheets.secondary-approver",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "APPROVED",
+      "action": "submit",
+      "role": "timesheets.employee",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "APPROVED",
+      "action": "submit",
+      "role": "timesheets.primary-approver",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "APPROVED",
+      "action": "submit",
+      "role": "timesheets.secondary-approver",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "APPROVED",
+      "action": "primary-approve",
+      "role": "timesheets.employee",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "APPROVED",
+      "action": "primary-approve",
+      "role": "timesheets.primary-approver",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "APPROVED",
+      "action": "primary-approve",
+      "role": "timesheets.secondary-approver",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "APPROVED",
+      "action": "secondary-approve",
+      "role": "timesheets.employee",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "APPROVED",
+      "action": "secondary-approve",
+      "role": "timesheets.primary-approver",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "APPROVED",
+      "action": "secondary-approve",
+      "role": "timesheets.secondary-approver",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "APPROVED",
+      "action": "return",
+      "role": "timesheets.employee",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "APPROVED",
+      "action": "return",
+      "role": "timesheets.primary-approver",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "APPROVED",
+      "action": "return",
+      "role": "timesheets.secondary-approver",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "APPROVED",
+      "action": "resubmit",
+      "role": "timesheets.employee",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "APPROVED",
+      "action": "resubmit",
+      "role": "timesheets.primary-approver",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "APPROVED",
+      "action": "resubmit",
+      "role": "timesheets.secondary-approver",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "RETURNED",
+      "action": "submit",
+      "role": "timesheets.employee",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "RETURNED",
+      "action": "submit",
+      "role": "timesheets.primary-approver",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "RETURNED",
+      "action": "submit",
+      "role": "timesheets.secondary-approver",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "RETURNED",
+      "action": "primary-approve",
+      "role": "timesheets.employee",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "RETURNED",
+      "action": "primary-approve",
+      "role": "timesheets.primary-approver",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "RETURNED",
+      "action": "primary-approve",
+      "role": "timesheets.secondary-approver",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "RETURNED",
+      "action": "secondary-approve",
+      "role": "timesheets.employee",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "RETURNED",
+      "action": "secondary-approve",
+      "role": "timesheets.primary-approver",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "RETURNED",
+      "action": "secondary-approve",
+      "role": "timesheets.secondary-approver",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "RETURNED",
+      "action": "return",
+      "role": "timesheets.employee",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "RETURNED",
+      "action": "return",
+      "role": "timesheets.primary-approver",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "RETURNED",
+      "action": "return",
+      "role": "timesheets.secondary-approver",
+      "outcome": "illegal-state",
+      "status": "409",
+      "to": null,
+      "error": "illegalTransition"
+    },
+    {
+      "from": "RETURNED",
+      "action": "resubmit",
+      "role": "timesheets.employee",
+      "outcome": "legal",
+      "status": "2xx",
+      "to": "RESUBMITTED"
+    },
+    {
+      "from": "RETURNED",
+      "action": "resubmit",
+      "role": "timesheets.primary-approver",
+      "outcome": "wrong-role",
+      "status": "403",
+      "to": null,
+      "error": "authorization"
+    },
+    {
+      "from": "RETURNED",
+      "action": "resubmit",
+      "role": "timesheets.secondary-approver",
+      "outcome": "wrong-role",
+      "status": "403",
+      "to": null,
+      "error": "authorization"
+    }
+  ]
+}

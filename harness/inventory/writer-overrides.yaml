@@ -1,0 +1,2461 @@
+# Reviewed legacy table writers the static extractor cannot resolve, merged into opt2/inventory/legacy-inventory.json tables[].writers[], and settledCalls: reviewed resolutions of unresolved calls that add no writer.
+sourceSha: "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+
+writers:
+  - id: wov:scheduler-registration
+    tablesFrom: {job: "job:sitemonitor"}
+    component: core/appcfc/onApplicationStart_include.cfm
+    method: null
+    op: schedule
+    source: {path: core/appcfc/onApplicationStart_include.cfm, lines: [561, 575]}
+    routeKeys: []
+    keyScope: table
+    trigger: appstart
+    sessionEffects: none
+    condition: "iniProperties.ping is true (settings default ping=false, core/templates/settings.template.cfm:91); runs on every start-up, reload and re-initialisation (core/appcfc/onApplicationStart_method.cfm:81, core/appcfc/onRequestStart_include.cfm:131, admin/Application.cfc:184)"
+    preventedBy: scheduler-registration
+    reason: "It registers the ACF siteMonitor task whose runs write every site-monitor step's tables, which no request closure reaches."
+
+  - id: wov:native-sitemonitor-task
+    tablesFrom: {job: "job:sitemonitor"}
+    component: core/mura/content/contentServer.cfc
+    method: handleAPIRequest
+    op: update
+    source: {path: core/mura/content/contentServer.cfc, lines: [669, 747]}
+    routeKeys: ["sitemonitor:run"]
+    keyScope: table
+    trigger: scheduler
+    sessionEffects: none
+    condition: "the ACF task exists only when registered with ping true, every 900 s with a 600 s request timeout (core/appcfc/onApplicationStart_include.cfm:561-575); each step's own writes resolve through application.<manager>"
+    preventedBy: native-sitemonitor-task
+    reason: "The ACF scheduler, not an inventoried request, calls the /_api/sitemonitor handler, so the extractor cannot give its steps a scheduler trigger."
+
+  - id: wov:fixture-survey-tasks
+    tables: [synthetic.survey, synthetic.survey_reminder]
+    component: legacy-fixtures/cfml/modules/surveys.cfc
+    method: handle
+    op: update
+    source: {path: legacy-fixtures/cfml/modules/surveys.cfc, lines: [37, 42]}
+    routeKeys: ["fixture:surveys/surveys/{id}/launch@get", "fixture:surveys/surveys/{id}/remind@get"]
+    keyScope: [id]
+    trigger: scheduler
+    sessionEffects: none
+    condition: "the opt2-survey-<id>-launch and opt2-survey-<id>-reminder-<n> cfschedule tasks that scheduleSurvey creates (surveys.cfc:174-190) call launchCallback (379-388, survey status and launched_at) and remindCallback (390-417, reminder sent_at) with the survey's task credential"
+    preventedBy: fixture-survey-tasks
+    reason: "ACF tasks the fixture registers at run time issue these requests, so no inventoried entry point carries their scheduler trigger."
+
+  - id: wov:fixture-export-threads
+    tables: [synthetic.export_job]
+    component: legacy-fixtures/cfml/modules/reporting.cfc
+    method: createExport
+    op: update
+    source: {path: legacy-fixtures/cfml/modules/reporting.cfc, lines: [84, 90]}
+    routeKeys: ["fixture:reporting/exports@post"]
+    keyScope: table
+    trigger: thread
+    sessionEffects: none
+    condition: "the opt2-export-<jobId> cfthread runs runExport (reporting.cfc:136-175), which moves the job to running and then done or failed only through synthetic.usp_export_job_transition"
+    preventedBy: fixture-export-threads
+    reason: "The writes run in a cfthread that outlives the request that queued the job, so that request's closure cannot carry them."
+
+  - id: wov:startup-url-conversion
+    tables: [tcontent]
+    columns: [Body, Filename, urltitle]
+    component: core/appcfc/onApplicationStart_include.cfm
+    method: null
+    op: update
+    source: {path: core/appcfc/onApplicationStart_include.cfm, lines: [892, 929]}
+    routeKeys: []
+    keyScope: table
+    trigger: appstart
+    sessionEffects: none
+    condition: "readonly is false and tcontent holds rows with type in ('File','Link'), active=1, body null and filename not null (896-899); sets body=filename (910), then filename and urlTitle (922); contentUtility.setUniqueFilename (912) only computes those values in memory"
+    preventedBy: startup-url-conversion
+    reason: "Start-up code in a .cfm include runs outside every inventoried entry point."
+
+  - id: wov:login-lastlogin
+    tables: [tusers]
+    columns: [LastLogin]
+    component: core/mura/user/userUtility.cfc
+    method: loginByQuery
+    op: update
+    source: {path: core/mura/user/userUtility.cfc, lines: [367, 370]}
+    routeKeys: ["admin:clogin.login", "api:login", "api:processasyncobject", "page:createprofile", "page:login", "page:render", "page:updateprofile"]
+    keyScope: table
+    trigger: request
+    sessionEffects: login
+    condition: "request.muraSessionManagement is true (userUtility.cfc:338), so /_api/rest/ requests never write it; page:render reaches it through a maintenance-lockdown login (core/mura/Handler/standardEventsHandler.cfc:683-701)"
+    reason: "Login paths reach loginByQuery through loginManager, event validators and handlers chosen at run time, and the extractor cannot infer the login session effect of this write."
+
+  - id: wov:remember-me-login
+    tables: [tusers]
+    columns: [LastLogin]
+    component: core/appcfc/onRequestStart_include.cfm
+    method: null
+    op: update
+    source: {path: core/appcfc/onRequestStart_include.cfm, lines: [222, 229]}
+    routeKeys: []
+    entryScope: {families: [admin, api, cfc, page], when: "userid and userHash cookies are set while the session is not logged in"}
+    keyScope: table
+    trigger: request
+    sessionEffects: login
+    condition: "encryptionKey is set (settings default empty, core/templates/settings.template.cfm:41), MFA is off and the decrypted userHash matches the stored one (core/mura/login/loginManager.cfc:90-108); LastLogin is written only when request.muraSessionManagement is true"
+    reason: "Request start-up code calls loginManager.rememberMe before any entry point is dispatched, so no route closure contains it."
+
+  - id: wov:login-module-request-logout
+    tables: []
+    component: core/modules/v1/login/model/handlers/authHandler.cfc
+    method: onGlobalRequestStart
+    op: save
+    source: {path: core/modules/v1/login/model/handlers/authHandler.cfc, lines: [18, 21]}
+    routeKeys: []
+    entryScope: {families: [admin, api, asset, cfc, cfm, feed, fixture, page, render, sitemonitor, trackopen, variation, widgets], when: "the url or form carries a logout field, empty included (event values are form then url, core/mura/event.cfc:86-89); a JSON body does not count"}
+    keyScope: table
+    trigger: request
+    sessionEffects: logout
+    condition: "core/appcfc/onRequestStart_include.cfm:331 announces onGlobalRequestStart on every request to this global listener (core/mura/configBean.cfc:1964-1968, 2114-2126; core/mura/plugin/pluginManager.cfc:3117-3121); loginManager.logout (core/mura/login/loginManager.cfc:476-516) announces onSiteLogout and onBeforeSiteLogout or onGlobalLogout and onBeforeGlobalLogout (485-491), deletes the session keys (497-501), invalidates the session under rotateSessions (502-506), deletes the userid and userHash cookies (507-508) and announces onAfterSiteLogout or onAfterGlobalLogout (511-515), writing no table; on sessionless /_api/rest/ requests (core/appcfc/applicationSettings.cfm:179) only the cookie deletion lasts"
+    dynamic: true
+    reason: "The login module's event handler, registered from its handlers directory at run time, logs the session out before any entry point is dispatched, so no route closure contains it. The logout events reach handlers registered at run time, whose writes cannot be read from the pinned source."
+
+  - id: wov:oauth-token-session-data
+    tables: [toauthtokens]
+    columns: [data]
+    component: core/mura/client/api/json/v1/jsonApiUtility.cfc
+    method: processRequest
+    op: save
+    source: {path: core/mura/client/api/json/v1/jsonApiUtility.cfc, lines: [521, 769]}
+    routeKeys: ["rest:oauth", "rest:oauth2", "rest:tokeninfo"]
+    entryScope: {families: [rest], when: "Bearer access_token naming a stored token whose data is not JSON (jsonApiUtility.cfc:503-522)"}
+    keyScope: table
+    trigger: request
+    sessionEffects: login
+    condition: "REST mode only (request.muraSessionManagement false); stores the request-scoped session built by the preceding userBean.login() while the token's data is not yet JSON"
+    reason: "token.setData(serializeJSON(getSession())).save() at lines 521, 614, 656, 709 and 769 writes through a token bean held in a local variable."
+
+  - id: wov:userbean-login
+    tables: [tusers]
+    columns: [LastLogin]
+    component: core/mura/user/userBean.cfc
+    method: login
+    op: update
+    source: {path: core/mura/user/userBean.cfc, lines: [768, 771]}
+    routeKeys: ["admin:ceditprofile.edit", "page:render"]
+    entryScope: {families: [admin, api, cfc, page], when: "url loginProvider with code, error or state (login module authHandler.onGlobalRequestStart), or returnID and returnUserID present (userUtility.returnLoginCheck)"}
+    keyScope: table
+    trigger: request
+    sessionEffects: relogin
+    condition: "writes through loginByUserID and loginByQuery only when request.muraSessionManagement is true, so the REST callers (jsonApiUtility.cfc:520, 613, 655, 708, 768, 825) write nothing here; the session-managed callers are core/modules/v1/login/model/oauthLoginUtility.cfc:106, 111, 116 and userUtility.cfc:842"
+    reason: "login() is called on user beans held in variables or returned by other beans, never on a getBean('<name>') result."
+
+  - id: wov:returnlogincheck-magic-link
+    tables: [tusers]
+    columns: [LastLogin]
+    component: core/mura/user/userUtility.cfc
+    method: returnLoginCheck
+    op: update
+    source: {path: core/mura/user/userUtility.cfc, lines: [817, 843]}
+    routeKeys: ["admin:ceditprofile.edit", "page:render"]
+    entryScope: {families: [admin, page], when: "returnID and returnUserID request parameters present"}
+    keyScope: table
+    trigger: request
+    sessionEffects: relogin
+    condition: "logs any current user out (817-819), then logs the tredirects row's user in through loginByUserID (839, MFA per device) or user.login() (842) when the row is at most mfadayslinkvalid days old and returnUserID matches it; the sent link targets cEditProfile.edit or the site edit-profile page (userUtility.cfc:534-568)"
+    reason: "Every admin request (admin/Application.cfc:424) and every page permission check (core/mura/Handler/standardEventsHandler.cfc:142) calls it before dispatch, outside any route closure."
+
+  - id: wov:jsonapi-self-save-relogin
+    tables: [tusers]
+    columns: [LastLogin]
+    component: core/mura/client/api/json/v1/jsonApiUtility.cfc
+    method: save
+    op: update
+    source: {path: core/mura/client/api/json/v1/jsonApiUtility.cfc, lines: [2065, 2071]}
+    routeKeys: ["api:user.save", "api:user.save{photo}"]
+    keyScope: table
+    trigger: request
+    sessionEffects: relogin
+    condition: "request.muraAPIRequestMode is json, the saved entity is User without errors, and the logged-in user saved their own record"
+    reason: "The re-login follows the generic entity save, so the entity closure carries the user write but not this relogin effect."
+
+  - id: wov:legacy-hash-upgrade
+    tables: [tusers]
+    columns: [Password, PasswordCreated]
+    component: core/mura/user/userUtility.cfc
+    method: lookupByCredentials
+    op: update
+    source: {path: core/mura/user/userUtility.cfc, lines: [167, 173]}
+    routeKeys: ["admin:clogin.login", "api:login", "api:processasyncobject", "page:login", "page:render", "rest:login", "rest:oauth", "rest:oauth2"]
+    entryScope: {families: [rest], when: "Authorization Basic credentials whose client id is not a UUID (jsonApiUtility.cfc:457-480)"}
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "javaEnabled, BCryptPasswords and encryptPasswords are true and the stored password equals hash(password, defaultHashAlgorithm) (167-171); userDAO.savePassword (core/mura/user/userDAO.cfc:693-703) rewrites it as bcrypt, in REST mode too"
+    noGroupJoin: true
+    reason: "Identity performs this upgrade only while identity.credential is target-authoritative, so the write must not join the credential unit to the login group."
+
+  - id: wov:userstrikes-credential-lookup
+    tables: [tuserstrikes]
+    component: core/mura/user/userUtility.cfc
+    method: lookupByCredentials
+    op: update
+    source: {path: core/mura/user/userUtility.cfc, lines: [120, 120]}
+    routeKeys: ["admin:clogin.login", "api:login", "api:processasyncobject", "page:login", "page:render", "rest:login", "rest:oauth", "rest:oauth2"]
+    entryScope: {families: [rest], when: "Authorization Basic credentials whose client id is not a UUID (jsonApiUtility.cfc:457-480)"}
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "userstrikes.init inserts the username's row when missing and resets strikes last attempted over 10 minutes ago (core/mura/user/userstrikes.cfc:10-61)"
+    reason: "The strikes object comes from createObject('component','mura.user.userstrikes'), not from getBean or an application manager."
+
+  - id: wov:userstrikes-login
+    tables: [tuserstrikes]
+    component: core/mura/user/userUtility.cfc
+    method: login
+    op: update
+    source: {path: core/mura/user/userUtility.cfc, lines: [191, 239]}
+    routeKeys: ["admin:clogin.login", "api:login", "api:processasyncobject", "page:login", "page:render", "rest:login"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "init as in wov:userstrikes-credential-lookup (191); addStrike on a public user outside the site's pool or a failed unblocked attempt (200, 239); clear on success (224)"
+    reason: "The strikes object comes from createObject('component','mura.user.userstrikes'), not from getBean or an application manager."
+
+  - id: wov:userstrikes-mfa-challenge
+    tables: [tuserstrikes]
+    component: core/mura/login/loginManager.cfc
+    method: handleChallengeAttempt
+    op: update
+    source: {path: core/mura/login/loginManager.cfc, lines: [268, 275]}
+    routeKeys: ["admin:clogin.login", "api:processasyncobject", "page:login"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "attemptChallenge is true with a pending session.mfa login; init as in wov:userstrikes-credential-lookup, then clear on a valid code (271) or addStrike (274)"
+    reason: "The strikes object comes from createObject('component','mura.user.userstrikes'), not from getBean or an application manager."
+
+  - id: wov:userstrikes-login-display-object
+    tables: [tuserstrikes]
+    component: core/modules/v1/login/index.cfm
+    method: null
+    op: update
+    source: {path: core/modules/v1/login/index.cfm, lines: [103, 103]}
+    routeKeys: ["api:processasyncobject", "page:render"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "the login display object renders while session.mfa.username is set; init as in wov:userstrikes-credential-lookup"
+    reason: "The display object is included by page rendering at run time and creates the strikes object with createObject."
+
+  - id: wov:userstrikes-edituser-view
+    tables: [tuserstrikes]
+    component: admin/core/views/cusers/edituser.cfm
+    method: null
+    op: update
+    source: {path: admin/core/views/cusers/edituser.cfm, lines: [129, 132]}
+    routeKeys: ["admin:cusers.edituser"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "the edited user has a username; init as in wov:userstrikes-credential-lookup, and removeBlock clears the strikes (130-132)"
+    reason: "The view, not the controller, creates the strikes object with createObject while rendering the edit screen."
+
+  - id: wov:oauth-generate-token
+    tables: [toauthtokens]
+    component: core/mura/client/api/json/v1/jsonApiUtility.cfc
+    method: processRequest
+    op: save
+    source: {path: core/mura/client/api/json/v1/jsonApiUtility.cfc, lines: [624, 765]}
+    routeKeys: ["rest:oauth", "rest:oauth2"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "generateToken (core/mura/client/api/oauth/oauthClientBean.cfc:24-71) inserts a token unless an unexpired one matches client, grant type and user, and for authorization_code and client_credentials deletes the client's tokens expired over a day"
+    reason: "oauthclient.generateToken(...) at lines 624, 652, 667, 680, 696, 720, 733 and 765 writes through an OAuth client bean held in a local variable."
+
+  - id: wov:oauth-refresh-token-delete
+    tables: [toauthtokens]
+    component: core/mura/client/api/json/v1/jsonApiUtility.cfc
+    method: processRequest
+    op: delete
+    source: {path: core/mura/client/api/json/v1/jsonApiUtility.cfc, lines: [755, 757]}
+    routeKeys: ["rest:oauth", "rest:oauth2"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "refresh_token grant whose stored refresh token has expired"
+    reason: "refreshToken.delete() removes a token bean held in a local variable."
+
+  - id: wov:oauth-authorize-display-object
+    tables: [toauthtokens]
+    component: core/modules/v1/oauth/index.cfm
+    method: null
+    op: save
+    source: {path: core/modules/v1/oauth/index.cfm, lines: [46, 46]}
+    routeKeys: ["api:processasyncobject", "page:render"]
+    keyScope: [client_id]
+    trigger: request
+    sessionEffects: none
+    condition: "the oauth display object renders for a logged-in user with accept true, a valid CSRF token for the client, a valid redirect_uri and grant_type implicit or authorization_code (28-37); generateToken as in wov:oauth-generate-token"
+    reason: "The display object is included by page rendering at run time and calls generateToken on a client bean held in a variable."
+
+  - id: wov:oauth-login-module-user-save
+    tables: [tusers]
+    columns: [UserID, GroupName, Fname, Lname, UserName, Password, PasswordCreated, Email, Company, JobTitle, mobilePhone, Website, Type, subType, ContactForm, S2, LastUpdate, LastUpdateBy, LastUpdateByID, Perm, InActive, isPublic, SiteID, Subscribe, notes, description, interests, keepPrivate, photoFileID, IMName, IMService, created, remoteID, tags, tablist]
+    component: core/modules/v1/login/model/oauthLoginUtility.cfc
+    method: updateOrCreateUserAccount
+    op: save
+    source: {path: core/modules/v1/login/model/oauthLoginUtility.cfc, lines: [105, 115]}
+    routeKeys: ["page:render"]
+    entryScope: {families: [admin, api, cfc, page], when: "url loginProvider with code, error or state (core/modules/v1/login/model/handlers/authHandler.cfc onGlobalRequestStart)"}
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "a login provider is configured and validates the callback; saves the user matched by remoteID or email, or a new one, under the site's lockdown rules (99-117); the callback URL is /?loginProvider=<name> (baseLoginProvider.cfc:11-13)"
+    reason: "The login module's event handler, registered from its handlers directory at run time, saves a user bean held in a variable."
+
+  - id: wov:oauth-login-module-user-relations
+    tables: [tclassextenddatauseractivity, tredirects, tuseraddresses, tusersinterests, tusersmemb, tuserstags]
+    component: core/modules/v1/login/model/oauthLoginUtility.cfc
+    method: updateOrCreateUserAccount
+    op: save
+    source: {path: core/modules/v1/login/model/oauthLoginUtility.cfc, lines: [105, 115]}
+    routeKeys: ["page:render"]
+    entryScope: {families: [admin, api, cfc, page], when: "url loginProvider with code, error or state (core/modules/v1/login/model/handlers/authHandler.cfc onGlobalRequestStart)"}
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "as wov:oauth-login-module-user-save; userManager.save writes memberships, interests, tags, the primary address, user extended data and, on update, removes prior magic-link redirects (core/mura/user/userDAO.cfc:460-497)"
+    reason: "The login module's event handler, registered from its handlers directory at run time, saves a user bean held in a variable."
+
+  - id: wov:carch-edit-locknode-stats
+    tables: [tcontentstats]
+    columns: [lockID, lockType]
+    component: admin/core/controllers/carch.cfc
+    method: edit
+    op: save
+    source: {path: admin/core/controllers/carch.cfc, lines: [323, 328]}
+    routeKeys: ["admin:carch.edit"]
+    keyScope: [contentid, siteid]
+    trigger: request
+    sessionEffects: none
+    condition: "rc.locknode is true and the node is unlocked or locked by the session user"
+    reason: "The stats bean comes from contentBean.getStats(), a getter on another bean that the extractor does not follow."
+
+  - id: wov:carch-lockfile-stats
+    tables: [tcontentstats]
+    columns: [lockID, lockType]
+    component: admin/core/controllers/carch.cfc
+    method: lockFile
+    op: save
+    source: {path: admin/core/controllers/carch.cfc, lines: [585, 585]}
+    routeKeys: ["admin:carch.lockfile"]
+    keyScope: [contentid, siteid]
+    trigger: request
+    sessionEffects: none
+    condition: "a valid lockfile CSRF token and author or editor permission on the node, or S2 (579-584)"
+    reason: "The stats bean comes from contentBean.getStats(), a getter on another bean that the extractor does not follow."
+
+  - id: wov:carch-unlockfile-stats
+    tables: [tcontentstats]
+    columns: [lockID, lockType]
+    component: admin/core/controllers/carch.cfc
+    method: unlockFile
+    op: save
+    source: {path: admin/core/controllers/carch.cfc, lines: [598, 605]}
+    routeKeys: ["admin:carch.unlockfile"]
+    keyScope: [contentid, siteid]
+    trigger: request
+    sessionEffects: none
+    condition: "a valid unlockfile CSRF token and a lock held by the session user, or S2"
+    reason: "The stats bean comes from contentBean.getStats(), a getter on another bean that the extractor does not follow."
+
+  - id: wov:carch-unlocknode-stats
+    tables: [tcontentstats]
+    columns: [lockID, lockType]
+    component: admin/core/controllers/carch.cfc
+    method: unlockNode
+    op: save
+    source: {path: admin/core/controllers/carch.cfc, lines: [617, 624]}
+    routeKeys: ["admin:carch.unlocknode"]
+    keyScope: [contentid, siteid]
+    trigger: request
+    sessionEffects: none
+    condition: "a valid unlocknode CSRF token and a lock held by the session user, or S2"
+    reason: "The stats bean comes from contentBean.getStats(), a getter on another bean that the extractor does not follow."
+
+  - id: wov:commentsproxy-flag
+    tables: [tcontentcomments, tcontentstats]
+    component: core/modules/v1/comments/ajax/commentsProxy.cfc
+    method: flag
+    op: update
+    source: {path: core/modules/v1/comments/ajax/commentsProxy.cfc, lines: [101, 102]}
+    routeKeys: ["cfc:/core/modules/v1/comments/ajax/commentsproxy.cfc?method=flag"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "contentCommentBean.flag increments flagCount and recounts the content's comment stats (core/mura/content/contentCommentBean.cfc:363-382)"
+    reason: "The comment bean comes from contentManager.getCommentBean(), a getter whose result the extractor does not follow."
+
+  - id: wov:comment-save-commenter
+    tables: [tcontentcommentcommenters]
+    component: core/mura/content/contentCommentBean.cfc
+    method: setCommenter
+    op: save
+    source: {path: core/mura/Handler/standardEventsHandler.cfc, lines: [158, 183]}
+    routeKeys: ["admin:ccomments.approve", "admin:ccomments.bulkedit", "admin:ccomments.singleedit", "admin:ccomments.unapprove", "api:comment.save", "rest:comment.save", "rest:comment.save{session}", "rest:comment.save{siteid}"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "contentCommentBean.save finds no validation errors (core/mura/content/contentCommentBean.cfc:466-468); standardSetCommenterHandler loads the commenter by the comment's userID for a stored comment, else by the signed-in user's id or the comment e-mail, sets its name and e-mail and saves it (core/mura/Handler/standardEventsHandler.cfc:164-180)"
+    reason: "setCommenter runs the standardSetCommenter handler through pluginEvent.getHandler(...).handle (core/mura/content/contentCommentBean.cfc:273), a handler-factory lookup the extractor does not follow."
+
+  - id: wov:comments-display-object-writes
+    tables: [tcontentcommentcommenters, tcontentcomments, tcontentstats, ttrash]
+    component: core/modules/v1/comments/index.cfm
+    method: null
+    op: save
+    source: {path: core/modules/v1/comments/index.cfm, lines: [163, 245]}
+    routeKeys: ["api:processasyncobject", "page:render"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "the comments display object renders on a site with comments enabled: commentUnsubscribe (163-165); a posted comment that passes the human check (168-233); deletecommentid or spamcommentid for editors, or approvedcommentid for any visitor (235-245)"
+    reason: "The display object is included by page rendering at run time, outside every inventoried entry point's closure."
+
+  - id: wov:comments-display-object-redirects
+    tables: [tredirects]
+    component: core/mura/utility.cfc
+    method: createRedirectID
+    op: insert
+    source: {path: core/mura/utility.cfc, lines: [430, 434]}
+    routeKeys: ["api:processasyncobject", "page:render"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "a comment posted through the comments display object on a site whose comment approval default is not 1 (core/modules/v1/comments/index.cfm:207-209); contentCommentBean.sendNotification, given no script, writes the approve, delete and view links through utility.createRedirectID (core/mura/content/contentCommentBean.cfc:595-625), one tredirects row each"
+    reason: "The display object is included by page rendering at run time, outside every inventoried entry point's closure; the redirect rows are written by utility.createRedirectID, which that display object's comment notification calls."
+
+  - id: wov:cextend-subtype-write
+    tables: [tclassextend, tclassextendattributes, tclassextenddata, tclassextenddatauseractivity, tclassextendsets, tfiles]
+    component: admin/core/controllers/cextend.cfc
+    method: updateSubType
+    op: save
+    source: {path: admin/core/controllers/cextend.cfc, lines: [140, 151]}
+    routeKeys: ["admin:cextend.updatesubtype"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "a valid CSRF token for rc.subtypeid; Add or Update saves the subtype (core/mura/extend/extendSubType.cfc:590-699), Delete also deletes its sets, attributes, attribute values and unused attribute files (721-749)"
+    reason: "The subtype bean comes from application.classExtensionManager, which configBean creates outside the bean factory and the application serviceList."
+
+  - id: wov:cextend-set-write
+    tables: [tclassextendattributes, tclassextenddata, tclassextenddatauseractivity, tclassextendsets, tfiles]
+    component: admin/core/controllers/cextend.cfc
+    method: updateSet
+    op: save
+    source: {path: admin/core/controllers/cextend.cfc, lines: [162, 173]}
+    routeKeys: ["admin:cextend.updateset"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "a valid CSRF token for rc.extendsetid; Add or Update saves the set, Delete also deletes its attributes and their values (core/mura/extend/extendSet.cfc:374-390)"
+    reason: "The set bean comes from getSubTypeBean().getExtendSetBean(), getters on a bean from application.classExtensionManager."
+
+  - id: wov:cextend-attribute-write
+    tables: [tclassextendattributes, tclassextenddata, tclassextenddatauseractivity, tfiles]
+    component: admin/core/controllers/cextend.cfc
+    method: updateAttribute
+    op: save
+    source: {path: admin/core/controllers/cextend.cfc, lines: [200, 211]}
+    routeKeys: ["admin:cextend.updateattribute"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "a valid CSRF token for rc.attributeid; Add or Update saves the attribute, Delete also removes its values and marks unused attribute files deleted (core/mura/extend/extendAttribute.cfc:459-503)"
+    reason: "The attribute bean comes from getSubTypeBean().getExtendSetBean().getattributeBean(), getters on a bean from application.classExtensionManager."
+
+  - id: wov:orm-oauthclient-tokens-add
+    tables: [toauthtokens]
+    component: core/mura/client/api/oauth/oauthClientBean.cfc
+    method: save
+    op: save
+    source: {path: core/mura/bean/beanORM.cfc, lines: [462, 538]}
+    routeKeys: ["admin:cwebservice.save"]
+    keyScope: [clientid]
+    trigger: request
+    sessionEffects: none
+    condition: "request data carries tokens={items:[...],cascade:'merge'|'replace'} (core/mura/bean/bean.cfc:348-375), which cwebservice.save passes to set (admin/core/controllers/cwebservice.cfc:106); each listed token is saved with the client's clientid (bean.cfc:209-219) in the update (464) or insert (536) branch"
+    reason: "The oauthClient addObjects loop saves oauthToken beans built from request data, a receiver the extractor cannot resolve (core/mura/bean/beanORM.cfc:464, 536)."
+
+  - id: wov:orm-oauthclient-tokens-remove
+    tables: [toauthtokens]
+    component: core/mura/client/api/oauth/oauthClientBean.cfc
+    method: save
+    op: delete
+    source: {path: core/mura/bean/beanORM.cfc, lines: [456, 460]}
+    routeKeys: ["admin:cwebservice.save"]
+    keyScope: [clientid]
+    trigger: request
+    sessionEffects: none
+    condition: "request data that cwebservice.save passes to set (admin/core/controllers/cwebservice.cfc:106) carries tokens with cascade 'replace' for a stored client, whose stored tokens not listed are removed (core/mura/bean/bean.cfc:378-388, 235-239)"
+    reason: "The oauthClient removeObjects loop deletes the oauthToken beans the replace cascade collects, a receiver the extractor cannot resolve (core/mura/bean/beanORM.cfc:458)."
+
+  - id: wov:orm-oauthclient-tokens-cascade
+    tables: [toauthtokens]
+    component: core/mura/client/api/oauth/oauthClientBean.cfc
+    method: delete
+    op: delete
+    source: {path: core/mura/bean/beanORM.cfc, lines: [707, 723]}
+    routeKeys: ["admin:cwebservice.delete"]
+    keyScope: [clientid]
+    trigger: request
+    sessionEffects: none
+    condition: "the client has stored tokens; tokens declares cascade='delete' (core/mura/client/api/oauth/oauthClientBean.cfc:6)"
+    reason: "beanORM.delete cascades to each oauthToken of the client through an iterator built at run time, a receiver the extractor cannot resolve (core/mura/bean/beanORM.cfc:719)."
+
+  - id: wov:orm-approvalchain-children-add
+    tables: [tapprovalactions, tapprovalmemberships, tapprovalrequests]
+    component: core/mura/content/approval/approvalChainBean.cfc
+    method: save
+    op: save
+    source: {path: core/mura/bean/beanORM.cfc, lines: [462, 538]}
+    routeKeys: ["admin:cchain.save"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "request data carries memberships or requests={items:[...],cascade:'merge'|'replace'} (core/mura/bean/bean.cfc:348-375), which cchain.save passes to set (admin/core/controllers/cchain.cfc:108); a requests item may nest actions the same way, saved with its request (core/mura/content/approval/approvalRequestBean.cfc:11)"
+    reason: "The approvalChain addObjects loop saves membership and request beans built from request data, with their nested actions, receivers the extractor cannot resolve (core/mura/bean/beanORM.cfc:464, 536)."
+
+  - id: wov:orm-approvalchain-children-remove
+    tables: [tapprovalactions, tapprovalmemberships, tapprovalrequests]
+    component: core/mura/content/approval/approvalChainBean.cfc
+    method: save
+    op: delete
+    source: {path: core/mura/bean/beanORM.cfc, lines: [456, 538]}
+    routeKeys: ["admin:cchain.save"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "request data that cchain.save passes to set (admin/core/controllers/cchain.cfc:108) carries memberships or requests with cascade 'replace' for a stored chain, which removes its stored memberships or requests not listed (core/mura/bean/bean.cfc:378-388, 235-239) and each removed request's actions (core/mura/content/approval/approvalRequestBean.cfc:11); a listed request whose nested actions use 'replace' removes its unlisted actions when saved (beanORM.cfc:464, 536)"
+    reason: "The approvalChain removeObjects loop, and the loops of the requests it saves, delete beans the replace cascade collects, receivers the extractor cannot resolve (core/mura/bean/beanORM.cfc:458, 464, 536)."
+
+  - id: wov:orm-approvalchain-cascade
+    tables: [tapprovalactions, tapprovalmemberships, tapprovalrequests]
+    component: core/mura/content/approval/approvalChainBean.cfc
+    method: delete
+    op: delete
+    source: {path: core/mura/bean/beanORM.cfc, lines: [707, 723]}
+    routeKeys: ["admin:cchain.delete"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "the chain has stored memberships or requests; both declare cascade='delete' (core/mura/content/approval/approvalChainBean.cfc:10-11), and each deleted request cascades to its actions (core/mura/content/approval/approvalRequestBean.cfc:11)"
+    reason: "beanORM.delete cascades to each membership and request of the chain, and on to each request's actions, through iterators built at run time, receivers the extractor cannot resolve (core/mura/bean/beanORM.cfc:719)."
+
+  - id: wov:orm-approvalrequest-actions-cascade
+    tables: [tapprovalactions]
+    component: core/mura/content/approval/approvalRequestBean.cfc
+    method: delete
+    op: delete
+    source: {path: core/mura/bean/beanORM.cfc, lines: [707, 723]}
+    routeKeys: ["admin:carch.update", "admin:carch.update{approved=1}", "admin:carch.update{notify}", "admin:carch.update{upload=image}", "admin:cfeed.import2", "api:content.delete", "api:contentnav.delete", "rest:content.delete", "rest:contentnav.delete", "sitemonitor:run"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "the deleted request has stored actions; actions declares cascade='delete' (core/mura/content/approval/approvalRequestBean.cfc:11); content deletes reach the request through contentDAO.deleteHistAll and delete (core/mura/content/contentDAO.cfc:784-786, 1183-1185)"
+    reason: "beanORM.delete cascades to each approvalAction of the request through an iterator built at run time, a receiver the extractor cannot resolve (core/mura/bean/beanORM.cfc:719)."
+
+  - id: wov:changeset-publish-item-save
+    tables: [tcontent]
+    component: core/mura/content/changeset/changesetManager.cfc
+    method: publish
+    op: save
+    source: {path: core/mura/content/changeset/changesetManager.cfc, lines: [533, 533]}
+    routeKeys: ["admin:cchangesets.publish", "sitemonitor:run"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "the change set has no pending approvals (core/mura/content/changeset/changesetManager.cfc:503); each assigned version is saved approved (524-533), which also updates or deletes a calendar item's event reminders (core/mura/content/contentManager.cfc:1269-1274)"
+    reaches:
+      - {component: core/mura/content/contentBean.cfc, method: save}
+    reason: "item is a contentNavBean of the run-time contentIterator getAssignmentsIterator returns (changesetManager.cfc:563-569, core/mura/content/contentIterator.cfc:102), whose save() reaches contentBean.save through onMissingMethod (core/mura/content/contentNavBean.cfc:98-119, core/mura/content/contentBean.cfc:1074-1077), a receiver the extractor cannot resolve."
+
+  - id: wov:changeset-publish-changeset-save
+    tables: [tchangesets]
+    component: core/mura/content/changeset/changesetManager.cfc
+    method: publish
+    op: save
+    source: {path: core/mura/content/changeset/changesetManager.cfc, lines: [552, 554]}
+    routeKeys: ["admin:cchangesets.publish", "sitemonitor:run"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "the change set has no pending approvals and no errors (core/mura/content/changeset/changesetManager.cfc:503, 521); it is saved as published (552-554)"
+    reaches:
+      - {component: core/mura/content/changeset/changesetBean.cfc, method: save}
+    reason: "changeset is the bean read(changesetID) returns (changesetManager.cfc:506), a receiver the extractor cannot resolve; its save() persists through changesetManager.save (core/mura/content/changeset/changesetBean.cfc:145-153)."
+
+  - id: wov:ver-versioned-objects-delete
+    tables: [tcontentfilemetadata]
+    component: core/mura/content/contentDAO.cfc
+    method: deleteVersionedObjects
+    op: delete
+    source: {path: core/mura/content/contentDAO.cfc, lines: [1652, 1668]}
+    routeKeys: ["admin:carch.approvalaction{action=approve}", "admin:carch.copy", "admin:carch.importcomponent", "admin:carch.importcontent", "admin:carch.update", "admin:carch.updateobjectparams", "admin:carch.updateobjectparams{approved=1}", "admin:carch.update{approved=1}", "admin:carch.update{notify}", "admin:carch.update{upload=image}", "admin:carch.variationtargeting", "admin:carch.variationtargeting{notify}", "admin:cchangesets.publish", "admin:cfeed.import2", "admin:cform.importform", "admin:ctrash.empty", "api:content.delete", "api:content.save", "api:content.save{approved=1}", "api:content.save{notify}", "api:contentnav.delete", "api:contentnav.save", "api:contentnav.save{approved=1}", "api:contentnav.save{notify}", "rest:content.delete", "rest:content.save", "rest:content.save{approved=1}", "rest:content.save{notify}", "rest:contentnav.delete", "rest:contentnav.save", "rest:contentnav.save{approved=1}", "rest:contentnav.save{notify}", "sitemonitor:run"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "application.objectMappings.versionedBeans holds fileMetaData, the one entity at the pin declaring versioned=true (core/mura/content/contentFileMetaDataBean.cfc:81), instantiated at start-up (core/appcfc/onApplicationStart_include.cfm:442); each stored row of the contenthistid, or of contentid and siteid when the trash is emptied (core/mura/trash/trashManager.cfc:132), is deleted through beanORM.delete (core/mura/bean/beanORM.cfc:731)"
+    reason: "The bean is getBean(i) for each name in the run-time list application.objectMappings.versionedBeans (contentDAO.cfc:1653-1663), which core/mura/bean/bean.cfc:647-652 fills from each entity's versioned attribute."
+
+  - id: wov:ver-versioned-objects-persist
+    tables: [tcontentfilemetadata]
+    component: core/mura/content/contentDAO.cfc
+    method: persistVersionedObjects
+    op: save
+    source: {path: core/mura/content/contentDAO.cfc, lines: [1686, 1723]}
+    routeKeys: ["admin:carch.copy", "admin:carch.importcomponent", "admin:carch.importcontent", "admin:carch.update", "admin:carch.updateobjectparams", "admin:carch.updateobjectparams{approved=1}", "admin:carch.update{approved=1}", "admin:carch.update{notify}", "admin:carch.update{upload=image}", "admin:carch.variationtargeting", "admin:carch.variationtargeting{notify}", "admin:cchangesets.publish", "admin:cfeed.import2", "admin:cform.importform", "api:content.save", "api:content.save{approved=1}", "api:content.save{notify}", "api:contentnav.save", "api:contentnav.save{approved=1}", "api:contentnav.save{notify}", "rest:content.save", "rest:content.save{approved=1}", "rest:content.save{notify}", "rest:contentnav.save", "rest:contentnav.save{approved=1}", "rest:contentnav.save{notify}", "sitemonitor:run"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "application.objectMappings.versionedBeans holds fileMetaData, the one entity at the pin declaring versioned=true (core/mura/content/contentFileMetaDataBean.cfc:81), instantiated at start-up (core/appcfc/onApplicationStart_include.cfm:442); each row of version1 whose fileid is a value of version2 (core/mura/content/contentFileMetaDataBean.cfc:138-153) and that removeObjects and addObjects do not name is saved under version2's contenthistid with a new metaID, so beanORM.save inserts it (core/mura/bean/beanORM.cfc:506)"
+    reason: "The bean comes from getBean(i).loadBy(...) for each name in the run-time list application.objectMappings.versionedBeans (contentDAO.cfc:1687-1717)."
+
+  - id: wov:ext-loadconfigxml-subtype-save
+    tables: [tclassextend]
+    component: core/mura/extend/extendManager.cfc
+    method: loadConfigXML
+    op: save
+    source: {path: core/mura/extend/extendManager.cfc, lines: [1897, 1913]}
+    routeKeys: ["admin:carch.importcontent", "admin:cextend.importsubtypes", "admin:csettings.deployplugin", "admin:csettings.sitecopy", "admin:csettings.updateplugin", "admin:csettings.updatesite{action=add}", "admin:csettings.updatesite{action=delete}", "admin:csettings.updatesite{action=update}", "admin:csettings.updatesite{bundle}", "api:site.save", "api:site.save{bundle}", "rest:site.save", "rest:site.save{bundle}"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "the config XML declares an extension whose subtype is new to the site, or moduleConfigOverAdmin is true (default false, 1899); extendSubType.save updates (core/mura/extend/extendSubType.cfc:633) or inserts (668) the row, whose baseTable is tsettings, tusers or tusersaddresses (1900-1911) or, for content types, tcontent (extendSubType.cfc:594-603)"
+    reason: "subType comes from getSubTypeBean() (extendManager.cfc:1845), which creates mura.extend.extendSubType with createObject (299-300) outside the bean factory."
+
+  - id: wov:ext-loadconfigxml-attribute-insert
+    tables: [tclassextendattributes]
+    component: core/mura/extend/extendManager.cfc
+    method: loadConfigXML
+    op: insert
+    source: {path: core/mura/extend/extendManager.cfc, lines: [1943, 1957]}
+    routeKeys: ["admin:carch.importcontent", "admin:cextend.importsubtypes", "admin:csettings.deployplugin", "admin:csettings.sitecopy", "admin:csettings.updateplugin", "admin:csettings.updatesite{action=add}", "admin:csettings.updatesite{action=delete}", "admin:csettings.updatesite{action=update}", "admin:csettings.updatesite{bundle}", "api:site.save", "api:site.save{bundle}", "rest:site.save", "rest:site.save{bundle}"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "an attribute the config XML names is new to its extend set (1943); extendAttribute.save inserts it (core/mura/extend/extendAttribute.cfc:423), owned by the baseTable of its set's subtype"
+    reason: "attribute comes from extendSet.getAttributeByName (core/mura/extend/extendSet.cfc:392-408), a getter on a set bean whose result the extractor does not follow."
+
+  - id: wov:ext-loadconfigxml-site-save
+    tables: [tsettings]
+    component: core/mura/extend/extendManager.cfc
+    method: loadConfigXML
+    op: update
+    source: {path: core/mura/extend/extendManager.cfc, lines: [2016, 2018]}
+    routeKeys: ["admin:carch.importcontent", "admin:cextend.importsubtypes", "admin:csettings.deployplugin", "admin:csettings.sitecopy", "admin:csettings.updateplugin", "admin:csettings.updatesite{action=add}", "admin:csettings.updatesite{action=delete}", "admin:csettings.updatesite{action=update}", "admin:csettings.updatesite{bundle}", "api:site.save", "api:site.save{bundle}", "rest:site.save", "rest:site.save{bundle}"]
+    keyScope: [siteid]
+    trigger: request
+    sessionEffects: none
+    condition: "the config XML gives the small, medium or large image size a height or width other than the site's (core/mura/extend/extendManager.cfc:1986-1998), which marks the site dirty; site.save then updates its tsettings row through settingsManager.update (core/mura/settings/settingsManager.cfc:292, core/mura/settings/settingsDAO.cfc:318)"
+    reason: "site is getBean('settingsManager').getSite(siteid) (core/mura/extend/extendManager.cfc:1804), a settingsBean setSites reads into variables.sites (core/mura/settings/settingsManager.cfc:477, 486) and getSite returns from that struct (546-562), which the extractor does not follow; every such site has its tsettings row, so settingsBean.save (core/mura/settings/settingsBean.cfc:1271-1274) takes the update branch of settingsManager.save (settingsManager.cfc:829-830). The site's own values carry no extendSetID, new placeholder image or bundle (settingsManager.cfc:267, 273, 294), and the registry reload of setSites (295) is the start-up writer's."
+
+  - id: wov:ext-loadconfigxml-site-razuna-save
+    tables: [trazunasettings]
+    component: core/mura/extend/extendManager.cfc
+    method: loadConfigXML
+    op: save
+    source: {path: core/mura/extend/extendManager.cfc, lines: [2016, 2018]}
+    routeKeys: ["admin:carch.importcontent", "admin:cextend.importsubtypes", "admin:csettings.deployplugin", "admin:csettings.sitecopy", "admin:csettings.updateplugin", "admin:csettings.updatesite{action=add}", "admin:csettings.updatesite{action=delete}", "admin:csettings.updatesite{action=update}", "admin:csettings.updatesite{bundle}", "api:site.save", "api:site.save{bundle}", "rest:site.save", "rest:site.save{bundle}"]
+    keyScope: [siteid]
+    trigger: request
+    sessionEffects: none
+    condition: "the config XML gives the small, medium or large image size a height or width other than the site's (core/mura/extend/extendManager.cfc:1986-1998), so site.save runs settingsManager.update, which re-saves the site's razuna settings row, inserting it when the site has none (core/mura/settings/settingsManager.cfc:271, core/mura/settings/settingsBean.cfc:1306-1311)"
+    reason: "The razunaSettings bean is reached only through the site the extractor does not follow (core/mura/extend/extendManager.cfc:1804, 2017); it is the trazunasettings entity (core/mura/content/file/razuna/razunaSettingsBean.cfc:2)."
+
+  - id: wov:sql-bundle-restore-bundleable-delete
+    tables: [tapprovalactions, tapprovalchains, tapprovalmemberships, tapprovalrequests, tchangesetcategoryassign, tchangesettagassign, tcontentfilemetadata, tcontentfilenamearchive, tcontentremotepointer, tcontentvariationtargeting, toauthclients, tremotepointer]
+    component: core/mura/publisher.cfc
+    method: getToWork
+    op: delete
+    source: {path: core/mura/publisher.cfc, lines: [171, 190]}
+    routeKeys: ["admin:carch.importcontent", "admin:cextend.importsubtypes", "admin:csettings.deployplugin", "admin:csettings.sitecopy", "admin:csettings.updateplugin", "admin:csettings.updatesite{bundle}", "api:site.save{bundle}", "rest:site.save{bundle}"]
+    keyScope: [siteid]
+    trigger: request
+    sessionEffects: none
+    condition: "a bundle is deployed with contentMode All: for each name in the bundle's bundleablebeans list (core/mura/settings/settingsBundle.cfc:1842) that the factory holds and whose bean has a siteid property, the target site's rows are deleted (180-183) before fromBundle restores them (185); these are the static entities declaring bundleable=true with a siteid property, each listed once instantiated (core/mura/bean/bean.cfc:658-663)"
+    reason: "The table is local.beanClass.getTable() of getBean(beanName=bb) for each name the bundle lists (publisher.cfc:176-181), read at run time."
+
+  - id: wov:sql-bundle-restore-bundleable-save
+    tables: [tapprovalactions, tapprovalchains, tapprovalmemberships, tapprovalrequests, tchangesetcategoryassign, tchangesettagassign, tcontentcommentcommenters, tcontentfilemetadata, tcontentfilenamearchive, tcontentremotepointer, tcontentvariationtargeting, toauthclients, tremotepointer]
+    component: core/mura/publisher.cfc
+    method: getToWork
+    op: save
+    source: {path: core/mura/publisher.cfc, lines: [171, 190]}
+    routeKeys: ["admin:carch.importcontent", "admin:cextend.importsubtypes", "admin:csettings.deployplugin", "admin:csettings.sitecopy", "admin:csettings.updateplugin", "admin:csettings.updatesite{bundle}", "api:site.save{bundle}", "rest:site.save{bundle}"]
+    keyScope: [siteid]
+    trigger: request
+    sessionEffects: none
+    condition: "a bundle is deployed whose bundleablebeans list names the bean (core/mura/settings/settingsBundle.cfc:1842); beanORM.fromBundle saves each bundle row with siteid set to the target site and UUID values remapped (core/mura/bean/beanORM.cfc:972-1000); the tables are those of the static entities declaring bundleable=true, tcontentcommentcommenters included although it has no siteid property"
+    reason: "local.beanClass.fromBundle (publisher.cfc:185) runs on a bean chosen by name at run time, so its saves lie outside every static closure."
+
+  - id: wov:sql-bundle-partial-bundleable-save
+    tables: [tapprovalactions, tapprovalchains, tapprovalmemberships, tapprovalrequests, tchangesetcategoryassign, tchangesettagassign, tcontentcommentcommenters, tcontentfilemetadata, tcontentfilenamearchive, tcontentremotepointer, tcontentvariationtargeting, toauthclients, tremotepointer]
+    component: core/mura/publisher.cfc
+    method: getToWorkPartial
+    op: save
+    source: {path: core/mura/publisher.cfc, lines: [598, 610]}
+    routeKeys: ["admin:carch.importcontent"]
+    keyScope: [siteid]
+    trigger: request
+    sessionEffects: none
+    condition: "a partial bundle is imported whose bundleablebeans list (core/mura/settings/settingsBundle.cfc:1891) names a bean the factory holds (603-604); beanORM.fromBundle saves each of the bundle's rows for that bean's table with siteid set to the target site and UUID values remapped (core/mura/bean/beanORM.cfc:972-1000); the tables are those of the static entities declaring bundleable=true, of which bundles Masa writes carry rows only for versioned ones (settingsBundle.cfc:1897-1898)"
+    reason: "getBean(bb).fromBundle (publisher.cfc:605) runs on a bean chosen by name at run time, so its saves lie outside every static closure."
+
+  - id: wov:sql-site-delete-bundleable
+    tables: [tapprovalactions, tapprovalchains, tapprovalmemberships, tapprovalrequests, tchangesetcategoryassign, tchangesettagassign, tcontentfilemetadata, tcontentfilenamearchive, tcontentremotepointer, tcontentvariationtargeting, toauthclients, tremotepointer]
+    component: core/mura/settings/settingsDAO.cfc
+    method: delete
+    op: delete
+    source: {path: core/mura/settings/settingsDAO.cfc, lines: [303, 313]}
+    routeKeys: ["admin:csettings.updatesite{action=delete}", "admin:csettings.updatesite{bundle}"]
+    keyScope: [siteid]
+    trigger: request
+    sessionEffects: none
+    condition: "the site is deleted: every bean in application.objectMappings.bundleablebeans with a siteid property loses the site's rows (306-310); these are the static entities declaring bundleable=true with a siteid property, each listed once instantiated (core/mura/bean/bean.cfc:658-663), eight of them at start-up (core/appcfc/onApplicationStart_include.cfm:434-452)"
+    reason: "The table is getBean(beanName=local.b).getTable() for each name in the run-time list application.objectMappings.bundleablebeans (settingsDAO.cfc:304-308)."
+
+  - id: wov:cextend-subtype-basetable
+    tables: []
+    component: admin/core/controllers/cextend.cfc
+    method: updateSubType
+    op: update
+    source: {path: admin/core/controllers/cextend.cfc, lines: [140, 151]}
+    routeKeys: ["admin:cextend.updatesubtype"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "renaming a content subtype updates type and subType of its rows in the stored baseTable (core/mura/extend/extendSubType.cfc:652-662); deleting a subtype other than Custom, Site or Base sets subType='Default' on its baseTable rows, tcontent or tusers (741-747)"
+    dynamic: true
+    reason: "The written table is the stored subtype's baseTable, read at run time."
+
+  - id: wov:ctrash-restore-object-save
+    tables: []
+    component: admin/core/controllers/ctrash.cfc
+    method: restore
+    op: save
+    source: {path: admin/core/controllers/ctrash.cfc, lines: [123, 142]}
+    routeKeys: ["admin:ctrash.restore"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "a valid restore CSRF token; saves each trashed object of rc.deleteid, or the one of rc.objectid, rebuilt as getBean(objectClass) from its stored objectstring (core/mura/trash/trashManager.cfc:308)"
+    dynamic: true
+    reaches:
+      - {component: core/mura/user/addressBean.cfc, method: save}
+      - {component: core/mura/category/categoryBean.cfc, method: save}
+      - {component: core/mura/content/changeset/changesetBean.cfc, method: save}
+      - {component: core/mura/content/contentBean.cfc, method: save}
+      - {component: core/mura/email/emailBean.cfc, method: save}
+      - {component: core/mura/extend/extendObject.cfc, method: save}
+      - {component: core/mura/content/feed/feedBean.cfc, method: save}
+      - {component: core/mura/mailinglist/mailinglistBean.cfc, method: save}
+      - {component: core/mura/user/userBean.cfc, method: save}
+    reason: "The saved bean is that of the stored ttrash objectClass. reaches lists the save of each class trashManager.throwIn stores at the pin: address and user or group (core/mura/user/userManager.cfc:945,728), category (core/mura/category/categoryManager.cfc:809), changeset (core/mura/content/changeset/changesetManager.cfc:229), content (core/mura/content/contentManager.cfc:1829), email (core/mura/email/emailManager.cfc:201), extendObject (core/mura/extend/extendObject.cfc:139), feed (core/mura/content/feed/feedManager.cfc:460) and mailinglist (core/mura/mailinglist/mailinglistManager.cfc:165). ORM entities are trashed only with usetrash (core/mura/bean/beanORM.cfc:743), which no static entity declares, so further classes are dynamic."
+
+  - id: wov:ctrash-restore-trash-row
+    tables: [ttrash]
+    component: admin/core/controllers/ctrash.cfc
+    method: restore
+    op: delete
+    source: {path: core/mura/trash/trashManager.cfc, lines: [432, 434]}
+    routeKeys: ["admin:ctrash.restore"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "a valid restore CSRF token; trashManager.takeOut, called by each restored object's save, deletes its ttrash row and those of the child items it saves again (core/mura/trash/trashManager.cfc:432-440)"
+    reason: "takeOut deletes the row only for an object rebuilt from the trash (core/mura/trash/trashManager.cfc:310,417-421), which this action alone saves, so the delete is listed as the restore's own write."
+
+  - id: wov:ctrash-restore-file-versions
+    tables: [tfiles]
+    component: admin/core/controllers/ctrash.cfc
+    method: restore
+    op: update
+    source: {path: core/mura/content/file/fileDAO.cfc, lines: [375, 380]}
+    routeKeys: ["admin:ctrash.restore"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "a valid restore CSRF token; trashManager.takeOut sets deleted=0 on the tfiles row of every UUID value the restored object holds (core/mura/trash/trashManager.cfc:425-430)"
+    reason: "takeOut restores file versions only for an object rebuilt from the trash (core/mura/trash/trashManager.cfc:310,417-421), which this action alone saves, so the update is listed as the restore's own write."
+
+  - id: wov:plugin-execute-script-listeners
+    tables: []
+    component: core/mura/plugin/pluginManager.cfc
+    method: executeScript
+    op: save
+    source: {path: core/mura/plugin/pluginManager.cfc, lines: [1420, 1600]}
+    routeKeys: []
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "a deployed plugin listens to the announced event through a tpluginscripts row (variables.rsScripts): its .cfm script runs through pluginExecutor.executeScript (1454, 1495, 1541, 1581; core/mura/plugin/pluginExecutor.cfc:120-131) and its component through getComponent; no plugins/ directory exists at the pin and tplugins is on the decision list"
+    dynamic: true
+    reason: "Plugin listeners are registered at run time, so their writes cannot be read from the pinned source. The pinned listeners this method invokes write no table: the core/modules/v1 handlers registerHandlerDir adds (cta and gatedasset onRenderStart queue HTML, gatedasset onGatedAssetSuccess sets a cookie, deprecation onLogDeprecation calls writeLog, filebrowser onApplicationLoad is empty, login authHandler answers only onSessionStart and onGlobalRequestStart). arguments.event.event() (1422) returns the event the Masa scope holds (core/mura/MasaScope.cfc:257-273)."
+
+  - id: wov:plugin-execute-scripts-listeners
+    tables: []
+    component: core/mura/plugin/pluginManager.cfc
+    method: executeScripts
+    op: save
+    source: {path: core/mura/plugin/pluginManager.cfc, lines: [1659, 1898]}
+    routeKeys: []
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "a deployed plugin listens to the announced event through a tpluginscripts row (variables.rsScripts or the scripts query): its .cfm script runs through pluginExecutor.executeScript (1711, 1757, 1806, 1849, 1893; core/mura/plugin/pluginExecutor.cfc:120-131) and its component through getComponent; no plugins/ directory exists at the pin and tplugins is on the decision list"
+    dynamic: true
+    reason: "Plugin listeners are registered at run time, so their writes cannot be read from the pinned source. The pinned listeners this method invokes write no table on the events inventoried closures announce: the site eventHandler.cfc is a copy of the empty core/templates/site/eventHandler.template.cfc (core/mura/utility.cfc:260-261); the core/modules/v1 handlers are those of wov:plugin-execute-script-listeners; login authHandler.onGlobalRequestStart runs only from the pre-dispatch call at core/appcfc/onRequestStart_include.cfm:331, whose login writes wov:oauth-login-module-user-save, wov:oauth-login-module-user-relations and wov:userbean-login record and whose pre-dispatch logout on a logout url or form field wov:login-module-request-logout records. arguments.event.event() (1661) returns the event the Masa scope holds (core/mura/MasaScope.cfc:257-273)."
+
+  - id: wov:plugin-render-script-listeners
+    tables: []
+    component: core/mura/plugin/pluginManager.cfc
+    method: renderScript
+    op: save
+    source: {path: core/mura/plugin/pluginManager.cfc, lines: [1970, 2253]}
+    routeKeys: ["admin:carch.edit", "admin:carch.loadnewcontentmenu", "admin:carch.update", "admin:carch.update{approved=1}", "admin:carch.update{notify}", "admin:carch.update{upload=image}", "admin:ccategory.edit", "admin:ccategory.update", "admin:cchangesets.edit", "admin:cchangesets.save", "admin:cfeed.edit", "admin:cfeed.update", "admin:cfeed.update{closecompactdisplay=true}", "admin:csettings.list", "admin:cusers.editgroup", "admin:cusers.edituser"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "a deployed plugin renders the event through a tpluginscripts row: its .cfm script is included inside savecontent by pluginExecutor.renderScript (2039, 2102, 2166, 2224; core/mura/plugin/pluginExecutor.cfc:133-150) and its component comes from getComponent; no plugins/ directory exists at the pin and tplugins is on the decision list"
+    dynamic: true
+    reason: "Plugin listeners are registered at run time, so their writes cannot be read from the pinned source. No pinned handler defines a render-event method: the core/modules/v1 handlers answer only onRenderStart, onGatedAssetSuccess, onLogDeprecation, onApplicationLoad, onSessionStart and onGlobalRequestStart, and the site eventHandler.cfc is a copy of the empty core/templates/site/eventHandler.template.cfc. arguments.event.event() (1972) returns the event the Masa scope holds (core/mura/MasaScope.cfc:257-273)."
+
+  - id: wov:plugin-render-scripts-listeners
+    tables: []
+    component: core/mura/plugin/pluginManager.cfc
+    method: renderScripts
+    op: save
+    source: {path: core/mura/plugin/pluginManager.cfc, lines: [2317, 2647]}
+    routeKeys: ["admin:carch.audit", "admin:carch.datamanager", "admin:carch.draft", "admin:carch.edit", "admin:carch.edittext", "admin:carch.frontendconfigurator", "admin:carch.hist", "admin:carch.list", "admin:carch.list{sharedid}", "admin:carch.loadnewcontentmenu", "admin:carch.loadsitemanager", "admin:carch.lockcheck", "admin:carch.multifileupload", "admin:carch.multifileupload{upload=image}", "admin:carch.relatedcontent", "admin:carch.search", "admin:carch.selectfields", "admin:carch.selectmedia", "admin:carch.update", "admin:carch.update{approved=1}", "admin:carch.update{notify}", "admin:carch.update{upload=image}", "admin:carch.variationtargeting", "admin:carch.variationtargeting{notify}", "admin:ccategory.edit", "admin:ccategory.update", "admin:cchangesets.edit", "admin:cchangesets.save", "admin:cemail.edit", "admin:cfeed.edit", "admin:cfeed.update", "admin:cfeed.update{closecompactdisplay=true}", "admin:csettings.editsite", "admin:csettings.list", "admin:cusers.editgroup", "admin:cusers.edituser"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "a deployed plugin renders the event through a tpluginscripts row: its .cfm script is included inside savecontent by pluginExecutor.renderScript (2386, 2447, 2513, 2573, 2638; core/mura/plugin/pluginExecutor.cfc:133-150) and its component comes from getComponent; no plugins/ directory exists at the pin and tplugins is on the decision list"
+    dynamic: true
+    reason: "Plugin listeners are registered at run time, so their writes cannot be read from the pinned source. No pinned handler defines a render-event method, as in wov:plugin-render-script-listeners. arguments.event.event() (2319) returns the event the Masa scope holds (core/mura/MasaScope.cfc:257-273)."
+
+  - id: wov:plugin-script-component-init
+    tables: []
+    component: core/mura/plugin/pluginManager.cfc
+    method: getComponent
+    op: save
+    source: {path: core/mura/plugin/pluginManager.cfc, lines: [2864, 2878]}
+    routeKeys: []
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "a deployed plugin registers a component script: every caller passes componentPath plugins.<directory>.<scriptfile> of a tpluginscripts row (1442-1444, 1701, 1883, 2019, 2366 and the other branches of executeScript, executeScripts, renderScript and renderScripts); no plugins/ directory exists at the pin and tplugins is on the decision list"
+    dynamic: true
+    reason: "createObject('component',componentPath).init() (2868, 2870, 2877) runs the init of a plugin component installed at run time, so its writes cannot be read from the pinned source."
+
+  - id: wov:plugin-event-handler-path-init
+    tables: []
+    component: core/mura/plugin/pluginManager.cfc
+    method: getEventHandlerFromPath
+    op: save
+    source: {path: core/mura/plugin/pluginManager.cfc, lines: [3130, 3133]}
+    routeKeys: []
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "a plugin, theme or module registers its handler as a dotted path rather than an object (addEventHandler, 3024-3034); every pinned caller of addEventHandler passes an object (core/mura/configBean.cfc:2126, 2221, core/mura/bean/bean.cfc:1414, core/mura/settings/settingsBean.cfc:2227, core/appcfc/onApplicationStart_include.cfm:886)"
+    dynamic: true
+    reason: "eventHandler.init() (3132) runs the init of a handler component named at run time, so its writes cannot be read from the pinned source."
+
+  - id: wov:plugin-config-xml-include
+    tables: []
+    component: core/mura/plugin/pluginManager.cfc
+    method: getPluginXML
+    op: save
+    source: {path: core/mura/plugin/pluginManager.cfc, lines: [894, 898]}
+    routeKeys: ["admin:csettings.deleteplugin", "admin:csettings.deployplugin", "admin:csettings.editplugin", "admin:csettings.updateplugin"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "the plugin directory holds plugin/config.xml.cfm and no plugin/config.xml (894-898); no plugins/ directory exists at the pin and tplugins is on the decision list"
+    dynamic: true
+    reason: "The include at 897 runs a template the plugin package brings at run time, so its writes cannot be read from the pinned source."
+
+  - id: wov:plugin-cfc-deploy-hooks
+    tables: []
+    component: core/mura/plugin/pluginManager.cfc
+    method: updateSettings
+    op: save
+    source: {path: core/mura/plugin/pluginManager.cfc, lines: [1122, 1139]}
+    routeKeys: ["admin:csettings.updateplugin"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "the deployed plugin has plugin/plugin.cfc (1122) and autoDeploy is not false (1118): its init (1127) runs, then update when already deployed (1132) or install otherwise (1136); no plugins/ directory exists at the pin and tplugins is on the decision list"
+    dynamic: true
+    reason: "plugin.cfc is plugin code installed at run time, so the writes of its init, update and install cannot be read from the pinned source."
+
+  - id: wov:plugin-cfc-delete-hook
+    tables: []
+    component: core/mura/plugin/pluginManager.cfc
+    method: deletePlugin
+    op: save
+    source: {path: core/mura/plugin/pluginManager.cfc, lines: [1255, 1266]}
+    routeKeys: ["admin:csettings.deleteplugin"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "the plugin being deleted has plugin/plugin.cfc (1255): its init (1260) and delete (1264) run before its rows are removed; no plugins/ directory exists at the pin and tplugins is on the decision list"
+    dynamic: true
+    reason: "plugin.cfc is plugin code installed at run time, so the writes of its init and delete cannot be read from the pinned source."
+
+  - id: wov:entity-register-dynamic
+    tables: []
+    component: core/mura/configBean.cfc
+    method: registerBean
+    op: save
+    source: {path: core/mura/configBean.cfc, lines: [2029, 2077]}
+    routeKeys: []
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "the registered component extends mura.bean.beanORM or beanORMVersioned (2002-2016): a stored dynamic tentity entity the factory generates and registers with forceSchemaCheck (core/mura/bean/beanFactory.cfc:240-263), or an entity of a plugin, theme or site model directory; no pinned module bean is one (core/modules/v1/filebrowser/model/beans/filebrowser.cfc extends mura.bean.bean; nav/model/beans/catnav.cfc, login/model/oauthLoginUtility.cfc and login/model/providers extend mura.cfobject); with url.applydbupdates or forceSchemaCheck (1983), checkSchema adds the entity's columns, keys and indexes to its declared table (core/mura/bean/beanORM.cfc:271-300; tentity-declared:*, decision list)"
+    dynamic: true
+    reason: "entity is ioc.getBean of a component found in a directory scanned at run time (2017-2025), so its schema writes cannot be read from the pinned source. registerAsEntity (2029) saves the entity's tentity row (core/mura/bean/bean.cfc:1452-1493), a save every closure reaching this method already records through beanFactory.declareBean; getEntityName (2036, inside the never-true 'false and' test, and 2077) and isOrm (2071) only read metadata."
+
+  - id: wov:module-handler-register-dynamic
+    tables: []
+    component: core/mura/configBean.cfc
+    method: registerHandlerDir
+    op: save
+    source: {path: core/mura/configBean.cfc, lines: [2116, 2132]}
+    routeKeys: []
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "a theme, site, plugin or /modules model directory holds a handlers directory whose component writes in init or onApplicationLoad (2118, 2129-2131); at the pin the only handler directories are those of core/modules/v1 (cta, deprecation, filebrowser, gatedasset, login), whose handlers inherit the mura.cfobject init that returns this (core/mura/cfobject.cfc:89-91) and of which only filebrowser defines onApplicationLoad, an empty function (core/modules/v1/filebrowser/model/handlers/handler.cfc:11-12); sites/default/modules/site_module_test has no model directory"
+    dynamic: true
+    reason: "The handler component is named by the directory listing (2117-2118), so the init and onApplicationLoad of handlers installed at run time cannot be read from the pinned source."
+
+  - id: wov:startup-db-updates-update
+    tables: [tclassextend, tclassextendattributes, tclassextenddata, tclassextenddatauseractivity, tclassextendsets, tcontent, tcontentassignments, tcontentcategories, tcontentcomments, tcontentfeeds, tcontentrelated, tcontentstats, temails, tfiles, tformresponsepackets, tformresponsequestions, tmailinglist, tplugindisplayobjects, tplugins, tpluginscripts, tsettings, tsystemobjects, tuseraddresses, tusers]
+    component: core/mura/configBean.cfc
+    method: applyDbUpdates
+    op: update
+    source: {path: core/mura/configBean.cfc, lines: [973, 977]}
+    routeKeys: []
+    keyScope: table
+    trigger: appstart
+    sessionEffects: none
+    condition: "runs only on upgrade from an older version"
+    reason: "The cfinclude at 976 runs every core/mura/dbUpdates/*.cfm in name order, a template the walk cannot bind, when start-up or reload carries appAutoUpdated or url.applyDBUpdates and applyDbUpdates is true (core/appcfc/onApplicationStart_include.cfm:421-424, configBean.cfc:938). Their MSSQL data updates follow a schema or row check only a database older than the pin fails (for example core/mura/dbUpdates/5.1.85.cfm:69, 107, 154; 5.2.0.cfm:33-36, which rewrites columns converted from ntext, a type core/setup/db/mssql.sql never creates; 5.6.cfm; 5.7.cfm:38-154; 6.1.cfm:307-315; extendManager.resetTypedData from 5.2.2655.cfm:184, 329), except 7.0.cfm:1-15, which resets the titles of five system nodes on every run. The mysql- and oracle-only branches (5.0.627.cfm, 5.5.cfm:326, 567, 619, 5.6.cfm:360) do not run under MURA_DBTYPE=mssql. The update, insert and delete writers carry distinct spans holding 976, because writers sharing a method and span fold into one table writer."
+
+  - id: wov:startup-db-updates-insert
+    tables: [tcontent, tcontentobjects, tsystemobjects]
+    component: core/mura/configBean.cfc
+    method: applyDbUpdates
+    op: insert
+    source: {path: core/mura/configBean.cfc, lines: [975, 977]}
+    routeKeys: []
+    keyScope: table
+    trigger: appstart
+    sessionEffects: none
+    condition: "runs only on upgrade from an older version"
+    reason: "As wov:startup-db-updates-update: core/mura/dbUpdates/5.4.3178.cfm:276-391, 6.1.cfm:184-301, 6.2.1.cfm:10-127 and 7.1.cfm:38-67 insert the system content nodes a site lacks, and 5.4.4312.cfm:7-12 and 7.4.0.cfm:7-48 insert the navigation system objects and the primary_nav content object of every site lacking them."
+
+  - id: wov:startup-db-updates-delete
+    tables: [tsystemobjects]
+    component: core/mura/configBean.cfc
+    method: applyDbUpdates
+    op: delete
+    source: {path: core/mura/configBean.cfc, lines: [976, 976]}
+    routeKeys: []
+    keyScope: table
+    trigger: appstart
+    sessionEffects: none
+    condition: "runs only on upgrade from an older version"
+    reason: "As wov:startup-db-updates-update: core/mura/dbUpdates/5.2.0.cfm:485 deletes the retired IASiteMap system object, which only a database older than the pin holds."
+
+  - id: wov:plugin-cfc-bundle-hooks
+    tables: []
+    component: core/mura/publisher.cfc
+    method: getToWorkPlugins
+    op: save
+    source: {path: core/mura/publisher.cfc, lines: [3386, 3398]}
+    routeKeys: ["admin:csettings.deployplugin", "admin:csettings.updatesite{bundle}", "api:site.save{bundle}", "rest:site.save{bundle}"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "a bundle carrying plugins is deployed with pluginMode all (162-168) and an unpacked plugin has plugin/plugin.cfc (3386): its init (3393) and fromBundle (3395) run; a site copy passes no bundle, so it skips them (3383); no plugins/ directory exists at the pin and tplugins is on the decision list"
+    dynamic: true
+    reason: "plugin.cfc arrives with the bundle at run time, so the writes of its init and fromBundle cannot be read from the pinned source."
+
+  - id: wov:cextend-subtype-rename-tcontent
+    tables: [tcontent]
+    columns: [Type, subType]
+    component: admin/core/controllers/cextend.cfc
+    method: updateSubType
+    op: update
+    source: {path: core/mura/extend/extendSubType.cfc, lines: [655, 661]}
+    routeKeys: ["admin:cextend.updatesubtype"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "a valid CSRF token and action Update on a stored subtype other than Default whose type, or whose subtype outside a Custom base table, changes while the stored and the new type are both content types (core/mura/extend/extendSubType.cfc:652-653); the stored site's rows of the stored type and subtype take the new ones in the posted baseTable, which the edit form sets to tcontent for every content type (admin/core/views/cextend/editsubtype.cfm:80-83, 247)"
+    reason: "The statement updates #getBaseTable()# of the subtype bean the request populates (admin/core/controllers/cextend.cfc:140-144); any other base table a request posts stays with wov:cextend-subtype-basetable."
+
+  - id: wov:cextend-subtype-delete-default
+    tables: [tcontent, tusers]
+    columns: [subType]
+    component: admin/core/controllers/cextend.cfc
+    method: updateSubType
+    op: update
+    source: {path: core/mura/extend/extendSubType.cfc, lines: [742, 746]}
+    routeKeys: ["admin:cextend.updatesubtype"]
+    keyScope: [siteid]
+    trigger: request
+    sessionEffects: none
+    condition: "a valid CSRF token and action Delete on a subtype whose type is not Custom, Site or Base (core/mura/extend/extendSubType.cfc:740): the site's rows with that subType are set to Default in the posted baseTable, tcontent for content types and tusers for users and groups (admin/core/views/cextend/editsubtype.cfm:80-83); for Address the form posts tuseraddresses, which has no subType column (core/setup/db/mssql.sql:444-464), so the statement fails"
+    reason: "The statement updates #getBaseTable()# of the subtype bean the request populates (admin/core/controllers/cextend.cfc:140-147); extendManager.deleteSubType (core/mura/extend/extendManager.cfc:327-332), the only other caller of extendSubType.delete, is called nowhere at the pin."
+
+  - id: wov:plugin-monitor-events
+    tables: []
+    component: core/mura/content/contentServer.cfc
+    method: handleAPIRequest
+    op: save
+    source: {path: core/mura/content/contentServer.cfc, lines: [737, 743]}
+    routeKeys: ["sitemonitor:run"]
+    keyScope: table
+    trigger: scheduler
+    sessionEffects: none
+    condition: "no plugin, theme, site or module handler for onGlobalMonitor or onSiteMonitor exists at the pin and there is no plugins/ directory, so the write set is empty unless handlers are registered live (tplugins, decision list)"
+    dynamic: true
+    reason: "Event handlers are registered at run time, so their writes cannot be read from the pinned source."
+
+  - id: wov:plugin-login-events-lookup
+    tables: []
+    component: core/mura/user/userUtility.cfc
+    method: lookupByCredentials
+    op: save
+    source: {path: core/mura/user/userUtility.cfc, lines: [123, 131]}
+    routeKeys: ["admin:clogin.login", "api:login", "api:processasyncobject", "page:login", "page:render"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "announces onSiteLogin or onGlobalLogin when request.muraSessionManagement is true; no handler for either exists at the pin"
+    dynamic: true
+    reason: "Event handlers are registered at run time, so their writes cannot be read from the pinned source."
+
+  - id: wov:plugin-login-events
+    tables: []
+    component: core/mura/user/userUtility.cfc
+    method: login
+    op: save
+    source: {path: core/mura/user/userUtility.cfc, lines: [229, 251]}
+    routeKeys: ["admin:clogin.login", "api:login", "api:processasyncobject", "page:login", "page:render", "rest:login"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "announces onSiteLoginSuccess or onGlobalLoginSuccess (229-233), LoginFailure (240-244) or LoginBlocked (247-251), in REST mode too; no handler for these exists at the pin"
+    dynamic: true
+    reason: "Event handlers are registered at run time, so their writes cannot be read from the pinned source."
+
+  - id: wov:plugin-login-events-by-userid
+    tables: []
+    component: core/mura/user/userUtility.cfc
+    method: loginByUserID
+    op: save
+    source: {path: core/mura/user/userUtility.cfc, lines: [292, 298]}
+    routeKeys: ["admin:ceditprofile.edit", "admin:clogin.login", "api:processasyncobject", "api:user.save", "api:user.save{photo}", "page:createprofile", "page:render", "page:updateprofile"]
+    entryScope: {families: [admin, api, cfc, page], when: "userid and userHash cookies are set while the session is not logged in"}
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "announces onSiteLoginSuccess or onGlobalLoginSuccess when request.muraSessionManagement is true; no handler for either exists at the pin"
+    dynamic: true
+    reason: "Event handlers are registered at run time, so their writes cannot be read from the pinned source."
+
+  - id: wov:theme-content-renderer
+    tables: []
+    component: core/mura/MasaScope.cfc
+    method: getContentRenderer
+    op: save
+    source: {path: core/mura/MasaScope.cfc, lines: [176, 178]}
+    routeKeys: []
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "the site's theme include path holds a contentRenderer.cfc (175); at the pin themes/ holds only Application.cfc and README.md and sites/default/themes only README.md, and without a theme directory the path falls back to the site directory (core/mura/settings/settingsBean.cfc:853-883), whose contentRenderer.cfc core/mura/utility.cfc:253 copies at run time from core/templates/site/contentRenderer.template.cfc, a mura.content.contentRenderer subclass that only sets this.* rendering settings"
+    dynamic: true
+    reason: "core/mura/MasaScope.cfc:176-178 create and initialise the theme's contentRenderer.cfc, theme code installed at run time, on every request that builds a content renderer, so its writes cannot be read from the pinned source."
+
+  - id: wov:plugin-log-deprecation-events
+    tables: []
+    component: core/mura/content/contentRenderer.cfc
+    method: setDynamicContent
+    op: save
+    source: {path: core/mura/content/contentRenderer.cfc, lines: [2762, 2768]}
+    routeKeys: []
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "the content uses a deprecated [mura] or [sava] tag or the $ or mura scope (2761, 2766), so announceEvent('LogDeprecation') runs every onLogDeprecation handler; the pin's only one, core/modules/v1/deprecation/model/handlers/handler.cfc:19-79, writes a log file with writeLog, and no plugin, theme or site handler exists at the pin"
+    dynamic: true
+    reason: "Event handlers are registered at run time, so their writes cannot be read from the pinned source."
+
+  - id: wov:plugin-toolbar-render-events
+    tables: []
+    component: core/mura/content/contentRenderer.cfc
+    method: renderHTMLQueue
+    op: save
+    source: {path: core/mura/content/contentRenderer.cfc, lines: [2924, 2924]}
+    routeKeys: ["page:render"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "the FOOT queue renders with getShowModal() true (2920-2922) and includes admin/core/utilities/modal/toolbar.cfm, which reads the content, its stats, change sets and the current user to build edit links and renders onExperienceToolbarRender and onFEToolbarExtensionRender (toolbar.cfm:440, 510); no handler for either exists at the pin"
+    dynamic: true
+    reason: "Event handlers are registered at run time, so their writes cannot be read from the pinned source."
+
+  - id: wov:theme-html-queue-includes
+    tables: []
+    component: core/mura/content/contentRenderer.cfc
+    method: renderHTMLQueue
+    op: save
+    source: {path: core/mura/content/contentRenderer.cfc, lines: [2952, 2952]}
+    routeKeys: ["page:render"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "lookupHTMLHeadQueueFilePath (core/mura/settings/settingsBean.cfc:2255-2587) finds a queued file in a theme, site, /muraWRM/display_objects, /muraWRM/modules or plugins/ directory; at the pin the only htmlhead files are core/modules/v1/htmlhead/global.cfm, jquery.cfm and prettify.cfm, which emit script tags from configuration and content values, and core/modules/v1/nav/calendarNav/htmlhead/htmlhead.cfm, whose body is a CFML comment"
+    dynamic: true
+    reason: "Queued HTML head and foot files come from themes, sites and plugins installed at run time, so their writes cannot be read from the pinned source."
+
+  - id: wov:theme-page-template
+    tables: []
+    component: core/mura/Translator/standardHTMLTranslator.cfc
+    method: translate
+    op: save
+    source: {path: core/mura/Translator/standardHTMLTranslator.cfc, lines: [128, 130]}
+    routeKeys: ["page:render"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "the theme's templates directory (core/mura/settings/settingsBean.cfc:916-921) holds the content's template (128); at the pin themes/ holds only Application.cfc and README.md and sites/default holds no themes or templates directory, so no page template exists"
+    dynamic: true
+    reason: "Page templates belong to themes installed at run time, so their writes cannot be read from the pinned source."
+
+  - id: wov:site-lockdown-template
+    tables: []
+    component: core/mura/Handler/standardEventsHandler.cfc
+    method: standardEnableLockdownHandler
+    op: save
+    source: {path: core/mura/Handler/standardEventsHandler.cfc, lines: [92, 93]}
+    routeKeys: ["page:render"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "the site is locked down and /muraWRM/config/lockdown.cfm exists (92); config/ at the pin holds only Application.cfc and README.md, so core/templates/lockdown.cfm renders instead (95)"
+    dynamic: true
+    reason: "config/lockdown.cfm is an operator file added at run time, so its writes cannot be read from the pinned source."
+
+  - id: wov:site-login-handler
+    tables: []
+    component: core/mura/Handler/standardEventsHandler.cfc
+    method: doAction
+    op: save
+    source: {path: core/mura/Handler/standardEventsHandler.cfc, lines: [541, 542]}
+    routeKeys: ["page:login"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "doaction=login and the site's includes/loginHandler.cfc exists (541); none exists at the pin, and its handleLogin replaces the loginManager branch (543-552), whose login page:login already records"
+    dynamic: true
+    reason: "A site login handler is code added at run time, so its writes cannot be read from the pinned source; the override applies to doAction under every doaction value, so it carries no session effect of its own."
+
+  - id: wov:site-custom-objectclass-label
+    tables: []
+    component: admin/core/views/carch/form/dsp_panel_layoutobjects.cfm
+    method: null
+    op: save
+    source: {path: admin/core/views/carch/form/dsp_panel_layoutobjects.cfm, lines: [238, 240]}
+    routeKeys: ["admin:carch.edit", "admin:carch.update", "admin:carch.update{approved=1}", "admin:carch.update{notify}", "admin:carch.update{upload=image}"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "<webroot>/<siteid>/includes/display_objects/custom/admin/dsp_objectClassLabel.cfm exists (238); no site includes directory exists at the pin"
+    dynamic: true
+    reason: "Custom admin display-object files are site code added at run time, so their writes cannot be read from the pinned source."
+
+  - id: wov:site-custom-objectclass
+    tables: []
+    component: admin/core/views/carch/loadclass.cfm
+    method: null
+    op: save
+    source: {path: admin/core/views/carch/loadclass.cfm, lines: [129, 131]}
+    routeKeys: ["admin:carch.loadclass"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "rc.layoutmanager is false and <webroot>/<siteid>/includes/display_objects/custom/admin/dsp_objectClass.cfm exists (128-129); no site includes directory exists at the pin"
+    dynamic: true
+    reason: "Custom admin display-object files are site code added at run time, so their writes cannot be read from the pinned source."
+
+  - id: wov:module-configurator-include
+    tables: []
+    component: admin/core/views/carch/loadclassconfigurator.cfm
+    method: null
+    op: save
+    source: {path: admin/core/views/carch/loadclassconfigurator.cfm, lines: [156, 157]}
+    routeKeys: ["admin:carch.loadclassconfigurator"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "configFile is the first <classid>/configurator.cfm, <classid>/layout/index.cfm or external/configurator.cfm in the site's display-object directories (141-153; core/mura/settings/settingsBean.cfc:2040-2072, 2120-2178); at the pin those are core/modules/v1 configurators, which only read content, feeds, permissions and subtypes, except plugin/configurator.cfm, which cfinvokes a plugin display object's OptionsRender (125-138), and no plugins/ directory or theme or site module configurator exists"
+    dynamic: true
+    reason: "Configurators of theme, site and plugin modules are code installed at run time, so their writes cannot be read from the pinned source."
+
+  - id: wov:theme-email-template-send
+    tables: []
+    component: core/mura/email/emailUtility.cfc
+    method: send
+    op: save
+    source: {path: core/mura/email/emailUtility.cfc, lines: [229, 254]}
+    routeKeys: []
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "template is the email's <theme>/templates/emails/<template> or the site's email/inc_email.cfm or includes/email/inc_email.cfm (195-201); none exists at the pin, and core/mura/utility.cfc:270 creates the site file at run time from core/templates/site/email.template.cfm, which only outputs the body, unsubscribe link and open-tracking image"
+    dynamic: true
+    reason: "Email templates belong to themes and sites installed at run time, so their writes cannot be read from the pinned source; send is reached from cemail.update, ctrash.restore and the site monitor's email step."
+
+  - id: wov:theme-email-template-forward
+    tables: []
+    component: core/mura/email/emailUtility.cfc
+    method: forward
+    op: save
+    source: {path: core/mura/email/emailUtility.cfc, lines: [395, 418]}
+    routeKeys: ["page:forwardemail"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "template is the email's <theme>/templates/emails/<template> or the site's includes/email/inc_email.cfm (372); none exists at the pin, and core/mura/utility.cfc:270 creates the site's email/inc_email.cfm at run time from core/templates/site/email.template.cfm, which only outputs the body, unsubscribe link and open-tracking image"
+    dynamic: true
+    reason: "Email templates belong to themes and sites installed at run time, so their writes cannot be read from the pinned source."
+
+  - id: wov:plugin-formbuilder-field-template
+    tables: []
+    component: core/mura/formBuilder/formBuilderManager.cfc
+    method: getFieldTemplate
+    op: save
+    source: {path: core/mura/formBuilder/formBuilderManager.cfc, lines: [210, 210]}
+    routeKeys: ["admin:cform.getfieldtemplate"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "the include is admin/core/utilities/formbuilder/templates/<fieldType>.cfm (84-85, 195-197), whose files render markup, read forms (field-nested.cfm:79) and render onFormElementBasicTabRender (field-checkbox.cfm:103, field-dropdown.cfm:104, field-radio.cfm:105, field-hidden.cfm:107, field-textarea.cfm:108, field-textfield.cfm:108); no handler for it exists at the pin"
+    dynamic: true
+    reason: "Event handlers are registered at run time, so their writes cannot be read from the pinned source."
+
+  - id: wov:plugin-formbuilder-dialog
+    tables: []
+    component: core/mura/formBuilder/formBuilderManager.cfc
+    method: getDialog
+    op: save
+    source: {path: core/mura/formBuilder/formBuilderManager.cfc, lines: [237, 237]}
+    routeKeys: ["admin:cform.getdialog"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "the include is admin/core/utilities/formbuilder/templates/<dialog>.cfm (84-85, 222-224), whose files render markup, read forms (field-nested.cfm:79) and render onFormElementBasicTabRender (field-checkbox.cfm:103, field-dropdown.cfm:104, field-radio.cfm:105, field-hidden.cfm:107, field-textarea.cfm:108, field-textfield.cfm:108); no handler for it exists at the pin"
+    dynamic: true
+    reason: "Event handlers are registered at run time, so their writes cannot be read from the pinned source."
+
+  - id: wov:bean-variation-mxp-tracking-id
+    tables: []
+    component: core/mura/client/api/resource/variation.js.cfm
+    method: null
+    op: save
+    source: {path: core/mura/client/api/resource/variation.js.cfm, lines: [206, 210]}
+    routeKeys: ["variation:js"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "runs only when getServiceFactory().containsBean('marketingManager') and the site has a gaTrackingID (196), then calls getTrackingid() at 206 and 208; no component, alias, addBean, module model file or plugins/ directory registers marketingManager at the pin, so the write set is empty unless a plugin provides the bean live (tplugins, decision list)"
+    dynamic: true
+    reason: "core/mura/client/api/resource/variation.js.cfm:206,208 call a marketingManager bean that only a plugin registered at run time provides, so its writes cannot be read from the pinned source."
+
+  - id: wov:bean-related-content-mxp-defaults
+    tables: []
+    component: core/mura/content/contentGatewayAdobe.cfc
+    method: getRelatedContent
+    op: save
+    source: {path: core/mura/content/contentGatewayAdobe.cfc, lines: [2212, 2215]}
+    routeKeys: ["admin:carch.loadselectedrelatedcontent"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "sortBy is mxpRelevance and session.mura.mxp is undefined (2212-2213); no marketingManager is registered at the pin, so getBean throws 'bean not found' (core/mura/bean/ioc.cfc:213-214) unless a plugin provides the bean live (tplugins, decision list)"
+    dynamic: true
+    reason: "core/mura/content/contentGatewayAdobe.cfc:2214 calls getDefaults() on a marketingManager bean that only a plugin registered at run time provides, so its writes cannot be read from the pinned source."
+
+  - id: wov:bean-feed-mxp-defaults
+    tables: []
+    component: core/mura/content/feed/feedGateway.cfc
+    method: getFeed
+    op: save
+    source: {path: core/mura/content/feed/feedGateway.cfc, lines: [237, 240]}
+    routeKeys: ["admin:carch.list", "admin:carch.loadrelatedcontent", "admin:carch.loadrepomanager", "admin:carch.loadsiteflat", "admin:carch.loadsitemanager", "admin:carch.update", "admin:carch.update{approved=1}", "admin:carch.update{notify}", "admin:carch.update{upload=image}", "feed:v1"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "the feed sorts or orders by mxpRelevance outside countOnly and session.mura.mxp is undefined (237-238); no marketingManager is registered at the pin, so getBean throws 'bean not found' (core/mura/bean/ioc.cfc:213-214) unless a plugin provides the bean live (tplugins, decision list)"
+    dynamic: true
+    reason: "core/mura/content/feed/feedGateway.cfc:239 calls getDefaults() on a marketingManager bean that only a plugin registered at run time provides, so its writes cannot be read from the pinned source."
+
+  - id: wov:sql-undeclare-entity-drop-dynamic
+    tables: []
+    component: core/mura/bean/beanFactory.cfc
+    method: undeclareBean
+    op: delete
+    source: {path: core/mura/bean/beanFactory.cfc, lines: [185, 189]}
+    routeKeys: ["api:undeclareentity", "rest:undeclareentity"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "a super user undeclares a dynamic entity with deleteSchema true (core/mura/client/api/json/v1/jsonApiUtility.cfc:187-195, core/mura/bean/beanFactory.cfc:181-185); dbUtility.dropTable then drops the entity's table when it exists (core/mura/dbUtility.cfc:41-54), a JSON-declared tentity table on the decision list"
+    dynamic: true
+    reason: "The dropped table is entity.getTable() of an entity declared at run time (core/mura/bean/beanFactory.cfc:92, 183), so it cannot be read from the pinned source; the tentity row delete at line 199 is extracted, and entity.getEntityName at 191 and 193 only names the application.objectMappings entry and the generated bean file deleted at 195-197 (core/mura/bean/bean.cfc:1118-1135), which is code, not the file store."
+
+  - id: wov:ver-versioned-objects-delete-dynamic
+    tables: []
+    component: core/mura/content/contentDAO.cfc
+    method: deleteVersionedObjects
+    op: delete
+    source: {path: core/mura/content/contentDAO.cfc, lines: [1652, 1668]}
+    routeKeys: ["admin:carch.approvalaction{action=approve}", "admin:carch.copy", "admin:carch.importcomponent", "admin:carch.importcontent", "admin:carch.update", "admin:carch.updateobjectparams", "admin:carch.updateobjectparams{approved=1}", "admin:carch.update{approved=1}", "admin:carch.update{notify}", "admin:carch.update{upload=image}", "admin:carch.variationtargeting", "admin:carch.variationtargeting{notify}", "admin:cchangesets.publish", "admin:cfeed.import2", "admin:cform.importform", "admin:ctrash.empty", "api:content.delete", "api:content.save", "api:content.save{approved=1}", "api:content.save{notify}", "api:contentnav.delete", "api:contentnav.save", "api:contentnav.save{approved=1}", "api:contentnav.save{notify}", "rest:content.delete", "rest:content.save", "rest:content.save{approved=1}", "rest:content.save{notify}", "rest:contentnav.delete", "rest:contentnav.save", "rest:contentnav.save{approved=1}", "rest:contentnav.save{notify}", "sitemonitor:run"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "an entity registered from a plugin, module or theme bean directory extends mura.bean.beanORMVersioned with versioned=true (core/mura/configBean.cfc:2011-2029); none exists at the pin, and JSON-declared tentity entities are never versioned (core/mura/bean/beanFactory.cfc:90-102)"
+    dynamic: true
+    reason: "Entities registered at run time join versionedBeans (core/mura/bean/bean.cfc:647-652), so their tables cannot be read from the pinned source."
+
+  - id: wov:ver-versioned-objects-persist-dynamic
+    tables: []
+    component: core/mura/content/contentDAO.cfc
+    method: persistVersionedObjects
+    op: save
+    source: {path: core/mura/content/contentDAO.cfc, lines: [1686, 1723]}
+    routeKeys: ["admin:carch.copy", "admin:carch.importcomponent", "admin:carch.importcontent", "admin:carch.update", "admin:carch.updateobjectparams", "admin:carch.updateobjectparams{approved=1}", "admin:carch.update{approved=1}", "admin:carch.update{notify}", "admin:carch.update{upload=image}", "admin:carch.variationtargeting", "admin:carch.variationtargeting{notify}", "admin:cchangesets.publish", "admin:cfeed.import2", "admin:cform.importform", "api:content.save", "api:content.save{approved=1}", "api:content.save{notify}", "api:contentnav.save", "api:contentnav.save{approved=1}", "api:contentnav.save{notify}", "rest:content.save", "rest:content.save{approved=1}", "rest:content.save{notify}", "rest:contentnav.save", "rest:contentnav.save{approved=1}", "rest:contentnav.save{notify}", "sitemonitor:run"]
+    keyScope: table
+    trigger: request
+    sessionEffects: none
+    condition: "an entity registered from a plugin, module or theme bean directory extends mura.bean.beanORMVersioned with versioned=true (core/mura/configBean.cfc:2011-2029); none exists at the pin, and JSON-declared tentity entities are never versioned (core/mura/bean/beanFactory.cfc:90-102)"
+    dynamic: true
+    reason: "Entities registered at run time join versionedBeans (core/mura/bean/bean.cfc:647-652), so their tables cannot be read from the pinned source."
+
+  - id: wov:sql-bundle-restore-bundleable-dynamic
+    tables: []
+    component: core/mura/publisher.cfc
+    method: getToWork
+    op: save
+    source: {path: core/mura/publisher.cfc, lines: [171, 190]}
+    routeKeys: ["admin:carch.importcontent", "admin:cextend.importsubtypes", "admin:csettings.deployplugin", "admin:csettings.sitecopy", "admin:csettings.updateplugin", "admin:csettings.updatesite{bundle}", "api:site.save{bundle}", "rest:site.save{bundle}"]
+    keyScope: [siteid]
+    trigger: request
+    sessionEffects: none
+    condition: "the bundle lists a bean registered at run time, a bundleable tentity JSON entity (core/mura/bean/beanFactory.cfc:94, 102) or a plugin, module or theme entity declaring bundleable=true (core/mura/configBean.cfc:2011-2029), or another name the target factory holds; its rows are deleted and restored as for the static entities, and tentity and plugin-declared entity tables are on the decision list"
+    dynamic: true
+    reason: "The bean names come from the bundle file, so the tables of entities registered at run time cannot be read from the pinned source."
+
+  - id: wov:sql-bundle-partial-bundleable-dynamic
+    tables: []
+    component: core/mura/publisher.cfc
+    method: getToWorkPartial
+    op: save
+    source: {path: core/mura/publisher.cfc, lines: [598, 610]}
+    routeKeys: ["admin:carch.importcontent"]
+    keyScope: [siteid]
+    trigger: request
+    sessionEffects: none
+    condition: "the partial bundle lists a bean registered at run time, a bundleable tentity JSON entity (core/mura/bean/beanFactory.cfc:94, 102) or a plugin, module or theme entity declaring bundleable=true (core/mura/configBean.cfc:2011-2029), or another name the target factory holds; its rows are restored as for the static entities, and tentity and plugin-declared entity tables are on the decision list"
+    dynamic: true
+    reason: "The bean names come from the bundle file, so the tables of entities registered at run time cannot be read from the pinned source."
+
+  - id: wov:sql-site-delete-bundleable-dynamic
+    tables: []
+    component: core/mura/settings/settingsDAO.cfc
+    method: delete
+    op: delete
+    source: {path: core/mura/settings/settingsDAO.cfc, lines: [303, 313]}
+    routeKeys: ["admin:csettings.updatesite{action=delete}", "admin:csettings.updatesite{bundle}"]
+    keyScope: [siteid]
+    trigger: request
+    sessionEffects: none
+    condition: "bundleablebeans holds a bean registered at run time: a bundleable tentity JSON entity (core/mura/bean/beanFactory.cfc:94, 102) or a plugin, module or theme entity declaring bundleable=true (core/mura/configBean.cfc:2011-2029); tentity and plugin-declared entity tables are on the decision list"
+    dynamic: true
+    reason: "Entities registered at run time join bundleablebeans (core/mura/bean/bean.cfc:658-663), so their tables cannot be read from the pinned source."
+
+settledCalls:
+  - id: wov:fw-carch-export
+    source: {path: admin/core/controllers/carch.cfc, lines: [119, 121]}
+    calls: [variables.fw.redirect]
+    resolution: non-write
+    reason: "variables.fw is admin/Application.cfc, which extends the FW/1 admin/framework.cfc without overriding redirect and passes itself to each controller's init (admin/framework.cfc:1394, admin/core/controllers/controller.cfc:79-81); redirect (admin/framework.cfc:723-783) only builds the target URL and ends the request with cflocation, writing no table or file and changing no login state."
+
+  - id: wov:fw-carch-importcontent-csrf
+    source: {path: admin/core/controllers/carch.cfc, lines: [136, 136]}
+    calls: [variables.fw.redirect]
+    resolution: non-write
+    reason: "variables.fw is admin/Application.cfc, which extends the FW/1 admin/framework.cfc without overriding redirect and passes itself to each controller's init (admin/framework.cfc:1394, admin/core/controllers/controller.cfc:79-81); redirect (admin/framework.cfc:723-783) only builds the target URL and ends the request with cflocation, writing no table or file and changing no login state."
+
+  - id: wov:fw-carch-importcontent-result
+    source: {path: admin/core/controllers/carch.cfc, lines: [148, 150]}
+    calls: [variables.fw.redirect]
+    resolution: non-write
+    reason: "variables.fw is admin/Application.cfc, which extends the FW/1 admin/framework.cfc without overriding redirect and passes itself to each controller's init (admin/framework.cfc:1394, admin/core/controllers/controller.cfc:79-81); redirect (admin/framework.cfc:723-783) only builds the target URL and ends the request with cflocation, writing no table or file and changing no login state."
+
+  - id: wov:fw-carch-update
+    source: {path: admin/core/controllers/carch.cfc, lines: [427, 446]}
+    calls: [variables.fw.redirect]
+    resolution: non-write
+    reason: "variables.fw is admin/Application.cfc, which extends the FW/1 admin/framework.cfc without overriding redirect and passes itself to each controller's init (admin/framework.cfc:1394, admin/core/controllers/controller.cfc:79-81); redirect (admin/framework.cfc:723-783) only builds the target URL and ends the request with cflocation, writing no table or file and changing no login state."
+
+  - id: wov:servlet-carch-getaudittrail-content-type
+    source: {path: admin/core/controllers/carch.cfc, lines: [638, 638]}
+    calls: ["getpagecontext().getResponse().setContentType"]
+    resolution: non-write
+    reason: "getpagecontext().getResponse() is the servlet response of the ColdFusion page context, whose setContentType only sets the Content-Type header of the JSON written before the abort (admin/core/controllers/carch.cfc:638-642), writing no table or file and changing no login state."
+
+  - id: wov:servlet-carch-getimagesizeurl-content-type
+    source: {path: admin/core/controllers/carch.cfc, lines: [646, 646]}
+    calls: ["getpagecontext().getResponse().setContentType"]
+    resolution: non-write
+    reason: "getpagecontext().getResponse() is the servlet response of the ColdFusion page context, whose setContentType only sets the Content-Type header of the JSON written before the abort (admin/core/controllers/carch.cfc:646-648), writing no table or file and changing no login state."
+
+  - id: wov:fw-ccategory-update
+    source: {path: admin/core/controllers/ccategory.cfc, lines: [117, 117]}
+    calls: [variables.fw.redirect]
+    resolution: non-write
+    reason: "variables.fw is admin/Application.cfc, which extends the FW/1 admin/framework.cfc without overriding redirect and passes itself to each controller's init (admin/framework.cfc:1394, admin/core/controllers/controller.cfc:79-81); redirect (admin/framework.cfc:723-783) only builds the target URL and ends the request with cflocation, writing no table or file and changing no login state."
+
+  - id: wov:fw-cchain-save-siteid
+    source: {path: admin/core/controllers/cchain.cfc, lines: [104, 104]}
+    calls: [variables.fw.redirect]
+    resolution: non-write
+    reason: "variables.fw is admin/Application.cfc, which extends the FW/1 admin/framework.cfc without overriding redirect and passes itself to each controller's init (admin/framework.cfc:1394, admin/core/controllers/controller.cfc:79-81); redirect (admin/framework.cfc:723-783) only builds the target URL and ends the request with cflocation, writing no table or file and changing no login state."
+
+  - id: wov:fw-cchain-save-saved
+    source: {path: admin/core/controllers/cchain.cfc, lines: [112, 112]}
+    calls: [variables.fw.redirect]
+    resolution: non-write
+    reason: "variables.fw is admin/Application.cfc, which extends the FW/1 admin/framework.cfc without overriding redirect and passes itself to each controller's init (admin/framework.cfc:1394, admin/core/controllers/controller.cfc:79-81); redirect (admin/framework.cfc:723-783) only builds the target URL and ends the request with cflocation, writing no table or file and changing no login state."
+
+  - id: wov:fw-cchain-delete
+    source: {path: admin/core/controllers/cchain.cfc, lines: [120, 120]}
+    calls: [variables.fw.redirect]
+    resolution: non-write
+    reason: "variables.fw is admin/Application.cfc, which extends the FW/1 admin/framework.cfc without overriding redirect and passes itself to each controller's init (admin/framework.cfc:1394, admin/core/controllers/controller.cfc:79-81); redirect (admin/framework.cfc:723-783) only builds the target URL and ends the request with cflocation, writing no table or file and changing no login state."
+
+  - id: wov:fw-cchangesets-publish
+    source: {path: admin/core/controllers/cchangesets.cfc, lines: [146, 146]}
+    calls: [variables.fw.redirect]
+    resolution: non-write
+    reason: "variables.fw is admin/Application.cfc, which extends the FW/1 admin/framework.cfc without overriding redirect and passes itself to each controller's init (admin/framework.cfc:1394, admin/core/controllers/controller.cfc:79-81); redirect (admin/framework.cfc:723-783) only builds the target URL and ends the request with cflocation, writing no table or file and changing no login state."
+
+  - id: wov:fw-cchangesets-rollback
+    source: {path: admin/core/controllers/cchangesets.cfc, lines: [153, 153]}
+    calls: [variables.fw.redirect]
+    resolution: non-write
+    reason: "variables.fw is admin/Application.cfc, which extends the FW/1 admin/framework.cfc without overriding redirect and passes itself to each controller's init (admin/framework.cfc:1394, admin/core/controllers/controller.cfc:79-81); redirect (admin/framework.cfc:723-783) only builds the target URL and ends the request with cflocation, writing no table or file and changing no login state."
+
+  - id: wov:fw-cchangesets-removeitem
+    source: {path: admin/core/controllers/cchangesets.cfc, lines: [170, 170]}
+    calls: [variables.fw.redirect]
+    resolution: non-write
+    reason: "variables.fw is admin/Application.cfc, which extends the FW/1 admin/framework.cfc without overriding redirect and passes itself to each controller's init (admin/framework.cfc:1394, admin/core/controllers/controller.cfc:79-81); redirect (admin/framework.cfc:723-783) only builds the target URL and ends the request with cflocation, writing no table or file and changing no login state."
+
+  - id: wov:fw-cchangesets-save
+    source: {path: admin/core/controllers/cchangesets.cfc, lines: [183, 183]}
+    calls: [variables.fw.redirect]
+    resolution: non-write
+    reason: "variables.fw is admin/Application.cfc, which extends the FW/1 admin/framework.cfc without overriding redirect and passes itself to each controller's init (admin/framework.cfc:1394, admin/core/controllers/controller.cfc:79-81); redirect (admin/framework.cfc:723-783) only builds the target URL and ends the request with cflocation, writing no table or file and changing no login state."
+
+  - id: wov:fw-cchangesets-delete
+    source: {path: admin/core/controllers/cchangesets.cfc, lines: [191, 191]}
+    calls: [variables.fw.redirect]
+    resolution: non-write
+    reason: "variables.fw is admin/Application.cfc, which extends the FW/1 admin/framework.cfc without overriding redirect and passes itself to each controller's init (admin/framework.cfc:1394, admin/core/controllers/controller.cfc:79-81); redirect (admin/framework.cfc:723-783) only builds the target URL and ends the request with cflocation, writing no table or file and changing no login state."
+
+  - id: wov:fw-ccomments-bulkedit-view
+    source: {path: admin/core/controllers/ccomments.cfc, lines: [138, 138]}
+    calls: ["getFW().setView"]
+    resolution: non-write
+    reason: "getFW() is the accessor of the fw property (admin/core/controllers/controller.cfc:76-81), which holds admin/Application.cfc, the FW/1 application passed to init (admin/framework.cfc:1394) that overrides neither redirect nor setView; setView (admin/framework.cfc:878-880) only sets request.overrideViewAction, writing no table or file and changing no login state."
+
+  - id: wov:fw-ccomments-singleedit-view
+    source: {path: admin/core/controllers/ccomments.cfc, lines: [166, 166]}
+    calls: ["getFW().setView"]
+    resolution: non-write
+    reason: "getFW() is the accessor of the fw property (admin/core/controllers/controller.cfc:76-81), which holds admin/Application.cfc, the FW/1 application passed to init (admin/framework.cfc:1394) that overrides neither redirect nor setView; setView (admin/framework.cfc:878-880) only sets request.overrideViewAction, writing no table or file and changing no login state."
+
+  - id: wov:fw-ccomments-approve
+    source: {path: admin/core/controllers/ccomments.cfc, lines: [175, 175]}
+    calls: ["getFW().redirect"]
+    resolution: non-write
+    reason: "getFW() is the accessor of the fw property (admin/core/controllers/controller.cfc:76-81), which holds admin/Application.cfc, the FW/1 application passed to init (admin/framework.cfc:1394) that overrides neither redirect nor setView; redirect (admin/framework.cfc:723-783) copies the preserved request-context keys into a session.__fw1 flash struct (saveFlashContext, 1584-1607), builds the target URL and ends the request with cflocation, writing no table or file and changing no login state."
+
+  - id: wov:fw-ccomments-unapprove
+    source: {path: admin/core/controllers/ccomments.cfc, lines: [184, 184]}
+    calls: ["getFW().redirect"]
+    resolution: non-write
+    reason: "getFW() is the accessor of the fw property (admin/core/controllers/controller.cfc:76-81), which holds admin/Application.cfc, the FW/1 application passed to init (admin/framework.cfc:1394) that overrides neither redirect nor setView; redirect (admin/framework.cfc:723-783) copies the preserved request-context keys into a session.__fw1 flash struct (saveFlashContext, 1584-1607), builds the target URL and ends the request with cflocation, writing no table or file and changing no login state."
+
+  - id: wov:fw-ccomments-delete
+    source: {path: admin/core/controllers/ccomments.cfc, lines: [193, 193]}
+    calls: ["getFW().redirect"]
+    resolution: non-write
+    reason: "getFW() is the accessor of the fw property (admin/core/controllers/controller.cfc:76-81), which holds admin/Application.cfc, the FW/1 application passed to init (admin/framework.cfc:1394) that overrides neither redirect nor setView; redirect (admin/framework.cfc:723-783) copies the preserved request-context keys into a session.__fw1 flash struct (saveFlashContext, 1584-1607), builds the target URL and ends the request with cflocation, writing no table or file and changing no login state."
+
+  - id: wov:fw-ccomments-markasspam
+    source: {path: admin/core/controllers/ccomments.cfc, lines: [201, 201]}
+    calls: ["getFW().redirect"]
+    resolution: non-write
+    reason: "getFW() is the accessor of the fw property (admin/core/controllers/controller.cfc:76-81), which holds admin/Application.cfc, the FW/1 application passed to init (admin/framework.cfc:1394) that overrides neither redirect nor setView; redirect (admin/framework.cfc:723-783) copies the preserved request-context keys into a session.__fw1 flash struct (saveFlashContext, 1584-1607), builds the target URL and ends the request with cflocation, writing no table or file and changing no login state."
+
+  - id: wov:fw-ccomments-purgedeletedcomments
+    source: {path: admin/core/controllers/ccomments.cfc, lines: [357, 357]}
+    calls: ["getFW().redirect"]
+    resolution: non-write
+    reason: "getFW() is the accessor of the fw property (admin/core/controllers/controller.cfc:76-81), which holds admin/Application.cfc, the FW/1 application passed to init (admin/framework.cfc:1394) that overrides neither redirect nor setView; redirect (admin/framework.cfc:723-783) copies the preserved request-context keys into a session.__fw1 flash struct (saveFlashContext, 1584-1607), builds the target URL and ends the request with cflocation, writing no table or file and changing no login state."
+
+  - id: wov:fw-ceditprofile-update
+    source: {path: admin/core/controllers/ceditprofile.cfc, lines: [138, 138]}
+    calls: [variables.fw.redirect]
+    resolution: non-write
+    reason: "variables.fw is admin/Application.cfc, which extends the FW/1 admin/framework.cfc without overriding redirect and passes itself to each controller's init (admin/framework.cfc:1394, admin/core/controllers/controller.cfc:79-81); redirect (admin/framework.cfc:723-783) only builds the target URL and ends the request with cflocation, writing no table or file and changing no login state."
+
+  - id: wov:fw-cemail-update
+    source: {path: admin/core/controllers/cemail.cfc, lines: [122, 122]}
+    calls: [variables.fw.redirect]
+    resolution: non-write
+    reason: "variables.fw is admin/Application.cfc, which extends the FW/1 admin/framework.cfc without overriding redirect and passes itself to each controller's init (admin/framework.cfc:1394, admin/core/controllers/controller.cfc:79-81); redirect (admin/framework.cfc:723-783) only builds the target URL and ends the request with cflocation, writing no table or file and changing no login state."
+
+  - id: wov:fw-cextend-exportsubtype
+    source: {path: admin/core/controllers/cextend.cfc, lines: [96, 96]}
+    calls: [variables.fw.redirect]
+    resolution: non-write
+    reason: "variables.fw is admin/Application.cfc, which extends the FW/1 admin/framework.cfc without overriding redirect and passes itself to each controller's init (admin/framework.cfc:1394, admin/core/controllers/controller.cfc:79-81); redirect (admin/framework.cfc:723-783) only builds the target URL and ends the request with cflocation, writing no table or file and changing no login state."
+
+  - id: wov:fw-cextend-importsubtypes
+    source: {path: admin/core/controllers/cextend.cfc, lines: [111, 111]}
+    calls: [variables.fw.redirect]
+    resolution: non-write
+    reason: "variables.fw is admin/Application.cfc, which extends the FW/1 admin/framework.cfc without overriding redirect and passes itself to each controller's init (admin/framework.cfc:1394, admin/core/controllers/controller.cfc:79-81); redirect (admin/framework.cfc:723-783) only builds the target URL and ends the request with cflocation, writing no table or file and changing no login state."
+
+  - id: wov:fw-cextend-updaterelatedcontentset
+    source: {path: admin/core/controllers/cextend.cfc, lines: [196, 196]}
+    calls: [variables.fw.redirect]
+    resolution: non-write
+    reason: "variables.fw is admin/Application.cfc, which extends the FW/1 admin/framework.cfc without overriding redirect and passes itself to each controller's init (admin/framework.cfc:1394, admin/core/controllers/controller.cfc:79-81); redirect (admin/framework.cfc:723-783) only builds the target URL and ends the request with cflocation, writing no table or file and changing no login state."
+
+  - id: wov:fw-cfeed-update
+    source: {path: admin/core/controllers/cfeed.cfc, lines: [137, 144]}
+    calls: [variables.fw.redirect]
+    resolution: non-write
+    reason: "variables.fw is admin/Application.cfc, which extends the FW/1 admin/framework.cfc without overriding redirect and passes itself to each controller's init (admin/framework.cfc:1394, admin/core/controllers/controller.cfc:79-81); redirect (admin/framework.cfc:723-783) only builds the target URL and ends the request with cflocation, writing no table or file and changing no login state."
+
+  - id: wov:fw-clogin-main
+    source: {path: admin/core/controllers/clogin.cfc, lines: [97, 97]}
+    calls: [variables.fw.redirect]
+    resolution: non-write
+    reason: "variables.fw is admin/Application.cfc, which extends the FW/1 admin/framework.cfc without overriding redirect and passes itself to each controller's init (admin/framework.cfc:1394, admin/core/controllers/controller.cfc:79-81); redirect (admin/framework.cfc:723-783) only builds the target URL and ends the request with cflocation, writing no table or file and changing no login state."
+
+  - id: wov:fw-clogin-login
+    source: {path: admin/core/controllers/clogin.cfc, lines: [111, 111]}
+    calls: [variables.fw.redirect]
+    resolution: non-write
+    reason: "variables.fw is admin/Application.cfc, which extends the FW/1 admin/framework.cfc without overriding redirect and passes itself to each controller's init (admin/framework.cfc:1394, admin/core/controllers/controller.cfc:79-81); redirect (admin/framework.cfc:723-783) only builds the target URL and ends the request with cflocation, writing no table or file and changing no login state."
+
+  - id: wov:fw-clogin-logout
+    source: {path: admin/core/controllers/clogin.cfc, lines: [117, 117]}
+    calls: [variables.fw.redirect]
+    resolution: non-write
+    reason: "variables.fw is admin/Application.cfc, which extends the FW/1 admin/framework.cfc without overriding redirect and passes itself to each controller's init (admin/framework.cfc:1394, admin/core/controllers/controller.cfc:79-81); redirect (admin/framework.cfc:723-783) only builds the target URL and ends the request with cflocation, writing no table or file and changing no login state; the logout is loginManager.logout's at line 116."
+
+  - id: wov:fw-cmailinglist-update
+    source: {path: admin/core/controllers/cmailinglist.cfc, lines: [115, 117]}
+    calls: [variables.fw.redirect]
+    resolution: non-write
+    reason: "variables.fw is admin/Application.cfc, which extends the FW/1 admin/framework.cfc without overriding redirect and passes itself to each controller's init (admin/framework.cfc:1394, admin/core/controllers/controller.cfc:79-81); redirect (admin/framework.cfc:723-783) only builds the target URL and ends the request with cflocation, writing no table or file and changing no login state."
+
+  - id: wov:fw-cmailinglist-updatemember
+    source: {path: admin/core/controllers/cmailinglist.cfc, lines: [128, 128]}
+    calls: [variables.fw.redirect]
+    resolution: non-write
+    reason: "variables.fw is admin/Application.cfc, which extends the FW/1 admin/framework.cfc without overriding redirect and passes itself to each controller's init (admin/framework.cfc:1394, admin/core/controllers/controller.cfc:79-81); redirect (admin/framework.cfc:723-783) only builds the target URL and ends the request with cflocation, writing no table or file and changing no login state."
+
+  - id: wov:fw-cperm-update
+    source: {path: admin/core/controllers/cperm.cfc, lines: [107, 107]}
+    calls: [variables.fw.redirect]
+    resolution: non-write
+    reason: "variables.fw is admin/Application.cfc, which extends the FW/1 admin/framework.cfc without overriding redirect and passes itself to each controller's init (admin/framework.cfc:1394, admin/core/controllers/controller.cfc:79-81); redirect (admin/framework.cfc:723-783) only builds the target URL and ends the request with cflocation, writing no table or file and changing no login state."
+
+  - id: wov:fw-cperm-updatemodule
+    source: {path: admin/core/controllers/cperm.cfc, lines: [124, 159]}
+    calls: [variables.fw.redirect]
+    resolution: non-write
+    reason: "variables.fw is admin/Application.cfc, which extends the FW/1 admin/framework.cfc without overriding redirect and passes itself to each controller's init (admin/framework.cfc:1394, admin/core/controllers/controller.cfc:79-81); redirect (admin/framework.cfc:723-783) only builds the target URL and ends the request with cflocation, writing no table or file and changing no login state."
+
+  - id: wov:fw-csettings-list
+    source: {path: admin/core/controllers/csettings.cfc, lines: [106, 106]}
+    calls: [variables.fw.redirect]
+    resolution: non-write
+    reason: "variables.fw is admin/Application.cfc, which extends the FW/1 admin/framework.cfc without overriding redirect and passes itself to each controller's init (admin/framework.cfc:1394, admin/core/controllers/controller.cfc:79-81); redirect (admin/framework.cfc:723-783) only builds the target URL and ends the request with cflocation, writing no table or file and changing no login state."
+
+  - id: wov:fw-csettings-deployplugin
+    source: {path: admin/core/controllers/csettings.cfc, lines: [149, 152]}
+    calls: [variables.fw.redirect]
+    resolution: non-write
+    reason: "variables.fw is admin/Application.cfc, which extends the FW/1 admin/framework.cfc without overriding redirect and passes itself to each controller's init (admin/framework.cfc:1394, admin/core/controllers/controller.cfc:79-81); redirect (admin/framework.cfc:723-783) only builds the target URL and ends the request with cflocation, writing no table or file and changing no login state."
+
+  - id: wov:fw-csettings-updatesite-update
+    source: {path: admin/core/controllers/csettings.cfc, lines: [186, 186]}
+    calls: [variables.fw.redirect]
+    resolution: non-write
+    reason: "variables.fw is admin/Application.cfc, which extends the FW/1 admin/framework.cfc without overriding redirect and passes itself to each controller's init (admin/framework.cfc:1394, admin/core/controllers/controller.cfc:79-81); redirect (admin/framework.cfc:723-783) only builds the target URL and ends the request with cflocation, writing no table or file and changing no login state."
+
+  - id: wov:fw-csettings-updatesite-add
+    source: {path: admin/core/controllers/csettings.cfc, lines: [203, 203]}
+    calls: [variables.fw.redirect]
+    resolution: non-write
+    reason: "variables.fw is admin/Application.cfc, which extends the FW/1 admin/framework.cfc without overriding redirect and passes itself to each controller's init (admin/framework.cfc:1394, admin/core/controllers/controller.cfc:79-81); redirect (admin/framework.cfc:723-783) only builds the target URL and ends the request with cflocation, writing no table or file and changing no login state."
+
+  - id: wov:fw-csettings-updatesite-done
+    source: {path: admin/core/controllers/csettings.cfc, lines: [221, 223]}
+    calls: [variables.fw.redirect]
+    resolution: non-write
+    reason: "variables.fw is admin/Application.cfc, which extends the FW/1 admin/framework.cfc without overriding redirect and passes itself to each controller's init (admin/framework.cfc:1394, admin/core/controllers/controller.cfc:79-81); redirect (admin/framework.cfc:723-783) only builds the target URL and ends the request with cflocation, writing no table or file and changing no login state."
+
+  - id: wov:fw-csettings-sitecopy
+    source: {path: admin/core/controllers/csettings.cfc, lines: [239, 239]}
+    calls: [variables.fw.redirect]
+    resolution: non-write
+    reason: "variables.fw is admin/Application.cfc, which extends the FW/1 admin/framework.cfc without overriding redirect and passes itself to each controller's init (admin/framework.cfc:1394, admin/core/controllers/controller.cfc:79-81); redirect (admin/framework.cfc:723-783) only builds the target URL and ends the request with cflocation, writing no table or file and changing no login state."
+
+  - id: wov:fw-csettings-createbundle
+    source: {path: admin/core/controllers/csettings.cfc, lines: [260, 262]}
+    calls: [variables.fw.redirect]
+    resolution: non-write
+    reason: "variables.fw is admin/Application.cfc, which extends the FW/1 admin/framework.cfc without overriding redirect and passes itself to each controller's init (admin/framework.cfc:1394, admin/core/controllers/controller.cfc:79-81); redirect (admin/framework.cfc:723-783) only builds the target URL and ends the request with cflocation, writing no table or file and changing no login state."
+
+  - id: wov:fw-ctrash-empty
+    source: {path: admin/core/controllers/ctrash.cfc, lines: [105, 105]}
+    calls: [variables.fw.redirect]
+    resolution: non-write
+    reason: "variables.fw is admin/Application.cfc, which extends the FW/1 admin/framework.cfc without overriding redirect and passes itself to each controller's init (admin/framework.cfc:1394, admin/core/controllers/controller.cfc:79-81); redirect (admin/framework.cfc:723-783) only builds the target URL and ends the request with cflocation, writing no table or file and changing no login state."
+
+  - id: wov:fw-cusers-default
+    source: {path: admin/core/controllers/cusers.cfc, lines: [175, 175]}
+    calls: [variables.fw.redirect]
+    resolution: non-write
+    reason: "variables.fw is admin/Application.cfc, which extends the FW/1 admin/framework.cfc without overriding redirect and passes itself to each controller's init (admin/framework.cfc:1394, admin/core/controllers/controller.cfc:79-81); redirect (admin/framework.cfc:723-783) only builds the target URL and ends the request with cflocation, writing no table or file and changing no login state."
+
+  - id: wov:fw-cusers-downloadgroupmembers
+    source: {path: admin/core/controllers/cusers.cfc, lines: [269, 269]}
+    calls: [variables.fw.redirect]
+    resolution: non-write
+    reason: "variables.fw is admin/Application.cfc, which extends the FW/1 admin/framework.cfc without overriding redirect and passes itself to each controller's init (admin/framework.cfc:1394, admin/core/controllers/controller.cfc:79-81); redirect (admin/framework.cfc:723-783) copies the preserved request-context keys into a session.__fw1 flash struct (saveFlashContext, 1584-1607), builds the target URL and ends the request with cflocation, writing no table or file and changing no login state."
+
+  - id: wov:fw-cusers-removefromgroup
+    source: {path: admin/core/controllers/cusers.cfc, lines: [281, 281]}
+    calls: [variables.fw.redirect]
+    resolution: non-write
+    reason: "variables.fw is admin/Application.cfc, which extends the FW/1 admin/framework.cfc without overriding redirect and passes itself to each controller's init (admin/framework.cfc:1394, admin/core/controllers/controller.cfc:79-81); redirect (admin/framework.cfc:723-783) copies the preserved request-context keys into a session.__fw1 flash struct (saveFlashContext, 1584-1607), builds the target URL and ends the request with cflocation, writing no table or file and changing no login state."
+
+  - id: wov:fw-cusers-update
+    source: {path: admin/core/controllers/cusers.cfc, lines: [348, 351]}
+    calls: [variables.fw.redirect]
+    resolution: non-write
+    reason: "variables.fw is admin/Application.cfc, which extends the FW/1 admin/framework.cfc without overriding redirect and passes itself to each controller's init (admin/framework.cfc:1394, admin/core/controllers/controller.cfc:79-81); redirect (admin/framework.cfc:723-783) copies the preserved request-context keys into a session.__fw1 flash struct (saveFlashContext, 1584-1607), builds the target URL and ends the request with cflocation, writing no table or file and changing no login state."
+
+  - id: wov:fw-cusers-updateaddress
+    source: {path: admin/core/controllers/cusers.cfc, lines: [371, 373]}
+    calls: [variables.fw.redirect]
+    resolution: non-write
+    reason: "variables.fw is admin/Application.cfc, which extends the FW/1 admin/framework.cfc without overriding redirect and passes itself to each controller's init (admin/framework.cfc:1394, admin/core/controllers/controller.cfc:79-81); redirect (admin/framework.cfc:723-783) copies the preserved request-context keys into a session.__fw1 flash struct (saveFlashContext, 1584-1607), builds the target URL and ends the request with cflocation, writing no table or file and changing no login state."
+
+  - id: wov:fw-cusers-route
+    source: {path: admin/core/controllers/cusers.cfc, lines: [388, 397]}
+    calls: [variables.fw.redirect]
+    resolution: non-write
+    reason: "variables.fw is admin/Application.cfc, which extends the FW/1 admin/framework.cfc without overriding redirect and passes itself to each controller's init (admin/framework.cfc:1394, admin/core/controllers/controller.cfc:79-81); redirect (admin/framework.cfc:723-783) only builds the target URL and ends the request with cflocation, writing no table or file and changing no login state."
+
+  - id: wov:servlet-cusers-advancedsearch-parameters
+    source: {path: admin/core/controllers/cusers.cfc, lines: [443, 443]}
+    calls: ["getPageContext().getRequest().getParameterMap"]
+    resolution: non-write
+    reason: "getPageContext().getRequest() is the servlet request of the ColdFusion page context, whose getParameterMap only reads the request parameters that admin/core/controllers/cusers.cfc:443-450 copies into rc.querystruct and rc.qs, writing no table or file and changing no login state."
+
+  - id: wov:fw-cusers-advancedsearchtocsv
+    source: {path: admin/core/controllers/cusers.cfc, lines: [455, 455]}
+    calls: [variables.fw.redirect]
+    resolution: non-write
+    reason: "variables.fw is admin/Application.cfc, which extends the FW/1 admin/framework.cfc without overriding redirect and passes itself to each controller's init (admin/framework.cfc:1394, admin/core/controllers/controller.cfc:79-81); redirect (admin/framework.cfc:723-783) copies the preserved request-context keys into a session.__fw1 flash struct (saveFlashContext, 1584-1607), builds the target URL and ends the request with cflocation, writing no table or file and changing no login state."
+
+  - id: wov:fw-cwebservice-save-siteid
+    source: {path: admin/core/controllers/cwebservice.cfc, lines: [103, 103]}
+    calls: [variables.fw.redirect]
+    resolution: non-write
+    reason: "variables.fw is admin/Application.cfc, which extends the FW/1 admin/framework.cfc without overriding redirect and passes itself to each controller's init (admin/framework.cfc:1394, admin/core/controllers/controller.cfc:79-81); redirect (admin/framework.cfc:723-783) only builds the target URL and ends the request with cflocation, writing no table or file and changing no login state."
+
+  - id: wov:fw-cwebservice-save-saved
+    source: {path: admin/core/controllers/cwebservice.cfc, lines: [113, 113]}
+    calls: [variables.fw.redirect]
+    resolution: non-write
+    reason: "variables.fw is admin/Application.cfc, which extends the FW/1 admin/framework.cfc without overriding redirect and passes itself to each controller's init (admin/framework.cfc:1394, admin/core/controllers/controller.cfc:79-81); redirect (admin/framework.cfc:723-783) only builds the target URL and ends the request with cflocation, writing no table or file and changing no login state."
+
+  - id: wov:fw-cwebservice-delete
+    source: {path: admin/core/controllers/cwebservice.cfc, lines: [123, 123]}
+    calls: [variables.fw.redirect]
+    resolution: non-write
+    reason: "variables.fw is admin/Application.cfc, which extends the FW/1 admin/framework.cfc without overriding redirect and passes itself to each controller's init (admin/framework.cfc:1394, admin/core/controllers/controller.cfc:79-81); redirect (admin/framework.cfc:723-783) only builds the target URL and ends the request with cflocation, writing no table or file and changing no login state."
+
+  - id: wov:fw-home-redirect-login
+    source: {path: admin/core/controllers/home.cfc, lines: [93, 93]}
+    calls: [variables.fw.redirect]
+    resolution: non-write
+    reason: "variables.fw is admin/Application.cfc, the FW/1 application passed to home's own init (admin/core/controllers/home.cfc:78-80, admin/framework.cfc:1394), not this controller's redirect action at line 86; redirect (admin/framework.cfc:723-783) only builds the target URL and ends the request with cflocation, writing no table or file and changing no login state."
+
+  - id: wov:fw-home-redirect-site
+    source: {path: admin/core/controllers/home.cfc, lines: [118, 128]}
+    calls: [variables.fw.redirect]
+    resolution: non-write
+    reason: "variables.fw is admin/Application.cfc, the FW/1 application passed to home's own init (admin/core/controllers/home.cfc:78-80, admin/framework.cfc:1394), not this controller's redirect action at line 86; redirect (admin/framework.cfc:723-783) only builds the target URL and ends the request with cflocation, writing no table or file and changing no login state."
+
+  - id: wov:js-datamanager-summary-buttons
+    source: {path: admin/core/views/carch/data_manager/dsp_display.cfm, lines: [103, 105]}
+    calls: [dataManager.addObject, dataManager.deleteObject]
+    resolution: not-cfml
+    reason: "admin/core/views/carch/data_manager/dsp_display.cfm:103,105 are onclick attributes of HTML buttons that call the browser dataManager object of admin/assets/js/manageData.js, so ColdFusion emits them as text and never runs them."
+
+  - id: wov:js-datamanager-detail-buttons
+    source: {path: admin/core/views/carch/data_manager/dsp_display.cfm, lines: [120, 122]}
+    calls: [dataManager.addObject, dataManager.deleteObject]
+    resolution: not-cfml
+    reason: "admin/core/views/carch/data_manager/dsp_display.cfm:120,122 are onclick attributes of HTML buttons that call the browser dataManager object of admin/assets/js/manageData.js, so ColdFusion emits them as text and never runs them."
+
+  - id: wov:js-carch-edit-title-holder
+    source: {path: admin/core/views/carch/edit.cfm, lines: [659, 659]}
+    calls: [document.createElement]
+    resolution: not-cfml
+    reason: "admin/core/views/carch/edit.cfm:659 is JavaScript inside the script block of lines 582-721, so ColdFusion emits it as text and never runs it."
+
+  - id: wov:js-carch-edit-entity-helpers
+    source: {path: admin/core/views/carch/edit.cfm, lines: [694, 700]}
+    calls: [document.createElement]
+    resolution: not-cfml
+    reason: "admin/core/views/carch/edit.cfm:694,700 are the JavaScript encodeHTMLEntities and decodeHTMLEntities helpers inside the script block of lines 582-721, so ColdFusion emits them as text and never runs them."
+
+  - id: wov:js-carch-edittext-proxy
+    source: {path: admin/core/views/carch/edittext.cfm, lines: [65, 65]}
+    calls: [frontEndProxy.addEventListener]
+    resolution: not-cfml
+    reason: "admin/core/views/carch/edittext.cfm:65 is JavaScript inside the script block of lines 25-84, so ColdFusion emits it as text and never runs it."
+
+  - id: wov:js-layoutobjects-region-buttons
+    source: {path: admin/core/views/carch/form/dsp_panel_layoutobjects.cfm, lines: [250, 250]}
+    calls: [siteManager.addDisplayObject, siteManager.deleteDisplayObject]
+    resolution: not-cfml
+    reason: "admin/core/views/carch/form/dsp_panel_layoutobjects.cfm:250 holds onclick attributes that call the browser siteManager object of admin/assets/js/architecture.js with only the loop index #r# interpolated, so ColdFusion emits the calls as text and never runs them."
+
+  - id: wov:js-frontendconfigurator-update-99
+    source: {path: admin/core/views/carch/frontendconfigurator.cfm, lines: [99, 99]}
+    calls: [siteManager.updateAvailableObject]
+    resolution: not-cfml
+    reason: "admin/core/views/carch/frontendconfigurator.cfm:99 is JavaScript inside the script block of lines 79-260, so ColdFusion emits it as text and never runs it."
+
+  - id: wov:js-frontendconfigurator-proxy-219
+    source: {path: admin/core/views/carch/frontendconfigurator.cfm, lines: [219, 219]}
+    calls: [frontEndProxy.addEventListener]
+    resolution: not-cfml
+    reason: "admin/core/views/carch/frontendconfigurator.cfm:219 is JavaScript inside the script block of lines 79-260, so ColdFusion emits it as text and never runs it."
+
+  - id: wov:js-frontendconfigurator-update-507
+    source: {path: admin/core/views/carch/frontendconfigurator.cfm, lines: [507, 507]}
+    calls: [siteManager.updateAvailableObject]
+    resolution: not-cfml
+    reason: "admin/core/views/carch/frontendconfigurator.cfm:507 is JavaScript inside the script block of lines 356-646, so ColdFusion emits it as text and never runs it."
+
+  - id: wov:js-frontendconfigurator-update-537
+    source: {path: admin/core/views/carch/frontendconfigurator.cfm, lines: [537, 537]}
+    calls: [siteManager.updateAvailableObject]
+    resolution: not-cfml
+    reason: "admin/core/views/carch/frontendconfigurator.cfm:537 is JavaScript inside the script block of lines 356-646, so ColdFusion emits it as text and never runs it."
+
+  - id: wov:js-frontendconfigurator-update-567
+    source: {path: admin/core/views/carch/frontendconfigurator.cfm, lines: [567, 567]}
+    calls: [siteManager.updateAvailableObject]
+    resolution: not-cfml
+    reason: "admin/core/views/carch/frontendconfigurator.cfm:567 is JavaScript inside the script block of lines 356-646, so ColdFusion emits it as text and never runs it."
+
+  - id: wov:js-frontendconfigurator-update-615
+    source: {path: admin/core/views/carch/frontendconfigurator.cfm, lines: [615, 615]}
+    calls: [siteManager.updateAvailableObject]
+    resolution: not-cfml
+    reason: "admin/core/views/carch/frontendconfigurator.cfm:615 is JavaScript inside the script block of lines 356-646, so ColdFusion emits it as text and never runs it."
+
+  - id: wov:js-filemanager-folder-cookie
+    source: {path: admin/core/views/cfilemanager/default.cfm, lines: [119, 119]}
+    calls: [Mura.createCookie]
+    resolution: not-cfml
+    reason: "admin/core/views/cfilemanager/default.cfm:119 is JavaScript inside the script block of lines 107-125 that ColdFusion emits as text when rc.resourceTypeChanged (117-120) and never runs."
+
+  - id: wov:view-datamanager-ormform-missing
+    source: {path: admin/core/views/carch/datamanager.cfm, lines: [136, 136]}
+    calls: ["data_manager/dsp_ormform.cfm"]
+    resolution: unreachable
+    reason: "admin/core/views/carch/datamanager.cfm:136 includes data_manager/dsp_ormform.cfm when the form JSON sets muraormentities (110-118), but the pin's data_manager directory holds only dsp_display.cfm, dsp_edit.cfm and dsp_response.cfm, so the include throws a missing-template error before any of it runs."
+
+  - id: wov:bean-secondary-menu-entity-labels
+    source: {path: admin/core/views/carch/dsp_secondary_menu.cfm, lines: [309, 316]}
+    calls: [beanInstance.getEntityDisplayName, beanInstance.pluralizeHasRefName]
+    resolution: non-write
+    reason: "beanInstance is getBean(i.cfc) of each scaffolded has-many or has-one property of the content entity (admin/core/views/carch/dsp_secondary_menu.cfm:305-316), and getEntityDisplayName and pluralizeHasRefName (core/mura/bean/bean.cfc:1088-1094, 1138-1142; core/mura/user/userBean.cfc:814-816) only read application.objectMappings and build a label."
+
+  - id: wov:view-edit-remote-panel
+    source: {path: admin/core/views/carch/edit_panels.cfm, lines: [220, 220]}
+    calls: ["form/dsp_panel_Remote.cfm"]
+    resolution: non-write
+    reason: "ColdFusion resolves the name to admin/core/views/carch/form/dsp_panel_remote.cfm, as it resolves dsp_Folders.cfm (wov:view-loadclass-legacy-folders), and that panel only renders five remote* inputs from rc.contentBean getters and a cf_datetimeselector (core/mura/customtags/datetimeselector.cfm), writing nothing."
+
+  - id: wov:view-loadclass-legacy-folders
+    source: {path: admin/core/views/carch/loadclass.cfm, lines: [103, 103]}
+    calls: ["objectclass/legacy/dsp_Folders.cfm"]
+    resolution: non-write
+    reason: "ColdFusion resolves the name to admin/core/views/carch/objectclass/legacy/dsp_folders.cfm (cArch.loadclass with classid=folder renders its Select Folder list), which makes only the reads dsp_calendars.cfm makes in this closure: contentManager.getSections, contentGateway.getCrumblist, dspZoomText and renderObjectClassOption (dsp_folders.cfm:77-81, 112-143)."
+
+  - id: wov:bean-related-content-sample-props
+    source: {path: admin/core/views/carch/loadrelatedcontent.cfm, lines: [487, 515]}
+    calls: [sample.getSearchableProps, sample.getListViewProps]
+    resolution: non-write
+    reason: "sample is getBean(rc.entitytype) (admin/core/views/carch/loadrelatedcontent.cfm:485), and getSearchableProps and getListViewProps (core/mura/bean/bean.cfc:1523-1543) only filter getProperties(), the property metadata bean.cfc:620-1063 keeps in application.objectMappings."
+
+  - id: wov:bean-selected-related-content-sample-props
+    source: {path: admin/core/views/carch/loadselectedrelatedcontent.cfm, lines: [131, 131]}
+    calls: [sample.getListViewProps]
+    resolution: non-write
+    reason: "sample is getBean(rcsBean.getEntityType()) (admin/core/views/carch/loadselectedrelatedcontent.cfm:116), and getListViewProps (core/mura/bean/bean.cfc:1523-1532) only filters getProperties(), the property metadata bean.cfc:620-1063 keeps in application.objectMappings."
+
+  - id: wov:effect-diff-match-patch
+    source: {path: core/mura/diffMatchPatch.cfc, lines: [16, 22]}
+    calls: [variables.diff_match_patch.diff_cleanupSemantic, variables.diff_match_patch.diff_prettyHTML, variables.diff_match_patch.diff_text1, variables.diff_match_patch.diff_text2]
+    resolution: non-write
+    reason: "variables.diff_match_patch is the Java name.fraser.neil.plaintext.diff_match_patch object init creates (core/mura/diffMatchPatch.cfc:3-11) from core/vendor/lib/diff_match_patch.jar on the javaSettings load path (core/appcfc/applicationSettings.cfm:596-603), whose methods only turn the in-memory diff list into text and HTML."
+
+  - id: wov:effect-render-lucee-stream
+    source: {path: core/mura/content/file/renderLucee.cfc, lines: [85, 92]}
+    calls: [context.getResponse, response.getOutputStream, response.setContentType, response.setContentLength, out.write, out.flush, out.close]
+    resolution: unreachable
+    reason: "Every caller (core/mura/content/file/fileManager.cfc:226-230, 292-296, 334-338, 415-422, 484-488) takes renderAdobe when configBean.getCompiler() is Adobe, which configBean sets for every server.coldfusion.productName but Railo and Lucee (core/mura/configBean.cfc:351-360), so this stream never runs on ACF; it only writes the file bytes to the HTTP response."
+
+  - id: wov:bean-renderer-html-queue-content
+    source: {path: core/mura/content/contentRenderer.cfc, lines: [2910, 2910]}
+    calls: [variables.$.content]
+    resolution: non-write
+    reason: "variables.$ is the request's MasaScope (core/mura/content/contentRenderer.cfc:642-644), whose content('type') reads the content bean's value (core/mura/MasaScope.cfc:274-288)."
+
+  - id: wov:bean-renderer-image-url-event
+    source: {path: core/mura/content/contentRenderer.cfc, lines: [3063, 3068]}
+    calls: [variables.$.event]
+    resolution: non-write
+    reason: "variables.$ is the request's MasaScope (core/mura/content/contentRenderer.cfc:642-644), whose event('siteID') reads the event's value (core/mura/MasaScope.cfc:257-271)."
+
+  - id: wov:effect-json-translator-content-type
+    source: {path: core/mura/Handler/standardEventsHandler.cfc, lines: [986, 986]}
+    calls: [getpagecontext().getresponse().setcontenttype]
+    resolution: non-write
+    reason: "core/mura/Handler/standardEventsHandler.cfc:986 sets the Content-Type header of the servlet response to application/json before the JSON body is returned."
+
+  - id: wov:bean-lockdown-oauth-provider-auth-urls
+    source: {path: core/templates/lockdown.cfm, lines: [200, 227]}
+    calls: ["$.getBean('googleLoginProvider').generateAuthUrl", "$.getBean('facebookLoginProvider').generateAuthUrl", "$.getBean('githubLoginProvider').generateAuthUrl", "$.getBean('azureadLoginProvider').generateAuthUrl"]
+    resolution: non-write
+    reason: "core/templates/lockdown.cfm:200,209,218,227 call generateAuthUrl on the login module's provider singletons, as admin/core/views/clogin/main.cfm does (wov:bean-oauth-provider-auth-urls), and each only builds an authorization URL string and sets session.mura.returnURL (core/modules/v1/login/model/providers/baseLoginProvider.cfc:15-27, googleLoginProvider.cfc:5-18, facebookLoginProvider.cfc:5-17, githubLoginProvider.cfc:5-17, azureADLoginProvider.cfc:5-26)."
+
+  - id: wov:include-variation-executor
+    source: {path: core/mura/executor.cfc, lines: [7, 7]}
+    calls: ["#filepath#"]
+    resolution: counted
+    countedBy: [wov:bean-variation-mxp-tracking-id]
+    reason: "The one closure reaching execute, /_api/resource/variation, passes core/mura/client/api/resource/variation.js.cfm (core/mura/content/contentServer.cfc:649-650), which the route walk also roots directly, so that template's writes are already recorded there."
+
+  - id: wov:bean-oauth-provider-auth-urls
+    source: {path: admin/core/views/clogin/main.cfm, lines: [183, 204]}
+    calls: ["getBean('googleLoginProvider')", "getBean('facebookLoginProvider')", "getBean('githubLoginProvider')", "getBean('azureADLoginProvider')"]
+    resolution: non-write
+    reason: "admin/core/views/clogin/main.cfm:183,190,197,204 call generateAuthUrl on the login module's provider singletons, which settingsBean.discoverGlobalModules registers from core/modules/v1/login/model/providers (core/mura/settings/settingsBean.cfc:1794,2120-2135), and each only builds an authorization URL string and sets session.mura.returnURL (core/modules/v1/login/model/providers/baseLoginProvider.cfc:15-27, googleLoginProvider.cfc:5-18, facebookLoginProvider.cfc:5-17, githubLoginProvider.cfc:5-17, azureADLoginProvider.cfc:5-26)."
+
+  - id: wov:orm-beanorm-update-relations
+    source: {path: core/mura/bean/beanORM.cfc, lines: [456, 466]}
+    calls: [obj.delete, obj.save]
+    resolution: unreachable
+    reason: "For every receiver without a wov:orm writer both arrays stay empty, since bean.set fills them only from request data on the entity's own one-to-many properties (core/mura/bean/bean.cfc:348-388), which these entities do not declare, approvalRequest never receives, and contentCategoryAssign, whose primary key is empty, never carries past beanORM.cfc:372-424."
+
+  - id: wov:orm-beanorm-insert-relations
+    source: {path: core/mura/bean/beanORM.cfc, lines: [534, 538]}
+    calls: [obj.save]
+    resolution: unreachable
+    reason: "For every receiver without a wov:orm writer addObjects stays empty, since bean.set fills it only from request data on the entity's own one-to-many properties (core/mura/bean/bean.cfc:348-375), which these entities do not declare, approvalRequest never receives, and contentCategoryAssign, whose primary key is empty, never carries past beanORM.cfc:372-424."
+
+  - id: wov:orm-beanorm-cascade-delete
+    source: {path: core/mura/bean/beanORM.cfc, lines: [707, 723]}
+    calls: [subitem.delete]
+    resolution: unreachable
+    reason: "The loop deletes children only through one-to-many properties declared cascade='delete' (core/mura/bean/beanORM.cfc:708), which no receiver declares except oauthClient, approvalChain and approvalRequest, each settled by its own wov:orm cascade writer."
+
+  - id: wov:bean-synth-relation-load-key
+    source: {path: core/mura/bean/bean.cfc, lines: [132, 138]}
+    calls: [bean.has, bean.getPrimaryKey]
+    resolution: non-write
+    reason: "bean is a new bean of the cfc a synthesized relationship function names (core/mura/bean/bean.cfc:128); has only tests an instance key (483-485, 479-481) and getPrimaryKey only returns the key name (587-589, core/mura/bean/beanORM.cfc:244-246), so both only pick the loadKey held in memory."
+
+  - id: wov:rel-bean-set-many-load
+    source: {path: core/mura/bean/bean.cfc, lines: [364, 384]}
+    calls: [obj.setSiteID, obj.getPrimaryKey, obj.loadBy, "obj.loadBy(argumentCollection=loadArgs).set", obj.get]
+    resolution: non-write
+    reason: "obj is a new bean of the cfc the relationship property names (core/mura/bean/bean.cfc:363); setSiteID, getPrimaryKey, set and get read or set its values, and loadBy only selects its row (core/mura/bean/beanORM.cfc:750-925, core/mura/content/contentBean.cfc:1235-1241, core/mura/category/categoryBean.cfc:200-206, core/mura/content/contentCommentBean.cfc:226-232, core/mura/settings/settingsBean.cfc:1290-1296); their closures reach no write but settingsManager.getSite's load of a site missing from the registry (core/mura/settings/settingsManager.cfc:440-486), which is start-up's. The rows are saved later from addObjects and removeObjects, which the wov:orm-beanorm-* and wov:rel-* records settle."
+
+  - id: wov:rel-bean-set-one-load
+    source: {path: core/mura/bean/bean.cfc, lines: [396, 404]}
+    calls: [obj.setSiteID, obj.getPrimaryKey, obj.loadBy, "obj.loadBy(argumentCollection=loadArgs).set"]
+    resolution: non-write
+    reason: "The one-to-one branch runs the same setSiteID, getPrimaryKey, loadBy and set on a new bean of the property's cfc (core/mura/bean/bean.cfc:395-404) as wov:rel-bean-set-many-load, so it only reads the related row into memory."
+
+  - id: wov:bean-factory-declare-fk-primary-key
+    source: {path: core/mura/bean/beanFactory.cfc, lines: [120, 120]}
+    calls: ["getBean(p.relatesto).getValue"]
+    resolution: non-write
+    reason: "p.relatesto names a bean the service factory holds (core/mura/bean/beanFactory.cfc:114-118); getValue('primaryKey') runs its getPrimaryKey (core/mura/bean/bean.cfc:451-453), which returns the key name (bean.cfc:587-589, core/mura/bean/beanORM.cfc:244-246), or reads a variable of a non-entity bean (core/mura/cfobject.cfc:102-111), only to fill the generated property's fkcolumn."
+
+  - id: wov:bean-feed-entity-db-utility
+    source: {path: core/mura/bean/beanFeed.cfc, lines: [328, 328]}
+    calls: ["getEntity().getDbUtility"]
+    resolution: non-write
+    reason: "getEntity() is the feed's own entity bean (core/mura/bean/beanFeed.cfc:645-650), whose getDbUtility only returns the dbUtility bean (core/mura/bean/bean.cfc:108-110) or one set to the entity's table and datasource (core/mura/bean/beanORM.cfc:189-204), used here only to map a column's datatype (beanFeed.cfc:329-332)."
+
+  - id: wov:bean-feed-join-entity-metadata
+    source: {path: core/mura/bean/beanFeed.cfc, lines: [655, 681]}
+    calls: [entity.getHasManyPropArray, entity.getTable, entity.translatePropKey, entity.getHasOnePropArray, entity.getValue]
+    resolution: non-write
+    reason: "entity is the feed's own entity bean (core/mura/bean/beanFeed.cfc:645-650, 653, 671); getHasManyPropArray, getHasOnePropArray and getTable read application.objectMappings (core/mura/bean/bean.cfc:591-618), translatePropKey maps a property name (271-301) and getValue reads a value (449-463, core/mura/bean/beanExtendable.cfc:251-282), only to build the join clause; their closures reach no write but settingsManager.getSite's load of a site missing from the registry (core/mura/settings/settingsManager.cfc:440-486), which is start-up's."
+
+  - id: wov:bean-feed-order-entity-table
+    source: {path: core/mura/bean/beanFeed.cfc, lines: [778, 778]}
+    calls: ["getEntity().getTable"]
+    resolution: non-write
+    reason: "getTable reads the entity's table name from application.objectMappings (core/mura/bean/bean.cfc:591-594) to qualify the order-by columns (core/mura/bean/beanFeed.cfc:777-790)."
+
+  - id: wov:bean-feed-query-entity-sql
+    source: {path: core/mura/bean/beanFeed.cfc, lines: [927, 940]}
+    calls: ["getEntity().getLoadSQLColumnsAndTables", "getEntity().getPrimaryKey"]
+    resolution: non-write
+    reason: "getLoadSQLColumnsAndTables only returns select-list and from-clause text (core/mura/bean/beanORM.cfc:931-933, core/mura/content/contentCategoryAssignBean.cfc:93-99; a non-ORM entity answers through getValue, core/mura/bean/bean.cfc:168-172) and getPrimaryKey the key name (bean.cfc:587-589, beanORM.cfc:244-246), so the feed's select is built in memory."
+
+  - id: wov:bean-iterator-package-record
+    source: {path: core/mura/bean/beanIterator.cfc, lines: [101, 107]}
+    calls: ["getBean(variables.entityName).set", "getBean(variables.entityName).set(queryRowToStruct(variables.records,arguments.recordIndex)).setIsNew"]
+    resolution: non-write
+    reason: "packageRecord fills a new bean of the iterator's entity from the current query row or array item (core/mura/bean/beanIterator.cfc:98-111); set and setIsNew only set its values, reading relations at most, and their closures reach no write but settingsManager.getSite's load of a site missing from the registry (core/mura/settings/settingsManager.cfc:440-486), which is start-up's."
+
+  - id: wov:ioc-parent-contains-bean
+    source: {path: core/mura/bean/ioc.cfc, lines: [91, 91]}
+    calls: [variables.parent.containsBean]
+    resolution: unreachable
+    reason: "hasParent() holds only after setParent (core/mura/bean/ioc.cfc:272-274, 347-349), which no code at the pin calls on the factory built at core/appcfc/onApplicationStart_include.cfm:229-234, so the parent lookup never runs."
+
+  - id: wov:ioc-onload-listeners
+    source: {path: core/mura/bean/ioc.cfc, lines: [682, 689]}
+    calls: [head.listener, head.listener.onLoad, "getBean( head.listener ).onLoad", head.listener.toString]
+    resolution: unreachable
+    reason: "variables.listeners stays 0 (core/mura/bean/ioc.cfc:60), since the factory's config at core/appcfc/onApplicationStart_include.cfm:229-234 has no loadListener (ioc.cfc:62-64) and no code at the pin calls onLoad (339-345), so the loop of onLoadEvent (679-680) never runs."
+
+  - id: wov:cache-abstract-get
+    source: {path: core/mura/cache/cacheAbstract.cfc, lines: [151, 155]}
+    calls: [variables.collection.get, cacheData.object.get]
+    resolution: non-write
+    reason: "variables.collection is the java.util.HashMap init sets (core/mura/cache/cacheAbstract.cfc:91, 98), called by cacheSimple and pluginStandardEventFactory (cacheSimple.cfc:87, core/mura/plugin/pluginStandardEventFactory.cfc:85), and cacheData.object a java.lang.ref.SoftReference (189), so both gets only read the in-memory cache."
+
+  - id: wov:cache-abstract-set
+    source: {path: core/mura/cache/cacheAbstract.cfc, lines: [196, 196]}
+    calls: [variables.collection.put]
+    resolution: non-write
+    reason: "variables.collection is the java.util.HashMap init sets (core/mura/cache/cacheAbstract.cfc:91, 98), so put only stores the entry in the in-memory cache."
+
+  - id: wov:cache-abstract-has
+    source: {path: core/mura/cache/cacheAbstract.cfc, lines: [219, 222]}
+    calls: [variables.collection.get, cacheData.object.get]
+    resolution: non-write
+    reason: "variables.collection is the java.util.HashMap init sets (core/mura/cache/cacheAbstract.cfc:91, 98) and cacheData.object a java.lang.ref.SoftReference (189), so both gets only read the in-memory cache."
+
+  - id: wov:cfobject-invoke-missing-method
+    source: {path: core/mura/cfobject.cfc, lines: [265, 265]}
+    calls: [this.onMissingMethod]
+    resolution: non-write
+    reason: "invokeMethod reaches the receiver's onMissingMethod only for a method it lacks: never from beanValidator (core/mura/bean/beanValidator.cfc:147, 241), whose validate_* targets are public (261-466), and otherwise on the contentBean or userBean that contentNavBean.cfc:115-119, MasaScope.cfc:115-137 and sessionUserFacade.cfc:27-31 forward to, whose bean.OnMissingMethod (core/mura/bean/bean.cfc:112-187) only loads synthesized relations, appends to addObjects or removeObjects, or gets and sets values."
+
+  - id: wov:cfobject-get-feed
+    source: {path: core/mura/cfobject.cfc, lines: [471, 471]}
+    calls: ["getBean(argumentCollection=arguments).getFeed"]
+    resolution: non-write
+    reason: "getFeed only builds the named entity's feed (core/mura/bean/beanORM.cfc:939-951, core/mura/bean/bean.cfc:1319-1337), reaching no write but the bean factory's on-demand declaration of a stored dynamic entity (core/mura/bean/beanFactory.cfc:220-231), which is start-up's; the deletes the callers run on the feed's items are extracted where they run (core/mura/user/userDAO.cfc:371, 486, core/mura/user/userUtility.cfc:911)."
+
+  - id: wov:s3-secret-bytes
+    source: {path: core/mura/content/file/s3.cfc, lines: [323, 323]}
+    calls: [variables.awsSecret.getBytes]
+    resolution: non-write
+    reason: "variables.awsSecret is the string init receives (core/mura/content/file/s3.cfc:20, 26), so getBytes is java.lang.String.getBytes, read only to build the HMAC signing key."
+
+  - id: wov:rb-java-locale-init
+    source: {path: core/mura/resourceBundle/resourceBundle.cfc, lines: [39, 39]}
+    calls: [variables.javaLocale.init]
+    resolution: non-write
+    reason: "variables.javaLocale is java.util.Locale (core/mura/resourceBundle/resourceBundle.cfc:21), so init only constructs the locale in memory."
+
+  - id: wov:rb-message-format
+    source: {path: core/mura/resourceBundle/resourceBundle.cfc, lines: [177, 188]}
+    calls: [variables.msgFormat.init, thisFormat.format]
+    resolution: non-write
+    reason: "variables.msgFormat is java.text.MessageFormat (core/mura/resourceBundle/resourceBundle.cfc:20), so init and format only build and format the message string in memory."
+
+  - id: wov:rb-parent-factory-key
+    source: {path: core/mura/resourceBundle/resourceBundleFactory.cfc, lines: [127, 137]}
+    calls: [variables.parentFactory.getKeyValue]
+    resolution: non-write
+    reason: "variables.parentFactory is '' or the next resourceBundleFactory of the chain settingsBean builds (core/mura/resourceBundle/resourceBundleFactory.cfc:81, 87-88; core/mura/settings/settingsBean.cfc:674-702, 1810-1813, 1994-1997), so getKeyValue runs this same method (resourceBundleFactory.cfc:120-148), which writes no table and no stored file."
+
+  - id: wov:rb-utils-locale-name
+    source: {path: core/mura/resourceBundle/utils.cfc, lines: [152, 152]}
+    calls: [variables.thisLocale.getDisplayName]
+    resolution: non-write
+    reason: "variables.thisLocale is the java.util.Locale created at core/mura/resourceBundle/utils.cfc:151, so getDisplayName only returns its name."
+
+  - id: wov:utility-request-scheme
+    source: {path: core/mura/utility.cfc, lines: [490, 490]}
+    calls: ["getPageContext().getRequest().getScheme"]
+    resolution: non-write
+    reason: "getScheme only reads the servlet request's scheme for getRequestProtocol (core/mura/utility.cfc:481-490)."
+
+  - id: wov:effect-cfformprotect-verify-init
+    source: {path: core/mura/utility.cfc, lines: [555, 555]}
+    calls: ['CreateObject("component","cfformprotect.cffpVerify").init']
+    resolution: non-write
+    reason: "The /cfformprotect mapping is core/vendor/cfformprotect (core/appcfc/applicationSettings.cfm:232), whose cffpVerify.init only reads cffp.ini.cfm into variables.Config with GetProfileString (core/vendor/cfformprotect/cffpVerify.cfc:40-69)."
+
+  - id: wov:effect-cfformprotect-test-submission
+    source: {path: core/mura/utility.cfc, lines: [565, 565]}
+    calls: [cffp.testSubmission]
+    resolution: non-write
+    reason: "testSubmission scores the form in memory (core/vendor/cfformprotect/cffpVerify.cfc:80-221), posting to Akismet or LinkSleeve only when enabled (302-417), and on failure only sends a cfmail report or writes a cflog line when emailFailedTests or logFailedTests is set (204-218, 526-729), so it writes no table and no stored file."
+
+  - id: wov:rel-categorybean-added-kids
+    source: {path: core/mura/category/categoryBean.cfc, lines: [169, 174]}
+    calls: [kid.save]
+    resolution: unreachable
+    reason: "variables.kids is filled only by addChild (core/mura/category/categoryBean.cfc:179-184), which no code at the pin calls."
+
+  - id: wov:rel-category-create-children
+    source: {path: core/mura/category/categoryManager.cfc, lines: [304, 308]}
+    calls: [obj.save]
+    resolution: counted
+    countedBy: [tcontentcategories, tcontentcategoryassign]
+    reason: "addObjects holds only kid categories, because a contentAssignments item makes bean.set throw on the contentCategoryAssign primary key, which is empty (core/mura/bean/bean.cfc:374, 442-447), and each kid.save runs categoryBean.save back into this categoryManager.save closure (core/mura/category/categoryBean.cfc:168)."
+
+  - id: wov:rel-category-update-children
+    source: {path: core/mura/category/categoryManager.cfc, lines: [755, 759]}
+    calls: [obj.save]
+    resolution: counted
+    countedBy: [tcontentcategories, tcontentcategoryassign]
+    reason: "addObjects holds only kid categories, because a contentAssignments item makes bean.set throw on the contentCategoryAssign primary key, which is empty (core/mura/bean/bean.cfc:374, 442-447), and each kid.save runs categoryBean.save back into this categoryManager.save closure (core/mura/category/categoryBean.cfc:168)."
+
+  - id: wov:rel-category-update-removals
+    source: {path: core/mura/category/categoryManager.cfc, lines: [761, 765]}
+    calls: [obj.delete]
+    resolution: unreachable
+    reason: "removeObjects stays empty, because removeObject keeps only children carrying this categoryid (core/mura/bean/bean.cfc:235-239), which kid categories never do, while a stored contentAssignments row makes bean.set throw first on the empty contentCategoryAssign primary key (bean.cfc:384, 442-447)."
+
+  - id: wov:js-variation-loadscript
+    source: {path: core/mura/client/api/resource/variation.js.cfm, lines: [46, 46]}
+    calls: [document.createElement]
+    resolution: not-cfml
+    reason: "core/mura/client/api/resource/variation.js.cfm:46 is JavaScript of the response body that the template serves as application/javascript (line 6), so ColdFusion emits it as text and never runs it."
+
+  - id: wov:js-variation-editable-footer
+    source: {path: core/mura/client/api/resource/variation.js.cfm, lines: [146, 165]}
+    calls: [item.addClass, document.createElement]
+    resolution: not-cfml
+    reason: "core/mura/client/api/resource/variation.js.cfm:146,165 are JavaScript of the response body that the template serves as application/javascript (line 6), so ColdFusion emits them as text and never runs them."
+
+  - id: wov:js-variation-ga-loader
+    source: {path: core/mura/client/api/resource/variation.js.cfm, lines: [199, 199]}
+    calls: [s.createElement]
+    resolution: not-cfml
+    reason: "core/mura/client/api/resource/variation.js.cfm:199 is the Google Analytics loader JavaScript that the template emits as text inside the cfif of lines 196-281 and never runs."
+
+  - id: wov:js-variation-dynamic-id
+    source: {path: core/mura/client/api/resource/variation.js.cfm, lines: [287, 287]}
+    calls: [item.addClass]
+    resolution: not-cfml
+    reason: "core/mura/client/api/resource/variation.js.cfm:287 is JavaScript of the response body that the template serves as application/javascript (line 6), so ColdFusion emits it as text and never runs it."
+
+  - id: wov:bean-declareentity-dynamic-check
+    source: {path: core/mura/client/api/json/v1/jsonApiUtility.cfc, lines: [172, 172]}
+    calls: ["getBean(obj.entityname).getDynamic"]
+    resolution: non-write
+    reason: "core/mura/client/api/json/v1/jsonApiUtility.cfc:172 only reads whether the registered bean is dynamic: bean.getDynamic returns application.objectMappings[entityName].dynamic (core/mura/bean/bean.cfc:582-585) and beanEntity.getDynamic its instance value (core/mura/bean/beanEntity.cfc:34-36); they are the only getDynamic at the pin, so any other bean inherits one or throws."
+
+  - id: wov:bean-undeclareentity-dynamic-check
+    source: {path: core/mura/client/api/json/v1/jsonApiUtility.cfc, lines: [194, 194]}
+    calls: ["getBean(arguments.entityname).getDynamic"]
+    resolution: non-write
+    reason: "core/mura/client/api/json/v1/jsonApiUtility.cfc:194 only reads whether the registered bean is dynamic: bean.getDynamic returns application.objectMappings[entityName].dynamic (core/mura/bean/bean.cfc:582-585) and beanEntity.getDynamic its instance value (core/mura/bean/beanEntity.cfc:34-36); they are the only getDynamic at the pin, so any other bean inherits one or throws."
+
+  - id: wov:sql-checkschema-entity-ddl
+    source: {path: core/mura/client/api/json/v1/jsonApiUtility.cfc, lines: [215, 215]}
+    calls: ["getBean(arguments.entityname).checkSchema"]
+    resolution: counted
+    countedBy: ["tentity-declared:*"]
+    reason: "The only checkSchema at the pin is beanORM's (core/mura/bean/beanORM.cfc:271-301), which adds the missing columns, primary key and indexes of the bean's table through dbUtility and changes no row, and any other bean throws (core/mura/bean/bean.cfc:182); api:checkschema and rest:checkschema, the closures reaching core/mura/client/api/json/v1/jsonApiUtility.cfc:215, record this DDL as their tentity-declared:* update at that line."
+
+  - id: wov:effect-jsonapi-response-headers
+    source: {path: core/mura/client/api/json/v1/jsonApiUtility.cfc, lines: [1472, 1501]}
+    calls: ["getpagecontext().getResponse", "responseObject.setContentType", "responseObject.setStatus"]
+    resolution: non-write
+    reason: "responseObject is the servlet response of the ColdFusion page context (core/mura/client/api/json/v1/jsonApiUtility.cfc:1472), so serializeResponse's setContentType (1473, 1501) and setStatus (1476, 1478) only set the reply's content type and HTTP status, writing no table or file."
+
+  - id: wov:bean-declareentity-properties
+    source: {path: core/mura/client/api/json/v1/jsonApiUtility.cfc, lines: [1552, 1612]}
+    calls: [exampleEntity.setType, exampleEntity.getProperties, exampleEntity.getEntityName, exampleEntity.getBundleable, exampleEntity.getOrderBy, exampleEntity.getIsHistorical, exampleEntity.getDynamic, exampleEntity.getscaffold, exampleEntity.getEntityDisplayName, exampleEntity.getPrimaryKey, exampleEntity.getTable]
+    resolution: non-write
+    reason: "exampleEntity is getBean(entityname) (core/mura/client/api/json/v1/jsonApiUtility.cfc:1549): the addressed JSON API entity on a findProperties route or, through declareEntity, the entity declareBean has just generated with only property declarations, extending mura.bean.beanORM or beanORMHistorical (core/mura/bean/beanFactory.cfc:90-147). setType runs only for group and sets userBean's type (core/mura/user/userBean.cfc:753-766); the getters read or fill instance and application.objectMappings values: bean's getIsHistorical through getOrderBy, getProperties, getEntityName and getEntityDisplayName (core/mura/bean/bean.cfc:567-599, 620, 1118-1142), beanEntity's flags (core/mura/bean/beanEntity.cfc:34-68), beanFeed's getOrderBy and getIsHistorical (core/mura/bean/beanFeed.cfc:144-146, 411-413), the name overrides of userBean.cfc:799-816 and core/mura/content/feed/feedBean.cfc:771-778, contentNavBean's forwarding to its contentBean (core/mura/content/contentNavBean.cfc:98-155), and getPrimaryKey as in wov:bean-jsonapi-findquery-entity."
+
+  - id: wov:bean-jsonapi-allowaccess
+    source: {path: core/mura/client/api/json/v1/jsonApiUtility.cfc, lines: [1690, 1710]}
+    calls: [arguments.bean.get, arguments.bean.getEntityName, arguments.bean.allowAccess]
+    resolution: non-write
+    reason: "arguments.bean is the bean a JSON API method checks, $.getBean of the requested entity name (core/mura/client/api/json/v1/jsonApiUtility.cfc:1703) or the bean it passes: a mura.bean.bean subclass, whose get and getEntityName read its entity name (core/mura/bean/bean.cfc:442-447, 1118-1136; core/mura/user/userBean.cfc:799-812; core/mura/content/feed/feedBean.cfc:771-778), or a contentNavBean, which forwards both to its contentBean (core/mura/content/contentNavBean.cfc:98-155); the only bean allowAccess at the pin returns false (core/mura/bean/bean.cfc:1349-1351)."
+
+  - id: wov:bean-jsonapi-save-variation-categories
+    source: {path: core/mura/client/api/json/v1/jsonApiUtility.cfc, lines: [1987, 1989]}
+    calls: [currentCategories.hasNext, currentCategories.next, "currentCategories.next().get"]
+    resolution: non-write
+    reason: "For content only (core/mura/client/api/json/v1/jsonApiUtility.cfc:1984), currentCategories is contentBean.getCategoriesIterator, a categoryIterator over the content's category assignments (core/mura/content/contentBean.cfc:1058-1063); hasNext and next move its cursor (core/mura/iterator/queryIterator.cfc:145-156), next sets the row on an in-memory categoryBean (core/mura/bean/beanIterator.cfc:98-112) and get reads its categoryid; the removal is written by entity.save, which the closure follows."
+
+  - id: wov:bean-jsonapi-save-categories
+    source: {path: core/mura/client/api/json/v1/jsonApiUtility.cfc, lines: [2015, 2017]}
+    calls: [currentCategories.hasNext, currentCategories.next, "currentCategories.next().get"]
+    resolution: non-write
+    reason: "For content only (core/mura/client/api/json/v1/jsonApiUtility.cfc:2012), currentCategories is contentBean.getCategoriesIterator, a categoryIterator over the content's category assignments (core/mura/content/contentBean.cfc:1058-1063); hasNext and next move its cursor (core/mura/iterator/queryIterator.cfc:145-156), next sets the row on an in-memory categoryBean (core/mura/bean/beanIterator.cfc:98-112) and get reads its categoryid; the removal is written by entity.save, which the closure follows."
+
+  - id: wov:bean-jsonapi-findquery-entity
+    source: {path: core/mura/client/api/json/v1/jsonApiUtility.cfc, lines: [2764, 2887]}
+    calls: [entity.getFeed, entity.setType, entity.allowQueryParams, entity.getEntityName, entity.valueExists, entity.getPrimaryKey, entity.hasProperty]
+    resolution: non-write
+    reason: "entity is $.getBean of the requested JSON API entity name (core/mura/client/api/json/v1/jsonApiUtility.cfc:2763) or, through expandEntity (2465), of a one-to-many property's cfc. getFeed only builds a beanFeed in memory (core/mura/bean/bean.cfc:1319-1337, core/mura/bean/beanORM.cfc:939-951, core/mura/content/changeset/changesetBean.cfc:219-226, core/mura/content/feed/feedBean.cfc:792-804); setType runs only for group and sets userBean's type (core/mura/user/userBean.cfc:753-766); allowQueryParams returns true or, for comments, sets params.fields after a permission lookup (bean.cfc:1365-1367, core/mura/content/contentCommentBean.cfc:748-775); getEntityName, valueExists, getPrimaryKey and hasProperty read instance and application.objectMappings values (bean.cfc:479-481, 587-589, 1118-1154, beanORM.cfc:244-246, and the constant keys of userBean.cfc:741-743, core/mura/user/addressBean.cfc:279-281, core/mura/category/categoryBean.cfc:269-271, contentCommentBean.cfc:260-262, changesetBean.cfc:159-161, feedBean.cfc:767-769). The permission lookup's settingsManager.getSite reaches only the guarded site-load and cluster-broadcast writes every closure reaching this span already records."
+
+  - id: wov:bean-jsonapi-feedprops-entity
+    source: {path: core/mura/client/api/json/v1/jsonApiUtility.cfc, lines: [3045, 3127]}
+    calls: ["feed.getEntity().getTable", "getBean(arguments.feed.getEntityName()).getPrimaryKey"]
+    resolution: non-write
+    reason: "feed is the beanFeed or content feedBean findQuery built; getEntity caches getBean of the feed's entity name (core/mura/bean/beanFeed.cfc:645-650), and getTable and getPrimaryKey read application.objectMappings or return the bean's constant key (core/mura/bean/bean.cfc:587-594, core/mura/bean/beanORM.cfc:244-246, and the getPrimaryKey of userBean, addressBean, categoryBean, contentCommentBean, changesetBean and feedBean) to qualify a sort column (core/mura/client/api/json/v1/jsonApiUtility.cfc:3045) and add the key to the field list (3127-3131)."
+
+  - id: wov:bean-jsonapi-iterator-nextn
+    source: {path: core/mura/client/api/json/v1/jsonApiUtility.cfc, lines: [3165, 3167]}
+    calls: [arguments.iterator.setNextN]
+    resolution: non-write
+    reason: "arguments.iterator is the iterator of beanFeed.getIterator (core/mura/bean/beanFeed.cfc:441-462) or of contentBean's related-content and version-history lists (core/mura/content/contentManager.cfc:2277-2285, core/mura/content/contentBean.cfc:1047-1052); every iterator at the pin extends mura.iterator.queryIterator, whose setNextN (core/mura/iterator/queryIterator.cfc:238-245) only sets the page size."
+
+  - id: wov:bean-jsonapi-crumb-iterator
+    source: {path: core/mura/client/api/json/v1/jsonApiUtility.cfc, lines: [3201, 3226]}
+    calls: [entity.getPrimaryKey, entity.loadBy, "entity.loadBy(argumentCollection=params).getCrumbIterator", entity.getEntityName, arguments.iterator.hasNext, arguments.iterator.next]
+    resolution: non-write
+    reason: "entity is $.getBean of the requested or expanded entity name (core/mura/client/api/json/v1/jsonApiUtility.cfc:3192); getPrimaryKey and getEntityName read its key and name as in findQuery, loadBy reads its row, and getCrumbIterator wraps its ancestors in a content, category or comment iterator (core/mura/content/contentBean.cfc:1270-1283, core/mura/content/contentNavBean.cfc:235-244, core/mura/category/categoryBean.cfc:244-253, core/mura/content/contentCommentBean.cfc:236-241), whose hasNext and next move the cursor and package the row in memory (core/mura/iterator/queryIterator.cfc:145-156, core/mura/content/contentIterator.cfc:93-104, core/mura/bean/beanIterator.cfc:98-112, core/mura/content/contentCommentIterator.cfc:83-92). The only writes beneath loadBy and the crumb queries are settingsManager.getSite's guarded site-load and cluster-broadcast writes, which every closure reaching this span already records."
+
+  - id: wov:bean-jsonapi-image-sizes-reset
+    source: {path: core/mura/client/api/json/v1/jsonApiUtility.cfc, lines: [3613, 3641]}
+    calls: [variables.images.reset]
+    resolution: non-write
+    reason: "variables.images is the site's custom image size iterator (core/mura/client/api/json/v1/jsonApiUtility.cfc:3592, 3622; core/mura/settings/settingsBean.cfc:1286-1288), a settingsImageSizeIterator extending mura.bean.beanIterator (core/mura/settings/settingsImageSizeIterator.cfc:79), whose reset only sets the cursor to 0 (core/mura/iterator/queryIterator.cfc:177-180)."
+
+  - id: wov:bean-jsonapi-swagger-entities
+    source: {path: core/mura/client/api/json/v1/jsonApiUtility.cfc, lines: [4481, 4489]}
+    calls: [entity.setType, entity.getPrimaryKey, entity.getEntityName]
+    resolution: non-write
+    reason: "entity is $.getBean of each registered JSON API entity name (core/mura/client/api/json/v1/jsonApiUtility.cfc:4473-4478); setType runs only for group and sets userBean's type (core/mura/user/userBean.cfc:753-766), and getPrimaryKey and getEntityName read the bean's key and name as in findQuery (core/mura/bean/bean.cfc:587-589, 1118-1136, core/mura/bean/beanORM.cfc:244-246) to build the swagger paths."
+
+  - id: wov:effect-feedapi-content-type
+    source: {path: core/mura/client/api/feed/v1/feedApiUtility.cfc, lines: [77, 109]}
+    calls: ["getpagecontext().getresponse", responseObject.setcontenttype]
+    resolution: non-write
+    reason: "responseObject is the servlet response of the ColdFusion page context (core/mura/client/api/feed/v1/feedApiUtility.cfc:77), so setcontenttype at 107 and 109 only sets the reply's content type, writing no table or file."
+
+  - id: wov:effect-feedapi-status
+    source: {path: core/mura/client/api/feed/v1/feedApiUtility.cfc, lines: [139, 175]}
+    calls: ["getpagecontext().getresponse().setStatus", responseObject.setStatus, "responseObject.getresponse().setStatus"]
+    resolution: non-write
+    reason: "core/mura/client/api/feed/v1/feedApiUtility.cfc:139-175 set the HTTP status of the servlet response (77) for the dispatched method and for each caught error, writing no table or file."
+
+  - id: wov:effect-dorequest-json-redirect-884
+    source: {path: core/mura/content/contentServer.cfc, lines: [884, 884]}
+    calls: ["getpagecontext().getresponse().setcontenttype"]
+    resolution: non-write
+    reason: "core/mura/content/contentServer.cfc:884 sets the servlet response's content type to JSON before doRequest returns the serialized request.muraJSONRedirectURL (885), writing no table or file."
+
+  - id: wov:effect-dorequest-json-redirect-896
+    source: {path: core/mura/content/contentServer.cfc, lines: [896, 896]}
+    calls: ["getpagecontext().getresponse().setcontenttype"]
+    resolution: non-write
+    reason: "core/mura/content/contentServer.cfc:896 sets the servlet response's content type to JSON before doRequest returns the serialized request.muraJSONRedirectURL (897), writing no table or file."
+
+  - id: wov:effect-dorequest-json-redirect-904
+    source: {path: core/mura/content/contentServer.cfc, lines: [904, 904]}
+    calls: ["getpagecontext().getresponse().setcontenttype"]
+    resolution: non-write
+    reason: "core/mura/content/contentServer.cfc:904 sets the servlet response's content type to JSON before doRequest returns the serialized request.muraJSONRedirectURL (905), writing no table or file."
+
+  - id: wov:effect-dorequest-json-redirect-912
+    source: {path: core/mura/content/contentServer.cfc, lines: [912, 912]}
+    calls: ["getpagecontext().getresponse().setcontenttype"]
+    resolution: non-write
+    reason: "core/mura/content/contentServer.cfc:912 sets the servlet response's content type to JSON before doRequest returns the serialized request.muraJSONRedirectURL (913), writing no table or file."
+
+  - id: wov:effect-logout-rotate-session
+    source: {path: core/mura/login/loginManager.cfc, lines: [503, 504]}
+    calls: ["getPageContext().getSession", j2eeSession.invalidate]
+    resolution: non-write
+    reason: "Under rotateSessions (core/mura/login/loginManager.cfc:502) logout invalidates the servlet session it reads from the page context, writing no table; ending the session is the logout session effect that every closure reaching loginManager.logout (api:logout, rest:logout, admin:clogin.logout, page:logout) already records."
+
+  - id: wov:rel-comment-children
+    source: {path: core/mura/content/contentCommentBean.cfc, lines: [534, 544]}
+    calls: [obj.save, obj.delete]
+    resolution: counted
+    countedBy: [tcontentcomments, tcontentcommentcommenters, tcontentstats]
+    reason: "Kid comments that request data adds (core/mura/bean/bean.cfc:348-375) save through this same contentCommentBean.save, and removeObject keeps only a self-parented kid (bean.cfc:235-239), whose delete updates tcontentcomments and recounts tcontentstats as this save does (core/mura/content/contentCommentBean.cfc:330-336)."
+
+  - id: wov:effect-comment-subscriber-mail
+    source: {path: core/mura/content/contentCommentBean.cfc, lines: [672, 683]}
+    calls: [email.sendText]
+    resolution: non-write
+    reason: "email is the mailer singleton injected through setMailer (core/mura/content/contentCommentBean.cfc:146-149,643), whose sendText (core/mura/mailer.cfc:231-318) only sends a cfmail message and logs a failure with cflog, writing no table."
+
+  - id: wov:ver-content-add-approval-request-save
+    source: {path: core/mura/content/contentManager.cfc, lines: [1610, 1610]}
+    calls: ["approvalRequest.save"]
+    resolution: counted
+    countedBy: [tapprovalrequests]
+    reason: "approvalRequestBean.save (core/mura/content/approval/approvalRequestBean.cfc:147-158) writes tapprovalrequests through beanORM.save (core/mura/bean/beanORM.cfc:438), which every closure reaching contentManager.add already records from approvalRequest.cancel (approvalRequestBean.cfc:137) or changesetManager.publish."
+
+  - id: wov:ver-set-version-numbers-stats-save
+    source: {path: core/mura/content/contentUtility.cfc, lines: [1549, 1549]}
+    calls: ["stats.save"]
+    resolution: counted
+    countedBy: [tcontentstats]
+    reason: "stats is the contentStatsBean of contentBean.getStats() (core/mura/content/contentBean.cfc:1243-1249), whose update and insert (core/mura/content/contentStatsBean.cfc:221, 240) every closure reaching setVersionNumbers already records from contentManager.add."
+
+  - id: wov:effect-form-field-order
+    source: {path: core/mura/content/dataCollection/dataCollectionBean.cfc, lines: [168, 168]}
+    calls: [fieldorder.addAll]
+    resolution: non-write
+    reason: "fieldorder is the local array that ArrayNew(1) creates at core/mura/content/dataCollection/dataCollectionBean.cfc:160, so addAll at line 168 only appends each form page's field names in memory."
+
+  - id: wov:sql-dbutility-altercolumn-nuodb-oracle
+    source: {path: core/mura/dbUtility.cfc, lines: [523, 595]}
+    calls: ["update #arguments.table#"]
+    resolution: unreachable
+    reason: "alterColumn switches on variables.dbtype, set from configBean.getDbType() (core/mura/dbUtility.cfc:14, 480) and so from MURA_DBTYPE=mssql (core/appcfc/onApplicationStart_include.cfm:136-141), whose case (481-485) only alters the column, so the nuodb (523-558) and oracle (559-595) column-copy updates never run; an entity's own dbtype applies only with its own datasource (core/mura/bean/beanORM.cfc:193-200)."
+
+  - id: wov:sql-bundle-restore-bundleable-table
+    source: {path: core/mura/publisher.cfc, lines: [181, 181]}
+    calls: ["delete #local.beanClass.getTable()#"]
+    resolution: counted
+    countedBy: [wov:sql-bundle-restore-bundleable-delete, wov:sql-bundle-restore-bundleable-dynamic]
+    reason: "The table is local.beanClass.getTable() of the bundle-listed bean (core/mura/publisher.cfc:176-181), whose static and run-time tables those two writers record."
+
+  - id: wov:bundle-restore-trashed-file-cache
+    source: {path: core/mura/publisher.cfc, lines: [1546, 1549]}
+    calls: [application.confiBean.getFileDir]
+    resolution: unreachable
+    reason: "No code at the pin sets application.confiBean (start-up sets application.configBean, core/appcfc/onApplicationStart_include.cfm:226), so when a bundle with a sincedate and trashed files is deployed (core/mura/publisher.cfc:1543-1544) evaluating the cfdirectory path at 1546 throws before the listing runs, and the cffile delete of 1549 inside its loop never runs."
+
+  - id: wov:bundle-tobundle-full
+    source: {path: core/mura/settings/settingsBundleBean.cfc, lines: [1818, 1818]}
+    calls: ["getBean(beanName=local.b,siteid=arguments.siteid).toBundle"]
+    resolution: non-write
+    reason: "Every bundleable bean inherits toBundle from core/mura/bean/beanORM.cfc:959-970 or beanORMVersioned.cfc:97-118, the only definitions at the pin (generated tentity entities declare properties only, core/mura/bean/beanFactory.cfc:87-146); both select the bean's rows and pass them to setValue (core/mura/settings/settingsBundleBean.cfc:1974-1995), which writes a WDDX file into the bundle work directory zipped into the bundle archive (1878), writing no table and no stored file."
+
+  - id: wov:bundle-tobundle-partial
+    source: {path: core/mura/settings/settingsBundleBean.cfc, lines: [1870, 1870]}
+    calls: [bean.toBundle]
+    resolution: non-write
+    reason: "As wov:bundle-tobundle-full, for the versioned bundleable beans of a partial bundle (core/mura/settings/settingsBundleBean.cfc:1866-1872), whose toBundle is core/mura/bean/beanORMVersioned.cfc:97-118."
+
+  - id: wov:trash-getobject-set-all-values
+    source: {path: core/mura/trash/trashManager.cfc, lines: [315, 315]}
+    calls: [retrieved.setAllValues]
+    resolution: non-write
+    reason: "retrieved is getBean(objectClass) of a class trashManager.throwIn stores (wov:ctrash-restore-object-save); each inherits setAllValues from core/mura/bean/bean.cfc:465-469, which re-inits the bean and appends the stored values in memory, or from core/mura/content/contentBean.cfc:976-980, which also resets its display regions in memory."
+
+  - id: wov:autoupdater-core-updates-include
+    source: {path: core/mura/autoUpdater/autoUpdater.cfc, lines: [217, 217]}
+    calls: ["coreUpdates/#rsCoreUpdates.name#"]
+    resolution: non-write
+    reason: "core/mura/autoUpdater/coreUpdates holds only 7.5.cfm at the pin, which deletes the obsolete core/mura/client/api/feed/v1 and json/v1 apiUtility.cfc source files when present (7.5.cfm:2-10), writing no table and no stored file; templates of a release the update downloads (core/mura/autoUpdater/autoUpdater.cfc:113-168) replace the pinned source and lie outside it."
+
+  - id: wov:cextend-subtype-rename-basetable
+    source: {path: core/mura/extend/extendSubType.cfc, lines: [655, 661]}
+    calls: ["#getBaseTable()#"]
+    resolution: counted
+    countedBy: [wov:cextend-subtype-rename-tcontent, wov:cextend-subtype-basetable]
+    reason: "The update runs only when the bean's type or subtype differs from its stored row (core/mura/extend/extendSubType.cfc:652-653), which only cextend.updateSubType posts (admin/core/controllers/cextend.cfc:140-144), whose closure carries those two writers; extendManager.loadConfigXML (core/mura/extend/extendManager.cfc:1897-1913) and syncDefinitions (1609-1624) load the stored row by type and subtype before saving (extendSubType.cfc:129-149), so neither differs there."
+
+  - id: wov:effect-recaptcha-siteverify
+    source: {path: core/mura/reCAPTCHA.cfc, lines: [124, 124]}
+    calls: [httpSvc.send]
+    resolution: non-write
+    reason: "httpSvc is ColdFusion's built-in http script component created at core/mura/reCAPTCHA.cfc:118 (no http.cfc exists at the pin), so send() at line 124 only POSTs the response token to the siteverify URL of line 91, and the result is parsed in memory (126-138)."
+
+  - id: wov:bean-bundle-sitemanager-lookup
+    source: {path: core/mura/settings/settingsBundleBean.cfc, lines: [1652, 1652]}
+    calls: ["getBean('siteManager')"]
+    resolution: unreachable
+    reason: "No bean named siteManager exists at the pin (no siteManager.cfc for the DI1 scan of core/mura and no addBean or addAlias in core/appcfc/onApplicationStart_include.cfm:240-393), so getBean at core/mura/settings/settingsBundleBean.cfc:1652 throws 'bean not found' (core/mura/bean/ioc.cfc:213-214,665-671) inside a SELECT on tfiles before any method runs."
+
+  - id: wov:sql-site-delete-bundleable-table
+    source: {path: core/mura/settings/settingsDAO.cfc, lines: [308, 308]}
+    calls: ["delete #local.beanClass.getTable()#"]
+    resolution: counted
+    countedBy: [wov:sql-site-delete-bundleable, wov:sql-site-delete-bundleable-dynamic]
+    reason: "The table is local.beanClass.getTable() of each name in application.objectMappings.bundleablebeans (core/mura/settings/settingsDAO.cfc:304-308), whose static and run-time tables those two writers record."
+
+  - id: wov:bean-address-geocoding-lookup
+    source: {path: core/mura/user/addressBean.cfc, lines: [203, 203]}
+    calls: ["getBean('geoCoding')"]
+    resolution: unreachable
+    reason: "No bean named geoCoding exists at the pin, because the DI1 scan registers core/mura/geoCoding/googleGeoCode.cfc only as googleGeoCode and googleGeoCodegeoCoding (core/mura/bean/ioc.cfc:553-582), so getBean at core/mura/user/addressBean.cfc:203 throws 'bean not found' (ioc.cfc:213-214,665-671), and googleGeoCode.geocode itself only issues a cfhttp request (core/mura/geoCoding/googleGeoCode.cfc:6-102)."
+
+  - id: wov:rel-userbean-new-addresses
+    source: {path: core/mura/user/userBean.cfc, lines: [571, 576]}
+    calls: [address.save]
+    resolution: unreachable
+    reason: "variables.newAddresses is filled only by addAddress (core/mura/user/userBean.cfc:629-635), which no code at the pin calls."
+
+  - id: wov:rel-user-update-relations
+    source: {path: core/mura/user/userManager.cfc, lines: [520, 530]}
+    calls: [obj.save, obj.delete]
+    resolution: unreachable
+    reason: "Both arrays stay empty, because userBean declares no one-to-many property, its own set ignores relationships (core/mura/user/userBean.cfc:202-240), and no code at the pin calls the add or remove methods synthesized for user (core/mura/bean/bean.cfc:975-983)."
+
+  - id: wov:rel-user-create-relations
+    source: {path: core/mura/user/userManager.cfc, lines: [667, 671]}
+    calls: [obj.save]
+    resolution: unreachable
+    reason: "addObjects stays empty, because userBean declares no one-to-many property, its own set ignores relationships (core/mura/user/userBean.cfc:202-240), and no code at the pin calls the add methods synthesized for user (core/mura/bean/bean.cfc:975-983)."
+
+  - id: wov:ver-send-login-password-reset-save
+    source: {path: core/mura/user/userUtility.cfc, lines: [464, 467]}
+    calls: ["arguments.userBean.save"]
+    resolution: counted
+    countedBy: [tclassextenddatauseractivity, tfiles, toauthtokens, tredirects, tuseraddresses, tusers, tusersinterests, tusersmemb, tuserstags]
+    reason: "When autoresetpasswords is true (core/templates/settings.template.cfm:16 sets it false) the call re-saves the user bean its callers have just saved through userBean.save (core/mura/Handler/standardEventsHandler.cfc:615, core/mura/client/api/json/v1/jsonApiUtility.cfc:4000), so every write of userManager.save (core/mura/user/userManager.cfc:372-401) is already in those closures."
+
+  - id: wov:bean-bcrypt-javaloader
+    source: {path: core/mura/utility.cfc, lines: [102, 102]}
+    calls: ["getBean('javaLoader')"]
+    resolution: unreachable
+    reason: "core/mura/utility.cfc:102 runs only when a javaLoader bean exists and legacyJavaLoader is true (100-101), but core/appcfc/onApplicationStart_include.cfm:255-264 adds that bean only under legacyJavaLoader (default false, core/templates/settings.template.cfm:61) by instantiating mura.javaloader.JavaLoader, a component absent at the pin."
+
+  - id: wov:effect-cfformprotect-config
+    source: {path: core/mura/utility.cfc, lines: [558, 563]}
+    calls: [cffp.updateConfig]
+    resolution: non-write
+    reason: "cffp is a cfformprotect.cffpVerify instance created per call at core/mura/utility.cfc:555, whose updateConfig (core/vendor/cfformprotect/cffpVerify.cfc:72-77) only sets a key of its in-memory variables.Config, so it writes no table and no file, cffp.ini.cfm being only read by setConfig (cffpVerify.cfc:55-69)."
+
+  - id: wov:bean-extend-object-manager-save
+    source: {path: core/mura/extend/extendObject.cfc, lines: [129, 131]}
+    calls: ["getManager().save"]
+    resolution: unreachable
+    reason: "No code at the pin gives an extendObject a manager: it defaults to '' (core/mura/extend/extendObject.cfc:9,20), the bean factory registers no manager bean and extendObjectIterator never sets one (core/mura/extend/extendObjectIterator.cfc:81,88-92), so save always takes the saveExtendedData branch (extendObject.cfc:132)."
+
+  - id: wov:sql-extend-object-data-table
+    source: {path: core/mura/extend/extendManager.cfc, lines: [523, 641]}
+    calls: ["#arguments.dataTable#"]
+    resolution: counted
+    countedBy: [tclassextenddata]
+    reason: "extendObject.save passes its extendDataTable as a variable the closure cannot bind (core/mura/extend/extendObject.cfc:132); it is the beanExtendable default tclassextenddata (core/mura/bean/beanExtendable.cfc:92), which nothing at the pin replaces, and the one closure reaching extendObject.save, the trash restore's, records these saveExtendedData statements on tclassextenddata through contentBean.save."
+
+  - id: wov:trash-takeout-child-resave
+    source: {path: core/mura/trash/trashManager.cfc, lines: [436, 440]}
+    calls: ["it.previous().getObject().save"]
+    resolution: counted
+    countedBy: [wov:ctrash-restore-object-save]
+    reason: "takeOut re-saves each item trashed with the restored object, rebuilt as getBean(objectClass) from its stored ttrash row (core/mura/trash/trashManager.cfc:297-320), and only for a bean carrying fromMuraTrash (417-421), which only the trash restore saves; those are the saves of the trashed classes wov:ctrash-restore-object-save reaches."
+
+  - id: wov:rel-content-added-objects
+    source: {path: core/mura/content/contentManager.cfc, lines: [1654, 1658]}
+    calls: ["obj.setAddedObjectValues(updateArgs).save"]
+    resolution: unreachable
+    reason: "addObjects is newBean.getAddObjects() (core/mura/content/contentManager.cfc:1156), which stays empty: contentBean.set replaces bean.set without its relationship loop (core/mura/content/contentBean.cfc:294-465, core/mura/bean/bean.cfc:340-410), and no code at the pin calls contentBean.addObject or addChild (contentBean.cfc:1081-1096) or an add method synthesized for content (bean.cfc:891, 918)."
+
+  - id: wov:zip-temp-file-delete
+    source: {path: core/mura/Zip.cfc, lines: [265, 284]}
+    calls: ["ioFile.init(arguments.zipFilePath).delete", "ioFile.init(arguments.zipFilePath & \".temp\").delete"]
+    resolution: non-write
+    reason: "ioFile is the java.io.File the pseudo-constructor creates (core/mura/Zip.cfc:53); DeleteFiles removes the bundle backup archive it rewrites and its .temp copy under the bundle backup directory (core/mura/settings/settingsBundle.cfc:374, 379), writing no table and no stored file."
+
+  - id: wov:fixture-auth-session-facade
+    source: {path: legacy-fixtures/cfml/lib/auth.cfc, lines: [22, 22]}
+    calls: ["new mura.user.sessionUserFacade"]
+    resolution: non-write
+    reason: "sessionUserFacade.init only takes the session through cfobject.getSession, which seeds a logged-out session.mura when none exists (core/mura/user/sessionUserFacade.cfc:43-46, core/mura/cfobject.cfc:419-460); the facade methods auth.cfc calls read session.mura and the registered request.siteid site (sessionUserFacade.cfc:48-62, 109-176, core/mura/permission.cfc:671-699), and validateCSRFTokens only marks the token used in session.mura.csrfusedtokens (sessionUserFacade.cfc:206-235), so no table is written and the login state never changes."
+
+  - id: wov:fixture-auth-program-query-attrs
+    source: {path: legacy-fixtures/cfml/lib/auth.cfc, lines: [46, 46]}
+    calls: [application.configBean.getReadOnlyQRYAttrs]
+    resolution: non-write
+    reason: "configBean.getReadOnlyQRYAttrs (core/mura/configBean.cfc:1833-1853) only returns the read-only datasource attributes the SELECT on synthetic.program_site at legacy-fixtures/cfml/lib/auth.cfc:43-47 runs with."
+
+  - id: wov:fixture-auth-csrf-masa-scope
+    source: {path: legacy-fixtures/cfml/lib/auth.cfc, lines: [109, 113]}
+    calls: ["createObject(\"component\", \"mura.MasaScope\").init"]
+    resolution: non-write
+    reason: "MasaScope.init builds an in-memory mura.event from the struct, form and url (core/mura/MasaScope.cfc:82-99, core/mura/event.cfc:82-102); the empty siteid skips loadSiteRelatedObjects (event.cfc:96-97), the only path to a write, so it just fetches the contentRenderer singleton start-up created (core/appcfc/onApplicationStart_include.cfm:495-501)."
+
+  - id: wov:fixture-auth-member-public-pool
+    source: {path: legacy-fixtures/cfml/lib/auth.cfc, lines: [131, 131]}
+    calls: [application.settingsManager.getSite, "application.settingsManager.getSite(request.siteid).getPublicUserPoolID"]
+    resolution: non-write
+    reason: "request.siteid is the registered key resolveSite sets after siteExists (legacy-fixtures/cfml/lib/auth.cfc:35-38), which api.cfm:105 runs before any module handler, so getSite returns it from the registry (core/mura/settings/settingsManager.cfc:545-546) without the site load of 547-555, and the pool getter reads the settings bean's instance value (core/mura/bean/bean.cfc:168-172, core/mura/bean/beanExtendable.cfc:256-257)."
+
+  - id: wov:fixture-esignature-pool-user
+    source: {path: legacy-fixtures/cfml/modules/esignature.cfc, lines: [278, 284]}
+    calls: [application.settingsManager.getSite, application.userManager.read, local.user.getIsNew, local.user.getType, local.site.getPublicUserPoolID, local.site.getPrivateUserPoolID, local.user.getSiteID, local.user.getUserID]
+    resolution: non-write
+    reason: "siteid is route.siteid (legacy-fixtures/cfml/modules/esignature.cfc:75), the registered key auth.resolveSite returns (auth.cfc:35-38, api.cfm:105), and the stored pool siteid userBean.set looks up names a registered site too (core/mura/user/userBean.cfc:227-239), so getSite skips the site load of core/mura/settings/settingsManager.cfc:547-555, the only write path userManager.read reaches; read otherwise SELECTs tusers, tfiles, tusersmemb and tusersinterests or copies the in-memory data cache (core/mura/user/userManager.cfc:158-194, core/mura/user/userDAO.cfc:92-121, 632-644, 674-682, 924-933), and the getters read bean instance values (core/mura/bean/bean.cfc:168-172, core/mura/bean/beanExtendable.cfc:256-257, core/mura/user/userBean.cfc:266-271)."
+
+  - id: wov:fixture-people-require-person
+    source: {path: legacy-fixtures/cfml/modules/people.cfc, lines: [80, 85]}
+    calls: [application.userManager.read, application.settingsManager.getSite, local.user.getIsNew, local.user.getType, local.user.getSiteID, local.site.getPublicUserPoolID, local.site.getPrivateUserPoolID]
+    resolution: non-write
+    reason: "route.siteid is the registered key auth.resolveSite returns (legacy-fixtures/cfml/lib/auth.cfc:35-38, api.cfm:105), and the stored pool siteid userBean.set looks up names a registered site too (core/mura/user/userBean.cfc:227-239), so getSite skips the site load of core/mura/settings/settingsManager.cfc:547-555, the only write path userManager.read reaches; read otherwise SELECTs tusers, tfiles, tusersmemb and tusersinterests or copies the in-memory data cache (core/mura/user/userManager.cfc:158-194, core/mura/user/userDAO.cfc:92-121, 632-644, 674-682, 924-933), and the getters read bean instance values (core/mura/bean/bean.cfc:168-172, core/mura/bean/beanExtendable.cfc:256-257)."
+
+  - id: wov:fixture-surveys-target-sites
+    source: {path: legacy-fixtures/cfml/modules/surveys.cfc, lines: [274, 279]}
+    calls: [application.settingsManager.siteExists, application.settingsManager.getSite, "application.settingsManager.getSite(local.target.siteID).getSiteID"]
+    resolution: non-write
+    reason: "siteExists only tests the registry key (core/mura/settings/settingsManager.cfc:568-572) and legacy-fixtures/cfml/modules/surveys.cfc:276 raises for an unknown site, so getSite at 279 returns the registered bean (settingsManager.cfc:545-546) without the site load of 547-555, and getSiteID reads its instance value (core/mura/bean/bean.cfc:168-172, core/mura/bean/beanExtendable.cfc:256-257)."

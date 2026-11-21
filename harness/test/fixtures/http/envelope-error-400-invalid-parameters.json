@@ -1,0 +1,12 @@
+{
+  "apiversion": "v1",
+  "method": "findQuery",
+  "params": {
+    "entityname": "content",
+    "siteid": "no-such-site"
+  },
+  "error": {
+    "code": "invalid_request",
+    "message": "Invalid parameters"
+  }
+}

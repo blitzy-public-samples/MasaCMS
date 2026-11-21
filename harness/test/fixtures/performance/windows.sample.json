@@ -1,0 +1,101 @@
+{
+  "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
+  "generatedBy": "migration/src/windows/",
+  "generatedAt": "2026-06-30T12:00:00.000Z",
+  "status": "recorded",
+  "unitIds": "opt2/table-ownership.json units[].unit",
+  "flagThresholdMs": 5000,
+  "windows": [
+    {
+      "windowId": "6F0A2C1E-5B7D-4E8A-9C3F0D1E2F3A4B01",
+      "holderId": "6F0A2C1E-5B7D-4E8A-9C3F0D1E2F3A4B01",
+      "kind": "request",
+      "routeKey": "admin:cemail.update",
+      "units": [
+        "communications.email"
+      ],
+      "scope": {
+        "siteid": "tenant-a",
+        "table": false
+      },
+      "phases": [
+        {
+          "phase": "quiet",
+          "at": "2026-06-30T10:00:00.000Z"
+        },
+        {
+          "phase": "executing",
+          "at": "2026-06-30T10:00:00.150Z"
+        },
+        {
+          "phase": "importing",
+          "at": "2026-06-30T10:00:00.900Z"
+        },
+        {
+          "phase": "closed",
+          "at": "2026-06-30T10:00:01.200Z"
+        }
+      ],
+      "durationMs": 1200,
+      "rowsImported": {
+        "communications.email": 1
+      },
+      "outcome": "closed"
+    },
+    {
+      "windowId": "6F0A2C1E-5B7D-4E8A-9C3F0D1E2F3A4B02",
+      "holderId": "6F0A2C1E-5B7D-4E8A-9C3F0D1E2F3A4B02",
+      "kind": "request",
+      "routeKey": "admin:csettings.updatesite{action=delete}",
+      "units": [
+        "communications.email",
+        "content.content",
+        "identity.group_account",
+        "identity.user_account",
+        "people.person",
+        "programs_sites.site",
+        "reporting.session_tracking"
+      ],
+      "scope": {
+        "siteid": "tenant-b",
+        "table": false
+      },
+      "phases": [
+        {
+          "phase": "quiet",
+          "at": "2026-06-30T11:00:00.000Z"
+        },
+        {
+          "phase": "executing",
+          "at": "2026-06-30T11:00:00.400Z"
+        },
+        {
+          "phase": "importing",
+          "at": "2026-06-30T11:00:05.000Z"
+        },
+        {
+          "phase": "closed",
+          "at": "2026-06-30T11:00:07.500Z"
+        }
+      ],
+      "durationMs": 7500,
+      "rowsImported": {
+        "communications.email": 2,
+        "content.content": 14,
+        "identity.group_account": 3,
+        "identity.user_account": 5,
+        "people.person": 5,
+        "programs_sites.site": 1,
+        "reporting.session_tracking": 9
+      },
+      "outcome": "closed"
+    }
+  ],
+  "summary": {
+    "count": 2,
+    "byOutcome": {
+      "closed": 2
+    },
+    "overThreshold": 1
+  }
+}

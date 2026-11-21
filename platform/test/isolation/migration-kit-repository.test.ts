@@ -1,0 +1,1140 @@
+import { setTimeout as sleep } from 'node:timers/promises';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { LegacyServiceUnavailableError, windows1252Text } from '../../src/legacy-compat/index.js';
+import { encodeKey, encodeRow, legacyRowHash, type CanonicalColumn } from '../../src/migration-kit/canonical.js';
+import { migrationKitSql, type GatePhase, type GateState } from '../../src/migration-kit/ddl.js';
+import {
+  GateClosedError,
+  GateRaceError,
+  UnitNotAuthoritativeError,
+  UnitReadBlockedError,
+  createMigrationAuthority,
+  ensureUnitGates,
+  requestMigrationAuthority,
+  setGatePhase,
+  withGatedTenant,
+  type MigrationAuthority,
+} from '../../src/migration-kit/gates.js';
+import { Roles } from '../../src/auth/index.js';
+import {
+  RepositoryError,
+  createRepository,
+  type Repository,
+  type RepositoryRow,
+  type TableDefinition,
+  type WriteContext,
+} from '../../src/migration-kit/repository.js';
+import { localTimestamp } from '../../src/outbox/ddl.js';
+import { fixedClock, newRequestContext, runWithRequestContext, type RequestContextStore } from '../../src/service-kit/index.js';
+import {
+  OutsideTenantTransactionError,
+  rlsSql,
+  tenantDbFromPool,
+  tenantIdForSite,
+  withMetadata,
+  type Pool,
+  type TenantDb,
+  type TenantTx,
+} from '../../src/tenancy/index.js';
+import { createThrowawaySchema, pgAvailable, type ThrowawaySchema } from '../../src/testing/schema.js';
+
+const BASE = 'mk_repository';
+const OWNER = 'mk-repository';
+const ITEM_UNIT = 'item';
+const TAG_UNIT = 'tag_member';
+const TENANT = tenantIdForSite('tenant-a');
+const OTHER_TENANT = tenantIdForSite('tenant-b');
+const CLOCK = fixedClock('2026-06-30T12:34:56.789Z');
+
+const ITEM_COLUMNS: CanonicalColumn[] = [
+  { name: 'tenant_id', type: 's' },
+  { name: 'item_id', type: 's' },
+  { name: 'name', type: 's' },
+  { name: 'qty', type: 'i' },
+];
+const TAG_DATA: CanonicalColumn[] = [
+  { name: 'label', type: 's' },
+  { name: 'weight', type: 'i' },
+];
+const TAG_COLUMNS: CanonicalColumn[] = [
+  { name: 'tenant_id', type: 's' },
+  ...TAG_DATA,
+  { name: 'legacy_row_hash', type: 's' },
+  { name: 'occurrence', type: 'i' },
+];
+const ITEM: TableDefinition = { table: 'item', columns: ITEM_COLUMNS, key: ['item_id'], unit: ITEM_UNIT };
+const TAG: TableDefinition = { table: 'tag_member', columns: TAG_COLUMNS, key: null, unit: TAG_UNIT };
+
+const TABLES_SQL = [
+  `CREATE TABLE ${BASE}.item (tenant_id uuid NOT NULL, item_id text NOT NULL, name text, qty integer,`,
+  '  PRIMARY KEY (tenant_id, item_id), UNIQUE (tenant_id, name));',
+  rlsSql(BASE, 'item'),
+  `CREATE TABLE ${BASE}.tag_member (tenant_id uuid NOT NULL, label text, weight integer,`,
+  '  legacy_row_hash text NOT NULL, occurrence integer NOT NULL, PRIMARY KEY (tenant_id, legacy_row_hash, occurrence));',
+  rlsSql(BASE, 'tag_member'),
+].join('\n');
+
+/** The error `fn` throws or rejects with; fails the test when it settles normally. */
+async function failure(fn: () => unknown): Promise<unknown> {
+  try {
+    await fn();
+  } catch (err) {
+    return err;
+  }
+  throw new Error('expected a failure');
+}
+
+/** A TenantDb whose transactions record every statement and answer each with no rows. */
+function recordingDb(schema: string): { db: TenantDb; statements: string[] } {
+  const statements: string[] = [];
+  const client = {
+    query: (text: string) => {
+      statements.push(text);
+      return Promise.resolve({ command: text, rows: [] });
+    },
+    release: () => undefined,
+  };
+  const pool = { on: () => pool, connect: () => Promise.resolve(client) } as unknown as Pool;
+  return { db: tenantDbFromPool(pool, { schema }), statements };
+}
+
+describe('createRepository table definitions', () => {
+  it.each([
+    ['a platform infrastructure table', [{ ...ITEM, table: 'changelog' }], 'changelog', 'is a platform table written only by platform internals'],
+    ['a column listed twice', [{ ...ITEM, columns: [...ITEM_COLUMNS, { name: 'qty', type: 'i' }] }], 'item', 'lists a column twice'],
+    ['a table without tenant_id', [{ ...ITEM, columns: ITEM_COLUMNS.slice(1) }], 'item', 'has no tenant_id column'],
+    [
+      'a keyless table without legacy_row_hash',
+      [{ ...TAG, columns: TAG_COLUMNS.filter((column) => column.name !== 'legacy_row_hash') }],
+      'tag_member',
+      'is keyless but lacks legacy_row_hash or occurrence',
+    ],
+    [
+      'a keyless table without occurrence',
+      [{ ...TAG, columns: TAG_COLUMNS.filter((column) => column.name !== 'occurrence') }],
+      'tag_member',
+      'is keyless but lacks legacy_row_hash or occurrence',
+    ],
+    ['an empty key', [{ ...ITEM, key: [] }], 'item', 'key must name declared columns other than tenant_id'],
+    ['a key on tenant_id', [{ ...ITEM, key: ['tenant_id', 'item_id'] }], 'item', 'key must name declared columns other than tenant_id'],
+    ['a key on an undeclared column', [{ ...ITEM, key: ['sku'] }], 'item', 'key must name declared columns other than tenant_id'],
+    ['a table declared twice', [ITEM, ITEM], 'item', 'is declared twice'],
+  ] as [string, TableDefinition[], string, string][])('rejects %s', async (_label, tables, table, problem) => {
+    const err = await failure(() => createRepository({ owner: OWNER, schema: BASE, tables }));
+    expect(err).toBeInstanceOf(RepositoryError);
+    expect(err).toMatchObject({ name: 'RepositoryError', table, message: `${table}: ${problem}` });
+  });
+
+  it('exposes frozen copies of the definitions and the distinct units in declaration order', async () => {
+    const columns = ITEM_COLUMNS.map((column) => ({ ...column }));
+    const repo = createRepository({
+      owner: OWNER,
+      schema: BASE,
+      tables: [{ ...ITEM, columns }, TAG, { ...ITEM, table: 'item_archive' }, { ...ITEM, table: 'scratch', unit: undefined }],
+    });
+    columns[1] = { name: 'renamed', type: 's' };
+
+    expect(Object.isFrozen(repo)).toBe(true);
+    expect(repo).toMatchObject({ owner: OWNER, schema: BASE });
+    const item = repo.definition('item');
+    expect(item).toEqual(ITEM);
+    expect(Object.isFrozen(item) && Object.isFrozen(item.columns) && Object.isFrozen(item.key)).toBe(true);
+    expect(repo.definition('scratch')).not.toHaveProperty('unit');
+
+    const units = repo.units();
+    expect(units).toEqual([ITEM_UNIT, TAG_UNIT]);
+    units.push('mutated');
+    expect(repo.units()).toEqual([ITEM_UNIT, TAG_UNIT]);
+
+    const err = await failure(() => repo.definition('missing'));
+    expect(err).toMatchObject({ name: 'RepositoryError', table: 'missing', message: `missing: is not a declared table of schema ${BASE}` });
+  });
+});
+
+describe('repository calls rejected before any statement', () => {
+  const repo = createRepository({ owner: OWNER, schema: BASE, tables: [ITEM, TAG] });
+  const elsewhere = createRepository({ owner: OWNER, schema: 'other_schema', tables: [ITEM] });
+
+  it.each([
+    ['an undeclared table', (tx: TenantTx) => repo.insert(tx, 'missing', { item_id: 'a' }), 'missing', `is not a declared table of schema ${BASE}`],
+    ['an undeclared column', (tx: TenantTx) => repo.insert(tx, 'item', { item_id: 'a', colour: 'red' }), 'item', 'has no column colour'],
+    [
+      'a row of another tenant',
+      (tx: TenantTx) => repo.insert(tx, 'item', { tenant_id: OTHER_TENANT, item_id: 'a' }),
+      'item',
+      `row tenant ${OTHER_TENANT} is not the transaction tenant ${TENANT}`,
+    ],
+    ['an update key without its key column', (tx: TenantTx) => repo.update(tx, 'item', {}, { qty: 1 }), 'item', 'key has no value for item_id'],
+    ['a delete key with a null key column', (tx: TenantTx) => repo.delete(tx, 'item', { item_id: null }), 'item', 'key has no value for item_id'],
+    ['an upsert row without its key column', (tx: TenantTx) => repo.upsert(tx, 'item', { name: 'n' }), 'item', 'key has no value for item_id'],
+    ['a findByKey key without its key column', (tx: TenantTx) => repo.findByKey(tx, 'item', { name: 'n' }), 'item', 'key has no value for item_id'],
+    [
+      'an update patch that sets no column',
+      (tx: TenantTx) => repo.update(tx, 'item', { item_id: 'a' }, { tenant_id: TENANT, qty: undefined }),
+      'item',
+      'update patch sets no column',
+    ],
+    [
+      'an update of a keyless table',
+      (tx: TenantTx) => repo.update(tx, 'tag_member', { label: 'a' }, { weight: 1 }),
+      'tag_member',
+      'has no primary key; write it with insert, deleteOne or replaceOne',
+    ],
+    [
+      'a deleteOne of a keyed table',
+      (tx: TenantTx) => repo.deleteOne(tx, 'item', { item_id: 'a' }),
+      'item',
+      'has a primary key; write it with insert, update, upsert or delete',
+    ],
+    [
+      'a replaceOne after-row with an undeclared column',
+      (tx: TenantTx) => repo.replaceOne(tx, 'tag_member', { label: 'a', weight: 1 }, { label: 'b', shade: 'x' }),
+      'tag_member',
+      'has no column shade',
+    ],
+    [
+      'an insertAbsent into a keyless table',
+      (tx: TenantTx) => repo.insertAbsent(tx, 'tag_member', [{ label: 'a', weight: 1 }], ['label']),
+      'tag_member',
+      'has no primary key; write it with insert, deleteOne or replaceOne',
+    ],
+    [
+      'an insertAbsent without conflict columns',
+      (tx: TenantTx) => repo.insertAbsent(tx, 'item', [{ item_id: 'a' }], []),
+      'item',
+      'conflict must name declared columns other than tenant_id',
+    ],
+    [
+      'an insertAbsent conflict on an undeclared column',
+      (tx: TenantTx) => repo.insertAbsent(tx, 'item', [{ item_id: 'a' }], ['sku']),
+      'item',
+      'conflict must name declared columns other than tenant_id',
+    ],
+    [
+      'an insertAbsent conflict on tenant_id',
+      (tx: TenantTx) => repo.insertAbsent(tx, 'item', [{ item_id: 'a' }], ['tenant_id']),
+      'item',
+      'conflict must name declared columns other than tenant_id',
+    ],
+    [
+      'an insertAbsent row with an undeclared column',
+      (tx: TenantTx) => repo.insertAbsent(tx, 'item', [{ item_id: 'a' }, { item_id: 'b', colour: 'red' }], ['name']),
+      'item',
+      'has no column colour',
+    ],
+    [
+      'an insertAbsent row of another tenant',
+      (tx: TenantTx) => repo.insertAbsent(tx, 'item', [{ item_id: 'a' }, { tenant_id: OTHER_TENANT, item_id: 'b' }], ['name']),
+      'item',
+      `row tenant ${OTHER_TENANT} is not the transaction tenant ${TENANT}`,
+    ],
+    [
+      'a transaction on another schema',
+      (tx: TenantTx) => elsewhere.insert(tx, 'item', { item_id: 'a' }),
+      undefined,
+      'needs a tenant transaction on schema other_schema',
+    ],
+    [
+      'a handle that is not a tenant transaction',
+      () => repo.read({ kind: 'metadata', schema: BASE } as unknown as TenantTx, ITEM_UNIT, () => Promise.resolve(1)),
+      undefined,
+      `needs a tenant transaction on schema ${BASE}`,
+    ],
+  ] as [string, (tx: TenantTx) => Promise<unknown>, string | undefined, string][])(
+    'rejects %s with RepositoryError',
+    async (_label, call, table, problem) => {
+      const { db, statements } = recordingDb(BASE);
+      const err = await failure(() => db.withTenant(TENANT, call));
+      expect(err).toBeInstanceOf(RepositoryError);
+      expect(err).toMatchObject({ name: 'RepositoryError', table, message: table === undefined ? problem : `${table}: ${problem}` });
+      expect(statements).toEqual(['BEGIN', expect.stringContaining("set_config('app.tenant_id'"), 'ROLLBACK']);
+    },
+  );
+
+  it.each([
+    ['insert', (tx: TenantTx) => repo.insert(tx, 'item', { item_id: 'a' })],
+    ['insertAbsent', (tx: TenantTx) => repo.insertAbsent(tx, 'item', [{ item_id: 'a' }], ['name'])],
+    ['update', (tx: TenantTx) => repo.update(tx, 'item', { item_id: 'a' }, { qty: 1 })],
+    ['upsert', (tx: TenantTx) => repo.upsert(tx, 'item', { item_id: 'a' })],
+    ['delete', (tx: TenantTx) => repo.delete(tx, 'item', { item_id: 'a' })],
+    ['deleteOne', (tx: TenantTx) => repo.deleteOne(tx, 'tag_member', { label: 'a', weight: 1 })],
+    ['replaceOne', (tx: TenantTx) => repo.replaceOne(tx, 'tag_member', { label: 'a', weight: 1 }, { label: 'b', weight: 1 })],
+    ['read', (tx: TenantTx) => repo.read(tx, ITEM_UNIT, () => Promise.resolve(1))],
+    ['findByKey', (tx: TenantTx) => repo.findByKey(tx, 'item', { item_id: 'a' })],
+  ] as [string, (tx: TenantTx) => Promise<unknown>][])(
+    '%s rejects a transaction handle kept after its transaction ended',
+    async (_method, call) => {
+      const { db, statements } = recordingDb(BASE);
+      const kept = await db.withTenant(TENANT, (tx) => Promise.resolve(tx));
+      await expect(call(kept)).rejects.toBeInstanceOf(OutsideTenantTransactionError);
+      expect(statements).toEqual(['BEGIN', expect.stringContaining("set_config('app.tenant_id'"), 'COMMIT']);
+    },
+  );
+
+  it('answers an insertAbsent of no rows with no rows, no gate and no statement', async () => {
+    const { db, statements } = recordingDb(BASE);
+    await expect(db.withTenant(TENANT, (tx) => repo.insertAbsent(tx, 'item', [], ['name']))).resolves.toEqual([]);
+    expect(statements).toEqual(['BEGIN', expect.stringContaining("set_config('app.tenant_id'"), 'COMMIT']);
+  });
+
+  const ungatedItems = createRepository({ owner: OWNER, schema: BASE, tables: [{ ...ITEM, unit: undefined }] });
+  it.each([
+    ['three columns bound by the row statement', (i: number) => ({ item_id: `i${i}`, name: `n${i}`, qty: i }), Math.floor((65_535 - 1) / 3)],
+    ['one column bound by the changelog statement', (i: number) => ({ item_id: `i${i}` }), Math.floor((65_535 - 11) / 2)],
+  ] as [string, (i: number) => RepositoryRow, number][])(
+    'splits an insertAbsent of one row above the chunk size into two row statements within the parameter limit (%s)',
+    async (_label, row, chunk) => {
+      const { db, statements } = recordingDb(BASE);
+      const rows = Array.from({ length: chunk + 1 }, (_, i) => row(i));
+      // The recording database inserts nothing, so no changelog statement follows.
+      await expect(db.withTenant(TENANT, (tx) => ungatedItems.insertAbsent(tx, 'item', rows, ['name']))).resolves.toEqual([]);
+      const inserts = statements.filter((text) => text.startsWith('INSERT INTO'));
+      expect(inserts.map((text) => text.match(/\(\$1[,)]/g)?.length)).toEqual([chunk, 1]);
+      const highest = inserts.map((text) => [...text.matchAll(/\$(\d+)/g)].reduce((max, [, n]) => Math.max(max, Number(n)), 0));
+      expect(highest[0]).toBeLessThanOrEqual(65_535);
+      expect(statements.filter((text) => text.includes('changelog'))).toEqual([]);
+    },
+  );
+});
+
+interface LoggedChange {
+  xid: string;
+  table: string;
+  op: string;
+  key: string;
+  before: string | null;
+  after: string | null;
+  columns: string[];
+  origin: string;
+  actor_user_id: string | null;
+  actor_service: string | null;
+  at: string;
+  request_id: string | null;
+  operation_id: string | null;
+}
+
+/** A request context with a verified user and calling service. */
+function requestStore(requestId: string): RequestContextStore {
+  const store = newRequestContext({ requestId });
+  store.user = { sub: 'user-1' } as RequestContextStore['user'];
+  store.service = { name: 'people', roles: [] };
+  return store;
+}
+
+const available = await pgAvailable();
+
+describe.skipIf(!available)('repository writes against PostgreSQL', () => {
+  let handle: ThrowawaySchema;
+  let repo: Repository;
+  let ungated: Repository;
+  let tenants = 0;
+
+  beforeAll(async () => {
+    handle = await createThrowawaySchema({ service: 'mk-repository', extraSql: [migrationKitSql(BASE), TABLES_SQL] });
+    repo = createRepository({ owner: OWNER, schema: handle.schema, tables: [ITEM, TAG], clock: CLOCK });
+    ungated = createRepository({ owner: OWNER, schema: handle.schema, tables: [{ ...ITEM, unit: undefined }] });
+    await ensureUnitGates(handle.app, [ITEM_UNIT, TAG_UNIT]);
+  });
+
+  afterAll(async () => {
+    await handle?.drop();
+  });
+
+  beforeEach(async () => {
+    await setGate(ITEM_UNIT, 'open');
+    await setGate(TAG_UNIT, 'open');
+  });
+
+  /** A tenant no earlier test has written. */
+  function freshTenant(): string {
+    tenants += 1;
+    return tenantIdForSite(`repository-${tenants}`);
+  }
+
+  /** Sets a unit gate's state and phase; a closed gate gets the holder the table requires. */
+  async function setGate(unit: string, state: GateState, phase: GatePhase = 'quiet'): Promise<void> {
+    await withMetadata(handle.app, (tx) =>
+      tx.query(
+        `UPDATE ${handle.schema}.unit_gate SET state = $2::text, holder_id = CASE WHEN $2::text = 'closed' THEN 'test-window' END, phase = $3
+          WHERE unit = $1`,
+        [unit, state, phase],
+      ),
+    );
+  }
+
+  /** The tenant's committed changelog rows in write order. */
+  function changelog(tenantId: string): Promise<LoggedChange[]> {
+    return handle.app.withTenant(tenantId, async (tx) => {
+      const { rows } = await tx.query<LoggedChange>(
+        `SELECT xid::text AS xid, "table", op, key, before, after, columns, origin, actor_user_id, actor_service,
+                to_char(at, 'YYYY-MM-DD HH24:MI:SS.MS') AS at, request_id, operation_id
+           FROM ${handle.schema}.changelog ORDER BY seq`,
+      );
+      return rows;
+    });
+  }
+
+  /** The tenant's keyless rows as label, weight and occurrence, in a stable order. */
+  function tagRows(tenantId: string): Promise<[string, number, number][]> {
+    return handle.app.withTenant(tenantId, async (tx) => {
+      const { rows } = await tx.query<{ label: string; weight: number; occurrence: number }>(
+        `SELECT label, weight, occurrence FROM ${handle.schema}.tag_member ORDER BY label, occurrence`,
+      );
+      return rows.map((row): [string, number, number] => [row.label, row.weight, row.occurrence]);
+    });
+  }
+
+  /** Resolves once a session of the app role waits on a row lock. */
+  async function untilLockWait(): Promise<void> {
+    const deadline = Date.now() + 10_000;
+    for (;;) {
+      const { rows } = await handle.appPool.query<{ waiting: number }>(
+        "SELECT count(*)::int AS waiting FROM pg_stat_activity WHERE usename = current_user AND wait_event_type = 'Lock'",
+      );
+      if ((rows[0]?.waiting ?? 0) > 0) return;
+      if (Date.now() > deadline) throw new Error('no app session started waiting on a lock');
+      await sleep(25);
+    }
+  }
+
+  /** The canonical image of an item row. */
+  function keyedImage(row: RepositoryRow): string {
+    return encodeRow(ITEM_COLUMNS, row);
+  }
+
+  /** `tx` appending the text of each statement it runs to `seen` and counting its commit callbacks in `registered`. */
+  function recordingTx(tx: TenantTx, seen: string[], registered: { count: number }): TenantTx {
+    return {
+      ...tx,
+      query: ((text: string | { text: string }, values?: unknown[]) => {
+        seen.push(typeof text === 'string' ? text : text.text);
+        return tx.query(text, values);
+      }) as TenantTx['query'],
+      onCommit: (cb, onError) => {
+        registered.count += 1;
+        tx.onCommit(cb, onError);
+      },
+    };
+  }
+
+  it('commits an insert with one changelog row carrying the request actor, clock time and target origin', async () => {
+    const tenant = freshTenant();
+    const store = requestStore('req-insert');
+    const stored = await runWithRequestContext(store, () =>
+      handle.app.withTenant(tenant, (tx) => repo.insert(tx, 'item', { tenant_id: tenant.toUpperCase(), item_id: 'i1', name: 'Widget', qty: 2 })),
+    );
+    expect(stored).toEqual({ tenant_id: tenant, item_id: 'i1', name: 'Widget', qty: 2 });
+
+    const log = await changelog(tenant);
+    expect(log).toEqual([
+      {
+        xid: expect.stringMatching(/^\d+$/),
+        table: 'item',
+        op: 'insert',
+        key: encodeKey(ITEM_COLUMNS, ['item_id'], stored),
+        before: null,
+        after: keyedImage(stored),
+        columns: ['item_id', 'name', 'qty'],
+        origin: 'target',
+        actor_user_id: 'user-1',
+        actor_service: 'people',
+        at: localTimestamp(CLOCK.now()),
+        request_id: 'req-insert',
+        operation_id: null,
+      },
+    ]);
+    expect(store.writePositions).toEqual(new Map([[OWNER, log[0]?.xid]]));
+  });
+
+  it('rolls the row, its changelog row and the write position back together', async () => {
+    const tenant = freshTenant();
+    const store = requestStore('req-rollback');
+    let loggedInside: number | undefined;
+    const err = await failure(() =>
+      runWithRequestContext(store, () =>
+        handle.app.withTenant(tenant, async (tx) => {
+          await repo.insert(tx, 'item', { item_id: 'r1', name: 'Lost', qty: 1 });
+          const { rows } = await tx.query<{ n: number }>(`SELECT count(*)::int AS n FROM ${handle.schema}.changelog`);
+          loggedInside = rows[0]?.n;
+          throw new Error('abort');
+        }),
+      ),
+    );
+    expect(err).toMatchObject({ message: 'abort' });
+    expect(loggedInside).toBe(1);
+    expect(await handle.app.withTenant(tenant, (tx) => repo.findByKey(tx, 'item', { item_id: 'r1' }))).toBeNull();
+    expect(await changelog(tenant)).toEqual([]);
+    expect(store.writePositions.size).toBe(0);
+  });
+
+  it('insertAbsent inserts the rows whose conflict columns are free in input order, logging them in one changelog statement', async () => {
+    const tenant = freshTenant();
+    const taken = await handle.app.withTenant(tenant, (tx) => repo.insert(tx, 'item', { item_id: 'a0', name: 'Taken', qty: 0 }));
+    const store = requestStore('req-absent');
+    const seen: string[] = [];
+    const registered = { count: 0 };
+    const inserted = await runWithRequestContext(store, () =>
+      handle.app.withTenant(tenant, (tx) =>
+        repo.insertAbsent(
+          recordingTx(tx, seen, registered),
+          'item',
+          [
+            { item_id: 'a3', name: 'Third', qty: 3 },
+            { tenant_id: tenant.toUpperCase(), item_id: 'a1', name: 'Taken', qty: 1 },
+            { item_id: 'a2', name: 'Second', qty: undefined },
+            { item_id: 'a4', name: 'Second', qty: 4 },
+          ],
+          ['name'],
+        ),
+      ),
+    );
+    expect(inserted).toEqual([
+      { tenant_id: tenant, item_id: 'a3', name: 'Third', qty: 3 },
+      { tenant_id: tenant, item_id: 'a2', name: 'Second', qty: null },
+    ]);
+
+    const [seeded, ...log] = await changelog(tenant);
+    expect(seeded).toMatchObject({ key: encodeKey(ITEM_COLUMNS, ['item_id'], taken) });
+    expect(log).toEqual(
+      inserted.map((row) => ({
+        xid: log[0]?.xid,
+        table: 'item',
+        op: 'insert',
+        key: encodeKey(ITEM_COLUMNS, ['item_id'], row),
+        before: null,
+        after: keyedImage(row),
+        columns: ['item_id', 'name', 'qty'],
+        origin: 'target',
+        actor_user_id: 'user-1',
+        actor_service: 'people',
+        at: localTimestamp(CLOCK.now()),
+        request_id: 'req-absent',
+        operation_id: null,
+      })),
+    );
+    expect(seen.filter((text) => text.startsWith('INSERT INTO'))).toEqual([
+      expect.stringContaining(`"${handle.schema}"."item"`),
+      expect.stringContaining(`"${handle.schema}"."changelog"`),
+    ]);
+    expect(registered.count).toBe(1);
+    expect(store.writePositions).toEqual(new Map([[OWNER, log[0]?.xid]]));
+    const stored = await handle.app.withTenant(tenant, async (tx) => [
+      await repo.findByKey(tx, 'item', { item_id: 'a0' }),
+      await repo.findByKey(tx, 'item', { item_id: 'a1' }),
+      await repo.findByKey(tx, 'item', { item_id: 'a4' }),
+    ]);
+    expect(stored).toEqual([taken, null, null]);
+  });
+
+  it('insertAbsent writes a batch one row above the chunk size in statements PostgreSQL accepts at its parameter limit', async () => {
+    const tenant = freshTenant();
+    const chunk = Math.floor((65_535 - 11) / 2);
+    const rows = Array.from({ length: chunk + 1 }, (_, i) => ({ item_id: `c${i}` }));
+    const seen: string[] = [];
+    const { inserted, logged } = await handle.app.withTenant(tenant, async (tx) => ({
+      inserted: await repo.insertAbsent(recordingTx(tx, seen, { count: 0 }), 'item', rows, ['name']),
+      logged: (await tx.query<{ n: number }>(`SELECT count(*)::int AS n FROM ${handle.schema}.changelog`)).rows[0]?.n,
+    }));
+    expect(inserted).toHaveLength(chunk + 1);
+    expect(inserted[chunk]).toEqual({ tenant_id: tenant, item_id: `c${chunk}`, name: null, qty: null });
+    expect(logged).toBe(chunk + 1);
+    expect(seen.filter((text) => text.startsWith('INSERT INTO')).map((text) => text.includes('"changelog"'))).toEqual([false, true, false, true]);
+  });
+
+  it('rolls insertAbsent rows and their changelog rows back together', async () => {
+    const tenant = freshTenant();
+    const err = await failure(() =>
+      handle.app.withTenant(tenant, async (tx) => {
+        await repo.insertAbsent(tx, 'item', [{ item_id: 'x1', name: 'X1', qty: 1 }, { item_id: 'x2', name: 'X2', qty: 2 }], ['name']);
+        throw new Error('abort');
+      }),
+    );
+    expect(err).toMatchObject({ message: 'abort' });
+    expect(await handle.app.withTenant(tenant, (tx) => repo.findByKey(tx, 'item', { item_id: 'x1' }))).toBeNull();
+    expect(await changelog(tenant)).toEqual([]);
+  });
+
+  it('insertAbsent propagates a primary-key violation of a row whose conflict columns are free', async () => {
+    const tenant = freshTenant();
+    await handle.app.withTenant(tenant, (tx) => repo.insert(tx, 'item', { item_id: 'k1', name: 'Kept', qty: 1 }));
+    const err = await failure(() => handle.app.withTenant(tenant, (tx) => repo.insertAbsent(tx, 'item', [{ item_id: 'k1', name: 'Other', qty: 2 }], ['name'])));
+    expect(err).toMatchObject({ code: '23505' });
+    expect(await changelog(tenant)).toHaveLength(1);
+  });
+
+  it('logs an update with before and after images, only the changed columns and the caller provenance', async () => {
+    const tenant = freshTenant();
+    const { before, after } = await handle.app.withTenant(tenant, async (tx) => ({
+      before: await repo.insert(tx, 'item', { item_id: 'u1', name: 'Old', qty: 1 }),
+      after: await repo.update(
+        tx,
+        'item',
+        { item_id: 'u1' },
+        { name: 'Old', qty: 5 },
+        { origin: 'legacy-window', operationId: 'op-7', actorUserId: 'actor-x', actorService: 'migration', requestId: 'req-x' },
+      ),
+    }));
+    expect(after).toEqual({ ...before, qty: 5 });
+
+    const [insertLog, updateLog] = await changelog(tenant);
+    expect(insertLog).toMatchObject({ op: 'insert', actor_user_id: null, actor_service: null, request_id: null });
+    expect(updateLog).toMatchObject({
+      op: 'update',
+      key: encodeKey(ITEM_COLUMNS, ['item_id'], before),
+      before: keyedImage(before),
+      after: keyedImage(after as RepositoryRow),
+      columns: ['qty'],
+      origin: 'legacy-window',
+      operation_id: 'op-7',
+      actor_user_id: 'actor-x',
+      actor_service: 'migration',
+      request_id: 'req-x',
+    });
+  });
+
+  it('deletes a keyed row and logs its before image without an after image', async () => {
+    const tenant = freshTenant();
+    const { stored, removed, gone } = await handle.app.withTenant(tenant, async (tx) => ({
+      stored: await repo.insert(tx, 'item', { item_id: 'd1', name: 'Doomed', qty: 3 }),
+      removed: await repo.delete(tx, 'item', { item_id: 'd1' }),
+      gone: await repo.findByKey(tx, 'item', { item_id: 'd1' }),
+    }));
+    expect(removed).toEqual(stored);
+    expect(gone).toBeNull();
+    const [, deleteLog] = await changelog(tenant);
+    expect(deleteLog).toMatchObject({
+      op: 'delete',
+      key: encodeKey(ITEM_COLUMNS, ['item_id'], stored),
+      before: keyedImage(stored),
+      after: null,
+      columns: ['item_id', 'name', 'qty'],
+    });
+  });
+
+  it('answers null from update, delete and findByKey for a missing key and logs nothing', async () => {
+    const tenant = freshTenant();
+    const results = await handle.app.withTenant(tenant, async (tx) => [
+      await repo.update(tx, 'item', { item_id: 'none' }, { qty: 1 }),
+      await repo.delete(tx, 'item', { item_id: 'none' }),
+      await repo.findByKey(tx, 'item', { item_id: 'none' }),
+    ]);
+    expect(results).toEqual([null, null, null]);
+    expect(await changelog(tenant)).toEqual([]);
+  });
+
+  it("hides one tenant's rows from another tenant's findByKey", async () => {
+    const owner = freshTenant();
+    await handle.app.withTenant(owner, (tx) => repo.insert(tx, 'item', { item_id: 'shared', name: 'Mine', qty: 1 }));
+    expect(await handle.app.withTenant(freshTenant(), (tx) => repo.findByKey(tx, 'item', { item_id: 'shared' }))).toBeNull();
+  });
+
+  it('upserts a new key as an insert, then updates only the changed non-key columns, and skips a row with nothing to set', async () => {
+    const tenant = freshTenant();
+    const [inserted, updated, unchanged] = await handle.app.withTenant(tenant, async (tx) => [
+      await repo.upsert(tx, 'item', { item_id: 'p1', name: 'First', qty: 1 }),
+      await repo.upsert(tx, 'item', { item_id: 'p1', name: 'Second', qty: 1 }),
+      await repo.upsert(tx, 'item', { item_id: 'p1' }),
+    ]);
+    expect(inserted).toEqual({ tenant_id: tenant, item_id: 'p1', name: 'First', qty: 1 });
+    expect(updated).toEqual({ ...inserted, name: 'Second' });
+    expect(unchanged).toEqual(updated);
+    const log = await changelog(tenant);
+    expect(log.map((change) => [change.op, change.columns])).toEqual([
+      ['insert', ['item_id', 'name', 'qty']],
+      ['update', ['name']],
+    ]);
+  });
+
+  it('writes no row or changelog row for an upsert, update or replaceOne that changes no canonical value, positioned at its own xid once', async () => {
+    const tenant = freshTenant();
+    const stored = await handle.app.withTenant(tenant, async (tx) => ({
+      item: await repo.insert(tx, 'item', { item_id: 'n1', name: 'Same', qty: 3 }),
+      tag: await repo.insert(tx, 'tag_member', { label: 'same', weight: 1 }),
+    }));
+    const store = requestStore('req-noop');
+    const seen: string[] = [];
+    const registered = { count: 0 };
+    const { results, xid } = await runWithRequestContext(store, () =>
+      handle.app.withTenant(tenant, async (tx) => {
+        const recorded = recordingTx(tx, seen, registered);
+        const written = [
+          await repo.upsert(recorded, 'item', { item_id: 'n1', name: 'Same', qty: '3' }),
+          await repo.update(recorded, 'item', { item_id: 'n1' }, { name: 'Same', qty: 3n }),
+          await repo.replaceOne(recorded, 'tag_member', { label: 'same', weight: 1 }, { label: 'same', weight: '1' }),
+        ];
+        const own = await tx.query<{ xid: string }>('SELECT pg_current_xact_id()::text AS xid');
+        return { results: written, xid: own.rows[0]?.xid };
+      }),
+    );
+    expect(results).toEqual([stored.item, stored.item, stored.tag]);
+    expect(seen.filter((text) => /^\s*(INSERT|UPDATE|DELETE)\b/.test(text))).toEqual([]);
+    expect(seen.filter((text) => text.includes('pg_current_xact_id'))).toHaveLength(1);
+    expect(registered.count).toBe(1);
+    expect((await changelog(tenant)).map((change) => change.op)).toEqual(['insert', 'insert']);
+    expect(store.writePositions).toEqual(new Map([[OWNER, xid]]));
+  });
+
+  it('positions a no-op after a logged write at the changelog xid without querying it, and queries nothing outside a request', async () => {
+    const tenant = freshTenant();
+    const store = requestStore('req-noop-after');
+    const seen: string[] = [];
+    await runWithRequestContext(store, () =>
+      handle.app.withTenant(tenant, async (tx) => {
+        const recorded = recordingTx(tx, seen, { count: 0 });
+        await repo.insert(recorded, 'item', { item_id: 'n3', name: 'Logged', qty: 1 });
+        await repo.upsert(recorded, 'item', { item_id: 'n3', name: 'Logged', qty: 1 });
+      }),
+    );
+    await handle.app.withTenant(tenant, (tx) => repo.update(recordingTx(tx, seen, { count: 0 }), 'item', { item_id: 'n3' }, { qty: 1 }));
+    expect(seen.filter((text) => text.includes('pg_current_xact_id'))).toEqual([]);
+    expect(store.writePositions).toEqual(new Map([[OWNER, (await changelog(tenant))[0]?.xid]]));
+  });
+
+  it('sets only the differing columns, and logs nothing when the database stores a value as the row already holds it', async () => {
+    const tenant = freshTenant();
+    const stored = await handle.app.withTenant(tenant, (tx) => repo.insert(tx, 'item', { item_id: 'n2', name: 'Kept', qty: 3 }));
+    const seen: string[] = [];
+    const [normalised, changed] = await handle.app.withTenant(tenant, async (tx) => {
+      const recorded = recordingTx(tx, seen, { count: 0 });
+      return [
+        // ' 3' has no canonical integer form until PostgreSQL parses it as 3.
+        await repo.update(recorded, 'item', { item_id: 'n2' }, { qty: ' 3' }),
+        await repo.upsert(recorded, 'item', { item_id: 'n2', name: 'Kept', qty: 4 }),
+      ];
+    });
+    expect(normalised).toEqual(stored);
+    expect(changed).toEqual({ ...stored, qty: 4 });
+    expect(seen.filter((text) => text.startsWith('UPDATE')).map((text) => /SET (.+) WHERE/.exec(text)?.[1])).toEqual(['"qty" = $1', '"qty" = $1']);
+    expect((await changelog(tenant)).map((change) => [change.op, change.columns])).toEqual([
+      ['insert', ['item_id', 'name', 'qty']],
+      ['update', ['qty']],
+    ]);
+  });
+
+  it('upsert updates the row a concurrent transaction committed for the same key after its first read', async () => {
+    const tenant = freshTenant();
+    let release = (): void => undefined;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let signalInserted = (): void => undefined;
+    const inserted = new Promise<void>((resolve) => {
+      signalInserted = resolve;
+    });
+    const rival = handle.app.withTenant(tenant, async (tx) => {
+      await repo.insert(tx, 'item', { item_id: 'race', name: 'Rival', qty: 1 });
+      signalInserted();
+      await released;
+    });
+    await inserted;
+    const upsert = handle.app.withTenant(tenant, (tx) => repo.upsert(tx, 'item', { item_id: 'race', name: 'Mine', qty: 2 }));
+    try {
+      await untilLockWait();
+    } finally {
+      release();
+    }
+    await rival;
+
+    expect(await upsert).toEqual({ tenant_id: tenant, item_id: 'race', name: 'Mine', qty: 2 });
+    const log = await changelog(tenant);
+    expect(log.map((change) => change.op)).toEqual(['insert', 'update']);
+    expect(log[1]).toMatchObject({
+      before: keyedImage({ tenant_id: tenant, item_id: 'race', name: 'Rival', qty: 1 }),
+      after: keyedImage({ tenant_id: tenant, item_id: 'race', name: 'Mine', qty: 2 }),
+      columns: ['name', 'qty'],
+    });
+  });
+
+  it('upsert rejects a row whose insert collides with another key on a unique column', async () => {
+    const tenant = freshTenant();
+    const err = await failure(() =>
+      handle.app.withTenant(tenant, async (tx) => {
+        await repo.insert(tx, 'item', { item_id: 'a', name: 'Same', qty: 1 });
+        return repo.upsert(tx, 'item', { item_id: 'b', name: 'Same', qty: 2 });
+      }),
+    );
+    expect(err).toBeInstanceOf(RepositoryError);
+    expect(err).toMatchObject({ table: 'item', message: 'item: insert conflicts with a row outside this key or tenant' });
+    expect(await changelog(tenant)).toEqual([]);
+  });
+
+  it('numbers identical keyless rows as occurrences of one row hash and keys their changelog rows by content', async () => {
+    const tenant = freshTenant();
+    const duplicate = { label: 'dup', weight: 3 };
+    const single = { label: 'other', weight: null };
+    const stored = await handle.app.withTenant(tenant, async (tx) => [
+      await repo.insert(tx, 'tag_member', duplicate),
+      await repo.insert(tx, 'tag_member', { tenant_id: tenant, ...duplicate }),
+      await repo.insert(tx, 'tag_member', single),
+    ]);
+    expect(stored.map((row) => [row.legacy_row_hash, row.occurrence])).toEqual([
+      [legacyRowHash(TAG_DATA, duplicate), 1],
+      [legacyRowHash(TAG_DATA, duplicate), 2],
+      [legacyRowHash(TAG_DATA, single), 1],
+    ]);
+    const log = await changelog(tenant);
+    expect(log.map((change) => change.key)).toEqual([encodeRow(TAG_DATA, duplicate), encodeRow(TAG_DATA, duplicate), encodeRow(TAG_DATA, single)]);
+    expect(log[1]).toMatchObject({
+      op: 'insert',
+      before: null,
+      after: encodeRow(TAG_COLUMNS, stored[1] as RepositoryRow),
+      columns: ['label', 'weight'],
+    });
+  });
+
+  it('deleteOne removes the highest occurrence of a duplicate and keeps the multiplicity of the rest', async () => {
+    const tenant = freshTenant();
+    const duplicate = { label: 'dup', weight: 1 };
+    const { removed, absent } = await handle.app.withTenant(tenant, async (tx) => {
+      for (const row of [duplicate, duplicate, duplicate, { label: 'kept', weight: 1 }]) {
+        await repo.insert(tx, 'tag_member', row);
+      }
+      return {
+        removed: await repo.deleteOne(tx, 'tag_member', duplicate),
+        absent: await repo.deleteOne(tx, 'tag_member', { label: 'none', weight: 0 }),
+      };
+    });
+    const hash = legacyRowHash(TAG_DATA, duplicate);
+    expect(removed).toEqual({ tenant_id: tenant, ...duplicate, legacy_row_hash: hash, occurrence: 3 });
+    expect(absent).toBeNull();
+    expect(await tagRows(tenant)).toEqual([
+      ['dup', 1, 1],
+      ['dup', 1, 2],
+      ['kept', 1, 1],
+    ]);
+    const log = await changelog(tenant);
+    expect(log).toHaveLength(5);
+    expect(log[4]).toMatchObject({
+      op: 'delete',
+      key: encodeRow(TAG_DATA, duplicate),
+      before: encodeRow(TAG_COLUMNS, removed as RepositoryRow),
+      after: null,
+      columns: ['label', 'weight'],
+    });
+  });
+
+  it('replaceOne turns one duplicate into the next occurrence of the new content', async () => {
+    const tenant = freshTenant();
+    const from = { label: 'a', weight: 1 };
+    const to = { label: 'b', weight: 1 };
+    const { replaced, absent } = await handle.app.withTenant(tenant, async (tx) => {
+      for (const row of [from, from, to]) {
+        await repo.insert(tx, 'tag_member', row);
+      }
+      return {
+        replaced: await repo.replaceOne(tx, 'tag_member', from, to),
+        absent: await repo.replaceOne(tx, 'tag_member', { label: 'none', weight: 0 }, to),
+      };
+    });
+    const toHash = legacyRowHash(TAG_DATA, to);
+    expect(replaced).toEqual({ tenant_id: tenant, ...to, legacy_row_hash: toHash, occurrence: 2 });
+    expect(absent).toBeNull();
+    expect(await tagRows(tenant)).toEqual([
+      ['a', 1, 1],
+      ['b', 1, 1],
+      ['b', 1, 2],
+    ]);
+    const log = await changelog(tenant);
+    expect(log).toHaveLength(4);
+    expect(log[3]).toMatchObject({
+      op: 'update',
+      key: encodeRow(TAG_DATA, from),
+      before: encodeRow(TAG_COLUMNS, { tenant_id: tenant, ...from, legacy_row_hash: legacyRowHash(TAG_DATA, from), occurrence: 2 }),
+      after: encodeRow(TAG_COLUMNS, replaced as RepositoryRow),
+      columns: ['label'],
+    });
+  });
+
+  it('records the changelog xid of each committed transaction as the owner write position, once per transaction', async () => {
+    const tenant = freshTenant();
+    const store = requestStore('req-position');
+    const insideFirst: (string | undefined)[] = [];
+    await runWithRequestContext(store, async () => {
+      await handle.app.withTenant(tenant, async (tx) => {
+        await repo.insert(tx, 'item', { item_id: 'w1', name: 'W', qty: 1 });
+        await repo.insert(tx, 'tag_member', { label: 'w', weight: 1 });
+        insideFirst.push(store.writePositions.get(OWNER));
+      });
+      await handle.app.withTenant(tenant, (tx) => repo.update(tx, 'item', { item_id: 'w1' }, { qty: 2 }));
+    });
+    const [first, second, third] = (await changelog(tenant)).map((change) => change.xid);
+    expect(insideFirst).toEqual([undefined]);
+    expect(second).toBe(first);
+    expect(BigInt(third as string) > BigInt(first as string)).toBe(true);
+    expect(store.writePositions).toEqual(new Map([[OWNER, third]]));
+  });
+
+  it('fails a write to a closed unit with the 503-shaped GateClosedError once the gate budget runs out', async () => {
+    const tenant = freshTenant();
+    await setGate(ITEM_UNIT, 'closed');
+    const started = Date.now();
+    const err = await failure(() =>
+      withGatedTenant(handle.app, tenant, (tx) => repo.insert(tx, 'item', { item_id: 'g1', name: 'G', qty: 1 }), { budgetMs: 200 }),
+    );
+    expect(Date.now() - started).toBeGreaterThanOrEqual(150);
+    expect(err).toBeInstanceOf(GateClosedError);
+    expect(err).toBeInstanceOf(LegacyServiceUnavailableError);
+    expect(err).toMatchObject({ units: [ITEM_UNIT], reason: 'unit-gate-closed' });
+    expect(await changelog(tenant)).toEqual([]);
+  });
+
+  it('lets a write waiting on a closed unit proceed once the gate reopens', async () => {
+    const tenant = freshTenant();
+    await setGate(TAG_UNIT, 'closed');
+    const write = withGatedTenant(handle.app, tenant, (tx) => repo.insert(tx, 'tag_member', { label: 'late', weight: 1 }), { budgetMs: 10_000 });
+    await sleep(200);
+    await setGate(TAG_UNIT, 'open');
+    expect(await write).toMatchObject({ label: 'late', occurrence: 1 });
+    expect(await changelog(tenant)).toHaveLength(1);
+  });
+
+  it('rejects a write to a legacy unit at once with UnitNotAuthoritativeError', async () => {
+    const tenant = freshTenant();
+    await setGate(ITEM_UNIT, 'legacy');
+    const err = await failure(() => handle.app.withTenant(tenant, (tx) => repo.upsert(tx, 'item', { item_id: 'l1', name: 'L', qty: 1 })));
+    expect(err).toBeInstanceOf(UnitNotAuthoritativeError);
+    expect(err).toMatchObject({ units: [ITEM_UNIT], reason: 'unit-not-authoritative' });
+  });
+
+  it.each([
+    ['closed', GateClosedError],
+    ['legacy', UnitNotAuthoritativeError],
+  ] as [GateState, new (...args: never[]) => Error][])('fails insertAbsent under a %s item gate with its gate error and writes nothing', async (state, expected) => {
+    const tenant = freshTenant();
+    await setGate(ITEM_UNIT, state);
+    const err = await failure(() =>
+      withGatedTenant(handle.app, tenant, (tx) => repo.insertAbsent(tx, 'item', [{ item_id: 'g1', name: 'G', qty: 1 }], ['name']), { budgetMs: 150 }),
+    );
+    expect(err).toBeInstanceOf(expected);
+    expect(err).toMatchObject({ units: [ITEM_UNIT] });
+    expect(await changelog(tenant)).toEqual([]);
+  });
+
+  it('lets a migration-authority insertAbsent pass a legacy gate with the caller origin', async () => {
+    const tenant = freshTenant();
+    await setGate(ITEM_UNIT, 'legacy');
+    const authority = createMigrationAuthority({ batchId: 'batch-absent' });
+    await handle.app.withTenant(tenant, (tx) =>
+      repo.insertAbsent(tx, 'item', [{ item_id: 'm1', name: 'M', qty: 1 }], ['name'], { authority, origin: 'backfill', operationId: 'op-absent' }),
+    );
+    expect((await changelog(tenant)).map((change) => [change.op, change.origin, change.operation_id])).toEqual([['insert', 'backfill', 'op-absent']]);
+  });
+
+  it('gates a write whose authority was never issued by createMigrationAuthority', async () => {
+    const tenant = freshTenant();
+    await setGate(ITEM_UNIT, 'legacy');
+    const forged = { ...createMigrationAuthority({ batchId: 'b-forged' }) } as MigrationAuthority;
+    const err = await failure(() =>
+      handle.app.withTenant(tenant, (tx) => repo.insert(tx, 'item', { item_id: 'f1', name: 'F', qty: 1 }, { authority: forged })),
+    );
+    expect(err).toBeInstanceOf(UnitNotAuthoritativeError);
+  });
+
+  it.each(['closed', 'legacy'] as const)('lets a migration-authority write pass a %s gate', async (state) => {
+    const tenant = freshTenant();
+    await setGate(ITEM_UNIT, state);
+    await setGate(TAG_UNIT, state);
+    const authority = createMigrationAuthority({ batchId: `batch-${state}` });
+    await handle.app.withTenant(tenant, async (tx) => {
+      await repo.upsert(tx, 'item', { item_id: 'm1', name: 'M', qty: 1 }, { authority, origin: 'backfill' });
+      await repo.insert(tx, 'tag_member', { label: 'm', weight: 1 }, { authority, origin: 'migration-feed' });
+    });
+    expect((await changelog(tenant)).map((change) => [change.table, change.origin])).toEqual([
+      ['item', 'backfill'],
+      ['tag_member', 'migration-feed'],
+    ]);
+  });
+
+  it('lets a write with the authority of a platform.migration request pass a closed gate', async () => {
+    const tenant = freshTenant();
+    await setGate(ITEM_UNIT, 'closed');
+    const store = { ...newRequestContext({ requestId: 'req-adopt' }), service: { name: 'migration', roles: [Roles.platformMigration] } };
+    await runWithRequestContext(store, () =>
+      handle.app.withTenant(tenant, (tx) =>
+        repo.insert(tx, 'item', { item_id: 'r1', name: 'R', qty: 1 }, { authority: requestMigrationAuthority() }),
+      ),
+    );
+    expect((await changelog(tenant)).map((change) => [change.table, change.actor_service, change.request_id])).toEqual([
+      ['item', 'migration', 'req-adopt'],
+    ]);
+  });
+
+  it.each(
+    (['executing', 'importing', 'import-pending'] as const).flatMap((phase) => [
+      [phase, 'findByKey', (tx: TenantTx) => repo.findByKey(tx, 'item', { item_id: 'b1' })],
+      [phase, 'read', (tx: TenantTx) => repo.read(tx, [ITEM_UNIT, TAG_UNIT], () => Promise.resolve('read'))],
+    ]) as [GatePhase, string, (tx: TenantTx) => Promise<unknown>][],
+  )('fails a gated read during a window in phase %s with UnitReadBlockedError (%s)', async (phase, _reader, readFn) => {
+    const tenant = freshTenant();
+    await handle.app.withTenant(tenant, (tx) => repo.insert(tx, 'item', { item_id: 'b1', name: 'B', qty: 1 }));
+    await setGate(ITEM_UNIT, 'closed', phase);
+    const err = await failure(() => withGatedTenant(handle.app, tenant, readFn, { budgetMs: 150 }));
+    expect(err).toBeInstanceOf(UnitReadBlockedError);
+    expect(err).toMatchObject({ units: [ITEM_UNIT], reason: 'unit-read-blocked' });
+  });
+
+  it.each(['closed', 'legacy'] as const)('serves gated reads under a quiet %s gate', async (state) => {
+    const tenant = freshTenant();
+    const stored = await handle.app.withTenant(tenant, (tx) => repo.insert(tx, 'item', { item_id: 'q1', name: 'Q', qty: 1 }));
+    await setGate(ITEM_UNIT, state);
+    const [found, read] = await handle.app.withTenant(tenant, async (tx) => [
+      await repo.findByKey(tx, 'item', { item_id: 'q1' }),
+      await repo.read(tx, ITEM_UNIT, () => Promise.resolve('read')),
+    ]);
+    expect(found).toEqual(stored);
+    expect(read).toBe('read');
+  });
+
+  it('holds a phase change behind a gated read until the reader commits, so the read returns the pre-window value', async () => {
+    const tenant = freshTenant();
+    await handle.app.withTenant(tenant, (tx) => repo.insert(tx, 'item', { item_id: 'w1', name: 'Before', qty: 1 }));
+    await setGate(ITEM_UNIT, 'closed');
+    let release = (): void => undefined;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let signalFenced = (): void => undefined;
+    const fenced = new Promise<void>((resolve) => {
+      signalFenced = resolve;
+    });
+    const reader = handle.app.withTenant(tenant, (tx) =>
+      repo.read(tx, ITEM_UNIT, async () => {
+        signalFenced();
+        await released;
+        const { rows } = await tx.query<{ name: string }>(`SELECT name FROM ${handle.schema}.item WHERE item_id = 'w1'`);
+        return rows[0]?.name;
+      }),
+    );
+    await fenced;
+    const phaseChange = setGatePhase(handle.app, { units: [ITEM_UNIT], holderId: 'test-window', phase: 'executing' });
+    try {
+      await untilLockWait();
+      expect(await Promise.race([phaseChange.then(() => 'changed'), sleep(200).then(() => 'waiting')])).toBe('waiting');
+    } finally {
+      release();
+    }
+    expect(await reader).toBe('Before');
+    expect(await phaseChange).toEqual([{ unit: ITEM_UNIT, state: 'closed', holderId: 'test-window', phase: 'executing' }]);
+  });
+
+  it.each(['executing', 'importing', 'import-pending'] as const)(
+    'holds a read started in phase %s until the gate reopens, then returns the imported value',
+    async (phase) => {
+      const tenant = freshTenant();
+      await handle.app.withTenant(tenant, (tx) => repo.insert(tx, 'item', { item_id: 'p1', name: 'Superseded', qty: 1 }));
+      await setGate(ITEM_UNIT, 'closed', phase);
+      const read = withGatedTenant(handle.app, tenant, (tx) => repo.findByKey(tx, 'item', { item_id: 'p1' }), { budgetMs: 10_000 });
+      expect(await Promise.race([read.then(() => 'read'), sleep(300).then(() => 'waiting')])).toBe('waiting');
+      const authority = createMigrationAuthority({ holderId: 'test-window' });
+      await handle.app.withTenant(tenant, (tx) =>
+        repo.update(tx, 'item', { item_id: 'p1' }, { name: 'Imported' }, { authority, origin: 'legacy-window' }),
+      );
+      await setGate(ITEM_UNIT, 'open');
+      expect(await read).toMatchObject({ item_id: 'p1', name: 'Imported' });
+    },
+  );
+
+  const findH1 = (tx: TenantTx): Promise<unknown> => repo.findByKey(tx, 'item', { item_id: 'h1' });
+  it.each([
+    ['a write then a read', 'executing', (tx: TenantTx) => repo.insert(tx, 'tag_member', { label: 'held', weight: 1 }), findH1],
+    ['a read then a read', 'executing', (tx: TenantTx) => repo.read(tx, TAG_UNIT, () => Promise.resolve()), findH1],
+    ['a read then a write', 'quiet', findH1, (tx: TenantTx) => repo.update(tx, 'item', { item_id: 'h1' }, { qty: 2 })],
+  ] as [string, GatePhase, (tx: TenantTx) => Promise<unknown>, (tx: TenantTx) => Promise<unknown>][])(
+    'fails %s fast with GateRaceError once the transaction holds gate locks and the item gate is closed in phase %s',
+    async (_steps, phase, first, next) => {
+      const tenant = freshTenant();
+      await handle.app.withTenant(tenant, (tx) => repo.insert(tx, 'item', { item_id: 'h1', name: 'H', qty: 1 }));
+      await setGate(ITEM_UNIT, 'closed', phase);
+      const started = Date.now();
+      const err = await failure(() =>
+        handle.app.withTenant(tenant, async (tx) => {
+          await first(tx);
+          await next(tx);
+        }),
+      );
+      expect(Date.now() - started).toBeLessThan(2_000);
+      expect(err).toBeInstanceOf(GateRaceError);
+      expect(err).toMatchObject({ units: [ITEM_UNIT], reason: 'unit-gate-race' });
+    },
+  );
+
+  it('reads a table without a unit without consulting any gate', async () => {
+    const tenant = freshTenant();
+    const stored = await handle.app.withTenant(tenant, (tx) => repo.insert(tx, 'item', { item_id: 'n1', name: 'N', qty: 1 }));
+    await setGate(ITEM_UNIT, 'closed', 'executing');
+    expect(ungated.units()).toEqual([]);
+    expect(await withGatedTenant(handle.app, tenant, (tx) => ungated.findByKey(tx, 'item', { item_id: 'n1' }), { budgetMs: 150 })).toEqual(stored);
+  });
+
+  describe('with legacyText', () => {
+    const legacy = (tables: TableDefinition[] = [ITEM, TAG]): Repository =>
+      createRepository({ owner: OWNER, schema: handle.schema, tables, clock: CLOCK, legacyText: windows1252Text });
+
+    it('stores the text of target-origin keyed writes as legacy does, matches their keys the same way and logs the stored images', async () => {
+      const tenant = freshTenant();
+      const store = legacy();
+      const rows = await handle.app.withTenant(tenant, async (tx) => ({
+        inserted: await store.insert(tx, 'item', { item_id: 'k😀', name: 'Cat ü 😀', qty: 1 }),
+        updated: await store.update(tx, 'item', { item_id: 'k😀' }, { name: 'QA cp üé – ✓ 日本 😀 end' }),
+        upserted: await store.upsert(tx, 'item', { item_id: 'u1', name: '✓ one' }),
+        resaved: await store.upsert(tx, 'item', { item_id: 'u1', name: '✗ one' }),
+        absent: await store.insertAbsent(tx, 'item', [{ item_id: 'a1', name: 'Ā two' }], ['item_id']),
+        deleted: await store.delete(tx, 'item', { item_id: 'k😀' }),
+      }));
+      expect(rows.inserted).toEqual({ tenant_id: tenant, item_id: 'k??', name: 'Cat ü ??', qty: 1 });
+      expect(rows.updated).toEqual({ ...rows.inserted, name: 'QA cp üé – ? ?? ?? end' });
+      expect(rows.upserted).toEqual({ tenant_id: tenant, item_id: 'u1', name: '? one', qty: null });
+      expect(rows.resaved).toEqual(rows.upserted);
+      expect(rows.absent).toEqual([{ tenant_id: tenant, item_id: 'a1', name: '? two', qty: null }]);
+      expect(rows.deleted).toEqual(rows.updated);
+      expect((await changelog(tenant)).map((change) => [change.op, change.after])).toEqual([
+        ['insert', keyedImage(rows.inserted)],
+        ['update', keyedImage(rows.updated as RepositoryRow)],
+        ['insert', keyedImage(rows.upserted)],
+        ['insert', keyedImage(rows.absent[0] as RepositoryRow)],
+        ['delete', null],
+      ]);
+    });
+
+    it('hashes, deletes and replaces target-origin keyless rows by their stored text', async () => {
+      const tenant = freshTenant();
+      const store = legacy();
+      const posted = { label: 'Tag 😀', weight: 1 };
+      const stored = { label: 'Tag ??', weight: 1 };
+      const result = await handle.app.withTenant(tenant, async (tx) => {
+        const first = await store.insert(tx, 'tag_member', posted);
+        await store.insert(tx, 'tag_member', stored);
+        await store.insert(tx, 'tag_member', posted);
+        return {
+          first,
+          removed: await store.deleteOne(tx, 'tag_member', posted),
+          replaced: await store.replaceOne(tx, 'tag_member', posted, { label: '✓', weight: 2 }),
+        };
+      });
+      expect(result.first).toEqual({ tenant_id: tenant, ...stored, legacy_row_hash: legacyRowHash(TAG_DATA, stored), occurrence: 1 });
+      expect(result.removed).toMatchObject({ ...stored, occurrence: 3 });
+      expect(result.replaced).toMatchObject({ label: '?', weight: 2, legacy_row_hash: legacyRowHash(TAG_DATA, { label: '?', weight: 2 }), occurrence: 1 });
+      expect((await tagRows(tenant)).sort()).toEqual([
+        ['?', 2, 1],
+        ['Tag ??', 1, 1],
+      ]);
+      expect((await changelog(tenant)).map((change) => change.key)).toEqual(Array.from({ length: 5 }, () => encodeRow(TAG_DATA, stored)));
+    });
+
+    it.each<[string, WriteContext, () => Repository]>([
+      ['a backfill under a migration authority', { origin: 'backfill', authority: createMigrationAuthority() }, () => legacy()],
+      ['a target-origin write under a migration authority', { authority: createMigrationAuthority() }, () => legacy()],
+      ['a legacy-window import', { origin: 'legacy-window' }, () => legacy()],
+      ['a table without a unit', {}, () => legacy([{ ...ITEM, unit: undefined }])],
+      ['a repository without legacyText', {}, () => repo],
+    ])('stores the exact text of %s', async (_label, ctx, repositoryOf) => {
+      const tenant = freshTenant();
+      const store = repositoryOf();
+      const row = await handle.app.withTenant(tenant, async (tx) => {
+        await store.insert(tx, 'item', { item_id: 'x😀', name: 'Cat ü 😀', qty: 1 }, ctx);
+        return store.update(tx, 'item', { item_id: 'x😀' }, { name: '✓ 日本 😀' }, ctx);
+      });
+      expect(row).toEqual({ tenant_id: tenant, item_id: 'x😀', name: '✓ 日本 😀', qty: 1 });
+    });
+  });
+});

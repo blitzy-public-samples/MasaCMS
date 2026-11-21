@@ -1,0 +1,212 @@
+{
+ "user": "qa_editor",
+ "request": {
+  "topid": "384724B1-ABAF-929C-3E6AB1A44B0EEAE5",
+  "moduleid": "00000000000000000000000000000000000",
+  "sortby": "",
+  "sortdirection": "",
+  "ptype": "Folder",
+  "startrow": "1",
+  "type": "Page"
+ },
+ "session": {
+  "nextN": "20",
+  "rb": "en_US",
+  "dateKeyFormat": "MM/DD/YYYY",
+  "locale": "English (US)",
+  "userid": "AF240756-C1CD-6298-60C0CAF70AACAE2B",
+  "memberships": "Editor;default;0,S2IsPrivate;default,S2IsPrivate,qa_editor;username;default",
+  "siteid": "default",
+  "openSectionList": "",
+  "flatViewArgs": {
+   "default": {
+    "TAB": 0
+   }
+  }
+ },
+ "site": {
+  "hasLockableNodes": 0,
+  "webPathComplete": "http://localhost:23280",
+  "hasComments": "1",
+  "locking": "none",
+  "privateUserPoolId": "default"
+ },
+ "config": {
+  "sortPermission": "editor",
+  "coreVersion": "7.6.1",
+  "adminDir": "/admin",
+  "context": ""
+ },
+ "marketing": false,
+ "tabAssignments": "Basic,SEO,Summary,Image,Publishing,Scheduling,Layout & Objects,Categorization,Tags,Related Content,Extended Attributes,Remote",
+ "rsExtend": [
+  {
+   "attribute": "formOwner",
+   "attributeid": "2",
+   "basekeyfield": "contentHistID",
+   "basetable": "tcontent",
+   "datatable": "tclassextenddata",
+   "label": "formOwner",
+   "subtype": "Default",
+   "type": "Form"
+  },
+  {
+   "attribute": "heroColor",
+   "attributeid": "1",
+   "basekeyfield": "contentHistID",
+   "basetable": "tcontent",
+   "datatable": "tclassextenddata",
+   "label": "heroColor",
+   "subtype": "Landing",
+   "type": "Page"
+  }
+ ],
+ "icons": [
+  {
+   "iconclass": "mi-star",
+   "siteid": "default",
+   "subtype": "Landing",
+   "type": "Page"
+  },
+  {
+   "iconclass": "",
+   "siteid": "default",
+   "subtype": "Default",
+   "type": "Form"
+  }
+ ],
+ "model": {
+  "rsTop": {
+   "siteid": "default",
+   "contentid": "384724B1-ABAF-929C-3E6AB1A44B0EEAE5",
+   "contenthistid": "384725B0-F8D2-F822-250A7C0046D07DE5",
+   "parentid": "00000000000000000000000000000000001",
+   "moduleid": "00000000000000000000000000000000000",
+   "type": "Folder",
+   "subtype": "Default",
+   "title": "Files",
+   "menutitle": "Files",
+   "filename": "files",
+   "fileid": "",
+   "fileext": "",
+   "assocfilename": "",
+   "display": "1",
+   "displaystart": "",
+   "displaystop": "",
+   "approved": "1",
+   "isnav": "1",
+   "inheritobjects": "Inherit",
+   "template": "",
+   "childtemplate": "",
+   "lastupdate": "2026-11-13T01:02:34.987",
+   "targetparams": "",
+   "remoteurl": "",
+   "sortby": "orderno",
+   "sortdirection": "asc",
+   "restricted": "0",
+   "islocked": "0",
+   "lockid": ""
+  },
+  "crumbs": [
+   {
+    "siteid": "default",
+    "contentid": "384724B1-ABAF-929C-3E6AB1A44B0EEAE5",
+    "type": "Folder",
+    "subtype": "Default",
+    "menutitle": "Files",
+    "restricted": "0",
+    "moduleid": "00000000000000000000000000000000000"
+   },
+   {
+    "siteid": "default",
+    "contentid": "00000000000000000000000000000000001",
+    "type": "Page",
+    "subtype": "Default",
+    "menutitle": "Home",
+    "restricted": "0",
+    "moduleid": "00000000000000000000000000000000000"
+   }
+  ],
+  "perm": "editor",
+  "restricted": 0,
+  "hasKids": 2,
+  "nest": [
+   {
+    "siteid": "default",
+    "contentid": "38476145-06F7-420E-A51BC05DC3F83AEE",
+    "contenthistid": "384761EA-E956-7A43-6C1100FB6D10A439",
+    "parentid": "384724B1-ABAF-929C-3E6AB1A44B0EEAE5",
+    "moduleid": "00000000000000000000000000000000000",
+    "type": "File",
+    "subtype": "Default",
+    "title": "Spec Sheet",
+    "menutitle": "Spec Sheet",
+    "filename": "files/spec-sheet",
+    "fileid": "38476297-C2F0-1727-4865EEC907A22A26",
+    "fileext": "pdf",
+    "assocfilename": "tiny.pdf",
+    "display": "1",
+    "displaystart": "",
+    "displaystop": "",
+    "approved": "1",
+    "isnav": "1",
+    "inheritobjects": "Inherit",
+    "template": "",
+    "childtemplate": "",
+    "lastupdate": "2026-11-13T01:02:36.530",
+    "targetparams": "",
+    "remoteurl": "",
+    "sortby": "orderno",
+    "sortdirection": "asc",
+    "restricted": "0",
+    "islocked": "0",
+    "lockid": "",
+    "verdict": "none",
+    "kidscount": 0
+   },
+   {
+    "siteid": "default",
+    "contentid": "38472C61-D572-11AC-F97A7B38A2FDFB7E",
+    "contenthistid": "38472CBC-03BF-A3F1-E330A9CC22B85DF3",
+    "parentid": "384724B1-ABAF-929C-3E6AB1A44B0EEAE5",
+    "moduleid": "00000000000000000000000000000000000",
+    "type": "File",
+    "subtype": "Default",
+    "title": "Photo One",
+    "menutitle": "Photo One",
+    "filename": "files/photo-one",
+    "fileid": "38472D49-9D12-0EFF-D0DC4855F85CB788",
+    "fileext": "png",
+    "assocfilename": "ui-bg_glass_65_ffffff_1x400.png",
+    "display": "1",
+    "displaystart": "",
+    "displaystop": "",
+    "approved": "1",
+    "isnav": "1",
+    "inheritobjects": "Inherit",
+    "template": "",
+    "childtemplate": "",
+    "lastupdate": "2026-11-13T01:02:36.397",
+    "targetparams": "",
+    "remoteurl": "",
+    "sortby": "orderno",
+    "sortdirection": "asc",
+    "restricted": "0",
+    "islocked": "0",
+    "lockid": "",
+    "verdict": "none",
+    "kidscount": 0
+   }
+  ]
+ },
+ "status": 200,
+ "contentType": "application/json;charset=utf-8",
+ "sessionAfter": {
+  "openSectionList": "",
+  "flatViewArgs": {
+   "default": {
+    "TAB": 0
+   }
+  }
+ }
+}

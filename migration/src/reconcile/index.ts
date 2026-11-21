@@ -1,0 +1,487 @@
+// Reconciliation: the folder's public API, per-unit and per-tenant comparison of legacy with the owners' exports, and the CLI command.
+import type { ResolvedPaths } from '../config.js';
+import type { MigrationContext } from '../context.js';
+import { CutoverDataError, currentAuthority, loadGroups, loadVersion, rollbackRefGroups } from '../cutover/index.js';
+import { listLegacyTables, migratableTables, type LegacyTableRef } from '../extract/index.js';
+import { SUPPORTED_FILE_STORE } from '../files/index.js';
+import { UnknownUnitError, type DataOwner, type UnitCatalog } from '../owners/index.js';
+import { getSnapshot, latestSnapshot, latestSnapshotOfKind, type SnapshotKind, type SnapshotRecord } from '../snapshot/index.js';
+import { compareObjects, compareRows, type ObjectEntry, type RowComparison } from './compare.js';
+import { fixtureTables, readFixtureStatus, tableLookupKey, type FixtureStatus } from './fixtures.js';
+import {
+  createTenantResolver,
+  describeUnitTable,
+  fileUnitIds,
+  readLegacyObjects,
+  readLegacyUnitRows,
+  type LegacyObjectsOptions,
+  type TenantResolver,
+} from './legacy-side.js';
+import {
+  ReconcileUsageError,
+  buildReport,
+  buildUnitReport,
+  resolvePoint,
+  writeReconciliationReport,
+  type EmptyUnitReport,
+  type FileStoreReport,
+  type LegacySource,
+  type ReconcileReport,
+  type ReconcileResult,
+  type ReconcileSummary,
+  type ResolvedPoint,
+  type SkippedUnitReport,
+  type UnitReport,
+} from './report.js';
+import { readTargetObjects, readTargetOnlyRows, readTargetTenants, readTargetUnitRows, type TargetObjectsSource } from './target-side.js';
+
+export * from './compare.js';
+export * from './fixtures.js';
+export * from './legacy-side.js';
+export * from './target-side.js';
+export * from './report.js';
+
+/** Context members reconciliation reads: both data sides, snapshots, the gateway's active version and the report target. */
+export type ReconcileContext = Pick<
+  MigrationContext,
+  'env' | 'config' | 'clock' | 'db' | 'legacy' | 'bridge' | 'catalog' | 'owners' | 'gateway'
+>;
+
+/** Options of {@link reconcileUnits}; `legacySource` overrides the point's own, `database` is the legacy side read. */
+export interface ReconcileUnitsOptions {
+  point: string;
+  units: readonly string[];
+  database: string;
+  snapshotSeq?: number | null;
+  legacySource?: LegacySource;
+  /** Refuse the run before any comparison when a unit would compare nothing: halted, or every table skipped. */
+  requireEveryUnit?: boolean;
+}
+
+/** Reads {@link reconcileUnits} makes, replaceable by fakes; each defaults to the legacy-side, target-side or cut-over function. */
+export interface ReconcileSources {
+  tableShape?: typeof describeUnitTable;
+  legacyRows?: typeof readLegacyUnitRows;
+  targetRows?: typeof readTargetUnitRows;
+  targetObjects?: typeof readTargetObjects;
+  /** Exported rows of a unit no legacy table feeds. */
+  targetOnlyRows?: typeof readTargetOnlyRows;
+  legacyObjects?: typeof readLegacyObjects;
+  tenantResolver?: typeof createTenantResolver;
+  /** Tenants an owner's registry names, asked once per owner and run. */
+  targetTenants?: typeof readTargetTenants;
+  /** Active cut-over version; defaults to the gateway's status through `currentAuthority`. */
+  tableVersion?: () => Promise<string | null>;
+  /** Physical tables of the legacy database read; defaults to `listLegacyTables` over its pool. */
+  legacyTables?: (deps: Pick<ReconcileContext, 'legacy'>, options: { database: string }) => Promise<readonly LegacyTableRef[]>;
+  /** Fixture capability; defaults to `${OPT2_STATE_DIR}/fixtures.json`. */
+  fixtureStatus?: () => Promise<FixtureStatus>;
+}
+
+/** Options of {@link runReconcile}: the point name and the `--units` ids, every applicable unit when absent. */
+export interface RunReconcileOptions {
+  point: string;
+  units?: readonly string[];
+}
+
+/** Outcome of {@link runReconcile}; `exitCode` is 0 only for a zero-difference point. */
+export interface RunReconcileResult {
+  point: string;
+  result: ReconcileResult;
+  reportPath: string;
+  summary: ReconcileSummary;
+  exitCode: 0 | 1;
+}
+
+type Reads = Required<ReconcileSources>;
+
+/** Legacy file-store objects of a run, per tenant. */
+type TenantObjects = ReadonlyMap<string, readonly ObjectEntry[]>;
+
+/** Tenants an owner's registry names, read once per owner in a run. */
+type TargetTenants = (owner: DataOwner) => Promise<readonly string[]>;
+
+/** Snapshot kind of `S0`, the seeded state the backfill applies. */
+const BACKFILL_SNAPSHOT_KIND: SnapshotKind = 'seed';
+/** Kind of Sk, the snapshot the `checkpoint` point compares against. */
+const CHECKPOINT_SNAPSHOT_KIND: SnapshotKind = 'checkpoint';
+
+/** Version whose `rollbackRefs` name the roster group set R that the rollback points reconcile. */
+const ROLLBACK_VERSION = 'v0003';
+
+/** Masa's file metadata table [core/setup/db/mssql.sql]; the owner exports its object manifest with the unit this table feeds. */
+const FILES_TABLE = 'tfiles';
+
+const NO_FILE_STORE: FileStoreReport = { store: null, status: 'not-applicable', haltedUnits: [] };
+
+function readsOf(ctx: ReconcileContext, sources: ReconcileSources): Reads {
+  return {
+    tableShape: sources.tableShape ?? describeUnitTable,
+    legacyRows: sources.legacyRows ?? readLegacyUnitRows,
+    targetRows: sources.targetRows ?? readTargetUnitRows,
+    targetObjects: sources.targetObjects ?? readTargetObjects,
+    targetOnlyRows: sources.targetOnlyRows ?? readTargetOnlyRows,
+    legacyObjects: sources.legacyObjects ?? readLegacyObjects,
+    tenantResolver: sources.tenantResolver ?? createTenantResolver,
+    targetTenants: sources.targetTenants ?? readTargetTenants,
+    tableVersion:
+      sources.tableVersion ?? (async () => (await currentAuthority({ gateway: ctx.gateway, config: ctx.config.paths })).tableVersion),
+    legacyTables: sources.legacyTables ?? (async (deps, options) => listLegacyTables(await deps.legacy.database(options.database))),
+    fixtureStatus: sources.fixtureStatus ?? (() => readFixtureStatus(ctx.env.OPT2_STATE_DIR, ctx.clock)),
+  };
+}
+
+function sortedUnion(...parts: readonly Iterable<string>[]): string[] {
+  return [...new Set(parts.flatMap((part) => [...part]))].sort();
+}
+
+function isCatalogued(catalog: Pick<UnitCatalog, 'units'>, unit: string): boolean {
+  return catalog.units().some((candidate) => candidate.id === unit);
+}
+
+/** Migratable legacy tables of `unit` in catalog order; a file unit the catalog does not list has none. */
+function migratableTablesOf(catalog: UnitCatalog, unit: string, fileUnit: boolean): string[] {
+  if (fileUnit && !isCatalogued(catalog, unit)) return [];
+  return catalog.legacyTablesOf(unit).filter((table) => catalog.isMigratable(table));
+}
+
+/**
+ * Owner and exported unit carrying a file unit's object manifest: the unit itself when catalogued, otherwise the unit of
+ * its schema fed by `tfiles` (an object-manifest table such as `content.file_object` is that unit's data, not a unit).
+ */
+function objectExportSource(catalog: Pick<UnitCatalog, 'units'>, unit: string): TargetObjectsSource {
+  const units = catalog.units();
+  const own = units.find((candidate) => candidate.id === unit);
+  if (own !== undefined) return { owner: own.owner, unit: own.id };
+  const schema = unit.slice(0, unit.indexOf('.'));
+  const fed = units.find(
+    (candidate) => candidate.schema === schema && candidate.legacyTables.some((table) => table.replace(/^dbo\./i, '').toLowerCase() === FILES_TABLE),
+  );
+  if (fed === undefined) throw new Error(`No ${schema} unit is fed by ${FILES_TABLE}, so no export carries the object manifest of ${unit}`);
+  return { owner: fed.owner, unit: fed.id };
+}
+
+/** The file-store state of the run and, when compared, the legacy objects per tenant. */
+async function fileStoreOf(
+  ctx: ReconcileContext,
+  reads: Reads,
+  fileUnits: readonly string[],
+  options: LegacyObjectsOptions,
+): Promise<{ fileStore: FileStoreReport; objects: TenantObjects }> {
+  if (fileUnits.length === 0) return { fileStore: NO_FILE_STORE, objects: new Map() };
+  const legacy = await reads.legacyObjects(ctx, options);
+  if (legacy.status === 'halted') {
+    return { fileStore: { store: legacy.store, status: 'halted', reason: legacy.reason, haltedUnits: [...fileUnits] }, objects: new Map() };
+  }
+  return { fileStore: { store: SUPPORTED_FILE_STORE, status: 'compared', haltedUnits: [] }, objects: legacy.byTenant };
+}
+
+/** True when an entry found no row and no object on either side. */
+function isEmptyEntry(entry: UnitReport): boolean {
+  return entry.legacyCount + entry.targetCount === 0 && (entry.files === null || entry.files.legacyObjects + entry.files.targetObjects === 0);
+}
+
+/**
+ * Entries of one unit table, one per tenant either side holds rows or objects in (the file-store `objects`, else its object
+ * columns'), or one per compared tenant when none holds any. Legacy row and site tenants, object tenants and the owner's
+ * `targetTenants` are compared.
+ */
+async function reconcileTable(
+  ctx: ReconcileContext,
+  reads: Reads,
+  input: {
+    unit: string;
+    legacyTable: string;
+    database: string;
+    tenants: TenantResolver;
+    targetTenants: TargetTenants;
+    objects: TenantObjects | null;
+  },
+): Promise<UnitReport[]> {
+  const { database, tenants } = input;
+  const shape = await reads.tableShape(ctx, { unit: input.unit, legacyTable: input.legacyTable, database });
+  // describeUnitTable records the catalog's DataOwner for the unit, widened to string.
+  const targetTenants = await input.targetTenants(shape.owner as DataOwner);
+  const legacy = await reads.legacyRows(ctx, shape, { database, tenants });
+  const objects = input.objects ?? (shape.objectColumns.length > 0 ? legacy.objects : null);
+  const includeObjects = input.objects !== null;
+  const entries: UnitReport[] = [];
+  const emptyEntries: UnitReport[] = [];
+  try {
+    // Tenants ascend, as the legacy rows are read tenant by tenant.
+    for (const tenantId of sortedUnion(legacy.tenants, tenants.siteTenants(), objects?.keys() ?? [], targetTenants)) {
+      const target = await reads.targetRows(ctx, shape, tenantId, { includeObjects });
+      try {
+        const legacyObjects = objects?.get(tenantId) ?? [];
+        const targetObjects = target.objects ?? [];
+        const empty = (legacy.counts.get(tenantId) ?? 0) + target.count + legacyObjects.length + targetObjects.length === 0;
+        const rows = await compareRows({
+          keyed: shape.keyed,
+          columns: shape.columns,
+          legacy: empty ? [] : legacy.rows(tenantId),
+          target: empty ? [] : target.rows,
+        });
+        const orphans = legacy.orphans.get(tenantId);
+        (empty ? emptyEntries : entries).push(
+          buildUnitReport({
+            unit: shape.unit,
+            owner: shape.owner,
+            legacyTable: shape.legacyTable,
+            tenantId,
+            rows,
+            files: objects === null ? null : compareObjects(legacyObjects, targetObjects),
+            excludedColumns: shape.excludedColumns,
+            orphans: orphans?.keys ?? [],
+            orphanCount: orphans?.count ?? 0,
+          }),
+        );
+      } finally {
+        await target.dispose();
+      }
+    }
+  } finally {
+    await legacy.dispose();
+  }
+  // An empty table's 0=0 evidence is every compared tenant, none singled out, so its unit is never absent from the report.
+  return entries.length > 0 ? entries : emptyEntries;
+}
+
+/** Entries of a file unit without a migratable legacy table: an empty row comparison plus the object manifests per tenant, as {@link reconcileTable} keeps them. */
+async function reconcileObjectsOnly(
+  ctx: ReconcileContext,
+  reads: Reads,
+  input: { unit: string; tenants: TenantResolver; targetTenants: TargetTenants; objects: TenantObjects },
+): Promise<UnitReport[]> {
+  const source = objectExportSource(ctx.catalog, input.unit);
+  let noRows: RowComparison | undefined;
+  const entries: UnitReport[] = [];
+  const emptyEntries: UnitReport[] = [];
+  for (const tenantId of sortedUnion(input.tenants.siteTenants(), input.objects.keys(), await input.targetTenants(source.owner))) {
+    const legacyObjects = input.objects.get(tenantId) ?? [];
+    const targetObjects = await reads.targetObjects(ctx, source, tenantId);
+    noRows ??= await compareRows({ keyed: false, columns: [], legacy: [], target: [] });
+    (legacyObjects.length + targetObjects.length === 0 ? emptyEntries : entries).push(
+      buildUnitReport({
+        unit: input.unit,
+        owner: source.owner,
+        legacyTable: null,
+        tenantId,
+        rows: noRows,
+        files: compareObjects(legacyObjects, targetObjects),
+      }),
+    );
+  }
+  return entries.length > 0 ? entries : emptyEntries;
+}
+
+/**
+ * Entries of a unit no legacy table feeds and no file store backs: an empty legacy side against its owner's exported rows,
+ * per site and registered tenant, kept as {@link reconcileTable} keeps them; every exported row is extra in the target.
+ */
+async function reconcileTargetOnly(
+  ctx: ReconcileContext,
+  reads: Reads,
+  input: { unit: string; tenants: TenantResolver; targetTenants: TargetTenants },
+): Promise<UnitReport[]> {
+  const source: TargetObjectsSource = { owner: ctx.catalog.ownerOf(input.unit), unit: input.unit };
+  const entries: UnitReport[] = [];
+  const emptyEntries: UnitReport[] = [];
+  for (const tenantId of sortedUnion(input.tenants.siteTenants(), await input.targetTenants(source.owner))) {
+    const target = await reads.targetOnlyRows(ctx, source, tenantId);
+    try {
+      const rows = await compareRows({ keyed: false, columns: [], legacy: [], target: target.rows });
+      (target.count === 0 ? emptyEntries : entries).push(
+        buildUnitReport({ unit: input.unit, owner: source.owner, legacyTable: null, tenantId, rows }),
+      );
+    } finally {
+      await target.dispose();
+    }
+  }
+  return entries.length > 0 ? entries : emptyEntries;
+}
+
+/**
+ * Skip reason, by lookup key, of each fixture table among `tables` that `database` lacks while the fixtures are
+ * unavailable; empty when none is selected or the fixtures are loaded, so any other missing table fails its read.
+ */
+async function absentFixtureTables(
+  ctx: ReconcileContext,
+  reads: Reads,
+  tables: readonly string[],
+  database: string,
+): Promise<ReadonlyMap<string, string>> {
+  const fixtures = await fixtureTables(ctx.config.paths.tableOwnership);
+  const selected = new Set(tables.map(tableLookupKey).filter((key) => fixtures.has(key)));
+  if (selected.size === 0) return new Map();
+  const status = await reads.fixtureStatus();
+  if (status.available) return new Map();
+  const present = new Set(migratableTables(ctx.catalog, await reads.legacyTables(ctx, { database })).map((table) => tableLookupKey(table.name)));
+  const reason = status.reason === null ? 'fixtures unavailable' : `fixtures unavailable: ${status.reason}`;
+  return new Map([...selected].filter((key) => !present.has(key)).map((key) => [key, reason]));
+}
+
+/**
+ * Reconciles `units` at a point with zero tolerance, unit by unit in sorted order and tenant by tenant, and returns the
+ * report body without writing it; the caller has reached the quiesced point. A unit without a migratable legacy table,
+ * other than a file unit, compares its owner's export with an empty legacy side. Fixture tables the database lacks while
+ * the fixtures are unavailable are listed as skipped; any other read failure of either side propagates.
+ * @throws ReconcileUsageError under `requireEveryUnit` when a unit would compare nothing.
+ */
+export async function reconcileUnits(
+  ctx: ReconcileContext,
+  options: ReconcileUnitsOptions,
+  sources: ReconcileSources = {},
+): Promise<ReconcileReport> {
+  const startedAt = ctx.clock.now().toISOString();
+  const point = resolvePoint(ctx.config, options.point);
+  const legacySource = options.legacySource ?? point.legacySource;
+  const snapshotSeq = options.snapshotSeq ?? null;
+  const { database } = options;
+  const reads = readsOf(ctx, sources);
+  const tableVersion = await reads.tableVersion();
+  const tenants = await reads.tenantResolver(ctx, { database });
+  const asked = new Map<DataOwner, Promise<readonly string[]>>();
+  const targetTenants: TargetTenants = (owner) => {
+    const known = asked.get(owner) ?? reads.targetTenants(ctx, owner);
+    asked.set(owner, known);
+    return known;
+  };
+  const units = sortedUnion(options.units);
+  const fileUnits = fileUnitIds(ctx.config).filter((unit) => units.includes(unit)).sort();
+  const { fileStore, objects } = await fileStoreOf(ctx, reads, fileUnits, { legacySource, snapshotSeq, database });
+  const unitTables = new Map(units.map((unit) => [unit, migratableTablesOf(ctx.catalog, unit, fileUnits.includes(unit))]));
+  const absent = await absentFixtureTables(ctx, reads, [...unitTables.values()].flat(), database);
+
+  const skippedUnits: SkippedUnitReport[] = [];
+  const compared: { unit: string; fileUnit: boolean; tables: string[] }[] = [];
+  const uncompared: string[] = [];
+  const emptyUnits: EmptyUnitReport[] = [];
+  for (const unit of units) {
+    // A halted store's units never move, so they are not compared.
+    if (fileStore.haltedUnits.includes(unit)) {
+      uncompared.push(`${unit} (${fileStore.reason ?? 'file store halted'})`);
+      continue;
+    }
+    const fileUnit = fileUnits.includes(unit);
+    const migratable = unitTables.get(unit) ?? [];
+    const tables: string[] = [];
+    for (const legacyTable of migratable) {
+      const reason = absent.get(tableLookupKey(legacyTable));
+      if (reason === undefined) tables.push(legacyTable);
+      else skippedUnits.push({ unit, legacyTable, reason });
+    }
+    if (fileUnit || tables.length > 0 || migratable.length === 0) {
+      compared.push({ unit, fileUnit, tables });
+    } else {
+      const reasons = new Set(skippedUnits.filter((skipped) => skipped.unit === unit).map((skipped) => skipped.reason));
+      uncompared.push(`${unit} (${[...reasons].join('; ')})`);
+    }
+  }
+  if (options.requireEveryUnit === true && uncompared.length > 0) {
+    throw new ReconcileUsageError(`Requested units compare nothing at ${point.name}: ${uncompared.join(', ')}`);
+  }
+
+  const entries: UnitReport[] = [];
+  for (const { unit, fileUnit, tables } of compared) {
+    if (tables.length === 0) {
+      const only = fileUnit
+        ? await reconcileObjectsOnly(ctx, reads, { unit, tenants, targetTenants, objects })
+        : await reconcileTargetOnly(ctx, reads, { unit, tenants, targetTenants });
+      entries.push(...only);
+      if (only.every(isEmptyEntry)) emptyUnits.push({ unit, legacyTable: null });
+      continue;
+    }
+    for (const [index, legacyTable] of tables.entries()) {
+      const tableObjects = fileUnit && index === 0 ? objects : null;
+      const tableEntries = await reconcileTable(ctx, reads, { unit, legacyTable, database, tenants, targetTenants, objects: tableObjects });
+      entries.push(...tableEntries);
+      // A table empty on both sides in every tenant keeps its 0=0 entries and is listed as compared empty.
+      if (tableEntries.every(isEmptyEntry)) emptyUnits.push({ unit, legacyTable });
+    }
+  }
+  return buildReport({
+    point,
+    startedAt,
+    legacySource,
+    tableVersion,
+    snapshotSeq,
+    legacyDatabase: database,
+    units: entries,
+    skippedUnits,
+    emptyUnits,
+    fileStore,
+  });
+}
+
+/** `--units` ids, each a catalog unit or a file unit, sorted and without repeats. @throws ReconcileUsageError */
+function requestedUnits(ctx: Pick<ReconcileContext, 'catalog' | 'config'>, units: readonly string[]): string[] {
+  if (units.length === 0) throw new ReconcileUsageError('--units names no unit');
+  const fileUnits = new Set(fileUnitIds(ctx.config));
+  for (const id of units) {
+    if (fileUnits.has(id)) continue;
+    try {
+      ctx.catalog.unit(id);
+    } catch (error) {
+      if (error instanceof UnknownUnitError) throw new ReconcileUsageError(error.message, { cause: error });
+      throw error;
+    }
+  }
+  return sortedUnion(units);
+}
+
+/** Units of the roster group set R: every unit of the groups `v0003.rollbackRefs` names. @throws CutoverDataError */
+function rosterGroupUnits(paths: Pick<ResolvedPaths, 'cutoverDir' | 'groupsFile'>): string[] {
+  const named = rollbackRefGroups(loadVersion(paths.cutoverDir, ROLLBACK_VERSION), loadGroups(paths.groupsFile), paths.groupsFile);
+  if (named.length === 0) throw new CutoverDataError(`${ROLLBACK_VERSION} rollbackRefs name no group, so the roster group set R is unknown`);
+  return sortedUnion(named.flatMap((group) => group.units));
+}
+
+/** Units a point reconciles without `--units`: R for rollback points, otherwise every catalog unit plus the file units. */
+function defaultUnits(ctx: Pick<ReconcileContext, 'catalog' | 'config'>, point: ResolvedPoint): string[] {
+  if (point.rollback) return rosterGroupUnits(ctx.config.paths);
+  return sortedUnion(
+    ctx.catalog.units().map((unit) => unit.id),
+    fileUnitIds(ctx.config),
+  );
+}
+
+/** Snapshot a snapshot point compares against. @throws ReconcileUsageError when it does not exist or is not ready */
+async function pointSnapshot(ctx: Pick<ReconcileContext, 'db'>, point: ResolvedPoint): Promise<SnapshotRecord> {
+  let snapshot: SnapshotRecord | null;
+  if (point.kind === 'after-backfill') snapshot = await latestSnapshotOfKind(ctx, BACKFILL_SNAPSHOT_KIND);
+  else if (point.kind === 'checkpoint') snapshot = await latestSnapshotOfKind(ctx, CHECKPOINT_SNAPSHOT_KIND);
+  // `after-feed-<n>` is named by the sequence of the snapshot the feed applied (S0, seq 0, is the backfill's), so
+  // snapshot n, not n + 1, is the state the target was brought to.
+  else if (point.feedN !== undefined) snapshot = await getSnapshot(ctx, point.feedN);
+  else snapshot = await latestSnapshot(ctx);
+  if (snapshot === null || snapshot.state !== 'ready') {
+    throw new ReconcileUsageError(`Point ${point.name} needs a ready snapshot to compare against, and none was found`);
+  }
+  return snapshot;
+}
+
+/** Legacy database a point reads and the snapshot sequence it records. */
+async function legacySideOf(ctx: Pick<ReconcileContext, 'db' | 'env'>, point: ResolvedPoint): Promise<{ database: string; snapshotSeq: number | null }> {
+  if (point.legacySource === 'live') return { database: ctx.env.MURA_DATABASE, snapshotSeq: (await latestSnapshot(ctx))?.seq ?? null };
+  const snapshot = await pointSnapshot(ctx, point);
+  return { database: snapshot.databaseName, snapshotSeq: snapshot.seq };
+}
+
+/**
+ * `opt2-migrate reconcile --point <name> [--units ...]`: reconciles the point's units, writes `reconciliation/<point>.json`
+ * and `summary.md`, and returns the summary with exit code 1 on any difference.
+ * @throws ReconcileUsageError for an unknown point, an unknown unit, a missing snapshot or a `--units` unit that compares nothing.
+ */
+export async function runReconcile(
+  ctx: ReconcileContext,
+  options: RunReconcileOptions,
+  sources: ReconcileSources = {},
+): Promise<RunReconcileResult> {
+  const point = resolvePoint(ctx.config, options.point);
+  const units = options.units === undefined ? defaultUnits(ctx, point) : requestedUnits(ctx, options.units);
+  const { database, snapshotSeq } = await legacySideOf(ctx, point);
+  const requireEveryUnit = options.units !== undefined;
+  const report = await reconcileUnits(ctx, { point: point.name, units, database, snapshotSeq, legacySource: point.legacySource, requireEveryUnit }, sources);
+  const reportPath = await writeReconciliationReport(ctx, report);
+  return { point: point.name, result: report.result, reportPath, summary: report.summary, exitCode: report.result === 'zero-difference' ? 0 : 1 };
+}

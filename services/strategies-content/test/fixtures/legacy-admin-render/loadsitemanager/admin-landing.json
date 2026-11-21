@@ -1,0 +1,171 @@
+{
+ "user": "admin",
+ "request": {
+  "topid": "384766FF-021C-B548-2949394FBA8B0186",
+  "moduleid": "00000000000000000000000000000000000",
+  "sortby": "",
+  "sortdirection": "",
+  "ptype": "Page",
+  "startrow": "1",
+  "type": "Page"
+ },
+ "session": {
+  "nextN": "20",
+  "rb": "en_US",
+  "dateKeyFormat": "MM/DD/YYYY",
+  "locale": "English (US)",
+  "userid": "AF1841AB-0ED4-34A5-AF2596AB342BA3E6",
+  "memberships": "S2IsPrivate;default,S2IsPrivate,S2,admin;username;default",
+  "siteid": "default",
+  "openSectionList": "",
+  "flatViewArgs": {
+   "default": {
+    "SUBTYPE": "",
+    "MODULEID": "00000000000000000000000000000000000",
+    "CATEGORYID": "",
+    "PAGE": "1",
+    "REPORT": "",
+    "LOCKID": "",
+    "TAB": 0,
+    "SORTBY": "lastupdate",
+    "TYPE": "",
+    "SORTDIRECTION": "desc",
+    "ASSIGNMENTS": "false",
+    "TAGS": "",
+    "KEYWORDS": "",
+    "FILTERED": false
+   }
+  }
+ },
+ "site": {
+  "hasLockableNodes": 0,
+  "webPathComplete": "http://localhost:23280",
+  "hasComments": "1",
+  "locking": "none",
+  "privateUserPoolId": "default"
+ },
+ "config": {
+  "sortPermission": "editor",
+  "coreVersion": "7.6.1",
+  "adminDir": "/admin",
+  "context": ""
+ },
+ "marketing": false,
+ "tabAssignments": "",
+ "rsExtend": [
+  {
+   "attribute": "formOwner",
+   "attributeid": "2",
+   "basekeyfield": "contentHistID",
+   "basetable": "tcontent",
+   "datatable": "tclassextenddata",
+   "label": "formOwner",
+   "subtype": "Default",
+   "type": "Form"
+  },
+  {
+   "attribute": "heroColor",
+   "attributeid": "1",
+   "basekeyfield": "contentHistID",
+   "basetable": "tcontent",
+   "datatable": "tclassextenddata",
+   "label": "heroColor",
+   "subtype": "Landing",
+   "type": "Page"
+  }
+ ],
+ "icons": [
+  {
+   "iconclass": "mi-star",
+   "siteid": "default",
+   "subtype": "Landing",
+   "type": "Page"
+  },
+  {
+   "iconclass": "",
+   "siteid": "default",
+   "subtype": "Default",
+   "type": "Form"
+  }
+ ],
+ "model": {
+  "rsTop": {
+   "siteid": "default",
+   "contentid": "384766FF-021C-B548-2949394FBA8B0186",
+   "contenthistid": "3847676B-0B9F-1633-E3366CCA96C5C5BE",
+   "parentid": "00000000000000000000000000000000001",
+   "moduleid": "00000000000000000000000000000000000",
+   "type": "Page",
+   "subtype": "Landing",
+   "title": "Landing Page",
+   "menutitle": "Landing Page",
+   "filename": "landing-page",
+   "fileid": "",
+   "fileext": "",
+   "assocfilename": "",
+   "display": "1",
+   "displaystart": "",
+   "displaystop": "",
+   "approved": "1",
+   "isnav": "1",
+   "inheritobjects": "Inherit",
+   "template": "",
+   "childtemplate": "",
+   "lastupdate": "2026-11-13T01:02:36.693",
+   "targetparams": "",
+   "remoteurl": "",
+   "sortby": "orderno",
+   "sortdirection": "asc",
+   "restricted": "0",
+   "islocked": "0",
+   "lockid": ""
+  },
+  "crumbs": [
+   {
+    "siteid": "default",
+    "contentid": "384766FF-021C-B548-2949394FBA8B0186",
+    "type": "Page",
+    "subtype": "Landing",
+    "menutitle": "Landing Page",
+    "restricted": "0",
+    "moduleid": "00000000000000000000000000000000000"
+   },
+   {
+    "siteid": "default",
+    "contentid": "00000000000000000000000000000000001",
+    "type": "Page",
+    "subtype": "Default",
+    "menutitle": "Home",
+    "restricted": "0",
+    "moduleid": "00000000000000000000000000000000000"
+   }
+  ],
+  "perm": "editor",
+  "restricted": 0,
+  "hasKids": 0,
+  "nest": []
+ },
+ "status": 200,
+ "contentType": "application/json;charset=utf-8",
+ "sessionAfter": {
+  "openSectionList": "",
+  "flatViewArgs": {
+   "default": {
+    "SUBTYPE": "",
+    "MODULEID": "00000000000000000000000000000000000",
+    "CATEGORYID": "",
+    "PAGE": "1",
+    "REPORT": "",
+    "LOCKID": "",
+    "TAB": 0,
+    "SORTBY": "lastupdate",
+    "TYPE": "",
+    "SORTDIRECTION": "desc",
+    "ASSIGNMENTS": "false",
+    "TAGS": "",
+    "KEYWORDS": "",
+    "FILTERED": false
+   }
+  }
+ }
+}

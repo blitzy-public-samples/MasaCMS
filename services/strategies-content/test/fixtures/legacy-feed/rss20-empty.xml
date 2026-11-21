@@ -1,0 +1,13 @@
+<?xml version="1.0" ?>
+		<rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/" xmlns:atom="http://www.w3.org/2005/Atom">
+			<channel>
+				<title>Empty 20</title>
+				<link>http://localhost:21080</link>
+				<description></description>
+				<webMaster>admin@example.com</webMaster>
+				<generator>https://www.masacms.com</generator>
+				<pubDate>Thu, 12 Nov 2026 08:54:02 GMT</pubDate>
+				<language>en-us</language>
+				<atom:link href="http://localhost:21080/_api/feed/v1/default/?feedID=15A1B276-ACD4-B50B-1BB45E4CD40D5435" rel="self" type="application/rss+xml" />
+			</channel>
+		</rss> 

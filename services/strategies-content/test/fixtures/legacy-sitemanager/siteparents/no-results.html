@@ -1,0 +1,38 @@
+
+<div class="form-inline">
+<h2>Search for Content</h2>
+<div class="mura-input-set">
+	<input id="parentSearch" name="parentSearch" value="" type="text" class="text" maxlength="50" onclick="return false;">
+	<input id="parentSearchSubmit" type="button" class="btn" onclick="siteManager.loadSiteParents('default','x','00000000000000000000000000000000001',document.getElementById('parentSearch').value,0);return false;" value="Search">
+</div>
+
+</div>
+
+ <table class="mura-table-grid">
+  
+		<tr>
+		  <th class="actions"></th>
+	    <th class="var-width">Select New Content Parent</th>
+    </tr>
+	
+			<tr class="alt">
+			  <td class="noResults" colspan="2">Your search returned no results.</td>
+			</tr> 
+  </table>
+</td></tr></table>
+<input type="hidden" id="parentid" name="parentid" value="00000000000000000000000000000000001" /> 
+
+<script type="text/javascript">
+	$(document).ready(function(){	
+		$('#parentSearch').on('keypress',function(e){
+			if(e.which == 13) {
+				var pval = $(this).val();
+				$('#parentSearchSubmit').trigger('click');
+				setTimeout(function(){						
+				$('#parentSearch').focus();	
+				},'250')	
+				return false;
+		  	}
+		})
+	})
+</script>

@@ -1,0 +1,1742 @@
+{
+  "capturedAt": "2026-11-21T04:47:00.711Z",
+  "fixtures": {
+    "available": true,
+    "reason": "fixtures loaded"
+  },
+  "generatedAt": "2026-11-21T04:47:02.208Z",
+  "generatedBy": "harness/src/golden/capture.ts",
+  "origin": "legacy",
+  "scenarioId": "GS-PE-07",
+  "sideEffects": {
+    "files": [],
+    "mail": [],
+    "rows": {
+      "identity.user_favorite": {
+        "checksum": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "columns": [
+          {
+            "name": "favoriteID",
+            "type": "s"
+          },
+          {
+            "name": "userID",
+            "type": "s"
+          },
+          {
+            "name": "favoriteName",
+            "type": "s"
+          },
+          {
+            "name": "favorite",
+            "type": "s"
+          },
+          {
+            "name": "type",
+            "type": "s"
+          },
+          {
+            "name": "siteID",
+            "type": "s"
+          },
+          {
+            "name": "dateCreated",
+            "type": "s"
+          },
+          {
+            "name": "columnNumber",
+            "type": "i"
+          },
+          {
+            "name": "rowNumber",
+            "type": "i"
+          },
+          {
+            "name": "maxRSSItems",
+            "type": "i"
+          }
+        ],
+        "entries": [],
+        "legacyTable": "tusersfavorites",
+        "unit": "identity.user_favorite"
+      },
+      "people.user_favorite": {
+        "checksum": "08abd7b95e28697d305cb5889758df73cabf6e398de9d80d696638155f7a2e6e",
+        "columns": [
+          {
+            "name": "favoriteID",
+            "type": "s"
+          },
+          {
+            "name": "userID",
+            "type": "s"
+          },
+          {
+            "name": "favoriteName",
+            "type": "s"
+          },
+          {
+            "name": "favorite",
+            "type": "s"
+          },
+          {
+            "name": "type",
+            "type": "s"
+          },
+          {
+            "name": "siteID",
+            "type": "s"
+          },
+          {
+            "name": "dateCreated",
+            "type": "s"
+          },
+          {
+            "name": "columnNumber",
+            "type": "i"
+          },
+          {
+            "name": "rowNumber",
+            "type": "i"
+          },
+          {
+            "name": "maxRSSItems",
+            "type": "i"
+          }
+        ],
+        "entries": [
+          {
+            "count": 1,
+            "encoding": "s6:<id:3>s6:<id:2>s8:GS-PE-07s6:<id:1>s16:internal_contents8:tenant-as14:<ts:iso-local>i1:0i1:0i1:0"
+          }
+        ],
+        "legacyTable": "tusersfavorites",
+        "unit": "people.user_favorite"
+      }
+    },
+    "tasks": []
+  },
+  "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
+  "steps": [
+    {
+      "index": 0,
+      "name": "save",
+      "normalised": {
+        "auth": {
+          "cookies": [
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "CFID",
+              "path": "/",
+              "persistence": "persistent",
+              "rotation": "first",
+              "secure": false,
+              "value": "<token>"
+            },
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "CFTOKEN",
+              "path": "/",
+              "persistence": "persistent",
+              "rotation": "first",
+              "secure": false,
+              "value": "<token>"
+            },
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "MXP_TRACKINGID",
+              "path": "/",
+              "persistence": "persistent",
+              "secure": false,
+              "value": "<token>"
+            },
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "mobileFormat",
+              "path": "/",
+              "persistence": "persistent",
+              "secure": false,
+              "value": "<token>"
+            }
+          ],
+          "redirectTargets": [],
+          "wwwAuthenticate": []
+        },
+        "domModel": {
+          "alerts": [],
+          "buttons": [],
+          "controls": [],
+          "forms": [],
+          "headings": [],
+          "labels": [],
+          "links": [
+            {
+              "href": "\\\"\\\"",
+              "text": ""
+            },
+            {
+              "href": "\\'/sports-statua/corrupti-alias-claudeo-apud/\\'",
+              "text": "GS-PE-07"
+            }
+          ],
+          "maskedText": [],
+          "tables": [],
+          "title": ""
+        },
+        "headers": {
+          "content-type": "text/html;charset=UTF-8",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "index": 0,
+        "maskedPaths": {},
+        "name": "save",
+        "routeKey": "cfm:/core/modules/v1/favorites/ajax/savefavorite.cfm",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {},
+        "method": "GET",
+        "url": "/core/modules/v1/favorites/ajax/saveFavorite.cfm?userID=54997BC5-1622-92A6-85D91337F7198874&siteid=tenant-a&favoriteName=GS-PE-07&favoriteLocation=AEAEFD1B-B638-0F03-01B3D64831264009&favoriteType=internal_content"
+      },
+      "response": {
+        "domModel": {
+          "alerts": [],
+          "buttons": [],
+          "controls": [],
+          "forms": [],
+          "headings": [],
+          "labels": [],
+          "links": [
+            {
+              "href": "\\\"\\\"",
+              "text": ""
+            },
+            {
+              "href": "\\'/sports-statua/corrupti-alias-claudeo-apud/\\'",
+              "text": "GS-PE-07"
+            }
+          ],
+          "maskedText": [],
+          "tables": [],
+          "title": ""
+        },
+        "headers": {
+          "content-type": "text/html;charset=UTF-8",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "d257e492073dbc33464715cfde345a3542623cb350bbae8101c64720c80a7820",
+        "status": 200
+      },
+      "routeKey": "cfm:/core/modules/v1/favorites/ajax/savefavorite.cfm"
+    },
+    {
+      "index": 1,
+      "name": "delete",
+      "normalised": {
+        "auth": {
+          "cookies": [
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "CFID",
+              "path": "/",
+              "persistence": "persistent",
+              "rotation": "changed",
+              "secure": false,
+              "value": "<token>"
+            },
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "CFTOKEN",
+              "path": "/",
+              "persistence": "persistent",
+              "rotation": "changed",
+              "secure": false,
+              "value": "<token>"
+            },
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "MXP_TRACKINGID",
+              "path": "/",
+              "persistence": "persistent",
+              "secure": false,
+              "value": "<token>"
+            },
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "mobileFormat",
+              "path": "/",
+              "persistence": "persistent",
+              "secure": false,
+              "value": "<token>"
+            }
+          ],
+          "redirectTargets": [],
+          "wwwAuthenticate": []
+        },
+        "domModel": {
+          "alerts": [],
+          "buttons": [],
+          "controls": [],
+          "forms": [],
+          "headings": [],
+          "labels": [],
+          "links": [],
+          "maskedText": [],
+          "tables": [],
+          "title": ""
+        },
+        "headers": {
+          "content-type": "text/html;charset=UTF-8",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "index": 1,
+        "maskedPaths": {},
+        "name": "delete",
+        "routeKey": "cfm:/core/modules/v1/favorites/ajax/deletefavorite.cfm",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {},
+        "method": "GET",
+        "url": "/core/modules/v1/favorites/ajax/deleteFavorite.cfm?favoriteID=00000000-0000-0000-0000000000000000"
+      },
+      "response": {
+        "domModel": {
+          "alerts": [],
+          "buttons": [],
+          "controls": [],
+          "forms": [],
+          "headings": [],
+          "labels": [],
+          "links": [],
+          "maskedText": [],
+          "tables": [],
+          "title": ""
+        },
+        "headers": {
+          "content-type": "text/html;charset=UTF-8",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "ed8cbb102008a6f76de6fa87b78ca65c8322c5ec061b634e693048da0a2efad5",
+        "status": 200
+      },
+      "routeKey": "cfm:/core/modules/v1/favorites/ajax/deletefavorite.cfm"
+    },
+    {
+      "index": 2,
+      "name": "save-rss",
+      "normalised": {
+        "auth": {
+          "cookies": [
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "CFID",
+              "path": "/",
+              "persistence": "persistent",
+              "rotation": "changed",
+              "secure": false,
+              "value": "<token>"
+            },
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "CFTOKEN",
+              "path": "/",
+              "persistence": "persistent",
+              "rotation": "changed",
+              "secure": false,
+              "value": "<token>"
+            },
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "MXP_TRACKINGID",
+              "path": "/",
+              "persistence": "persistent",
+              "secure": false,
+              "value": "<token>"
+            },
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "mobileFormat",
+              "path": "/",
+              "persistence": "persistent",
+              "secure": false,
+              "value": "<token>"
+            }
+          ],
+          "redirectTargets": [],
+          "wwwAuthenticate": []
+        },
+        "domModel": {
+          "alerts": [],
+          "buttons": [],
+          "controls": [],
+          "forms": [],
+          "headings": [],
+          "labels": [],
+          "links": [
+            {
+              "href": "\\\"\\\"",
+              "text": ""
+            },
+            {
+              "href": "\\'/sports-statua/corrupti-alias-claudeo-apud/\\'",
+              "text": "GS-PE-07-RSS"
+            }
+          ],
+          "maskedText": [],
+          "tables": [],
+          "title": ""
+        },
+        "headers": {
+          "content-type": "text/html;charset=UTF-8",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "index": 2,
+        "maskedPaths": {},
+        "name": "save-rss",
+        "routeKey": "cfm:/core/modules/v1/favorites/ajax/savefavorite.cfm",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {},
+        "method": "GET",
+        "url": "/core/modules/v1/favorites/ajax/saveFavorite.cfm?userID=54997BC5-1622-92A6-85D91337F7198874&siteid=tenant-a&favoriteName=GS-PE-07-RSS&favoriteLocation=AEAEFD1B-B638-0F03-01B3D64831264009&favoriteType=RSS&columnNumber=1&rowNumber=1&maxRssItems=5"
+      },
+      "response": {
+        "domModel": {
+          "alerts": [],
+          "buttons": [],
+          "controls": [],
+          "forms": [],
+          "headings": [],
+          "labels": [],
+          "links": [
+            {
+              "href": "\\\"\\\"",
+              "text": ""
+            },
+            {
+              "href": "\\'/sports-statua/corrupti-alias-claudeo-apud/\\'",
+              "text": "GS-PE-07-RSS"
+            }
+          ],
+          "maskedText": [],
+          "tables": [],
+          "title": ""
+        },
+        "headers": {
+          "content-type": "text/html;charset=UTF-8",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "a039d894e4b72429893e94bc410b359991af97006058056e6d6a707ae7a6f47f",
+        "status": 200
+      },
+      "routeKey": "cfm:/core/modules/v1/favorites/ajax/savefavorite.cfm"
+    },
+    {
+      "index": 3,
+      "name": "delete-rss",
+      "normalised": {
+        "auth": {
+          "cookies": [
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "CFID",
+              "path": "/",
+              "persistence": "persistent",
+              "rotation": "changed",
+              "secure": false,
+              "value": "<token>"
+            },
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "CFTOKEN",
+              "path": "/",
+              "persistence": "persistent",
+              "rotation": "changed",
+              "secure": false,
+              "value": "<token>"
+            },
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "MXP_TRACKINGID",
+              "path": "/",
+              "persistence": "persistent",
+              "secure": false,
+              "value": "<token>"
+            },
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "mobileFormat",
+              "path": "/",
+              "persistence": "persistent",
+              "secure": false,
+              "value": "<token>"
+            }
+          ],
+          "redirectTargets": [],
+          "wwwAuthenticate": []
+        },
+        "domModel": {
+          "alerts": [],
+          "buttons": [],
+          "controls": [],
+          "forms": [],
+          "headings": [],
+          "labels": [],
+          "links": [],
+          "maskedText": [],
+          "tables": [],
+          "title": ""
+        },
+        "headers": {
+          "content-type": "text/html;charset=UTF-8",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "index": 3,
+        "maskedPaths": {},
+        "name": "delete-rss",
+        "routeKey": "cfm:/core/modules/v1/favorites/ajax/deleterssfavorite.cfm",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {},
+        "method": "GET",
+        "url": "/core/modules/v1/favorites/ajax/deleteRSSFavorite.cfm?userID=54997BC5-1622-92A6-85D91337F7198874&siteID=tenant-a"
+      },
+      "response": {
+        "domModel": {
+          "alerts": [],
+          "buttons": [],
+          "controls": [],
+          "forms": [],
+          "headings": [],
+          "labels": [],
+          "links": [],
+          "maskedText": [],
+          "tables": [],
+          "title": ""
+        },
+        "headers": {
+          "content-type": "text/html;charset=UTF-8",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "status": 200
+      },
+      "routeKey": "cfm:/core/modules/v1/favorites/ajax/deleterssfavorite.cfm"
+    },
+    {
+      "index": 4,
+      "name": "save-without-fields",
+      "normalised": {
+        "auth": {
+          "cookies": [
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "CFID",
+              "path": "/",
+              "persistence": "persistent",
+              "rotation": "changed",
+              "secure": false,
+              "value": "<token>"
+            },
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "CFTOKEN",
+              "path": "/",
+              "persistence": "persistent",
+              "rotation": "changed",
+              "secure": false,
+              "value": "<token>"
+            },
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "MXP_TRACKINGID",
+              "path": "/",
+              "persistence": "persistent",
+              "secure": false,
+              "value": "<token>"
+            },
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "mobileFormat",
+              "path": "/",
+              "persistence": "persistent",
+              "secure": false,
+              "value": "<token>"
+            }
+          ],
+          "redirectTargets": [],
+          "wwwAuthenticate": []
+        },
+        "domModel": {
+          "alerts": [],
+          "buttons": [],
+          "controls": [],
+          "forms": [],
+          "headings": [
+            {
+              "level": 1,
+              "text": "500 Error"
+            },
+            {
+              "level": 2,
+              "text": "Element SITEID is undefined in URL."
+            },
+            {
+              "level": 3,
+              "text": "Type:Expression"
+            }
+          ],
+          "labels": [],
+          "links": [],
+          "maskedText": [],
+          "tables": [],
+          "title": ""
+        },
+        "headers": {
+          "content-type": "text/html;charset=UTF-8",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "index": 4,
+        "maskedPaths": {},
+        "name": "save-without-fields",
+        "routeKey": "cfm:/core/modules/v1/favorites/ajax/savefavorite.cfm",
+        "status": 500
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {},
+        "method": "GET",
+        "url": "/core/modules/v1/favorites/ajax/saveFavorite.cfm"
+      },
+      "response": {
+        "domModel": {
+          "alerts": [],
+          "buttons": [],
+          "controls": [],
+          "forms": [],
+          "headings": [
+            {
+              "level": 1,
+              "text": "500 Error"
+            },
+            {
+              "level": 2,
+              "text": "Element SITEID is undefined in URL."
+            },
+            {
+              "level": 3,
+              "text": "Type:Expression"
+            }
+          ],
+          "labels": [],
+          "links": [],
+          "maskedText": [],
+          "tables": [],
+          "title": ""
+        },
+        "headers": {
+          "content-type": "text/html;charset=UTF-8",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "857a7ca9e04ab3ec9f667db4a6a37930bdc745a242528b131863cc79e05e70ed",
+        "status": 500
+      },
+      "routeKey": "cfm:/core/modules/v1/favorites/ajax/savefavorite.cfm"
+    },
+    {
+      "exceptionId": "EX-FAVORITES",
+      "expected": "halted",
+      "index": 5,
+      "name": "save-group-user",
+      "normalised": {
+        "auth": {
+          "cookies": [
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "CFID",
+              "path": "/",
+              "persistence": "persistent",
+              "rotation": "changed",
+              "secure": false,
+              "value": "<token>"
+            },
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "CFTOKEN",
+              "path": "/",
+              "persistence": "persistent",
+              "rotation": "changed",
+              "secure": false,
+              "value": "<token>"
+            },
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "MXP_TRACKINGID",
+              "path": "/",
+              "persistence": "persistent",
+              "secure": false,
+              "value": "<token>"
+            },
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "mobileFormat",
+              "path": "/",
+              "persistence": "persistent",
+              "secure": false,
+              "value": "<token>"
+            }
+          ],
+          "redirectTargets": [],
+          "wwwAuthenticate": []
+        },
+        "domModel": {
+          "alerts": [],
+          "buttons": [],
+          "controls": [],
+          "forms": [],
+          "headings": [],
+          "labels": [],
+          "links": [
+            {
+              "href": "\\\"\\\"",
+              "text": ""
+            },
+            {
+              "href": "\\'/sports-statua/corrupti-alias-claudeo-apud/\\'",
+              "text": "GS-PE-07-group"
+            }
+          ],
+          "maskedText": [],
+          "tables": [],
+          "title": ""
+        },
+        "headers": {
+          "content-type": "text/html;charset=UTF-8",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "index": 5,
+        "maskedPaths": {},
+        "name": "save-group-user",
+        "routeKey": "cfm:/core/modules/v1/favorites/ajax/savefavorite.cfm",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {},
+        "method": "GET",
+        "url": "/core/modules/v1/favorites/ajax/saveFavorite.cfm?userID=D8F63922-BE9A-4241-CF35470D8B8004D2&siteid=tenant-a&favoriteName=GS-PE-07-group&favoriteLocation=AEAEFD1B-B638-0F03-01B3D64831264009&favoriteType=RSS"
+      },
+      "response": {
+        "domModel": {
+          "alerts": [],
+          "buttons": [],
+          "controls": [],
+          "forms": [],
+          "headings": [],
+          "labels": [],
+          "links": [
+            {
+              "href": "\\\"\\\"",
+              "text": ""
+            },
+            {
+              "href": "\\'/sports-statua/corrupti-alias-claudeo-apud/\\'",
+              "text": "GS-PE-07-group"
+            }
+          ],
+          "maskedText": [],
+          "tables": [],
+          "title": ""
+        },
+        "headers": {
+          "content-type": "text/html;charset=UTF-8",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "16f6f14db9fce354fae694d0380990f29fb536e5159caa811d1cc929f57a7b60",
+        "status": 200
+      },
+      "routeKey": "cfm:/core/modules/v1/favorites/ajax/savefavorite.cfm"
+    },
+    {
+      "exceptionId": "EX-FAVORITES",
+      "expected": "halted",
+      "index": 6,
+      "name": "delete-rss-group-user",
+      "normalised": {
+        "auth": {
+          "cookies": [
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "CFID",
+              "path": "/",
+              "persistence": "persistent",
+              "rotation": "changed",
+              "secure": false,
+              "value": "<token>"
+            },
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "CFTOKEN",
+              "path": "/",
+              "persistence": "persistent",
+              "rotation": "changed",
+              "secure": false,
+              "value": "<token>"
+            },
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "MXP_TRACKINGID",
+              "path": "/",
+              "persistence": "persistent",
+              "secure": false,
+              "value": "<token>"
+            },
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "mobileFormat",
+              "path": "/",
+              "persistence": "persistent",
+              "secure": false,
+              "value": "<token>"
+            }
+          ],
+          "redirectTargets": [],
+          "wwwAuthenticate": []
+        },
+        "domModel": {
+          "alerts": [],
+          "buttons": [],
+          "controls": [],
+          "forms": [],
+          "headings": [],
+          "labels": [],
+          "links": [],
+          "maskedText": [],
+          "tables": [],
+          "title": ""
+        },
+        "headers": {
+          "content-type": "text/html;charset=UTF-8",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "index": 6,
+        "maskedPaths": {},
+        "name": "delete-rss-group-user",
+        "routeKey": "cfm:/core/modules/v1/favorites/ajax/deleterssfavorite.cfm",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {},
+        "method": "GET",
+        "url": "/core/modules/v1/favorites/ajax/deleteRSSFavorite.cfm?userID=D8F63922-BE9A-4241-CF35470D8B8004D2&siteID=tenant-a"
+      },
+      "response": {
+        "domModel": {
+          "alerts": [],
+          "buttons": [],
+          "controls": [],
+          "forms": [],
+          "headings": [],
+          "labels": [],
+          "links": [],
+          "maskedText": [],
+          "tables": [],
+          "title": ""
+        },
+        "headers": {
+          "content-type": "text/html;charset=UTF-8",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "status": 200
+      },
+      "routeKey": "cfm:/core/modules/v1/favorites/ajax/deleterssfavorite.cfm"
+    },
+    {
+      "exceptionId": "EX-FAVORITES",
+      "expected": "halted",
+      "index": 7,
+      "name": "save-unknown-user",
+      "normalised": {
+        "auth": {
+          "cookies": [
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "CFID",
+              "path": "/",
+              "persistence": "persistent",
+              "rotation": "changed",
+              "secure": false,
+              "value": "<token>"
+            },
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "CFTOKEN",
+              "path": "/",
+              "persistence": "persistent",
+              "rotation": "changed",
+              "secure": false,
+              "value": "<token>"
+            },
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "MXP_TRACKINGID",
+              "path": "/",
+              "persistence": "persistent",
+              "secure": false,
+              "value": "<token>"
+            },
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "mobileFormat",
+              "path": "/",
+              "persistence": "persistent",
+              "secure": false,
+              "value": "<token>"
+            }
+          ],
+          "redirectTargets": [],
+          "wwwAuthenticate": []
+        },
+        "domModel": {
+          "alerts": [],
+          "buttons": [],
+          "controls": [],
+          "forms": [],
+          "headings": [],
+          "labels": [],
+          "links": [
+            {
+              "href": "\\\"\\\"",
+              "text": ""
+            },
+            {
+              "href": "\\'/sports-statua/corrupti-alias-claudeo-apud/\\'",
+              "text": "GS-PE-07-unknown"
+            }
+          ],
+          "maskedText": [],
+          "tables": [],
+          "title": ""
+        },
+        "headers": {
+          "content-type": "text/html;charset=UTF-8",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "index": 7,
+        "maskedPaths": {},
+        "name": "save-unknown-user",
+        "routeKey": "cfm:/core/modules/v1/favorites/ajax/savefavorite.cfm",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {},
+        "method": "GET",
+        "url": "/core/modules/v1/favorites/ajax/saveFavorite.cfm?userID=00000000-0000-0000-0000000000000000&siteid=tenant-a&favoriteName=GS-PE-07-unknown&favoriteLocation=AEAEFD1B-B638-0F03-01B3D64831264009&favoriteType=RSS"
+      },
+      "response": {
+        "domModel": {
+          "alerts": [],
+          "buttons": [],
+          "controls": [],
+          "forms": [],
+          "headings": [],
+          "labels": [],
+          "links": [
+            {
+              "href": "\\\"\\\"",
+              "text": ""
+            },
+            {
+              "href": "\\'/sports-statua/corrupti-alias-claudeo-apud/\\'",
+              "text": "GS-PE-07-unknown"
+            }
+          ],
+          "maskedText": [],
+          "tables": [],
+          "title": ""
+        },
+        "headers": {
+          "content-type": "text/html;charset=UTF-8",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "b50be2e32a3385b6d9f01e4b8558efba4291a85df76518205e710611f3c52f3b",
+        "status": 200
+      },
+      "routeKey": "cfm:/core/modules/v1/favorites/ajax/savefavorite.cfm"
+    },
+    {
+      "exceptionId": "EX-FAVORITES",
+      "expected": "halted",
+      "index": 8,
+      "name": "delete-rss-unknown-user",
+      "normalised": {
+        "auth": {
+          "cookies": [
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "CFID",
+              "path": "/",
+              "persistence": "persistent",
+              "rotation": "changed",
+              "secure": false,
+              "value": "<token>"
+            },
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "CFTOKEN",
+              "path": "/",
+              "persistence": "persistent",
+              "rotation": "changed",
+              "secure": false,
+              "value": "<token>"
+            },
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "MXP_TRACKINGID",
+              "path": "/",
+              "persistence": "persistent",
+              "secure": false,
+              "value": "<token>"
+            },
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "mobileFormat",
+              "path": "/",
+              "persistence": "persistent",
+              "secure": false,
+              "value": "<token>"
+            }
+          ],
+          "redirectTargets": [],
+          "wwwAuthenticate": []
+        },
+        "domModel": {
+          "alerts": [],
+          "buttons": [],
+          "controls": [],
+          "forms": [],
+          "headings": [],
+          "labels": [],
+          "links": [],
+          "maskedText": [],
+          "tables": [],
+          "title": ""
+        },
+        "headers": {
+          "content-type": "text/html;charset=UTF-8",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "index": 8,
+        "maskedPaths": {},
+        "name": "delete-rss-unknown-user",
+        "routeKey": "cfm:/core/modules/v1/favorites/ajax/deleterssfavorite.cfm",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {},
+        "method": "GET",
+        "url": "/core/modules/v1/favorites/ajax/deleteRSSFavorite.cfm?userID=00000000-0000-0000-0000000000000000&siteID=tenant-a"
+      },
+      "response": {
+        "domModel": {
+          "alerts": [],
+          "buttons": [],
+          "controls": [],
+          "forms": [],
+          "headings": [],
+          "labels": [],
+          "links": [],
+          "maskedText": [],
+          "tables": [],
+          "title": ""
+        },
+        "headers": {
+          "content-type": "text/html;charset=UTF-8",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "status": 200
+      },
+      "routeKey": "cfm:/core/modules/v1/favorites/ajax/deleterssfavorite.cfm"
+    },
+    {
+      "exceptionId": "EX-FAVORITES",
+      "expected": "halted",
+      "index": 9,
+      "name": "save-unregistered-site",
+      "normalised": {
+        "auth": {
+          "cookies": [
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "CFID",
+              "path": "/",
+              "persistence": "persistent",
+              "rotation": "changed",
+              "secure": false,
+              "value": "<token>"
+            },
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "CFTOKEN",
+              "path": "/",
+              "persistence": "persistent",
+              "rotation": "changed",
+              "secure": false,
+              "value": "<token>"
+            },
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "MXP_TRACKINGID",
+              "path": "/",
+              "persistence": "persistent",
+              "secure": false,
+              "value": "<token>"
+            },
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "mobileFormat",
+              "path": "/",
+              "persistence": "persistent",
+              "secure": false,
+              "value": "<token>"
+            }
+          ],
+          "redirectTargets": [],
+          "wwwAuthenticate": []
+        },
+        "domModel": {
+          "alerts": [],
+          "buttons": [],
+          "controls": [],
+          "forms": [],
+          "headings": [],
+          "labels": [],
+          "links": [
+            {
+              "href": "\\\"\\\"",
+              "text": ""
+            },
+            {
+              "href": "\\'/\\'",
+              "text": "GS-PE-07-no-site"
+            }
+          ],
+          "maskedText": [],
+          "tables": [],
+          "title": ""
+        },
+        "headers": {
+          "content-type": "text/html;charset=UTF-8",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "index": 9,
+        "maskedPaths": {},
+        "name": "save-unregistered-site",
+        "routeKey": "cfm:/core/modules/v1/favorites/ajax/savefavorite.cfm",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {},
+        "method": "GET",
+        "url": "/core/modules/v1/favorites/ajax/saveFavorite.cfm?userID=54997BC5-1622-92A6-85D91337F7198874&siteid=gs-pe-07-no-site&favoriteName=GS-PE-07-no-site&favoriteLocation=AEAEFD1B-B638-0F03-01B3D64831264009&favoriteType=RSS"
+      },
+      "response": {
+        "domModel": {
+          "alerts": [],
+          "buttons": [],
+          "controls": [],
+          "forms": [],
+          "headings": [],
+          "labels": [],
+          "links": [
+            {
+              "href": "\\\"\\\"",
+              "text": ""
+            },
+            {
+              "href": "\\'/\\'",
+              "text": "GS-PE-07-no-site"
+            }
+          ],
+          "maskedText": [],
+          "tables": [],
+          "title": ""
+        },
+        "headers": {
+          "content-type": "text/html;charset=UTF-8",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "7e417fff750162b02eeb8e832ef49f0c11e6530cc22ba4cdcad65156e8b40386",
+        "status": 200
+      },
+      "routeKey": "cfm:/core/modules/v1/favorites/ajax/savefavorite.cfm"
+    },
+    {
+      "exceptionId": "EX-FAVORITES",
+      "expected": "halted",
+      "index": 10,
+      "name": "delete-rss-unregistered-site",
+      "normalised": {
+        "auth": {
+          "cookies": [
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "CFID",
+              "path": "/",
+              "persistence": "persistent",
+              "rotation": "changed",
+              "secure": false,
+              "value": "<token>"
+            },
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "CFTOKEN",
+              "path": "/",
+              "persistence": "persistent",
+              "rotation": "changed",
+              "secure": false,
+              "value": "<token>"
+            },
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "MXP_TRACKINGID",
+              "path": "/",
+              "persistence": "persistent",
+              "secure": false,
+              "value": "<token>"
+            },
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "mobileFormat",
+              "path": "/",
+              "persistence": "persistent",
+              "secure": false,
+              "value": "<token>"
+            }
+          ],
+          "redirectTargets": [],
+          "wwwAuthenticate": []
+        },
+        "domModel": {
+          "alerts": [],
+          "buttons": [],
+          "controls": [],
+          "forms": [],
+          "headings": [],
+          "labels": [],
+          "links": [],
+          "maskedText": [],
+          "tables": [],
+          "title": ""
+        },
+        "headers": {
+          "content-type": "text/html;charset=UTF-8",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "index": 10,
+        "maskedPaths": {},
+        "name": "delete-rss-unregistered-site",
+        "routeKey": "cfm:/core/modules/v1/favorites/ajax/deleterssfavorite.cfm",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {},
+        "method": "GET",
+        "url": "/core/modules/v1/favorites/ajax/deleteRSSFavorite.cfm?userID=54997BC5-1622-92A6-85D91337F7198874&siteID=gs-pe-07-no-site"
+      },
+      "response": {
+        "domModel": {
+          "alerts": [],
+          "buttons": [],
+          "controls": [],
+          "forms": [],
+          "headings": [],
+          "labels": [],
+          "links": [],
+          "maskedText": [],
+          "tables": [],
+          "title": ""
+        },
+        "headers": {
+          "content-type": "text/html;charset=UTF-8",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "status": 200
+      },
+      "routeKey": "cfm:/core/modules/v1/favorites/ajax/deleterssfavorite.cfm"
+    },
+    {
+      "exceptionId": "EX-FAVORITES",
+      "expected": "halted",
+      "index": 11,
+      "name": "save-case-variant",
+      "normalised": {
+        "auth": {
+          "cookies": [
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "CFID",
+              "path": "/",
+              "persistence": "persistent",
+              "rotation": "changed",
+              "secure": false,
+              "value": "<token>"
+            },
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "CFTOKEN",
+              "path": "/",
+              "persistence": "persistent",
+              "rotation": "changed",
+              "secure": false,
+              "value": "<token>"
+            },
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "MXP_TRACKINGID",
+              "path": "/",
+              "persistence": "persistent",
+              "secure": false,
+              "value": "<token>"
+            },
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "mobileFormat",
+              "path": "/",
+              "persistence": "persistent",
+              "secure": false,
+              "value": "<token>"
+            },
+            {
+              "hop": 1,
+              "httpOnly": true,
+              "name": "CFID",
+              "path": "/",
+              "persistence": "persistent",
+              "rotation": "changed",
+              "secure": false,
+              "value": "<token>"
+            },
+            {
+              "hop": 1,
+              "httpOnly": true,
+              "name": "CFTOKEN",
+              "path": "/",
+              "persistence": "persistent",
+              "rotation": "changed",
+              "secure": false,
+              "value": "<token>"
+            },
+            {
+              "hop": 1,
+              "httpOnly": true,
+              "name": "MXP_TRACKINGID",
+              "path": "/",
+              "persistence": "persistent",
+              "secure": false,
+              "value": "<token>"
+            },
+            {
+              "hop": 1,
+              "httpOnly": true,
+              "name": "mobileFormat",
+              "path": "/",
+              "persistence": "persistent",
+              "secure": false,
+              "value": "<token>"
+            }
+          ],
+          "redirectTargets": [
+            {
+              "location": "<origin>/404/?favoriteLocation=<id:1>&favoriteName=GS-PE-07-case&favoriteType=internal_content&userID=<id:2>",
+              "status": 301
+            }
+          ],
+          "wwwAuthenticate": []
+        },
+        "domModel": {
+          "alerts": [],
+          "buttons": [
+            "",
+            "Search",
+            "Masa CMS Github",
+            "Masa CMS Twitter",
+            "",
+            "Close"
+          ],
+          "controls": [
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "Keywords",
+              "type": "text",
+              "value": ""
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "display",
+              "type": "hidden",
+              "value": "search"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "newSearch",
+              "type": "hidden",
+              "value": "true"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "noCache",
+              "type": "hidden",
+              "value": "1"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "csrf_token",
+              "type": "hidden",
+              "value": "<token>"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "csrf_token_expires",
+              "type": "hidden",
+              "value": "<token>"
+            }
+          ],
+          "forms": [
+            {
+              "action": "/search-results/",
+              "id": "searchForm",
+              "method": "post"
+            }
+          ],
+          "headings": [
+            {
+              "level": 4,
+              "text": "About"
+            },
+            {
+              "level": 4,
+              "text": "Contact Info"
+            },
+            {
+              "level": 4,
+              "text": "Follow"
+            },
+            {
+              "level": 5,
+              "text": "Sample Modal Window"
+            },
+            {
+              "level": 4,
+              "text": "This is just a sample…"
+            }
+          ],
+          "labels": [],
+          "links": [
+            {
+              "href": "/",
+              "text": "Default"
+            },
+            {
+              "href": "tel:1-916-608-8608",
+              "text": "+1(916)608-8608 Local"
+            },
+            {
+              "href": "tel:1-800-466-7525",
+              "text": "+1(800)466-7525 Toll Free"
+            },
+            {
+              "href": "mailto:masacms@weareorange.eu",
+              "text": "masacms@weareorange.eu"
+            },
+            {
+              "href": "#",
+              "text": "Sample Modal Window"
+            },
+            {
+              "href": "https://www.masacms.com",
+              "text": "Powered by Masa CMS"
+            },
+            {
+              "href": "https://github.com/MasaCMS/MasaCMS",
+              "text": "Masa CMS Github"
+            },
+            {
+              "href": "https://twitter.com/masacms",
+              "text": "Masa CMS Twitter"
+            }
+          ],
+          "maskedText": [],
+          "tables": [],
+          "title": "404 - Default"
+        },
+        "headers": {
+          "content-language": "en-US",
+          "content-type": "text/html;charset=UTF-8",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "index": 11,
+        "maskedPaths": {},
+        "name": "save-case-variant",
+        "routeKey": "cfm:/core/modules/v1/favorites/ajax/savefavorite.cfm",
+        "status": 404
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {},
+        "method": "GET",
+        "url": "/core/modules/v1/favorites/ajax/savefavorite.cfm?userID=54997BC5-1622-92A6-85D91337F7198874&siteid=tenant-a&favoriteName=GS-PE-07-case&favoriteLocation=AEAEFD1B-B638-0F03-01B3D64831264009&favoriteType=internal_content"
+      },
+      "response": {
+        "domModel": {
+          "alerts": [],
+          "buttons": [
+            "",
+            "Search",
+            "Masa CMS Github",
+            "Masa CMS Twitter",
+            "",
+            "Close"
+          ],
+          "controls": [
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "Keywords",
+              "type": "text",
+              "value": ""
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "display",
+              "type": "hidden",
+              "value": "search"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "newSearch",
+              "type": "hidden",
+              "value": "true"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "noCache",
+              "type": "hidden",
+              "value": "1"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "csrf_token",
+              "type": "hidden",
+              "value": "<token>"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "csrf_token_expires",
+              "type": "hidden",
+              "value": "<token>"
+            }
+          ],
+          "forms": [
+            {
+              "action": "/search-results/",
+              "id": "searchForm",
+              "method": "post"
+            }
+          ],
+          "headings": [
+            {
+              "level": 4,
+              "text": "About"
+            },
+            {
+              "level": 4,
+              "text": "Contact Info"
+            },
+            {
+              "level": 4,
+              "text": "Follow"
+            },
+            {
+              "level": 5,
+              "text": "Sample Modal Window"
+            },
+            {
+              "level": 4,
+              "text": "This is just a sample…"
+            }
+          ],
+          "labels": [],
+          "links": [
+            {
+              "href": "/",
+              "text": "Default"
+            },
+            {
+              "href": "tel:1-916-608-8608",
+              "text": "+1(916)608-8608 Local"
+            },
+            {
+              "href": "tel:1-800-466-7525",
+              "text": "+1(800)466-7525 Toll Free"
+            },
+            {
+              "href": "mailto:masacms@weareorange.eu",
+              "text": "masacms@weareorange.eu"
+            },
+            {
+              "href": "#",
+              "text": "Sample Modal Window"
+            },
+            {
+              "href": "https://www.masacms.com",
+              "text": "Powered by Masa CMS"
+            },
+            {
+              "href": "https://github.com/MasaCMS/MasaCMS",
+              "text": "Masa CMS Github"
+            },
+            {
+              "href": "https://twitter.com/masacms",
+              "text": "Masa CMS Twitter"
+            }
+          ],
+          "maskedText": [],
+          "tables": [],
+          "title": "404 - Default"
+        },
+        "headers": {
+          "content-language": "en-US",
+          "content-type": "text/html;charset=UTF-8",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "788df326d4d49b3027c72664bc65dfb8a24e7005e79faaf687499b910f8bad07",
+        "status": 404
+      },
+      "routeKey": "cfm:/core/modules/v1/favorites/ajax/savefavorite.cfm"
+    }
+  ],
+  "tableVersion": null
+}

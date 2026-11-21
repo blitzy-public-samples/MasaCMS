@@ -1,0 +1,1287 @@
+{
+  "capturedAt": "2026-11-21T04:52:26.608Z",
+  "fixtures": {
+    "available": true,
+    "reason": "fixtures loaded"
+  },
+  "generatedAt": "2026-11-21T04:52:26.609Z",
+  "generatedBy": "harness/e2e/ui/interactions.e2e.ts",
+  "origin": "legacy",
+  "scenarioId": "GS-UI-03",
+  "sideEffects": {
+    "files": [],
+    "mail": [],
+    "rows": {},
+    "tasks": []
+  },
+  "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
+  "steps": [
+    {
+      "index": 0,
+      "name": "xhr-0",
+      "normalised": {
+        "body": {
+          "files": [
+            {
+              "altext": "",
+              "alttext": "",
+              "credits": "",
+              "delete_type": "DELETE",
+              "delete_url": "",
+              "edit_url": "/admin/?muraAction=carch.edit&contenthistid=<id:1>&contentid=<id:2>&type=File&siteid=tenant-a&topid=00000000000000000000000000000000001&parentid=00000000000000000000000000000000001&moduleid=00000000000000000000000000000000000&compactdisplay=false",
+              "filename": "gs-ui-03.png",
+              "size": 268,
+              "summary": "",
+              "thumbnail_url": "/sites/umbrella/cache/file/<id:3>_small.png",
+              "title": "gs-ui-03.png",
+              "url": "/sites/umbrella/cache/file/<id:3>_source.png"
+            }
+          ]
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8"
+        },
+        "index": 0,
+        "maskedPaths": {},
+        "name": "xhr-0",
+        "routeKey": "admin:carch.update{upload=image}",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "multipart",
+          "value": {
+            "fields": {
+              "action": "multifileupload",
+              "approved": "1",
+              "contentid": "",
+              "csrf_token": "<token>",
+              "csrf_token_expires": "<token>",
+              "extraParams": "{\"title\":\"gs-ui-03.png\",\"summary\":\"\",\"credits\":\"\",\"alttext\":\"\"}",
+              "moduleid": "00000000000000000000000000000000000",
+              "muraAction": "cArch.update",
+              "orderno": "0",
+              "parentid": "00000000000000000000000000000000001",
+              "ptype": "Page",
+              "siteid": "tenant-a",
+              "startrow": "1",
+              "subtype": "Default",
+              "topid": "00000000000000000000000000000000001",
+              "type": "File"
+            },
+            "files": [
+              {
+                "contentType": "image/png",
+                "field": "files",
+                "filename": "gs-ui-03.png",
+                "sha256": "f0fa347743261694a4d8b53a909f7d569618d7eff91095ac821571c97d0e183d",
+                "size": 268
+              }
+            ]
+          }
+        },
+        "headers": {
+          "content-type": "multipart/form-data; boundary=----WebKitFormBoundaryAIBBSSzmAUx4pSZT"
+        },
+        "method": "POST",
+        "url": "/admin/"
+      },
+      "response": {
+        "body": {
+          "files": [
+            {
+              "altext": "",
+              "alttext": "",
+              "credits": "",
+              "delete_type": "DELETE",
+              "delete_url": "",
+              "edit_url": "/admin/?muraAction=carch.edit&contenthistid=<id:1>&contentid=<id:2>&type=File&siteid=tenant-a&topid=00000000000000000000000000000000001&parentid=00000000000000000000000000000000001&moduleid=00000000000000000000000000000000000&compactdisplay=false",
+              "filename": "gs-ui-03.png",
+              "size": 268,
+              "summary": "",
+              "thumbnail_url": "/sites/umbrella/cache/file/<id:3>_small.png",
+              "title": "gs-ui-03.png",
+              "url": "/sites/umbrella/cache/file/<id:3>_source.png"
+            }
+          ]
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8"
+        },
+        "rawSha256": "45f53a5ff6107629af314c42354d66f2b571cc47a3cba1ede9e80821e95ff711",
+        "status": 200
+      },
+      "routeKey": "admin:carch.update{upload=image}"
+    },
+    {
+      "index": 1,
+      "name": "xhr-1",
+      "normalised": {
+        "body": {
+          "files": [
+            {
+              "altext": "",
+              "credits": "",
+              "delete_type": "DELETE",
+              "delete_url": "",
+              "edit_url": "/admin/?muraAction=carch.edit&contenthistid=<id:4>&contentid=<id:5>&type=File&siteid=tenant-a&topid=00000000000000000000000000000000001&parentid=00000000000000000000000000000000001&moduleid=00000000000000000000000000000000000&compactdisplay=false",
+              "filename": "gs-ui-03.pdf",
+              "size": 595,
+              "summary": "<p><br></p>",
+              "thumbnail_url": "",
+              "title": "gs-ui-03.pdf",
+              "url": ""
+            }
+          ]
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8"
+        },
+        "index": 1,
+        "maskedPaths": {},
+        "name": "xhr-1",
+        "routeKey": "admin:carch.update{approved=1}",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "multipart",
+          "value": {
+            "fields": {
+              "action": "multifileupload",
+              "approved": "1",
+              "contentid": "",
+              "csrf_token": "<token>",
+              "csrf_token_expires": "<token>",
+              "extraParams": "{\"title\":\"gs-ui-03.pdf\",\"summary\":\"<p><br></p>\",\"credits\":\"\"}",
+              "moduleid": "00000000000000000000000000000000000",
+              "muraAction": "cArch.update",
+              "orderno": "0",
+              "parentid": "00000000000000000000000000000000001",
+              "ptype": "Page",
+              "siteid": "tenant-a",
+              "startrow": "1",
+              "subtype": "Default",
+              "topid": "00000000000000000000000000000000001",
+              "type": "File"
+            },
+            "files": [
+              {
+                "contentType": "application/pdf",
+                "field": "files",
+                "filename": "gs-ui-03.pdf",
+                "sha256": "9229a66f941e10e1177f7d8ab25c3f69e25ca6957a63f1d82766e35faa8debfb",
+                "size": 595
+              }
+            ]
+          }
+        },
+        "headers": {
+          "content-type": "multipart/form-data; boundary=----WebKitFormBoundaryYjyF48uiFK8cHLHn"
+        },
+        "method": "POST",
+        "url": "/admin/"
+      },
+      "response": {
+        "body": {
+          "files": [
+            {
+              "altext": "",
+              "credits": "",
+              "delete_type": "DELETE",
+              "delete_url": "",
+              "edit_url": "/admin/?muraAction=carch.edit&contenthistid=<id:4>&contentid=<id:5>&type=File&siteid=tenant-a&topid=00000000000000000000000000000000001&parentid=00000000000000000000000000000000001&moduleid=00000000000000000000000000000000000&compactdisplay=false",
+              "filename": "gs-ui-03.pdf",
+              "size": 595,
+              "summary": "<p><br></p>",
+              "thumbnail_url": "",
+              "title": "gs-ui-03.pdf",
+              "url": ""
+            }
+          ]
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8"
+        },
+        "rawSha256": "00a2d8f25fe978044615c238e738720bc3994042766e20fc261da7348cc25361",
+        "status": 200
+      },
+      "routeKey": "admin:carch.update{approved=1}"
+    },
+    {
+      "index": 1000000,
+      "name": "final-dom",
+      "normalised": {
+        "console": [
+          "pageerror: Cannot read properties of undefined (reading 'getBody')"
+        ],
+        "domModel": {
+          "alerts": [
+            {
+              "kind": "alert-warning",
+              "text": "Caching for this site is currently not enabled. It is strongly recommended to turn caching on for production sites."
+            }
+          ],
+          "buttons": [
+            "",
+            "",
+            "",
+            "",
+            "Tenant A",
+            "",
+            "",
+            "Admin User",
+            "",
+            "Back",
+            "Upload",
+            "Cancel",
+            "Edit",
+            "Edit"
+          ],
+          "controls": [
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "keywords",
+              "type": "text",
+              "value": ""
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "muraAction",
+              "type": "hidden",
+              "value": "cArch.list"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "activetab",
+              "type": "hidden",
+              "value": "1"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "siteid",
+              "type": "hidden",
+              "value": "tenant-a"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "moduleid",
+              "type": "hidden",
+              "value": "00000000000000000000000000000000000"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "files",
+              "type": "file"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "muraAction",
+              "type": "hidden",
+              "value": "cArch.update"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "action",
+              "type": "hidden",
+              "value": "multifileupload"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "siteid",
+              "type": "hidden",
+              "value": "tenant-a"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "moduleid",
+              "type": "hidden",
+              "value": "00000000000000000000000000000000000"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "topid",
+              "type": "hidden",
+              "value": "00000000000000000000000000000000001"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "ptype",
+              "type": "hidden",
+              "value": "Page"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "parentid",
+              "type": "hidden",
+              "value": "00000000000000000000000000000000001"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "contentid",
+              "type": "hidden",
+              "value": ""
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "type",
+              "type": "hidden",
+              "value": "File"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "subtype",
+              "type": "hidden",
+              "value": "Default"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "startrow",
+              "type": "hidden",
+              "value": "1"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "orderno",
+              "type": "hidden",
+              "value": "0"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "approved",
+              "type": "hidden",
+              "value": "1"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "csrf_token",
+              "type": "hidden",
+              "value": "<token>"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "csrf_token_expires",
+              "type": "hidden",
+              "value": "<token>"
+            }
+          ],
+          "forms": [
+            {
+              "action": "#",
+              "id": "globalSearch",
+              "method": "get",
+              "name": "globalSearch"
+            },
+            {
+              "action": "/admin/",
+              "id": "fileupload",
+              "method": "post"
+            }
+          ],
+          "headings": [
+            {
+              "level": 1,
+              "text": "Quick Upload"
+            }
+          ],
+          "labels": [
+            {
+              "text": "File name"
+            },
+            {
+              "text": "Title"
+            },
+            {
+              "text": "File name"
+            },
+            {
+              "text": "Title"
+            },
+            {
+              "text": "Summary/Caption"
+            }
+          ],
+          "links": [
+            {
+              "href": "/admin/?muraAction=carch.list&siteid=tenant-a",
+              "text": "Content"
+            },
+            {
+              "href": "/admin/?muraAction=cchangesets.list&siteid=tenant-a",
+              "text": "Staging"
+            },
+            {
+              "href": "/admin/?muraAction=ccomments.default&siteid=tenant-a",
+              "text": "Comments"
+            },
+            {
+              "href": "/admin/?muraAction=ccategory.list&siteid=tenant-a",
+              "text": "Categories"
+            },
+            {
+              "href": "/admin/?muraAction=cfeed.list&siteid=tenant-a",
+              "text": "Collections"
+            },
+            {
+              "href": "/admin/?muraAction=cfilemanager.default&siteid=tenant-a",
+              "text": "File Browser"
+            },
+            {
+              "href": "#",
+              "text": "Users"
+            },
+            {
+              "href": "/admin/?muraAction=cusers.listusers&siteid=tenant-a",
+              "text": "Users"
+            },
+            {
+              "href": "/admin/?muraAction=cusers.list&siteid=tenant-a",
+              "text": "Groups"
+            },
+            {
+              "href": "/admin/?muraAction=cusers.edituser&siteid=tenant-a&userid=",
+              "text": "Add User"
+            },
+            {
+              "href": "/admin/?muraAction=cusers.editgroup&siteid=tenant-a&userid=",
+              "text": "Add Group"
+            },
+            {
+              "href": "/admin/?muraAction=cplugins.list&siteid=tenant-a",
+              "text": "Plugins"
+            },
+            {
+              "href": "/admin/?muraAction=cplugins.list&siteid=tenant-a",
+              "text": "Site Plugins"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.list&plugins#tabPlugins",
+              "text": "Add Plugin"
+            },
+            {
+              "href": "/admin/",
+              "text": "Site Settings"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.editsite&siteid=tenant-a",
+              "text": "Edit Settings"
+            },
+            {
+              "href": "/admin/?muraAction=cperm.module&contentid=00000000000000000000000000000000000&siteid=tenant-a&moduleid=00000000000000000000000000000000000",
+              "text": "Permissions"
+            },
+            {
+              "href": "/admin/?muraAction=cchain.list&siteid=tenant-a",
+              "text": "Approval Chains"
+            },
+            {
+              "href": "#",
+              "text": "Class Extensions"
+            },
+            {
+              "href": "/admin/?muraAction=cextend.listsubtypes&siteid=tenant-a",
+              "text": "Class Extensions"
+            },
+            {
+              "href": "/admin/?muraAction=cextend.editsubtype&subTypeID=&siteid=tenant-a",
+              "text": "Add Class Extension"
+            },
+            {
+              "href": "/admin/?muraAction=cextend.importsubtypes&siteid=tenant-a",
+              "text": "Import Extensions"
+            },
+            {
+              "href": "/admin/?muraAction=cextend.exportsubtype&siteid=tenant-a",
+              "text": "Export Extensions"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.selectbundleoptions&siteID=tenant-a",
+              "text": "Create Site Bundle"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.editsite&siteid=tenant-a&deployBundle#tabBundles",
+              "text": "Deploy Site Bundle"
+            },
+            {
+              "href": "/admin/?muraAction=cwebservice.list&siteid=tenant-a",
+              "text": "Web Services (REST)"
+            },
+            {
+              "href": "/index.cfm/_api/json/v1/tenant-a",
+              "text": "JSON API"
+            },
+            {
+              "href": "/admin/?muraAction=ctrash.list&siteID=tenant-a",
+              "text": "Trash Bin"
+            },
+            {
+              "href": "/admin/",
+              "text": "Global Settings"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.list",
+              "text": "Sites"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.editsite&siteid=&addsite",
+              "text": "Add Site"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.sitecopyselect",
+              "text": "Copy Site"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.list&plugins#tabPlugins",
+              "text": "Plugins"
+            },
+            {
+              "href": "#",
+              "text": "Update Masa CMS Core"
+            },
+            {
+              "href": "/admin/?<token>&reload=<token>",
+              "text": "Reload Application"
+            },
+            {
+              "href": "/admin/",
+              "text": "Help"
+            },
+            {
+              "href": "https://www.masacms.com/documentation",
+              "text": "Documentation"
+            },
+            {
+              "href": "http://docs.cksource.com/",
+              "text": "Editor/File Manager"
+            },
+            {
+              "href": "https://www.wearenorth.eu/",
+              "text": "Professional Support"
+            },
+            {
+              "href": "https://www.masacms.com/",
+              "text": "Community Support"
+            },
+            {
+              "href": "/admin/",
+              "text": "About"
+            },
+            {
+              "href": "#",
+              "text": "Core Version 7.6.1"
+            },
+            {
+              "href": "#",
+              "text": "Update Masa CMS Core"
+            },
+            {
+              "href": "#",
+              "text": "App Server ColdFusion (2023,0,26,331018)"
+            },
+            {
+              "href": "#",
+              "text": "DB Server Microsoft SQL Server (Microsoft SQL Server 2022 - 16.0.4305.5)"
+            },
+            {
+              "href": "#",
+              "text": "OS Version UNIX (6.12.105+)"
+            },
+            {
+              "href": "https://github.com/blueriver/MuraCMS/blob/develop/license.txt",
+              "text": "Mura CMS © 2026 blueriver Licensed under GNU General Public License Version 2.0 with exceptions"
+            },
+            {
+              "href": "https://github.com/MasaCMS/MasaCMS/blob/main/license.txt",
+              "text": "Masa CMS © 2026 We Are North Groep BV Licensed under GNU General Public License Version 2.0 with exceptions"
+            },
+            {
+              "href": "<origin>/",
+              "text": "Tenant A"
+            },
+            {
+              "href": "/admin/?muraAction=carch.list&moduleID=00000000000000000000000000000000000&topID=00000000000000000000000000000000001&siteID=default",
+              "text": "Default"
+            },
+            {
+              "href": "/admin/?muraAction=carch.list&moduleID=00000000000000000000000000000000000&topID=00000000000000000000000000000000001&siteID=tenant-a",
+              "text": "Tenant A"
+            },
+            {
+              "href": "/admin/?muraAction=carch.list&moduleID=00000000000000000000000000000000000&topID=00000000000000000000000000000000001&siteID=tenant-b",
+              "text": "Tenant B"
+            },
+            {
+              "href": "/admin/?muraAction=carch.list&moduleID=00000000000000000000000000000000000&topID=00000000000000000000000000000000001&siteID=umbrella",
+              "text": "Umbrella"
+            },
+            {
+              "href": "/admin/?muraAction=ceditprofile.edit",
+              "text": "Admin User"
+            },
+            {
+              "href": "/admin/?muraAction=ceditprofile.edit",
+              "text": "Edit Profile"
+            },
+            {
+              "href": "/admin/?muraAction=clogin.logout",
+              "text": "Log out"
+            },
+            {
+              "href": "#",
+              "text": "Back"
+            },
+            {
+              "href": "/admin/?muraAction=carch.list&siteid=tenant-a&topid=00000000000000000000000000000000001&moduleid=00000000000000000000000000000000000&activeTab=0",
+              "text": "Home"
+            },
+            {
+              "href": "/sites/umbrella/cache/file/<id:3>_source.png",
+              "text": ""
+            },
+            {
+              "href": "javascript:void('Bold')",
+              "text": "Bold Keyboard shortcut Ctrl+B"
+            },
+            {
+              "href": "javascript:void('Italic')",
+              "text": "Italic Keyboard shortcut Ctrl+I"
+            },
+            {
+              "href": "javascript:void('Remove Format')",
+              "text": "Remove Format"
+            },
+            {
+              "href": "javascript:void('Insert/Remove Numbered List')",
+              "text": "Insert/Remove Numbered List"
+            },
+            {
+              "href": "javascript:void('Insert/Remove Bulleted List')",
+              "text": "Insert/Remove Bulleted List"
+            },
+            {
+              "href": "javascript:void('Link')",
+              "text": "Link Keyboard shortcut Ctrl+K"
+            },
+            {
+              "href": "javascript:void('Unlink')",
+              "text": "Unlink"
+            },
+            {
+              "href": "javascript:void(0)",
+              "text": "X"
+            },
+            {
+              "href": "javascript:void(0)",
+              "text": "Previous"
+            },
+            {
+              "href": "javascript:void(0)",
+              "text": "Next"
+            },
+            {
+              "href": "javascript:void(0)",
+              "text": "Quick fix"
+            },
+            {
+              "href": "javascript:void(0)",
+              "text": "Ignore"
+            },
+            {
+              "href": "javascript:void(0)",
+              "text": "Check again"
+            }
+          ],
+          "maskedText": [],
+          "tables": [
+            {
+              "headers": [],
+              "rows": [
+                [
+                  "PNG",
+                  "File name gs-ui-03.png Title gs-ui-03.png",
+                  "0.27 KB",
+                  "Edit"
+                ],
+                [
+                  "PDF",
+                  "File name gs-ui-03.pdf Title gs-ui-03.pdf Summary/Caption",
+                  "0.59 KB",
+                  "Edit"
+                ]
+              ]
+            }
+          ],
+          "title": "Masa CMS - Site Content"
+        },
+        "headers": {
+          "content-type": "text/html;charset=UTF-8"
+        },
+        "index": 1000000,
+        "maskedPaths": {
+          "domModel.forms[0].action": "header-search-404"
+        },
+        "name": "final-dom",
+        "notes": [],
+        "routeKey": "admin:carch.multifileupload",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {},
+        "method": "GET",
+        "url": "/admin/?muraAction=cArch.multiFileUpload&siteid=tenant-a&moduleid=00000000000000000000000000000000000&topid=00000000000000000000000000000000001&parentid=00000000000000000000000000000000001&type=File"
+      },
+      "response": {
+        "domModel": {
+          "alerts": [
+            {
+              "kind": "alert-warning",
+              "text": "Caching for this site is currently not enabled. It is strongly recommended to turn caching on for production sites."
+            }
+          ],
+          "buttons": [
+            "",
+            "",
+            "",
+            "",
+            "Tenant A",
+            "",
+            "",
+            "Admin User",
+            "",
+            "Back",
+            "Upload",
+            "Cancel",
+            "Edit",
+            "Edit"
+          ],
+          "controls": [
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "keywords",
+              "type": "text",
+              "value": ""
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "muraAction",
+              "type": "hidden",
+              "value": "cArch.list"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "activetab",
+              "type": "hidden",
+              "value": "1"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "siteid",
+              "type": "hidden",
+              "value": "tenant-a"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "moduleid",
+              "type": "hidden",
+              "value": "00000000000000000000000000000000000"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "files",
+              "type": "file"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "muraAction",
+              "type": "hidden",
+              "value": "cArch.update"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "action",
+              "type": "hidden",
+              "value": "multifileupload"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "siteid",
+              "type": "hidden",
+              "value": "tenant-a"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "moduleid",
+              "type": "hidden",
+              "value": "00000000000000000000000000000000000"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "topid",
+              "type": "hidden",
+              "value": "00000000000000000000000000000000001"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "ptype",
+              "type": "hidden",
+              "value": "Page"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "parentid",
+              "type": "hidden",
+              "value": "00000000000000000000000000000000001"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "contentid",
+              "type": "hidden",
+              "value": ""
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "type",
+              "type": "hidden",
+              "value": "File"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "subtype",
+              "type": "hidden",
+              "value": "Default"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "startrow",
+              "type": "hidden",
+              "value": "1"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "orderno",
+              "type": "hidden",
+              "value": "0"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "approved",
+              "type": "hidden",
+              "value": "1"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "csrf_token",
+              "type": "hidden",
+              "value": "<token>"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "csrf_token_expires",
+              "type": "hidden",
+              "value": "<token>"
+            }
+          ],
+          "forms": [
+            {
+              "action": "#",
+              "id": "globalSearch",
+              "method": "get",
+              "name": "globalSearch"
+            },
+            {
+              "action": "/admin/",
+              "id": "fileupload",
+              "method": "post"
+            }
+          ],
+          "headings": [
+            {
+              "level": 1,
+              "text": "Quick Upload"
+            }
+          ],
+          "labels": [
+            {
+              "text": "File name"
+            },
+            {
+              "text": "Title"
+            },
+            {
+              "text": "File name"
+            },
+            {
+              "text": "Title"
+            },
+            {
+              "text": "Summary/Caption"
+            }
+          ],
+          "links": [
+            {
+              "href": "/admin/?muraAction=carch.list&siteid=tenant-a",
+              "text": "Content"
+            },
+            {
+              "href": "/admin/?muraAction=cchangesets.list&siteid=tenant-a",
+              "text": "Staging"
+            },
+            {
+              "href": "/admin/?muraAction=ccomments.default&siteid=tenant-a",
+              "text": "Comments"
+            },
+            {
+              "href": "/admin/?muraAction=ccategory.list&siteid=tenant-a",
+              "text": "Categories"
+            },
+            {
+              "href": "/admin/?muraAction=cfeed.list&siteid=tenant-a",
+              "text": "Collections"
+            },
+            {
+              "href": "/admin/?muraAction=cfilemanager.default&siteid=tenant-a",
+              "text": "File Browser"
+            },
+            {
+              "href": "#",
+              "text": "Users"
+            },
+            {
+              "href": "/admin/?muraAction=cusers.listusers&siteid=tenant-a",
+              "text": "Users"
+            },
+            {
+              "href": "/admin/?muraAction=cusers.list&siteid=tenant-a",
+              "text": "Groups"
+            },
+            {
+              "href": "/admin/?muraAction=cusers.edituser&siteid=tenant-a&userid=",
+              "text": "Add User"
+            },
+            {
+              "href": "/admin/?muraAction=cusers.editgroup&siteid=tenant-a&userid=",
+              "text": "Add Group"
+            },
+            {
+              "href": "/admin/?muraAction=cplugins.list&siteid=tenant-a",
+              "text": "Plugins"
+            },
+            {
+              "href": "/admin/?muraAction=cplugins.list&siteid=tenant-a",
+              "text": "Site Plugins"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.list&plugins#tabPlugins",
+              "text": "Add Plugin"
+            },
+            {
+              "href": "/admin/",
+              "text": "Site Settings"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.editsite&siteid=tenant-a",
+              "text": "Edit Settings"
+            },
+            {
+              "href": "/admin/?muraAction=cperm.module&contentid=00000000000000000000000000000000000&siteid=tenant-a&moduleid=00000000000000000000000000000000000",
+              "text": "Permissions"
+            },
+            {
+              "href": "/admin/?muraAction=cchain.list&siteid=tenant-a",
+              "text": "Approval Chains"
+            },
+            {
+              "href": "#",
+              "text": "Class Extensions"
+            },
+            {
+              "href": "/admin/?muraAction=cextend.listsubtypes&siteid=tenant-a",
+              "text": "Class Extensions"
+            },
+            {
+              "href": "/admin/?muraAction=cextend.editsubtype&subTypeID=&siteid=tenant-a",
+              "text": "Add Class Extension"
+            },
+            {
+              "href": "/admin/?muraAction=cextend.importsubtypes&siteid=tenant-a",
+              "text": "Import Extensions"
+            },
+            {
+              "href": "/admin/?muraAction=cextend.exportsubtype&siteid=tenant-a",
+              "text": "Export Extensions"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.selectbundleoptions&siteID=tenant-a",
+              "text": "Create Site Bundle"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.editsite&siteid=tenant-a&deployBundle#tabBundles",
+              "text": "Deploy Site Bundle"
+            },
+            {
+              "href": "/admin/?muraAction=cwebservice.list&siteid=tenant-a",
+              "text": "Web Services (REST)"
+            },
+            {
+              "href": "/index.cfm/_api/json/v1/tenant-a",
+              "text": "JSON API"
+            },
+            {
+              "href": "/admin/?muraAction=ctrash.list&siteID=tenant-a",
+              "text": "Trash Bin"
+            },
+            {
+              "href": "/admin/",
+              "text": "Global Settings"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.list",
+              "text": "Sites"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.editsite&siteid=&addsite",
+              "text": "Add Site"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.sitecopyselect",
+              "text": "Copy Site"
+            },
+            {
+              "href": "/admin/?muraAction=csettings.list&plugins#tabPlugins",
+              "text": "Plugins"
+            },
+            {
+              "href": "#",
+              "text": "Update Masa CMS Core"
+            },
+            {
+              "href": "/admin/?<token>&reload=<token>",
+              "text": "Reload Application"
+            },
+            {
+              "href": "/admin/",
+              "text": "Help"
+            },
+            {
+              "href": "https://www.masacms.com/documentation",
+              "text": "Documentation"
+            },
+            {
+              "href": "http://docs.cksource.com/",
+              "text": "Editor/File Manager"
+            },
+            {
+              "href": "https://www.wearenorth.eu/",
+              "text": "Professional Support"
+            },
+            {
+              "href": "https://www.masacms.com/",
+              "text": "Community Support"
+            },
+            {
+              "href": "/admin/",
+              "text": "About"
+            },
+            {
+              "href": "#",
+              "text": "Core Version 7.6.1"
+            },
+            {
+              "href": "#",
+              "text": "Update Masa CMS Core"
+            },
+            {
+              "href": "#",
+              "text": "App Server ColdFusion (2023,0,26,331018)"
+            },
+            {
+              "href": "#",
+              "text": "DB Server Microsoft SQL Server (Microsoft SQL Server 2022 - 16.0.4305.5)"
+            },
+            {
+              "href": "#",
+              "text": "OS Version UNIX (6.12.105+)"
+            },
+            {
+              "href": "https://github.com/blueriver/MuraCMS/blob/develop/license.txt",
+              "text": "Mura CMS © 2026 blueriver Licensed under GNU General Public License Version 2.0 with exceptions"
+            },
+            {
+              "href": "https://github.com/MasaCMS/MasaCMS/blob/main/license.txt",
+              "text": "Masa CMS © 2026 We Are North Groep BV Licensed under GNU General Public License Version 2.0 with exceptions"
+            },
+            {
+              "href": "<origin>/",
+              "text": "Tenant A"
+            },
+            {
+              "href": "/admin/?muraAction=carch.list&moduleID=00000000000000000000000000000000000&topID=00000000000000000000000000000000001&siteID=default",
+              "text": "Default"
+            },
+            {
+              "href": "/admin/?muraAction=carch.list&moduleID=00000000000000000000000000000000000&topID=00000000000000000000000000000000001&siteID=tenant-a",
+              "text": "Tenant A"
+            },
+            {
+              "href": "/admin/?muraAction=carch.list&moduleID=00000000000000000000000000000000000&topID=00000000000000000000000000000000001&siteID=tenant-b",
+              "text": "Tenant B"
+            },
+            {
+              "href": "/admin/?muraAction=carch.list&moduleID=00000000000000000000000000000000000&topID=00000000000000000000000000000000001&siteID=umbrella",
+              "text": "Umbrella"
+            },
+            {
+              "href": "/admin/?muraAction=ceditprofile.edit",
+              "text": "Admin User"
+            },
+            {
+              "href": "/admin/?muraAction=ceditprofile.edit",
+              "text": "Edit Profile"
+            },
+            {
+              "href": "/admin/?muraAction=clogin.logout",
+              "text": "Log out"
+            },
+            {
+              "href": "#",
+              "text": "Back"
+            },
+            {
+              "href": "/admin/?muraAction=carch.list&siteid=tenant-a&topid=00000000000000000000000000000000001&moduleid=00000000000000000000000000000000000&activeTab=0",
+              "text": "Home"
+            },
+            {
+              "href": "/sites/umbrella/cache/file/<id:3>_source.png",
+              "text": ""
+            },
+            {
+              "href": "javascript:void('Bold')",
+              "text": "Bold Keyboard shortcut Ctrl+B"
+            },
+            {
+              "href": "javascript:void('Italic')",
+              "text": "Italic Keyboard shortcut Ctrl+I"
+            },
+            {
+              "href": "javascript:void('Remove Format')",
+              "text": "Remove Format"
+            },
+            {
+              "href": "javascript:void('Insert/Remove Numbered List')",
+              "text": "Insert/Remove Numbered List"
+            },
+            {
+              "href": "javascript:void('Insert/Remove Bulleted List')",
+              "text": "Insert/Remove Bulleted List"
+            },
+            {
+              "href": "javascript:void('Link')",
+              "text": "Link Keyboard shortcut Ctrl+K"
+            },
+            {
+              "href": "javascript:void('Unlink')",
+              "text": "Unlink"
+            },
+            {
+              "href": "javascript:void(0)",
+              "text": "X"
+            },
+            {
+              "href": "javascript:void(0)",
+              "text": "Previous"
+            },
+            {
+              "href": "javascript:void(0)",
+              "text": "Next"
+            },
+            {
+              "href": "javascript:void(0)",
+              "text": "Quick fix"
+            },
+            {
+              "href": "javascript:void(0)",
+              "text": "Ignore"
+            },
+            {
+              "href": "javascript:void(0)",
+              "text": "Check again"
+            }
+          ],
+          "maskedText": [],
+          "tables": [
+            {
+              "headers": [],
+              "rows": [
+                [
+                  "PNG",
+                  "File name gs-ui-03.png Title gs-ui-03.png",
+                  "0.27 KB",
+                  "Edit"
+                ],
+                [
+                  "PDF",
+                  "File name gs-ui-03.pdf Title gs-ui-03.pdf Summary/Caption",
+                  "0.59 KB",
+                  "Edit"
+                ]
+              ]
+            }
+          ],
+          "title": "Masa CMS - Site Content"
+        },
+        "headers": {
+          "content-type": "text/html;charset=UTF-8"
+        },
+        "rawSha256": "80e856529528ffb8b89468dc49871b594d13c0723bbc9e316598cd50cbfc3f23",
+        "status": 200
+      },
+      "routeKey": "admin:carch.multifileupload"
+    }
+  ],
+  "tableVersion": null
+}

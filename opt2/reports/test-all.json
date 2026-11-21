@@ -1,0 +1,845 @@
+{
+  "cloudPathsUntested": "Identity Platform tokens, invocation credentials, Cloud Tasks, storage signing, Secret Manager, the db-bootstrap job and the OpenTelemetry collector sidecar are untested against live services; terraform plan proves resources and bindings only",
+  "exitCode": 2,
+  "exitCodes": {
+    "0": "all stages passed",
+    "1": "a stage or a service-matrix cell failed",
+    "2": "completed with acceptance items unmet"
+  },
+  "fixtures": {
+    "available": true,
+    "reason": "fixtures loaded",
+    "source": "${OPT2_STATE_DIR}/fixtures.json"
+  },
+  "generatedAt": "2026-11-21T06:36:14.175Z",
+  "generatedBy": "harness/src/reporting/test-all.ts",
+  "result": "unmet",
+  "serviceMatrix": [
+    {
+      "contract": {
+        "reason": "3 contract files, 505 of 505 tests passed",
+        "state": "pass"
+      },
+      "events": {
+        "reason": "3 events files, 69 of 69 tests passed; opt2/reports/events.json result pass",
+        "state": "pass"
+      },
+      "isolation": {
+        "reason": "3 isolation files, 1154 of 1154 tests passed; opt2/reports/isolation.json: no cross-tenant reads or writes",
+        "state": "pass"
+      },
+      "parity": {
+        "reason": "withheld: GS-ID-03 (opt2/decision-list.json#tables/tcontenteventreminders); GS-ID-04 (opt2/decision-list.json#actionVariants/admin:clogin.main{status=sendlogin}, opt2/decision-list.json#actionVariants/admin:clogin.login{status=sendlogin}); GS-ID-06 (opt2/decision-list.json#actionVariants/admin:cusers.update{type=1,action=delete}); GS-ID-07 (opt2/decision-list.json#actionVariants/admin:cperm.update); GS-ID-09 (opt2/decision-list.json#actionVariants/admin:cusers.update{type=2,action=delete}, opt2/decision-list.json#actionVariants/page:render, opt2/decision-list.json#actionVariants/admin:ceditprofile.update{extdata}); GS-PUB-01 (opt2/decision-list.json#actionVariants/page:render); GS-PUB-02 (opt2/decision-list.json#actionVariants/page:render); GS-ID-10 (opt2/decision-list.json#actionVariants/admin:cextend.*, opt2/decision-list.json#actionVariants/admin:cusers.update{type=1,extdata}, opt2/decision-list.json#actionVariants/api:group.save, opt2/decision-list.json#actionVariants/api:group.save{extdata}, opt2/decision-list.json#actionVariants/api:group.save{photo}, opt2/decision-list.json#actionVariants/api:group.delete)",
+        "state": "unmet"
+      },
+      "security": {
+        "reason": "1 security files, 3433 of 3433 tests passed; ${OPT2_STATE_DIR}/security/summary.json verdict clean",
+        "state": "pass"
+      },
+      "service": "identity"
+    },
+    {
+      "contract": {
+        "reason": "5 contract files, 489 of 489 tests passed",
+        "state": "pass"
+      },
+      "events": {
+        "reason": "16 events files, 368 of 368 tests passed; opt2/reports/events.json result pass",
+        "state": "pass"
+      },
+      "isolation": {
+        "reason": "17 isolation files, 1211 of 1211 tests passed; opt2/reports/isolation.json: no cross-tenant reads or writes",
+        "state": "pass"
+      },
+      "parity": {
+        "reason": "withheld: GS-ID-05 (opt2/decision-list.json#actionVariants/admin:cusers.update{photo}, opt2/decision-list.json#actionVariants/admin:cusers.update{type=2,action=delete}); GS-PE-04 (opt2/decision-list.json#actionVariants/admin:ceditprofile.update{photo}); GS-PUB-03 (opt2/decision-list.json#actionVariants/page:updateprofile, opt2/decision-list.json#actionVariants/page:createprofile); GS-PE-06 (opt2/decision-list.json#actionVariants/admin:cextend.*, opt2/decision-list.json#actionVariants/admin:cusers.update{type=2,action=add,extdata}, opt2/decision-list.json#actionVariants/admin:cusers.update{type=2,action=update,extdata}, opt2/decision-list.json#actionVariants/admin:cusers.updateaddress{extdata}, opt2/decision-list.json#actionVariants/admin:cusers.updateaddress{action=delete}, opt2/decision-list.json#actionVariants/admin:ceditprofile.update{extdata}, opt2/decision-list.json#actionVariants/api:user.save, opt2/decision-list.json#actionVariants/api:user.save{extdata}, opt2/decision-list.json#actionVariants/api:user.save{photo}, opt2/decision-list.json#actionVariants/api:address.save, opt2/decision-list.json#actionVariants/api:address.save{extdata}, opt2/decision-list.json#actionVariants/api:address.delete, opt2/decision-list.json#actionVariants/api:user.delete, opt2/decision-list.json#actionVariants/admin:cusers.update)",
+        "state": "unmet"
+      },
+      "security": {
+        "reason": "1 security files, 234 of 234 tests passed; ${OPT2_STATE_DIR}/security/summary.json verdict clean",
+        "state": "pass"
+      },
+      "service": "people"
+    },
+    {
+      "contract": {
+        "reason": "3 contract files, 222 of 222 tests passed",
+        "state": "pass"
+      },
+      "events": {
+        "reason": "1 events files, 16 of 16 tests passed; opt2/reports/events.json result pass",
+        "state": "pass"
+      },
+      "isolation": {
+        "reason": "1 isolation files, 149 of 149 tests passed; opt2/reports/isolation.json: no cross-tenant reads or writes",
+        "state": "pass"
+      },
+      "parity": {
+        "reason": "withheld: GS-PS-01 (opt2/decision-list.json#actionVariants/admin:csettings.updatesite{action=add}, opt2/decision-list.json#tables/tentity, opt2/decision-list.json#tables/trazunasettings, opt2/decision-list.json#actionVariants/admin:csettings.updatesite{action=delete}, opt2/decision-list.json#tables/tremotepointer, opt2/decision-list.json#tables/tcontenteventreminders); GS-PS-02 (opt2/decision-list.json#tables/tentity, opt2/decision-list.json#tables/trazunasettings); GS-PS-03 (opt2/decision-list.json#actionVariants/admin:csettings.sitecopy, opt2/decision-list.json#tables/tplugins, opt2/decision-list.json#tables/tpluginsettings, opt2/decision-list.json#tables/tpluginscripts, opt2/decision-list.json#tables/tplugindisplayobjects, opt2/decision-list.json#tables/tremotepointer, opt2/decision-list.json#tables/trazunasettings, opt2/decision-list.json#actionVariants/admin:csettings.updatesite{action=add}, opt2/decision-list.json#tables/tentity, opt2/decision-list.json#actionVariants/admin:csettings.sitecopyselect, opt2/decision-list.json#actionVariants/admin:csettings.updatesite{action=delete}, opt2/decision-list.json#tables/tcontenteventreminders); GS-PS-04 (opt2/decision-list.json#tables/tplugins, opt2/decision-list.json#tables/tpluginsettings, opt2/decision-list.json#tables/tpluginscripts, opt2/decision-list.json#tables/tplugindisplayobjects, opt2/decision-list.json#tables/tclusterpeers, opt2/decision-list.json#tables/tclustercommands, opt2/decision-list.json#tables/tentity, opt2/decision-list.json#tables/tremotepointer, opt2/decision-list.json#tables/trazunasettings); GS-PS-05 (opt2/decision-list.json#actionVariants/admin:cextend.*); GS-PS-06 (opt2/decision-list.json#actionVariants/admin:ctrash.*, opt2/decision-list.json#tables/tcontenteventreminders); GS-PS-08 (opt2/decision-list.json#tables/tplugins, opt2/decision-list.json#tables/tpluginsettings, opt2/decision-list.json#tables/tpluginscripts, opt2/decision-list.json#tables/tplugindisplayobjects, opt2/decision-list.json#tables/tentity, opt2/decision-list.json#tables/tremotepointer, opt2/decision-list.json#tables/trazunasettings, opt2/decision-list.json#tables/tentity-declared:*); GS-LS-04 (opt2/decision-list.json#tables/tplugins, opt2/decision-list.json#tables/tpluginsettings, opt2/decision-list.json#tables/tpluginscripts, opt2/decision-list.json#tables/tplugindisplayobjects, opt2/decision-list.json#tables/tremotepointer, opt2/decision-list.json#tables/trazunasettings, opt2/decision-list.json#tables/tentity, opt2/decision-list.json#tables/tcontenteventreminders); GS-PS-10 (opt2/decision-list.json#tables/tplugins, opt2/decision-list.json#tables/tpluginsettings, opt2/decision-list.json#tables/tpluginscripts, opt2/decision-list.json#tables/tplugindisplayobjects, opt2/decision-list.json#tables/tremotepointer, opt2/decision-list.json#tables/trazunasettings)",
+        "state": "unmet"
+      },
+      "security": {
+        "reason": "1 security files, 228 of 228 tests passed; ${OPT2_STATE_DIR}/security/summary.json verdict clean",
+        "state": "pass"
+      },
+      "service": "programs-sites"
+    },
+    {
+      "contract": {
+        "reason": "3 contract files, 195 of 195 tests passed",
+        "state": "pass"
+      },
+      "events": {
+        "reason": "1 events files, 38 of 39 tests passed; opt2/reports/events.json result pass",
+        "state": "pass"
+      },
+      "isolation": {
+        "reason": "1 isolation files, 513 of 513 tests passed; opt2/reports/isolation.json: no cross-tenant reads or writes",
+        "state": "pass"
+      },
+      "parity": {
+        "reason": "withheld: GS-CO-01 (opt2/decision-list.json#tables/tcontenteventreminders); GS-CO-02 (opt2/decision-list.json#tables/tcontenteventreminders); GS-CO-03 (opt2/decision-list.json#tables/tcontenteventreminders); GS-CO-07 (opt2/decision-list.json#tables/tcontenteventreminders); GS-CO-09 (opt2/decision-list.json#tables/tcontenteventreminders, opt2/decision-list.json#actionVariants/admin:cperm.update); GS-CO-10 (opt2/decision-list.json#tables/tcontenteventreminders); GS-CO-13 (opt2/decision-list.json#tables/tcontenteventreminders); GS-CO-15 (opt2/decision-list.json#tables/tcontenteventreminders); GS-PUB-05 (opt2/decision-list.json#actionVariants/page:render, opt2/decision-list.json#actionVariants/page:saveform, opt2/decision-list.json#actionVariants/api:processasyncobject{saveform}, opt2/decision-list.json#actionVariants/api:processasyncobject); GS-UI-01 (opt2/decision-list.json#actionVariants/admin:carch.copy, opt2/decision-list.json#tables/tcontenteventreminders); GS-UI-02 (opt2/decision-list.json#actionVariants/admin:cperm.update, opt2/decision-list.json#tables/tcontenteventreminders); GS-UI-03 (opt2/decision-list.json#tables/tcontenteventreminders); GS-UI-05 (opt2/decision-list.json#tables/tcontenteventreminders); GS-BR-01 (opt2/decision-list.json#tables/tcontenteventreminders, opt2/decision-list.json#actionVariants/page:render); GS-CO-18 (opt2/decision-list.json#tables/tcontenteventreminders); GS-CO-19 (opt2/decision-list.json#tables/tcontenteventreminders, opt2/decision-list.json#actionVariants/admin:carch.variationtargeting{notify}); GS-LS-03 (opt2/decision-list.json#tables/tremotepointer, opt2/decision-list.json#tables/tcontenteventreminders); GS-CO-21 (opt2/decision-list.json#tables/tremotepointer, opt2/decision-list.json#tables/tcontenteventreminders)",
+        "state": "unmet"
+      },
+      "security": {
+        "reason": "1 security files, 10645 of 10645 tests passed; ${OPT2_STATE_DIR}/security/summary.json verdict clean",
+        "state": "pass"
+      },
+      "service": "strategies-content"
+    },
+    {
+      "contract": {
+        "reason": "5 contract files, 187 of 187 tests passed",
+        "state": "pass"
+      },
+      "events": {
+        "reason": "4 events files, 13 of 13 tests passed; opt2/reports/events.json result pass",
+        "state": "pass"
+      },
+      "isolation": {
+        "reason": "2 isolation files, 170 of 170 tests passed; opt2/reports/isolation.json: no cross-tenant reads or writes",
+        "state": "pass"
+      },
+      "parity": {
+        "reason": "withheld: GS-LS-02 (opt2/decision-list.json#tables/tcontenteventreminders, opt2/decision-list.json#actionVariants/page:sendlogin)",
+        "state": "unmet"
+      },
+      "security": {
+        "reason": "1 security files, 103 of 103 tests passed; ${OPT2_STATE_DIR}/security/summary.json verdict clean",
+        "state": "pass"
+      },
+      "service": "communications"
+    },
+    {
+      "contract": {
+        "reason": "4 contract files, 174 of 174 tests passed",
+        "state": "pass"
+      },
+      "events": {
+        "reason": "1 events files, 5 of 5 tests passed; opt2/reports/events.json result pass",
+        "state": "pass"
+      },
+      "isolation": {
+        "reason": "6 isolation files, 274 of 274 tests passed; opt2/reports/isolation.json: no cross-tenant reads or writes",
+        "state": "pass"
+      },
+      "parity": {
+        "reason": "2 scenarios: 2 pass",
+        "state": "pass"
+      },
+      "security": {
+        "reason": "1 security files, 92 of 92 tests passed; ${OPT2_STATE_DIR}/security/summary.json verdict clean",
+        "state": "pass"
+      },
+      "service": "reporting"
+    },
+    {
+      "contract": {
+        "reason": "4 contract files, 167 of 167 tests passed",
+        "state": "pass"
+      },
+      "events": {
+        "reason": "2 events files, 7 of 7 tests passed; opt2/reports/events.json result pass",
+        "state": "pass"
+      },
+      "isolation": {
+        "reason": "1 isolation files, 192 of 192 tests passed; opt2/reports/isolation.json: no cross-tenant reads or writes",
+        "state": "pass"
+      },
+      "parity": {
+        "reason": "4 scenarios: 4 pass",
+        "state": "pass"
+      },
+      "security": {
+        "reason": "1 security files, 60 of 60 tests passed; ${OPT2_STATE_DIR}/security/summary.json verdict clean",
+        "state": "pass"
+      },
+      "service": "surveys"
+    },
+    {
+      "contract": {
+        "reason": "3 contract files, 90 of 90 tests passed",
+        "state": "pass"
+      },
+      "events": {
+        "reason": "2 events files, 16 of 16 tests passed; opt2/reports/events.json result pass",
+        "state": "pass"
+      },
+      "isolation": {
+        "reason": "1 isolation files, 145 of 145 tests passed; opt2/reports/isolation.json: no cross-tenant reads or writes",
+        "state": "pass"
+      },
+      "parity": {
+        "reason": "6 scenarios: 6 pass",
+        "state": "pass"
+      },
+      "security": {
+        "reason": "1 security files, 113 of 113 tests passed; ${OPT2_STATE_DIR}/security/summary.json verdict clean",
+        "state": "pass"
+      },
+      "service": "timesheets"
+    },
+    {
+      "contract": {
+        "reason": "2 contract files, 67 of 67 tests passed",
+        "state": "pass"
+      },
+      "events": {
+        "reason": "1 events files, 10 of 10 tests passed; opt2/reports/events.json result pass",
+        "state": "pass"
+      },
+      "isolation": {
+        "reason": "2 isolation files, 126 of 126 tests passed; opt2/reports/isolation.json: no cross-tenant reads or writes",
+        "state": "pass"
+      },
+      "parity": {
+        "reason": "5 scenarios: 5 pass",
+        "state": "pass"
+      },
+      "security": {
+        "reason": "1 security files, 76 of 76 tests passed; ${OPT2_STATE_DIR}/security/summary.json verdict clean",
+        "state": "pass"
+      },
+      "service": "finance"
+    },
+    {
+      "contract": {
+        "reason": "3 contract files, 107 of 107 tests passed",
+        "state": "pass"
+      },
+      "events": {
+        "reason": "1 events files, 14 of 14 tests passed; opt2/reports/events.json result pass",
+        "state": "pass"
+      },
+      "isolation": {
+        "reason": "1 isolation files, 106 of 106 tests passed; opt2/reports/isolation.json: no cross-tenant reads or writes",
+        "state": "pass"
+      },
+      "parity": {
+        "reason": "2 scenarios: 2 pass",
+        "state": "pass"
+      },
+      "security": {
+        "reason": "1 security files, 54 of 54 tests passed; ${OPT2_STATE_DIR}/security/summary.json verdict clean",
+        "state": "pass"
+      },
+      "service": "e-signature"
+    }
+  ],
+  "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
+  "stages": [
+    {
+      "durationMs": 3267,
+      "evidence": [
+        "${OPT2_STATE_DIR}/test-all/stage-0.out"
+      ],
+      "name": "Pin and synthetic-label checks",
+      "result": "pass",
+      "stage": 0
+    },
+    {
+      "durationMs": 14643,
+      "evidence": [
+        "${OPT2_STATE_DIR}/test-all/stage-1.out",
+        "opt2/reports/baseline.json",
+        "opt2/reports/baseline.md",
+        "/tmp/masa-baseline.json",
+        "${OPT2_STATE_DIR}/baseline"
+      ],
+      "name": "Legacy baseline",
+      "result": "pass",
+      "stage": 1
+    },
+    {
+      "durationMs": 138871,
+      "evidence": [
+        "${OPT2_STATE_DIR}/test-all/stage-2.out",
+        "${OPT2_STATE_DIR}/test-all/vitest/platform.json",
+        "${OPT2_STATE_DIR}/test-all/vitest/gateway.json",
+        "${OPT2_STATE_DIR}/test-all/vitest/services-stub.json",
+        "${OPT2_STATE_DIR}/test-all/e2e/isolation-platform-proof.json",
+        "opt2/reports/platform-proof.json"
+      ],
+      "name": "Platform on stub",
+      "result": "pass",
+      "stage": 2
+    },
+    {
+      "durationMs": 838884,
+      "evidence": [
+        "${OPT2_STATE_DIR}/test-all/stage-3.out",
+        "${OPT2_STATE_DIR}/test-all/vitest/services-identity.json",
+        "${OPT2_STATE_DIR}/test-all/vitest/services-people.json",
+        "${OPT2_STATE_DIR}/test-all/vitest/services-programs-sites.json",
+        "${OPT2_STATE_DIR}/test-all/vitest/services-strategies-content.json",
+        "${OPT2_STATE_DIR}/test-all/vitest/services-communications.json",
+        "${OPT2_STATE_DIR}/test-all/vitest/services-reporting.json",
+        "${OPT2_STATE_DIR}/test-all/vitest/services-surveys.json",
+        "${OPT2_STATE_DIR}/test-all/vitest/services-timesheets.json",
+        "${OPT2_STATE_DIR}/test-all/vitest/services-finance.json",
+        "${OPT2_STATE_DIR}/test-all/vitest/services-e-signature.json",
+        "${OPT2_STATE_DIR}/test-all/vitest/web.json",
+        "${OPT2_STATE_DIR}/test-all/vitest/migration.json",
+        "${OPT2_STATE_DIR}/test-all/vitest/harness.json"
+      ],
+      "name": "Each service",
+      "result": "pass",
+      "stage": 3
+    },
+    {
+      "durationMs": 501678,
+      "evidence": [
+        "${OPT2_STATE_DIR}/test-all/stage-4.out",
+        "opt2/reports/reconciliation/after-backfill.json",
+        "opt2/reports/reconciliation/after-fault-applier-killed-mid-batch.json",
+        "opt2/reports/reconciliation/after-fault-service-restarted-mid-apply.json",
+        "opt2/reports/reconciliation/after-feed-1.json",
+        "opt2/reports/reconciliation/after-fault-duplicate-batch.json",
+        "opt2/reports/reconciliation/after-fault-mssql-dropped-mid-extract.json",
+        "opt2/reports/reconciliation/after-fault-pubsub-redelivery.json",
+        "opt2/reports/reconciliation/after-fault-forced-reinit.json",
+        "opt2/reports/reconciliation/after-feed-4.json",
+        "opt2/reports/reconciliation/summary.md",
+        "${OPT2_STATE_DIR}/checkpoint/ck.json"
+      ],
+      "name": "Migration",
+      "result": "pass",
+      "stage": 4
+    },
+    {
+      "durationMs": 921292,
+      "evidence": [
+        "${OPT2_STATE_DIR}/test-all/stage-5.out",
+        "${OPT2_STATE_DIR}/test-all/e2e/ui-interactions.json",
+        "harness/golden/sets",
+        "${OPT2_STATE_DIR}/test-all/e2e/session-bridge-shared-values.json",
+        "${OPT2_STATE_DIR}/checkpoint/verify"
+      ],
+      "name": "Capture",
+      "result": "pass",
+      "stage": 5
+    },
+    {
+      "durationMs": 220203,
+      "evidence": [
+        "${OPT2_STATE_DIR}/test-all/stage-6.out",
+        "opt2/reports/transitions.json",
+        "opt2/reports/reconciliation/after-feed-6.json",
+        "opt2/reports/reconciliation/post-cutover.json",
+        "opt2/reports/reconciliation/after-fault-window-import-interrupted.json"
+      ],
+      "name": "Cut-over",
+      "result": "pass",
+      "stage": 6
+    },
+    {
+      "durationMs": 5701210,
+      "evidence": [
+        "${OPT2_STATE_DIR}/test-all/stage-7.out",
+        "${OPT2_STATE_DIR}/test-all/e2e/ui-interactions.json",
+        "opt2/reports/parity.json",
+        "opt2/reports/parity.md",
+        "${OPT2_STATE_DIR}/test-all/e2e/isolation-tenant-isolation.json",
+        "${OPT2_STATE_DIR}/test-all/e2e/events-seams.json",
+        "${OPT2_STATE_DIR}/test-all/e2e/events-dlq-replay.json",
+        "${OPT2_STATE_DIR}/test-all/e2e/events-trace.json",
+        "${OPT2_STATE_DIR}/test-all/e2e/events-roster-protocol.json",
+        "${OPT2_STATE_DIR}/test-all/e2e/security-authz-matrix.json",
+        "${OPT2_STATE_DIR}/test-all/e2e/synthetic-v1-writes.json",
+        "${OPT2_STATE_DIR}/security/summary.json",
+        "opt2/reports/terraform-plan.json",
+        "${OPT2_STATE_DIR}/test-all/e2e/performance-performance.json",
+        "opt2/reports/isolation.json",
+        "opt2/reports/events.json",
+        "opt2/reports/observability.json"
+      ],
+      "name": "Equivalence and cross-cutting",
+      "result": "pass",
+      "stage": 7
+    },
+    {
+      "durationMs": 91647,
+      "evidence": [
+        "${OPT2_STATE_DIR}/test-all/stage-8.out",
+        "opt2/reports/reconciliation/rollback-before.json",
+        "opt2/reports/reconciliation/rollback-after.json",
+        "opt2/reports/rollback-rehearsal.md",
+        "opt2/reports/parity.json"
+      ],
+      "name": "Rollback",
+      "result": "pass",
+      "stage": 8
+    },
+    {
+      "durationMs": 23869,
+      "evidence": [
+        "${OPT2_STATE_DIR}/test-all/stage-9.out",
+        "opt2/reports/speed.json",
+        "opt2/reports/reviewability.json",
+        "opt2/reports/windows.json",
+        "opt2/reports/transitions.json",
+        "opt2/executive-summary/index.html"
+      ],
+      "name": "Reports",
+      "result": "pass",
+      "stage": 9
+    }
+  ],
+  "status": "generated",
+  "unmet": [
+    {
+      "evidence": [
+        "opt2/reports/parity.json",
+        "opt2/decision-list.json#tables/tcontenteventreminders"
+      ],
+      "item": "Parity: GS-ID-03 withheld",
+      "reason": "withheld pending the user's decision on opt2/decision-list.json#tables/tcontenteventreminders; proposal: Proposed owner: communications. Event reminders are written by `doaction=setReminder` and sent by `contentManager.sendReminders`, so communications is proposed as owner with a content-side projection."
+    },
+    {
+      "evidence": [
+        "opt2/reports/parity.json",
+        "opt2/decision-list.json#actionVariants/admin:clogin.main{status=sendlogin}",
+        "opt2/decision-list.json#actionVariants/admin:clogin.login{status=sendlogin}"
+      ],
+      "item": "Parity: GS-ID-04 withheld",
+      "reason": "withheld pending the user's decision on opt2/decision-list.json#actionVariants/admin:clogin.main{status=sendlogin}, opt2/decision-list.json#actionVariants/admin:clogin.login{status=sendlogin}; proposal: Identity owns the send-login request and its `tredirects` login link, and asks people to save the person and strategies-content for File-type extended-attribute files when `autoresetpasswords` resets the password through `userBean.save`, under the roster write protocol, extended to a third participant. | Identity owns the login action's send-login request, with the login's strike and device writes and the `tredirects` login link, and asks people to save the person and strategies-content for File-type extended-attribute files when `autoresetpasswords` resets the password through `userBean.save`, under the roster write protocol, extended to a third participant."
+    },
+    {
+      "evidence": [
+        "opt2/reports/parity.json",
+        "opt2/decision-list.json#actionVariants/admin:cusers.update{photo}",
+        "opt2/decision-list.json#actionVariants/admin:cusers.update{type=2,action=delete}"
+      ],
+      "item": "Parity: GS-ID-05 withheld",
+      "reason": "withheld pending the user's decision on opt2/decision-list.json#actionVariants/admin:cusers.update{photo}, opt2/decision-list.json#actionVariants/admin:cusers.update{type=2,action=delete}; proposal: People (users) or identity (groups) owns the save and asks strategies-content to store or delete the photo under the roster write protocol, extended to a third participant. | People owns the delete and asks identity to delete the account, credential and OAuth-token rows, and strategies-content to retire a stored photo, under the roster write protocol."
+    },
+    {
+      "evidence": [
+        "opt2/reports/parity.json",
+        "opt2/decision-list.json#actionVariants/admin:cusers.update{type=1,action=delete}"
+      ],
+      "item": "Parity: GS-ID-06 withheld",
+      "reason": "withheld pending the user's decision on opt2/decision-list.json#actionVariants/admin:cusers.update{type=1,action=delete}; proposal: Identity owns the group delete and asks strategies-content to retire the group's stored photo under the roster write protocol, with identity coordinating."
+    },
+    {
+      "evidence": [
+        "opt2/reports/parity.json",
+        "opt2/decision-list.json#actionVariants/admin:cperm.update"
+      ],
+      "item": "Parity: GS-ID-07 withheld",
+      "reason": "withheld pending the user's decision on opt2/decision-list.json#actionVariants/admin:cperm.update; proposal: Identity owns the permission save and asks strategies-content to save the node's approval-chain assignment (`tapprovalassignments`) under the roster write protocol, with identity coordinating."
+    },
+    {
+      "evidence": [
+        "opt2/reports/parity.json",
+        "opt2/decision-list.json#actionVariants/admin:cusers.update{type=2,action=delete}",
+        "opt2/decision-list.json#actionVariants/page:render",
+        "opt2/decision-list.json#actionVariants/admin:ceditprofile.update{extdata}"
+      ],
+      "item": "Parity: GS-ID-09 withheld",
+      "reason": "withheld pending the user's decision on opt2/decision-list.json#actionVariants/admin:cusers.update{type=2,action=delete}, opt2/decision-list.json#actionVariants/page:render, opt2/decision-list.json#actionVariants/admin:ceditprofile.update{extdata}; proposal: People owns the delete and asks identity to delete the account, credential and OAuth-token rows, and strategies-content to retire a stored photo, under the roster write protocol. | The page stays legacy-rendered by the CFML theme runtime, and its session-tracking, login, account and rendered-image file writes are imported into each owner through write windows. | People owns the profile save and asks identity for the account part and strategies-content for File-type extended-attribute files under the roster write protocol, extended to a third participant."
+    },
+    {
+      "evidence": [
+        "opt2/reports/parity.json",
+        "opt2/decision-list.json#actionVariants/admin:ceditprofile.update{photo}"
+      ],
+      "item": "Parity: GS-PE-04 withheld",
+      "reason": "withheld pending the user's decision on opt2/decision-list.json#actionVariants/admin:ceditprofile.update{photo}; proposal: People owns the profile save and asks identity for the account part and strategies-content to store or delete the photo under the roster write protocol, extended to a third participant."
+    },
+    {
+      "evidence": [
+        "opt2/reports/parity.json",
+        "opt2/decision-list.json#actionVariants/admin:csettings.updatesite{action=add}",
+        "opt2/decision-list.json#tables/tentity",
+        "opt2/decision-list.json#tables/trazunasettings",
+        "opt2/decision-list.json#actionVariants/admin:csettings.updatesite{action=delete}",
+        "opt2/decision-list.json#tables/tremotepointer",
+        "opt2/decision-list.json#tables/tcontenteventreminders"
+      ],
+      "item": "Parity: GS-PS-01 withheld",
+      "reason": "withheld pending the user's decision on opt2/decision-list.json#actionVariants/admin:csettings.updatesite{action=add}, opt2/decision-list.json#tables/tentity, opt2/decision-list.json#tables/trazunasettings, opt2/decision-list.json#actionVariants/admin:csettings.updatesite{action=delete}, opt2/decision-list.json#tables/tremotepointer, opt2/decision-list.json#tables/tcontenteventreminders; proposal: Programs-sites orchestrates the site-create closure across identity, people, strategies-content and communications under the roster write protocol, extended to every participant, once `tentity` and `trazunasettings` are decided. | Proposed owner: programs-sites. Runtime entity declaration (`declareEntity`, `beanEntity.cfc`) has no single static owner, so programs-sites is proposed as the schema registry. | Proposed owner: strategies-content. Razuna integration settings serve the legacy-served `razuna` circuit, yet every site create, update and delete also writes them (`core/mura/settings/settingsManager.cfc` 271, 316, 379). | Programs-sites orchestrates the site-delete closure across identity, people, strategies-content, communications, reporting and the trash rows of e-signature, finance, surveys and timesheets, including the decision-list `tcontenteventreminders`, `tentity`, `tremotepointer` and `trazunasettings` rows and the bundleable entity tables, under the roster write protocol extended to every participant. | Proposed owner: strategies-content. No carried entry point writes it, so nothing on the target needs it. | Proposed owner: communications. Event reminders are written by `doaction=setReminder` and sent by `contentManager.sendReminders`, so communications is proposed as owner with a content-side projection."
+    },
+    {
+      "evidence": [
+        "opt2/reports/parity.json",
+        "opt2/decision-list.json#tables/tentity",
+        "opt2/decision-list.json#tables/trazunasettings"
+      ],
+      "item": "Parity: GS-PS-02 withheld",
+      "reason": "withheld pending the user's decision on opt2/decision-list.json#tables/tentity, opt2/decision-list.json#tables/trazunasettings; proposal: Proposed owner: programs-sites. Runtime entity declaration (`declareEntity`, `beanEntity.cfc`) has no single static owner, so programs-sites is proposed as the schema registry. | Proposed owner: strategies-content. Razuna integration settings serve the legacy-served `razuna` circuit, yet every site create, update and delete also writes them (`core/mura/settings/settingsManager.cfc` 271, 316, 379)."
+    },
+    {
+      "evidence": [
+        "opt2/reports/parity.json",
+        "opt2/decision-list.json#actionVariants/admin:csettings.sitecopy",
+        "opt2/decision-list.json#tables/tplugins",
+        "opt2/decision-list.json#tables/tpluginsettings",
+        "opt2/decision-list.json#tables/tpluginscripts",
+        "opt2/decision-list.json#tables/tplugindisplayobjects",
+        "opt2/decision-list.json#tables/tremotepointer",
+        "opt2/decision-list.json#tables/trazunasettings",
+        "opt2/decision-list.json#actionVariants/admin:csettings.updatesite{action=add}",
+        "opt2/decision-list.json#tables/tentity",
+        "opt2/decision-list.json#actionVariants/admin:csettings.sitecopyselect",
+        "opt2/decision-list.json#actionVariants/admin:csettings.updatesite{action=delete}",
+        "opt2/decision-list.json#tables/tcontenteventreminders"
+      ],
+      "item": "Parity: GS-PS-03 withheld",
+      "reason": "withheld pending the user's decision on opt2/decision-list.json#actionVariants/admin:csettings.sitecopy, opt2/decision-list.json#tables/tplugins, opt2/decision-list.json#tables/tpluginsettings, opt2/decision-list.json#tables/tpluginscripts, opt2/decision-list.json#tables/tplugindisplayobjects, opt2/decision-list.json#tables/tremotepointer, opt2/decision-list.json#tables/trazunasettings, opt2/decision-list.json#actionVariants/admin:csettings.updatesite{action=add}, opt2/decision-list.json#tables/tentity, opt2/decision-list.json#actionVariants/admin:csettings.sitecopyselect, opt2/decision-list.json#actionVariants/admin:csettings.updatesite{action=delete}, opt2/decision-list.json#tables/tcontenteventreminders; proposal: Programs-sites orchestrates the `publisher.copy` closure across every owner under the roster write protocol, extended to every participant, once the plugin tables, `tremotepointer` and `trazunasettings` are decided. | Proposed owner: retire. Retires with the CFML plugin runtime, which runs only on legacy. | Proposed owner: strategies-content. No carried entry point writes it, so nothing on the target needs it. | Proposed owner: strategies-content. Razuna integration settings serve the legacy-served `razuna` circuit, yet every site create, update and delete also writes them (`core/mura/settings/settingsManager.cfc` 271, 316, 379). | Programs-sites orchestrates the site-create closure across identity, people, strategies-content and communications under the roster write protocol, extended to every participant, once `tentity` and `trazunasettings` are decided. | Proposed owner: programs-sites. Runtime entity declaration (`declareEntity`, `beanEntity.cfc`) has no single static owner, so programs-sites is proposed as the schema registry. | Programs-sites hosts the site-copy selection screen once the `csettings.sitecopy` proposal is approved, because the screen serves only that branch. | Programs-sites orchestrates the site-delete closure across identity, people, strategies-content, communications, reporting and the trash rows of e-signature, finance, surveys and timesheets, including the decision-list `tcontenteventreminders`, `tentity`, `tremotepointer` and `trazunasettings` rows and the bundleable entity tables, under the roster write protocol extended to every participant. | Proposed owner: communications. Event reminders are written by `doaction=setReminder` and sent by `contentManager.sendReminders`, so communications is proposed as owner with a content-side projection."
+    },
+    {
+      "evidence": [
+        "opt2/reports/parity.json",
+        "opt2/decision-list.json#tables/tplugins",
+        "opt2/decision-list.json#tables/tpluginsettings",
+        "opt2/decision-list.json#tables/tpluginscripts",
+        "opt2/decision-list.json#tables/tplugindisplayobjects",
+        "opt2/decision-list.json#tables/tclusterpeers",
+        "opt2/decision-list.json#tables/tclustercommands",
+        "opt2/decision-list.json#tables/tentity",
+        "opt2/decision-list.json#tables/tremotepointer",
+        "opt2/decision-list.json#tables/trazunasettings"
+      ],
+      "item": "Parity: GS-PS-04 withheld",
+      "reason": "withheld pending the user's decision on opt2/decision-list.json#tables/tplugins, opt2/decision-list.json#tables/tpluginsettings, opt2/decision-list.json#tables/tpluginscripts, opt2/decision-list.json#tables/tplugindisplayobjects, opt2/decision-list.json#tables/tclusterpeers, opt2/decision-list.json#tables/tclustercommands, opt2/decision-list.json#tables/tentity, opt2/decision-list.json#tables/tremotepointer, opt2/decision-list.json#tables/trazunasettings; proposal: Proposed owner: retire. Retires with the CFML plugin runtime, which runs only on legacy. | Proposed owner: retire. Retires because Pub/Sub replaces the cluster command broadcast this peer registry serves. | Proposed owner: retire. Retires because Pub/Sub replaces cluster commands. | Proposed owner: programs-sites. Runtime entity declaration (`declareEntity`, `beanEntity.cfc`) has no single static owner, so programs-sites is proposed as the schema registry. | Proposed owner: strategies-content. No carried entry point writes it, so nothing on the target needs it. | Proposed owner: strategies-content. Razuna integration settings serve the legacy-served `razuna` circuit, yet every site create, update and delete also writes them (`core/mura/settings/settingsManager.cfc` 271, 316, 379)."
+    },
+    {
+      "evidence": [
+        "opt2/reports/parity.json",
+        "opt2/decision-list.json#actionVariants/admin:cextend.*"
+      ],
+      "item": "Parity: GS-PS-05 withheld",
+      "reason": "withheld pending the user's decision on opt2/decision-list.json#actionVariants/admin:cextend.*; proposal: Programs-sites hosts the class-extension screens, and writes are delegated to the owner of each stored subtype's `baseTable`; the subtype import's site-settings save stays with programs-sites once `trazunasettings` is decided."
+    },
+    {
+      "evidence": [
+        "opt2/reports/parity.json",
+        "opt2/decision-list.json#actionVariants/admin:ctrash.*",
+        "opt2/decision-list.json#tables/tcontenteventreminders"
+      ],
+      "item": "Parity: GS-PS-06 withheld",
+      "reason": "withheld pending the user's decision on opt2/decision-list.json#actionVariants/admin:ctrash.*, opt2/decision-list.json#tables/tcontenteventreminders; proposal: Programs-sites hosts the trash screens, and writes are delegated to the owner of each stored `objectClass`. | Proposed owner: communications. Event reminders are written by `doaction=setReminder` and sent by `contentManager.sendReminders`, so communications is proposed as owner with a content-side projection."
+    },
+    {
+      "evidence": [
+        "opt2/reports/parity.json",
+        "opt2/decision-list.json#tables/tcontenteventreminders"
+      ],
+      "item": "Parity: GS-CO-01 withheld",
+      "reason": "withheld pending the user's decision on opt2/decision-list.json#tables/tcontenteventreminders; proposal: Proposed owner: communications. Event reminders are written by `doaction=setReminder` and sent by `contentManager.sendReminders`, so communications is proposed as owner with a content-side projection."
+    },
+    {
+      "evidence": [
+        "opt2/reports/parity.json",
+        "opt2/decision-list.json#tables/tcontenteventreminders"
+      ],
+      "item": "Parity: GS-CO-02 withheld",
+      "reason": "withheld pending the user's decision on opt2/decision-list.json#tables/tcontenteventreminders; proposal: Proposed owner: communications. Event reminders are written by `doaction=setReminder` and sent by `contentManager.sendReminders`, so communications is proposed as owner with a content-side projection."
+    },
+    {
+      "evidence": [
+        "opt2/reports/parity.json",
+        "opt2/decision-list.json#tables/tcontenteventreminders"
+      ],
+      "item": "Parity: GS-CO-03 withheld",
+      "reason": "withheld pending the user's decision on opt2/decision-list.json#tables/tcontenteventreminders; proposal: Proposed owner: communications. Event reminders are written by `doaction=setReminder` and sent by `contentManager.sendReminders`, so communications is proposed as owner with a content-side projection."
+    },
+    {
+      "evidence": [
+        "opt2/reports/parity.json",
+        "opt2/decision-list.json#tables/tcontenteventreminders"
+      ],
+      "item": "Parity: GS-CO-07 withheld",
+      "reason": "withheld pending the user's decision on opt2/decision-list.json#tables/tcontenteventreminders; proposal: Proposed owner: communications. Event reminders are written by `doaction=setReminder` and sent by `contentManager.sendReminders`, so communications is proposed as owner with a content-side projection."
+    },
+    {
+      "evidence": [
+        "opt2/reports/parity.json",
+        "opt2/decision-list.json#tables/tcontenteventreminders",
+        "opt2/decision-list.json#actionVariants/admin:cperm.update"
+      ],
+      "item": "Parity: GS-CO-09 withheld",
+      "reason": "withheld pending the user's decision on opt2/decision-list.json#tables/tcontenteventreminders, opt2/decision-list.json#actionVariants/admin:cperm.update; proposal: Proposed owner: communications. Event reminders are written by `doaction=setReminder` and sent by `contentManager.sendReminders`, so communications is proposed as owner with a content-side projection. | Identity owns the permission save and asks strategies-content to save the node's approval-chain assignment (`tapprovalassignments`) under the roster write protocol, with identity coordinating."
+    },
+    {
+      "evidence": [
+        "opt2/reports/parity.json",
+        "opt2/decision-list.json#tables/tcontenteventreminders"
+      ],
+      "item": "Parity: GS-CO-10 withheld",
+      "reason": "withheld pending the user's decision on opt2/decision-list.json#tables/tcontenteventreminders; proposal: Proposed owner: communications. Event reminders are written by `doaction=setReminder` and sent by `contentManager.sendReminders`, so communications is proposed as owner with a content-side projection."
+    },
+    {
+      "evidence": [
+        "opt2/reports/parity.json",
+        "opt2/decision-list.json#tables/tcontenteventreminders"
+      ],
+      "item": "Parity: GS-CO-13 withheld",
+      "reason": "withheld pending the user's decision on opt2/decision-list.json#tables/tcontenteventreminders; proposal: Proposed owner: communications. Event reminders are written by `doaction=setReminder` and sent by `contentManager.sendReminders`, so communications is proposed as owner with a content-side projection."
+    },
+    {
+      "evidence": [
+        "opt2/reports/parity.json",
+        "opt2/decision-list.json#tables/tcontenteventreminders"
+      ],
+      "item": "Parity: GS-CO-15 withheld",
+      "reason": "withheld pending the user's decision on opt2/decision-list.json#tables/tcontenteventreminders; proposal: Proposed owner: communications. Event reminders are written by `doaction=setReminder` and sent by `contentManager.sendReminders`, so communications is proposed as owner with a content-side projection."
+    },
+    {
+      "evidence": [
+        "opt2/reports/parity.json",
+        "opt2/decision-list.json#actionVariants/page:render"
+      ],
+      "item": "Parity: GS-PUB-01 withheld",
+      "reason": "withheld pending the user's decision on opt2/decision-list.json#actionVariants/page:render; proposal: The page stays legacy-rendered by the CFML theme runtime, and its session-tracking, login, account and rendered-image file writes are imported into each owner through write windows."
+    },
+    {
+      "evidence": [
+        "opt2/reports/parity.json",
+        "opt2/decision-list.json#actionVariants/page:render"
+      ],
+      "item": "Parity: GS-PUB-02 withheld",
+      "reason": "withheld pending the user's decision on opt2/decision-list.json#actionVariants/page:render; proposal: The page stays legacy-rendered by the CFML theme runtime, and its session-tracking, login, account and rendered-image file writes are imported into each owner through write windows."
+    },
+    {
+      "evidence": [
+        "opt2/reports/parity.json",
+        "opt2/decision-list.json#actionVariants/page:updateprofile",
+        "opt2/decision-list.json#actionVariants/page:createprofile"
+      ],
+      "item": "Parity: GS-PUB-03 withheld",
+      "reason": "withheld pending the user's decision on opt2/decision-list.json#actionVariants/page:updateprofile, opt2/decision-list.json#actionVariants/page:createprofile; proposal: People owns the profile update and asks identity for the account part and strategies-content for files under the roster write protocol, while the page itself stays legacy-rendered. | People owns the profile create and asks identity for the account part and strategies-content for files under the roster write protocol, while the page itself stays legacy-rendered."
+    },
+    {
+      "evidence": [
+        "opt2/reports/parity.json",
+        "opt2/decision-list.json#actionVariants/page:render",
+        "opt2/decision-list.json#actionVariants/page:saveform",
+        "opt2/decision-list.json#actionVariants/api:processasyncobject{saveform}",
+        "opt2/decision-list.json#actionVariants/api:processasyncobject"
+      ],
+      "item": "Parity: GS-PUB-05 withheld",
+      "reason": "withheld pending the user's decision on opt2/decision-list.json#actionVariants/page:render, opt2/decision-list.json#actionVariants/page:saveform, opt2/decision-list.json#actionVariants/api:processasyncobject{saveform}, opt2/decision-list.json#actionVariants/api:processasyncobject; proposal: The page stays legacy-rendered by the CFML theme runtime, and its session-tracking, login, account and rendered-image file writes are imported into each owner through write windows. | Strategies-content owns the form submission and asks identity to create the notification mail's `tredirects` links under the roster write protocol, while the page itself stays legacy-rendered. | Strategies-content owns the form submission and asks identity to create the notification mail's `tredirects` links under the roster write protocol, while the form itself stays legacy-rendered. | Display objects stay legacy-rendered by the CFML runtime, and their writes into target-authoritative units are imported through write windows."
+    },
+    {
+      "evidence": [
+        "opt2/reports/parity.json",
+        "opt2/decision-list.json#actionVariants/admin:carch.copy",
+        "opt2/decision-list.json#tables/tcontenteventreminders"
+      ],
+      "item": "Parity: GS-UI-01 withheld",
+      "reason": "withheld pending the user's decision on opt2/decision-list.json#actionVariants/admin:carch.copy, opt2/decision-list.json#tables/tcontenteventreminders; proposal: Strategies-content owns the copy and asks identity to copy the source nodes' `tpermissions` rows and create the notification's `tredirects` links under the roster write protocol, with strategies-content coordinating, once `tcontenteventreminders` is decided. | Proposed owner: communications. Event reminders are written by `doaction=setReminder` and sent by `contentManager.sendReminders`, so communications is proposed as owner with a content-side projection."
+    },
+    {
+      "evidence": [
+        "opt2/reports/parity.json",
+        "opt2/decision-list.json#actionVariants/admin:cperm.update",
+        "opt2/decision-list.json#tables/tcontenteventreminders"
+      ],
+      "item": "Parity: GS-UI-02 withheld",
+      "reason": "withheld pending the user's decision on opt2/decision-list.json#actionVariants/admin:cperm.update, opt2/decision-list.json#tables/tcontenteventreminders; proposal: Identity owns the permission save and asks strategies-content to save the node's approval-chain assignment (`tapprovalassignments`) under the roster write protocol, with identity coordinating. | Proposed owner: communications. Event reminders are written by `doaction=setReminder` and sent by `contentManager.sendReminders`, so communications is proposed as owner with a content-side projection."
+    },
+    {
+      "evidence": [
+        "opt2/reports/parity.json",
+        "opt2/decision-list.json#tables/tcontenteventreminders"
+      ],
+      "item": "Parity: GS-UI-03 withheld",
+      "reason": "withheld pending the user's decision on opt2/decision-list.json#tables/tcontenteventreminders; proposal: Proposed owner: communications. Event reminders are written by `doaction=setReminder` and sent by `contentManager.sendReminders`, so communications is proposed as owner with a content-side projection."
+    },
+    {
+      "evidence": [
+        "opt2/reports/parity.json",
+        "opt2/decision-list.json#tables/tcontenteventreminders"
+      ],
+      "item": "Parity: GS-UI-05 withheld",
+      "reason": "withheld pending the user's decision on opt2/decision-list.json#tables/tcontenteventreminders; proposal: Proposed owner: communications. Event reminders are written by `doaction=setReminder` and sent by `contentManager.sendReminders`, so communications is proposed as owner with a content-side projection."
+    },
+    {
+      "evidence": [
+        "opt2/reports/parity.json",
+        "opt2/decision-list.json#tables/tcontenteventreminders",
+        "opt2/decision-list.json#actionVariants/page:render"
+      ],
+      "item": "Parity: GS-BR-01 withheld",
+      "reason": "withheld pending the user's decision on opt2/decision-list.json#tables/tcontenteventreminders, opt2/decision-list.json#actionVariants/page:render; proposal: Proposed owner: communications. Event reminders are written by `doaction=setReminder` and sent by `contentManager.sendReminders`, so communications is proposed as owner with a content-side projection. | The page stays legacy-rendered by the CFML theme runtime, and its session-tracking, login, account and rendered-image file writes are imported into each owner through write windows."
+    },
+    {
+      "evidence": [
+        "opt2/reports/parity.json",
+        "opt2/decision-list.json#actionVariants/admin:cextend.*",
+        "opt2/decision-list.json#actionVariants/admin:cusers.update{type=1,extdata}",
+        "opt2/decision-list.json#actionVariants/api:group.save",
+        "opt2/decision-list.json#actionVariants/api:group.save{extdata}",
+        "opt2/decision-list.json#actionVariants/api:group.save{photo}",
+        "opt2/decision-list.json#actionVariants/api:group.delete"
+      ],
+      "item": "Parity: GS-ID-10 withheld",
+      "reason": "withheld pending the user's decision on opt2/decision-list.json#actionVariants/admin:cextend.*, opt2/decision-list.json#actionVariants/admin:cusers.update{type=1,extdata}, opt2/decision-list.json#actionVariants/api:group.save, opt2/decision-list.json#actionVariants/api:group.save{extdata}, opt2/decision-list.json#actionVariants/api:group.save{photo}, opt2/decision-list.json#actionVariants/api:group.delete; proposal: Programs-sites hosts the class-extension screens, and writes are delegated to the owner of each stored subtype's `baseTable`; the subtype import's site-settings save stays with programs-sites once `trazunasettings` is decided. | Identity owns the group save and asks strategies-content to store or delete File-type extended-attribute files under the roster write protocol, with identity coordinating. | Identity owns the JSON API group save and asks strategies-content to delete or flag the File-type extended-attribute files of the extend sets the group already stores under the roster write protocol, with identity coordinating. | Identity owns the JSON API group save and asks strategies-content to store or delete File-type extended-attribute files under the roster write protocol, with identity coordinating. | Identity owns the JSON API group save and asks strategies-content to store or delete the photo under the roster write protocol, with identity coordinating. | Identity owns the JSON API group delete and asks strategies-content to retire the group's stored photo under the roster write protocol, with identity coordinating."
+    },
+    {
+      "evidence": [
+        "opt2/reports/parity.json",
+        "opt2/decision-list.json#actionVariants/admin:cextend.*",
+        "opt2/decision-list.json#actionVariants/admin:cusers.update{type=2,action=add,extdata}",
+        "opt2/decision-list.json#actionVariants/admin:cusers.update{type=2,action=update,extdata}",
+        "opt2/decision-list.json#actionVariants/admin:cusers.updateaddress{extdata}",
+        "opt2/decision-list.json#actionVariants/admin:cusers.updateaddress{action=delete}",
+        "opt2/decision-list.json#actionVariants/admin:ceditprofile.update{extdata}",
+        "opt2/decision-list.json#actionVariants/api:user.save",
+        "opt2/decision-list.json#actionVariants/api:user.save{extdata}",
+        "opt2/decision-list.json#actionVariants/api:user.save{photo}",
+        "opt2/decision-list.json#actionVariants/api:address.save",
+        "opt2/decision-list.json#actionVariants/api:address.save{extdata}",
+        "opt2/decision-list.json#actionVariants/api:address.delete",
+        "opt2/decision-list.json#actionVariants/api:user.delete",
+        "opt2/decision-list.json#actionVariants/admin:cusers.update"
+      ],
+      "item": "Parity: GS-PE-06 withheld",
+      "reason": "withheld pending the user's decision on opt2/decision-list.json#actionVariants/admin:cextend.*, opt2/decision-list.json#actionVariants/admin:cusers.update{type=2,action=add,extdata}, opt2/decision-list.json#actionVariants/admin:cusers.update{type=2,action=update,extdata}, opt2/decision-list.json#actionVariants/admin:cusers.updateaddress{extdata}, opt2/decision-list.json#actionVariants/admin:cusers.updateaddress{action=delete}, opt2/decision-list.json#actionVariants/admin:ceditprofile.update{extdata}, opt2/decision-list.json#actionVariants/api:user.save, opt2/decision-list.json#actionVariants/api:user.save{extdata}, opt2/decision-list.json#actionVariants/api:user.save{photo}, opt2/decision-list.json#actionVariants/api:address.save, opt2/decision-list.json#actionVariants/api:address.save{extdata}, opt2/decision-list.json#actionVariants/api:address.delete, opt2/decision-list.json#actionVariants/api:user.delete, opt2/decision-list.json#actionVariants/admin:cusers.update; proposal: Programs-sites hosts the class-extension screens, and writes are delegated to the owner of each stored subtype's `baseTable`; the subtype import's site-settings save stays with programs-sites once `trazunasettings` is decided. | People owns the roster create and asks identity for the account part and strategies-content for File-type extended-attribute files under the roster write protocol, extended to a third participant. | People owns the roster edit and asks identity for the account part and strategies-content for File-type extended-attribute files under the roster write protocol, extended to a third participant. | People owns the address save and asks strategies-content to store or delete File-type extended-attribute files under the roster write protocol, with people coordinating. | People owns the address delete and asks strategies-content to delete the address's `tcontentratings` rows and stored extended-attribute files under the roster write protocol, with people coordinating. | People owns the profile save and asks identity for the account part and strategies-content for File-type extended-attribute files under the roster write protocol, extended to a third participant. | People owns the JSON API user save and asks identity for the account part and strategies-content for the File-type extended-attribute files of the extend sets the user already stores under the roster write protocol, extended to a third participant. | People owns the JSON API user save and asks identity for the account part and strategies-content for File-type extended-attribute files under the roster write protocol, extended to a third participant. | People owns the JSON API user save and asks identity for the account part and strategies-content to store or delete the photo under the roster write protocol, extended to a third participant. | People owns the JSON API address save and asks strategies-content to delete or flag the File-type extended-attribute files of the extend sets the address already stores under the roster write protocol, with people coordinating. | People owns the JSON API address save and asks strategies-content to store or delete File-type extended-attribute files under the roster write protocol, with people coordinating. | People owns the JSON API address delete and asks strategies-content to delete the address's `tcontentratings` rows and stored extended-attribute files under the roster write protocol, with people coordinating. | People owns the JSON API user delete, which reaches the same `userManager.delete` closure, and asks identity and strategies-content for their parts under the roster write protocol. | Resolve the owner from the stored `Type` of the addressed row, or the bean default for a create, and apply that typed branch's resolution."
+    },
+    {
+      "evidence": [
+        "opt2/reports/parity.json",
+        "opt2/decision-list.json#tables/tplugins",
+        "opt2/decision-list.json#tables/tpluginsettings",
+        "opt2/decision-list.json#tables/tpluginscripts",
+        "opt2/decision-list.json#tables/tplugindisplayobjects",
+        "opt2/decision-list.json#tables/tentity",
+        "opt2/decision-list.json#tables/tremotepointer",
+        "opt2/decision-list.json#tables/trazunasettings",
+        "opt2/decision-list.json#tables/tentity-declared:*"
+      ],
+      "item": "Parity: GS-PS-08 withheld",
+      "reason": "withheld pending the user's decision on opt2/decision-list.json#tables/tplugins, opt2/decision-list.json#tables/tpluginsettings, opt2/decision-list.json#tables/tpluginscripts, opt2/decision-list.json#tables/tplugindisplayobjects, opt2/decision-list.json#tables/tentity, opt2/decision-list.json#tables/tremotepointer, opt2/decision-list.json#tables/trazunasettings, opt2/decision-list.json#tables/tentity-declared:*; proposal: Proposed owner: retire. Retires with the CFML plugin runtime, which runs only on legacy. | Proposed owner: programs-sites. Runtime entity declaration (`declareEntity`, `beanEntity.cfc`) has no single static owner, so programs-sites is proposed as the schema registry. | Proposed owner: strategies-content. No carried entry point writes it, so nothing on the target needs it. | Proposed owner: strategies-content. Razuna integration settings serve the legacy-served `razuna` circuit, yet every site create, update and delete also writes them (`core/mura/settings/settingsManager.cfc` 271, 316, 379). | Proposed owner: programs-sites. Tables of entities declared at runtime through `tentity` or by plugins have no single static owner."
+    },
+    {
+      "evidence": [
+        "opt2/reports/parity.json",
+        "opt2/decision-list.json#tables/tcontenteventreminders"
+      ],
+      "item": "Parity: GS-CO-18 withheld",
+      "reason": "withheld pending the user's decision on opt2/decision-list.json#tables/tcontenteventreminders; proposal: Proposed owner: communications. Event reminders are written by `doaction=setReminder` and sent by `contentManager.sendReminders`, so communications is proposed as owner with a content-side projection."
+    },
+    {
+      "evidence": [
+        "opt2/reports/parity.json",
+        "opt2/decision-list.json#tables/tcontenteventreminders",
+        "opt2/decision-list.json#actionVariants/admin:carch.variationtargeting{notify}"
+      ],
+      "item": "Parity: GS-CO-19 withheld",
+      "reason": "withheld pending the user's decision on opt2/decision-list.json#tables/tcontenteventreminders, opt2/decision-list.json#actionVariants/admin:carch.variationtargeting{notify}; proposal: Proposed owner: communications. Event reminders are written by `doaction=setReminder` and sent by `contentManager.sendReminders`, so communications is proposed as owner with a content-side projection. | Strategies-content owns the save and asks identity to create the notification's `tredirects` links under the roster write protocol, with strategies-content coordinating, once `tcontenteventreminders` is decided."
+    },
+    {
+      "evidence": [
+        "opt2/reports/parity.json",
+        "opt2/decision-list.json#tables/tcontenteventreminders",
+        "opt2/decision-list.json#actionVariants/page:sendlogin"
+      ],
+      "item": "Parity: GS-LS-02 withheld",
+      "reason": "withheld pending the user's decision on opt2/decision-list.json#tables/tcontenteventreminders, opt2/decision-list.json#actionVariants/page:sendlogin; proposal: Proposed owner: communications. Event reminders are written by `doaction=setReminder` and sent by `contentManager.sendReminders`, so communications is proposed as owner with a content-side projection. | Identity owns the public send-login request, the login display object's strike update and the `tredirects` login link, and asks people to save the person and strategies-content for File-type extended-attribute files when `autoresetpasswords` resets the password through `userBean.save`, under the roster write protocol, while the page itself stays legacy-rendered."
+    },
+    {
+      "evidence": [
+        "opt2/reports/parity.json",
+        "opt2/decision-list.json#tables/tremotepointer",
+        "opt2/decision-list.json#tables/tcontenteventreminders"
+      ],
+      "item": "Parity: GS-LS-03 withheld",
+      "reason": "withheld pending the user's decision on opt2/decision-list.json#tables/tremotepointer, opt2/decision-list.json#tables/tcontenteventreminders; proposal: Proposed owner: strategies-content. No carried entry point writes it, so nothing on the target needs it. | Proposed owner: communications. Event reminders are written by `doaction=setReminder` and sent by `contentManager.sendReminders`, so communications is proposed as owner with a content-side projection."
+    },
+    {
+      "evidence": [
+        "opt2/reports/parity.json",
+        "opt2/decision-list.json#tables/tplugins",
+        "opt2/decision-list.json#tables/tpluginsettings",
+        "opt2/decision-list.json#tables/tpluginscripts",
+        "opt2/decision-list.json#tables/tplugindisplayobjects",
+        "opt2/decision-list.json#tables/tremotepointer",
+        "opt2/decision-list.json#tables/trazunasettings",
+        "opt2/decision-list.json#tables/tentity",
+        "opt2/decision-list.json#tables/tcontenteventreminders"
+      ],
+      "item": "Parity: GS-LS-04 withheld",
+      "reason": "withheld pending the user's decision on opt2/decision-list.json#tables/tplugins, opt2/decision-list.json#tables/tpluginsettings, opt2/decision-list.json#tables/tpluginscripts, opt2/decision-list.json#tables/tplugindisplayobjects, opt2/decision-list.json#tables/tremotepointer, opt2/decision-list.json#tables/trazunasettings, opt2/decision-list.json#tables/tentity, opt2/decision-list.json#tables/tcontenteventreminders; proposal: Proposed owner: retire. Retires with the CFML plugin runtime, which runs only on legacy. | Proposed owner: strategies-content. No carried entry point writes it, so nothing on the target needs it. | Proposed owner: strategies-content. Razuna integration settings serve the legacy-served `razuna` circuit, yet every site create, update and delete also writes them (`core/mura/settings/settingsManager.cfc` 271, 316, 379). | Proposed owner: programs-sites. Runtime entity declaration (`declareEntity`, `beanEntity.cfc`) has no single static owner, so programs-sites is proposed as the schema registry. | Proposed owner: communications. Event reminders are written by `doaction=setReminder` and sent by `contentManager.sendReminders`, so communications is proposed as owner with a content-side projection."
+    },
+    {
+      "evidence": [
+        "opt2/reports/parity.json",
+        "opt2/decision-list.json#tables/tplugins",
+        "opt2/decision-list.json#tables/tpluginsettings",
+        "opt2/decision-list.json#tables/tpluginscripts",
+        "opt2/decision-list.json#tables/tplugindisplayobjects",
+        "opt2/decision-list.json#tables/tremotepointer",
+        "opt2/decision-list.json#tables/trazunasettings"
+      ],
+      "item": "Parity: GS-PS-10 withheld",
+      "reason": "withheld pending the user's decision on opt2/decision-list.json#tables/tplugins, opt2/decision-list.json#tables/tpluginsettings, opt2/decision-list.json#tables/tpluginscripts, opt2/decision-list.json#tables/tplugindisplayobjects, opt2/decision-list.json#tables/tremotepointer, opt2/decision-list.json#tables/trazunasettings; proposal: Proposed owner: retire. Retires with the CFML plugin runtime, which runs only on legacy. | Proposed owner: strategies-content. No carried entry point writes it, so nothing on the target needs it. | Proposed owner: strategies-content. Razuna integration settings serve the legacy-served `razuna` circuit, yet every site create, update and delete also writes them (`core/mura/settings/settingsManager.cfc` 271, 316, 379)."
+    },
+    {
+      "evidence": [
+        "opt2/reports/parity.json",
+        "opt2/decision-list.json#tables/tremotepointer",
+        "opt2/decision-list.json#tables/tcontenteventreminders"
+      ],
+      "item": "Parity: GS-CO-21 withheld",
+      "reason": "withheld pending the user's decision on opt2/decision-list.json#tables/tremotepointer, opt2/decision-list.json#tables/tcontenteventreminders; proposal: Proposed owner: strategies-content. No carried entry point writes it, so nothing on the target needs it. | Proposed owner: communications. Event reminders are written by `doaction=setReminder` and sent by `contentManager.sendReminders`, so communications is proposed as owner with a content-side projection."
+    },
+    {
+      "evidence": [
+        "opt2/reports/parity.json"
+      ],
+      "item": "Done: ten services: identity parity",
+      "reason": "unmet: withheld: GS-ID-03 (opt2/decision-list.json#tables/tcontenteventreminders); GS-ID-04 (opt2/decision-list.json#actionVariants/admin:clogin.main{status=sendlogin}, opt2/decision-list.json#actionVariants/admin:clogin.login{status=sendlogin}); GS-ID-06 (opt2/decision-list.json#actionVariants/admin:cusers.update{type=1,action=delete}); GS-ID-07 (opt2/decision-list.json#actionVariants/admin:cperm.update); GS-ID-09 (opt2/decision-list.json#actionVariants/admin:cusers.update{type=2,action=delete}, opt2/decision-list.json#actionVariants/page:render, opt2/decision-list.json#actionVariants/admin:ceditprofile.update{extdata}); GS-PUB-01 (opt2/decision-list.json#actionVariants/page:render); GS-PUB-02 (opt2/decision-list.json#actionVariants/page:render); GS-ID-10 (opt2/decision-list.json#actionVariants/admin:cextend.*, opt2/decision-list.json#actionVariants/admin:cusers.update{type=1,extdata}, opt2/decision-list.json#actionVariants/api:group.save, opt2/decision-list.json#actionVariants/api:group.save{extdata}, opt2/decision-list.json#actionVariants/api:group.save{photo}, opt2/decision-list.json#actionVariants/api:group.delete)"
+    },
+    {
+      "evidence": [
+        "opt2/reports/parity.json"
+      ],
+      "item": "Done: ten services: people parity",
+      "reason": "unmet: withheld: GS-ID-05 (opt2/decision-list.json#actionVariants/admin:cusers.update{photo}, opt2/decision-list.json#actionVariants/admin:cusers.update{type=2,action=delete}); GS-PE-04 (opt2/decision-list.json#actionVariants/admin:ceditprofile.update{photo}); GS-PUB-03 (opt2/decision-list.json#actionVariants/page:updateprofile, opt2/decision-list.json#actionVariants/page:createprofile); GS-PE-06 (opt2/decision-list.json#actionVariants/admin:cextend.*, opt2/decision-list.json#actionVariants/admin:cusers.update{type=2,action=add,extdata}, opt2/decision-list.json#actionVariants/admin:cusers.update{type=2,action=update,extdata}, opt2/decision-list.json#actionVariants/admin:cusers.updateaddress{extdata}, opt2/decision-list.json#actionVariants/admin:cusers.updateaddress{action=delete}, opt2/decision-list.json#actionVariants/admin:ceditprofile.update{extdata}, opt2/decision-list.json#actionVariants/api:user.save, opt2/decision-list.json#actionVariants/api:user.save{extdata}, opt2/decision-list.json#actionVariants/api:user.save{photo}, opt2/decision-list.json#actionVariants/api:address.save, opt2/decision-list.json#actionVariants/api:address.save{extdata}, opt2/decision-list.json#actionVariants/api:address.delete, opt2/decision-list.json#actionVariants/api:user.delete, opt2/decision-list.json#actionVariants/admin:cusers.update)"
+    },
+    {
+      "evidence": [
+        "opt2/reports/parity.json"
+      ],
+      "item": "Done: ten services: programs-sites parity",
+      "reason": "unmet: withheld: GS-PS-01 (opt2/decision-list.json#actionVariants/admin:csettings.updatesite{action=add}, opt2/decision-list.json#tables/tentity, opt2/decision-list.json#tables/trazunasettings, opt2/decision-list.json#actionVariants/admin:csettings.updatesite{action=delete}, opt2/decision-list.json#tables/tremotepointer, opt2/decision-list.json#tables/tcontenteventreminders); GS-PS-02 (opt2/decision-list.json#tables/tentity, opt2/decision-list.json#tables/trazunasettings); GS-PS-03 (opt2/decision-list.json#actionVariants/admin:csettings.sitecopy, opt2/decision-list.json#tables/tplugins, opt2/decision-list.json#tables/tpluginsettings, opt2/decision-list.json#tables/tpluginscripts, opt2/decision-list.json#tables/tplugindisplayobjects, opt2/decision-list.json#tables/tremotepointer, opt2/decision-list.json#tables/trazunasettings, opt2/decision-list.json#actionVariants/admin:csettings.updatesite{action=add}, opt2/decision-list.json#tables/tentity, opt2/decision-list.json#actionVariants/admin:csettings.sitecopyselect, opt2/decision-list.json#actionVariants/admin:csettings.updatesite{action=delete}, opt2/decision-list.json#tables/tcontenteventreminders); GS-PS-04 (opt2/decision-list.json#tables/tplugins, opt2/decision-list.json#tables/tpluginsettings, opt2/decision-list.json#tables/tpluginscripts, opt2/decision-list.json#tables/tplugindisplayobjects, opt2/decision-list.json#tables/tclusterpeers, opt2/decision-list.json#tables/tclustercommands, opt2/decision-list.json#tables/tentity, opt2/decision-list.json#tables/tremotepointer, opt2/decision-list.json#tables/trazunasettings); GS-PS-05 (opt2/decision-list.json#actionVariants/admin:cextend.*); GS-PS-06 (opt2/decision-list.json#actionVariants/admin:ctrash.*, opt2/decision-list.json#tables/tcontenteventreminders); GS-PS-08 (opt2/decision-list.json#tables/tplugins, opt2/decision-list.json#tables/tpluginsettings, opt2/decision-list.json#tables/tpluginscripts, opt2/decision-list.json#tables/tplugindisplayobjects, opt2/decision-list.json#tables/tentity, opt2/decision-list.json#tables/tremotepointer, opt2/decision-list.json#tables/trazunasettings, opt2/decision-list.json#tables/tentity-declared:*); GS-LS-04 (opt2/decision-list.json#tables/tplugins, opt2/decision-list.json#tables/tpluginsettings, opt2/decision-list.json#tables/tpluginscripts, opt2/decision-list.json#tables/tplugindisplayobjects, opt2/decision-list.json#tables/tremotepointer, opt2/decision-list.json#tables/trazunasettings, opt2/decision-list.json#tables/tentity, opt2/decision-list.json#tables/tcontenteventreminders); GS-PS-10 (opt2/decision-list.json#tables/tplugins, opt2/decision-list.json#tables/tpluginsettings, opt2/decision-list.json#tables/tpluginscripts, opt2/decision-list.json#tables/tplugindisplayobjects, opt2/decision-list.json#tables/tremotepointer, opt2/decision-list.json#tables/trazunasettings)"
+    },
+    {
+      "evidence": [
+        "opt2/reports/parity.json"
+      ],
+      "item": "Done: ten services: strategies-content parity",
+      "reason": "unmet: withheld: GS-CO-01 (opt2/decision-list.json#tables/tcontenteventreminders); GS-CO-02 (opt2/decision-list.json#tables/tcontenteventreminders); GS-CO-03 (opt2/decision-list.json#tables/tcontenteventreminders); GS-CO-07 (opt2/decision-list.json#tables/tcontenteventreminders); GS-CO-09 (opt2/decision-list.json#tables/tcontenteventreminders, opt2/decision-list.json#actionVariants/admin:cperm.update); GS-CO-10 (opt2/decision-list.json#tables/tcontenteventreminders); GS-CO-13 (opt2/decision-list.json#tables/tcontenteventreminders); GS-CO-15 (opt2/decision-list.json#tables/tcontenteventreminders); GS-PUB-05 (opt2/decision-list.json#actionVariants/page:render, opt2/decision-list.json#actionVariants/page:saveform, opt2/decision-list.json#actionVariants/api:processasyncobject{saveform}, opt2/decision-list.json#actionVariants/api:processasyncobject); GS-UI-01 (opt2/decision-list.json#actionVariants/admin:carch.copy, opt2/decision-list.json#tables/tcontenteventreminders); GS-UI-02 (opt2/decision-list.json#actionVariants/admin:cperm.update, opt2/decision-list.json#tables/tcontenteventreminders); GS-UI-03 (opt2/decision-list.json#tables/tcontenteventreminders); GS-UI-05 (opt2/decision-list.json#tables/tcontenteventreminders); GS-BR-01 (opt2/decision-list.json#tables/tcontenteventreminders, opt2/decision-list.json#actionVariants/page:render); GS-CO-18 (opt2/decision-list.json#tables/tcontenteventreminders); GS-CO-19 (opt2/decision-list.json#tables/tcontenteventreminders, opt2/decision-list.json#actionVariants/admin:carch.variationtargeting{notify}); GS-LS-03 (opt2/decision-list.json#tables/tremotepointer, opt2/decision-list.json#tables/tcontenteventreminders); GS-CO-21 (opt2/decision-list.json#tables/tremotepointer, opt2/decision-list.json#tables/tcontenteventreminders)"
+    },
+    {
+      "evidence": [
+        "opt2/reports/parity.json"
+      ],
+      "item": "Done: ten services: communications parity",
+      "reason": "unmet: withheld: GS-LS-02 (opt2/decision-list.json#tables/tcontenteventreminders, opt2/decision-list.json#actionVariants/page:sendlogin)"
+    }
+  ]
+}

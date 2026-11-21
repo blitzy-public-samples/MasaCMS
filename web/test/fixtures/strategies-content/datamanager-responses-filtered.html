@@ -1,0 +1,156 @@
+
+
+<div id="manage-data">
+
+<form novalidate="novalidate" action="index.cfm" method="get" name="download" onsubmit="return validate(this);">
+
+	<div class="mura-control-group">
+  	<label>From</label>
+  	<input type="text" class="datepicker" name="date1"  validate="date" message="The 'To' field must be a valid date." required="true" value="06/152/2026">
+  	<select name="hour1" class="time"><option value="0" >12 AM</option><option value="1" >01 AM</option><option value="2" >02 AM</option><option value="3" >03 AM</option><option value="4" >04 AM</option><option value="5" >05 AM</option><option value="6" >06 AM</option><option value="7" >07 AM</option><option value="8" >08 AM</option><option value="9" >09 AM</option><option value="10" >10 AM</option><option value="11" >11 AM</option><option value="12" >12 PM</option><option value="13" selected>01 PM</option><option value="14" >02 PM</option><option value="15" >03 PM</option><option value="16" >04 PM</option><option value="17" >05 PM</option><option value="18" >06 PM</option><option value="19" >07 PM</option><option value="20" >08 PM</option><option value="21" >09 PM</option><option value="22" >10 PM</option><option value="23" >11 PM</option></select>
+    <select name="minute1" class="time"><option value="0" >00</option><option value="1" >01</option><option value="2" >02</option><option value="3" >03</option><option value="4" >04</option><option value="5" selected>05</option><option value="6" >06</option><option value="7" >07</option><option value="8" >08</option><option value="9" >09</option><option value="10" >10</option><option value="11" >11</option><option value="12" >12</option><option value="13" >13</option><option value="14" >14</option><option value="15" >15</option><option value="16" >16</option><option value="17" >17</option><option value="18" >18</option><option value="19" >19</option><option value="20" >20</option><option value="21" >21</option><option value="22" >22</option><option value="23" >23</option><option value="24" >24</option><option value="25" >25</option><option value="26" >26</option><option value="27" >27</option><option value="28" >28</option><option value="29" >29</option><option value="30" >30</option><option value="31" >31</option><option value="32" >32</option><option value="33" >33</option><option value="34" >34</option><option value="35" >35</option><option value="36" >36</option><option value="37" >37</option><option value="38" >38</option><option value="39" >39</option><option value="40" >40</option><option value="41" >41</option><option value="42" >42</option><option value="43" >43</option><option value="44" >44</option><option value="45" >45</option><option value="46" >46</option><option value="47" >47</option><option value="48" >48</option><option value="49" >49</option><option value="50" >50</option><option value="51" >51</option><option value="52" >52</option><option value="53" >53</option><option value="54" >54</option><option value="55" >55</option><option value="56" >56</option><option value="57" >57</option><option value="58" >58</option><option value="59" >59</option></select>
+	</div>
+
+	<div class="mura-control-group">
+  	<label>To</label>
+  	<input type="text" class="datepicker" name="date2" validate="date" message="The 'To' field must be a valid date." required="true" value="06/181/2026">
+  	<select name="hour2" class="time"><option value="0" >12 AM</option><option value="1" >01 AM</option><option value="2" >02 AM</option><option value="3" >03 AM</option><option value="4" >04 AM</option><option value="5" >05 AM</option><option value="6" >06 AM</option><option value="7" >07 AM</option><option value="8" >08 AM</option><option value="9" selected>09 AM</option><option value="10" >10 AM</option><option value="11" >11 AM</option><option value="12" >12 PM</option><option value="13" >01 PM</option><option value="14" >02 PM</option><option value="15" >03 PM</option><option value="16" >04 PM</option><option value="17" >05 PM</option><option value="18" >06 PM</option><option value="19" >07 PM</option><option value="20" >08 PM</option><option value="21" >09 PM</option><option value="22" >10 PM</option><option value="23" >11 PM</option></select>
+    <select name="minute2" class="time" ><option value="0" >00</option><option value="1" >01</option><option value="2" >02</option><option value="3" >03</option><option value="4" >04</option><option value="5" >05</option><option value="6" >06</option><option value="7" >07</option><option value="8" >08</option><option value="9" >09</option><option value="10" >10</option><option value="11" >11</option><option value="12" >12</option><option value="13" >13</option><option value="14" >14</option><option value="15" >15</option><option value="16" >16</option><option value="17" >17</option><option value="18" >18</option><option value="19" >19</option><option value="20" >20</option><option value="21" >21</option><option value="22" >22</option><option value="23" >23</option><option value="24" >24</option><option value="25" >25</option><option value="26" >26</option><option value="27" >27</option><option value="28" >28</option><option value="29" >29</option><option value="30" >30</option><option value="31" >31</option><option value="32" >32</option><option value="33" >33</option><option value="34" >34</option><option value="35" >35</option><option value="36" >36</option><option value="37" >37</option><option value="38" >38</option><option value="39" >39</option><option value="40" >40</option><option value="41" selected>41</option><option value="42" >42</option><option value="43" >43</option><option value="44" >44</option><option value="45" >45</option><option value="46" >46</option><option value="47" >47</option><option value="48" >48</option><option value="49" >49</option><option value="50" >50</option><option value="51" >51</option><option value="52" >52</option><option value="53" >53</option><option value="54" >54</option><option value="55" >55</option><option value="56" >56</option><option value="57" >57</option><option value="58" >58</option><option value="59" >59</option>
+   </select>
+	</div>
+
+<div class="mura-control-group">
+  <label>Sort By</label>
+  <select name="sortBy" class="mura-constrain">
+<option value="Entered" selected>Entered</option>
+
+<option value="email" >email</option>
+
+<option value="message" >message</option>
+
+<option value="name" >name</option>
+
+<option value="resumeattachment" >resumeattachment</option>
+
+</select>
+<select name="sortDirection" class="mura-constrain">
+<option value="asc" selected>Ascending</option>
+<option value="desc" >Descending</option>
+</select>
+</div>
+
+	<div class="mura-control-group">
+		<label>Keyword Search</label>
+		<select name="filterBy" class="mura-constrain">
+			
+			<option value="email" >email</option>
+			
+			<option value="message" >message</option>
+			
+			<option value="name" >name</option>
+			
+			<option value="resumeattachment" >resumeattachment</option>
+			
+		</select>
+		<input type="text" name="keywords" class="mura-constrain" value="">
+	</div>
+
+<input type="hidden" name="muraAction" value="cArch.datamanager" />
+<input type="hidden" name="contentid" value="F0000000-0000-0000-0000000000000001" />
+<input type="hidden" name="siteid" value="default" />
+<input type="hidden" name="moduleid" value="00000000000000000000000000000000004" />
+<input type="hidden" name="newSearch" value="1" />
+<input type="hidden" name="delete" value="0" />
+<div class="mura-actions">
+	<div class="form-actions">
+		<button type="button" class="btn mura-primary" onclick="submitForm(document.forms.download);" /><i class="mi-bar-chart"></i> View Data</button>
+		<button type="button" class="btn" onclick="return confirmDialog('Delete filtered results?',function(){document.download.delete.value=1;submitForm(document.forms.download);});" /><i class="mi-trash"></i> Delete Results</button>
+		<button type="button" class="btn" onclick="location.href='./?muraAction=cArch.downloaddata&siteid=default&contentid=F0000000-0000-0000-0000000000000001&date1=' + document.download.date1.value + '&hour1=' +document.download.hour1.value + '&minute1=' +document.download.minute1.value + '&date2=' + document.download.date2.value + '&hour2=' + document.download.hour2.value + '&minute2=' + document.download.minute2.value + '&sortBy=' +  document.download.sortBy.value + '&sortDirection=' +  document.download.sortDirection.value + '&filterBy='  + document.download.filterBy.value + '&keywords=' + document.download.keywords.value + '&columns=fixed';"><i class="mi-download"></i> Download</button>
+	</div>
+</div>
+</form>
+
+			<div class="mura-grid-container">
+			<table class="mura-table-grid">
+			<thead>
+			<tr>
+				<th class="actions"></th>
+				<th>Date/Time Entered</th>
+				
+				<th>email</th>
+				
+				<th>message</th>
+				
+				<th>name</th>
+				
+				<th>resumeattachment</th>
+				
+			</tr>
+			</thead>
+			<tbody>
+			
+			<tr>
+				
+					<td class="actions">
+						<a class="show-actions" href="javascript:;"  onclick="showTableControls(this);"><i class="mi-ellipsis-v"></i></a>
+						<div class="actions-menu hide">
+							<ul class="actions-list">
+								<li class="edit">
+									<a href="./?muraAction=cArch.datamanager&contentid=F0000000-0000-0000-0000000000000001&siteid=default&date1=06%2F01%2F2026&hour1=0&minute1=0&date2=06%2F30%2F2026&hour2=23&minute2=59&responseid=A1B2C3D4-E5F6-1A2B-3C4D5E6F7A8B9C0D&action=edit&moduleid=00000000000000000000000000000000004&sortBy=Entered&sortDirection=asc&filterBy=&keywords="><i class="mi-pencil"></i>Edit</a>
+								</li>
+								<li class="delete">
+									<a href="./?muraAction=cArch.datamanager&contentid=F0000000-0000-0000-0000000000000001&siteid=default&date1=06%2F01%2F2026&hour1=0&minute1=0&date2=06%2F30%2F2026&hour2=23&minute2=59&responseid=A1B2C3D4-E5F6-1A2B-3C4D5E6F7A8B9C0D&action=delete&moduleid=00000000000000000000000000000000004&sortBy=Entered&sortDirection=asc&filterBy=&keywords=&csrf_token=<token>&csrf_token_expires=<token>" onclick="return confirmDialog('Delete\x20Response\x3F',this.href)"><i class="mi-trash"></i>Delete</a>
+								</li>
+							</ul>
+						</div>
+					</td>
+					<td class="dateSubmitted">06/152/2026 1:05 PM</td>
+					
+					<td class="mForm-data"><p>a&#x40;b.com</p></td>
+					
+					<td class="mForm-data"><p>line one&#xa;see http&#x3a;&#x2f;&#x2f;x.com&#x2f;a</p></td>
+					
+					<td class="mForm-data"><p>Ann &lt;b&gt;</p></td>
+					
+					<td class="mForm-data"><a  href="#" onclick="return preview('http://localhost:25680/index.cfm/_api/render/file/?fileID=C1B2C3D4-E5F6-1A2B-3C4D5E6F7A8B9C0D');">View Attachment</a></td>
+					
+			</tr>
+			
+			<tr>
+				
+						<td>Invalid Response: B1B2C3D4-E5F6-1A2B-3C4D5E6F7A8B9C0D</td>
+					
+			</tr>
+			
+			<tr>
+				
+					<td class="actions">
+						<a class="show-actions" href="javascript:;"  onclick="showTableControls(this);"><i class="mi-ellipsis-v"></i></a>
+						<div class="actions-menu hide">
+							<ul class="actions-list">
+								<li class="edit">
+									<a href="./?muraAction=cArch.datamanager&contentid=F0000000-0000-0000-0000000000000001&siteid=default&date1=06%2F01%2F2026&hour1=0&minute1=0&date2=06%2F30%2F2026&hour2=23&minute2=59&responseid=D1B2C3D4-E5F6-1A2B-3C4D5E6F7A8B9C0D&action=edit&moduleid=00000000000000000000000000000000004&sortBy=Entered&sortDirection=asc&filterBy=&keywords="><i class="mi-pencil"></i>Edit</a>
+								</li>
+								<li class="delete">
+									<a href="./?muraAction=cArch.datamanager&contentid=F0000000-0000-0000-0000000000000001&siteid=default&date1=06%2F01%2F2026&hour1=0&minute1=0&date2=06%2F30%2F2026&hour2=23&minute2=59&responseid=D1B2C3D4-E5F6-1A2B-3C4D5E6F7A8B9C0D&action=delete&moduleid=00000000000000000000000000000000004&sortBy=Entered&sortDirection=asc&filterBy=&keywords=&csrf_token=<token>&csrf_token_expires=<token>" onclick="return confirmDialog('Delete\x20Response\x3F',this.href)"><i class="mi-trash"></i>Delete</a>
+								</li>
+							</ul>
+						</div>
+					</td>
+					<td class="dateSubmitted">06/181/2026 9:41 AM</td>
+					
+					<td class="mForm-data"><p></p></td>
+					
+					<td class="mForm-data"><p></p></td>
+					
+					<td class="mForm-data"><p>Bob</p></td>
+					
+					<td class="mForm-data"><p></p></td>
+					
+			</tr>
+			
+			</tbody>
+			</table>
+			</div><!-- /.mura-grid-container -->
+		
+</div>

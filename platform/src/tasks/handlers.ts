@@ -1,0 +1,319 @@
+// Fastify bindings of @opt2/platform/tasks: managed Cloud Tasks routes, queue-control routes and the reconcile client.
+import {
+  CLOUD_TASKS_HEADERS,
+  MAX_TASK_PAGE_SIZE,
+  parseTaskWireBody,
+  type TaskHandler,
+  type TaskPort,
+  type TaskWireBody,
+} from './port.js';
+import { QUEUES, SITEMONITOR_QUEUE, isQueueName, queueDefinition, recurringQueues, type QueueDefinition } from './queues.js';
+import { ensureRecurring, recurringSpec, type EnsureRecurringResult } from './recurring.js';
+import { Roles, TASKS_INVOKER_ROLE, transportForPath, type Opt2RouteConfig } from '../auth/index.js';
+import { assertTenantId, withTenant, type TenantDb, type TenantTx } from '../tenancy/index.js';
+import { LegacyApiError } from '../legacy-compat/index.js';
+import {
+  currentRequestContext,
+  z,
+  type Clock,
+  type FastifyInstance,
+  type FastifyReply,
+  type FastifyRequest,
+  type ServiceClient,
+} from '../service-kit/index.js';
+
+/** A task body's tenant is absent, not visible on its stored row, or present on a system task; renders as legacy 400 `badRequest`. */
+export class TaskTenantMismatchError extends LegacyApiError {
+  override readonly name: string = 'TaskTenantMismatchError';
+  declare readonly type: 'badRequest';
+
+  constructor(
+    readonly tenantId: string | null,
+    readonly taskName: string,
+  ) {
+    super('badRequest');
+  }
+}
+
+/** Why a tenant task route acknowledged a task that no retry can make valid. */
+export type TaskIgnoredReason = 'malformed-body' | 'no-tenant' | 'not-visible' | 'mismatch';
+
+/** Tenant handling of a task route: `tenant` re-checks the body's tenant against the stored row, `system` refuses any tenant. */
+export type TaskRouteOptions<S = unknown> =
+  | {
+      scope: 'tenant';
+      db: TenantDb;
+      /** The row the task acts on as visible under the body's tenant, or null when it is not. */
+      findStored: (tx: TenantTx, payload: unknown, ctx: { taskName: string; queue: string }) => Promise<S | null>;
+      handler: TaskHandler<S>;
+      /** 200 body answering a permanently invalid task instead of the legacy 400, which every queue retries; omitted, the 400 stays. */
+      ignored?: (reason: TaskIgnoredReason) => unknown;
+    }
+  | { scope: 'system'; handler: TaskHandler };
+
+function headerOf(request: FastifyRequest, name: string): string | undefined {
+  const value = request.headers[name];
+  return Array.isArray(value) ? value[0] : value;
+}
+
+function countHeader(request: FastifyRequest, name: string): number {
+  const count = Number.parseInt(headerOf(request, name) ?? '', 10);
+  return Number.isInteger(count) ? count : 0;
+}
+
+function etaHeader(request: FastifyRequest): Date | undefined {
+  const raw = headerOf(request, CLOUD_TASKS_HEADERS.eta);
+  const seconds = raw ? Number(raw) : Number.NaN;
+  return Number.isFinite(seconds) ? new Date(seconds * 1000) : undefined;
+}
+
+function wireBodyOf(raw: unknown): TaskWireBody {
+  try {
+    return parseTaskWireBody(raw);
+  } catch (err) {
+    throw err instanceof z.ZodError ? new LegacyApiError('invalidParameters') : err;
+  }
+}
+
+/** A permanent refusal of one task: why, the error it answers without an `ignored` body, and the task the log names. */
+interface TaskRefusal {
+  reason: TaskIgnoredReason;
+  error: LegacyApiError;
+  queue: string;
+  taskName: string;
+  tenantId: string | null;
+}
+
+/** Throws the refusal's error unless `ignored` is set; then logs it and answers 200 with the ignored body, so no queue retries the task. */
+function refuseTask(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  ignored: ((reason: TaskIgnoredReason) => unknown) | undefined,
+  { reason, error, queue, taskName, tenantId }: TaskRefusal,
+): FastifyReply {
+  if (ignored === undefined) throw error;
+  request.log.warn(tenantId === null ? {} : { tenantId }, `Task ${queue}/${taskName} ignored: ${reason}`);
+  return reply.code(200).send(ignored(reason));
+}
+
+/** Registers a POST task route on the `cloud-tasks` transport; throws `TypeError` for a path outside the managed task families or carrying a route parameter. */
+export function registerTaskRoute<S>(app: FastifyInstance, path: string, opts: TaskRouteOptions<S>): void {
+  if (transportForPath(path) !== 'cloud-tasks') {
+    throw new TypeError(
+      `Task route ${path} must be under /internal/v1/tasks/ or /internal/v1/jobs/, or be /internal/v1/outbox/sweep`,
+    );
+  }
+  if (/[:*{}]/.test(path)) {
+    throw new TypeError(`Task route ${path} must be a fixed path: Cloud Run admits only exact OIDC audiences`);
+  }
+  const opt2: Opt2RouteConfig = { transport: 'cloud-tasks', requires: [TASKS_INVOKER_ROLE] };
+  app.post(path, { config: { opt2 } }, async (request, reply) => {
+    const ignored = opts.scope === 'tenant' ? opts.ignored : undefined;
+    let body: TaskWireBody;
+    try {
+      body = wireBodyOf(request.body);
+    } catch (error) {
+      if (!(error instanceof LegacyApiError)) throw error;
+      // A malformed body is named by the Cloud Tasks headers, which both adapters always send.
+      return refuseTask(request, reply, ignored, {
+        reason: 'malformed-body',
+        error,
+        queue: headerOf(request, CLOUD_TASKS_HEADERS.queueName) || 'unknown',
+        taskName: headerOf(request, CLOUD_TASKS_HEADERS.taskName) || 'unknown',
+        tenantId: null,
+      });
+    }
+    const taskName = headerOf(request, CLOUD_TASKS_HEADERS.taskName) || body.name;
+    const queue = headerOf(request, CLOUD_TASKS_HEADERS.queueName) || body.queue;
+    const base = {
+      queue,
+      taskName,
+      retryCount: countHeader(request, CLOUD_TASKS_HEADERS.retryCount),
+      executionCount: countHeader(request, CLOUD_TASKS_HEADERS.executionCount),
+      eta: etaHeader(request),
+      payload: body.payload,
+      request,
+      reply,
+    };
+
+    let result: unknown;
+    if (opts.scope === 'system') {
+      if (body.tenantId !== null) throw new TaskTenantMismatchError(body.tenantId, taskName);
+      result = await opts.handler({ ...base, tenantId: null });
+    } else {
+      if (body.tenantId === null) {
+        const error = new TaskTenantMismatchError(null, taskName);
+        return refuseTask(request, reply, ignored, { reason: 'no-tenant', error, queue, taskName, tenantId: null });
+      }
+      const tenantId = assertTenantId(body.tenantId);
+      const stored = await withTenant(opts.db, tenantId, (tx) => opts.findStored(tx, body.payload, { taskName, queue }));
+      // Invisible under the body's tenant: the body never chooses a tenant on its own.
+      if (stored === null) {
+        const error = new TaskTenantMismatchError(tenantId, taskName);
+        return refuseTask(request, reply, ignored, { reason: 'not-visible', error, queue, taskName, tenantId });
+      }
+      const context = currentRequestContext();
+      if (context !== undefined) context.tenantId = tenantId;
+      try {
+        result = await opts.handler({ ...base, tenantId, stored });
+      } catch (error) {
+        if (!(error instanceof TaskTenantMismatchError)) throw error;
+        return refuseTask(request, reply, ignored, { reason: 'mismatch', error, queue, taskName, tenantId });
+      }
+    }
+
+    if (reply.sent) return reply;
+    return reply.code(200).send(result ?? { ok: true });
+  });
+}
+
+/** Path prefix of the queue-control routes, outside the cloud-tasks-only `/internal/v1/tasks/` family. */
+export const QUEUE_CONTROL_PREFIX = '/internal/v1/task-queues';
+
+/** Operation of a queue-control route. */
+export type QueueControlOp = 'pause' | 'resume' | 'ensure';
+
+/** Roles that may call the queue-control routes. */
+export const QUEUE_CONTROL_ROLES = [Roles.platformMigration, Roles.platformOperator] as const;
+
+/** Answer of a queue-control route: the queue's paused state, or the chain task `ensure` found or created. */
+export interface QueueControlResult {
+  queue: string;
+  service: string;
+  paused?: boolean;
+  /** Tasks of the queue still running when `pause` answered. */
+  running?: number;
+  ensured?: EnsureRecurringResult;
+}
+
+/** Live tasks of `queue` whose status is `running`, counted over every page. */
+async function runningTasks(port: TaskPort, queue: string): Promise<number> {
+  let running = 0;
+  let pageToken: string | undefined;
+  do {
+    const page = await port.list(queue, { pageSize: MAX_TASK_PAGE_SIZE, ...(pageToken === undefined ? {} : { pageToken }) });
+    running += page.tasks.filter((task) => task.status === 'running').length;
+    pageToken = page.nextPageToken;
+  } while (pageToken !== undefined);
+  return running;
+}
+
+/** Registers POST `<QUEUE_CONTROL_PREFIX>/:queue/{pause,resume,ensure}` for queues this service creates; list them in its contracts/openapi.yaml. */
+export function registerQueueControl(
+  app: FastifyInstance,
+  opts: { port: TaskPort; service: string; serviceUrls: Record<string, string>; clock: Clock },
+): void {
+  const { port, service } = opts;
+  const opt2: Opt2RouteConfig = { transport: 'service', requires: [...QUEUE_CONTROL_ROLES] };
+  const ownQueue = (queue: string): QueueDefinition => {
+    if (!isQueueName(queue) || !queueDefinition(queue).creators.includes(service)) {
+      throw new LegacyApiError('invalidParameters');
+    }
+    return queueDefinition(queue);
+  };
+
+  for (const op of ['pause', 'resume'] as const) {
+    app.post<{ Params: { queue: string } }>(
+      `${QUEUE_CONTROL_PREFIX}/:queue/${op}`,
+      { config: { opt2 } },
+      async (request): Promise<QueueControlResult> => {
+        const { name: queue } = ownQueue(request.params.queue);
+        await (op === 'pause' ? port.pauseQueue(queue) : port.resumeQueue(queue));
+        const { paused } = await port.queueState(queue);
+        return op === 'pause' ? { queue, service, paused, running: await runningTasks(port, queue) } : { queue, service, paused };
+      },
+    );
+  }
+
+  app.post<{ Params: { queue: string } }>(
+    `${QUEUE_CONTROL_PREFIX}/:queue/ensure`,
+    { config: { opt2 } },
+    async (request): Promise<QueueControlResult> => {
+      const def = ownQueue(request.params.queue);
+      if (def.recurring === undefined) throw new LegacyApiError('invalidParameters');
+      const ensured = await ensureRecurring(port, { ...recurringSpec(def.name, opts.serviceUrls), clock: opts.clock });
+      return { queue: def.name, service, ensured };
+    },
+  );
+}
+
+/**
+ * Calls one creator's queue-control route, bounded by `timeoutMs` when given, else by the client's timeout.
+ * @throws Error naming the service, queue, op and status on a non-2xx answer.
+ */
+export async function callQueueControl(
+  client: ServiceClient,
+  req: { service: string; queue: string; op: QueueControlOp; timeoutMs?: number },
+): Promise<QueueControlResult> {
+  const { service, queue, op, timeoutMs } = req;
+  const response = await client.request<QueueControlResult>({
+    service,
+    method: 'POST',
+    path: `${QUEUE_CONTROL_PREFIX}/${encodeURIComponent(queue)}/${op}`,
+    json: {},
+    // Queue control is the calling workload's own action, never one taken for a user.
+    userToken: null,
+    ...(timeoutMs === undefined ? {} : { timeoutMs }),
+  });
+  if (response.status < 200 || response.status > 299) {
+    throw new Error(`Queue control ${op} of ${queue} on ${service} answered HTTP ${String(response.status)}`);
+  }
+  return response.body;
+}
+
+/** Outcome of ensuring one queue's chain on one creating service. */
+export interface ReconcileResult {
+  queue: string;
+  service: string;
+  ok: boolean;
+  ensured?: EnsureRecurringResult;
+  error?: string;
+  skipped?: string;
+}
+
+/** Named queues in registry order; throws `TypeError` for a non-recurring name, or the site monitor without `withSiteMonitor`. */
+function namedRecurringQueues(names: readonly string[], withSiteMonitor: boolean): QueueDefinition[] {
+  for (const name of names) {
+    if (!isQueueName(name) || queueDefinition(name).recurring === undefined) {
+      throw new TypeError(`Not a recurring task queue: ${name}`);
+    }
+    if (name === SITEMONITOR_QUEUE && !withSiteMonitor) {
+      throw new TypeError(`${SITEMONITOR_QUEUE} is reconciled only with withSiteMonitor`);
+    }
+  }
+  const requested = new Set(names);
+  return Object.values(QUEUES).filter((def) => requested.has(def.name));
+}
+
+/** Asks each creator of the selected recurring queues to ensure its chain, sequentially in registry order; failures are reported, not thrown. */
+export async function reconcileRecurringQueues(
+  client: ServiceClient,
+  opts: { serviceUrls: Record<string, string>; queues?: string[]; withSiteMonitor?: boolean; includeLocalOnly?: boolean },
+): Promise<ReconcileResult[]> {
+  const explicit = opts.queues !== undefined;
+  const selected =
+    opts.queues === undefined
+      ? recurringQueues({ includeLocalOnly: opts.includeLocalOnly, withSiteMonitor: opts.withSiteMonitor })
+      : namedRecurringQueues(opts.queues, opts.withSiteMonitor === true);
+
+  const results: ReconcileResult[] = [];
+  for (const { name: queue, creators } of selected) {
+    for (const service of creators) {
+      if (!Object.hasOwn(opts.serviceUrls, service)) {
+        results.push(
+          explicit
+            ? { queue, service, ok: false, error: 'not deployed' }
+            : { queue, service, ok: true, skipped: 'not deployed' },
+        );
+        continue;
+      }
+      try {
+        const { ensured } = await callQueueControl(client, { service, queue, op: 'ensure' });
+        results.push({ queue, service, ok: true, ensured });
+      } catch (err) {
+        results.push({ queue, service, ok: false, error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+  }
+  return results;
+}

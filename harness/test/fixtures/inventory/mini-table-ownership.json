@@ -1,0 +1,336 @@
+{
+  "conventions": {
+    "columnPolicy": {
+      "explicit": "The target owns exactly ownedColumns.",
+      "whole-table": "The target owns every live column of the legacy table; ownedColumns lists the static set."
+    },
+    "liveCatalog": "false only for a table the pinned code drops; fixture tables exist after legacy-fixtures/load-fixtures.sh.",
+    "owner": "A service folder name, split (owners per target), decision-list, retired, or migration (OPT-2 coordination state).",
+    "programN": "Program_N stands for each of Program_1 and Program_2, which hold the same table set.",
+    "rowIdentity": {
+      "key": "Rows match on primaryKey.",
+      "multiset": "Rows match on their full canonical encoding; the target stores legacy_row_hash and an occurrence number."
+    },
+    "tenantResolution": {
+      "null": "Not migrated.",
+      "parent:<table>": "The parent row's tenant through tenantParent.join; a row with no parent, or parents in several tenants, loads under the umbrella tenant as an orphan.",
+      "program_site": "synthetic.program_site maps the Program_<id> schema to its siteID, then tenantIdForSite; the fold adds legacy_program_id.",
+      "siteID": "tenantIdForSite(siteID); the column is NOT NULL.",
+      "siteID-or-umbrella": "tenantIdForSite(siteID), or the umbrella tenant with an orphan flag when siteID is null or names no site."
+    },
+    "unit": "<schema>.<table> of a target table."
+  },
+  "countNotes": {},
+  "counts": {
+    "bootstrap": 2,
+    "liveStatic": 3,
+    "migration": 1,
+    "noPrimaryKeyAfterMigrations": 0,
+    "noPrimaryKeyBootstrap": 0,
+    "orm": 0,
+    "retired": 0,
+    "units": 3,
+    "withSiteIdStatic": 1
+  },
+  "description": "Ownership of every legacy table, its target tables, owned columns and units; a unit of write authority is one target table.",
+  "newTables": [],
+  "pools": [],
+  "ruleSteps": {
+    "1": "Entity owner: the service that owns the entity owns its table.",
+    "2": "Membership and permission tables go to identity.",
+    "3": "Other services keep an id plus an event-fed projection.",
+    "4": "Pooled data is umbrella-tenant data.",
+    "5": "Anything else goes on the decision list."
+  },
+  "schemaVersion": 1,
+  "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
+  "tables": [
+    {
+      "addedColumns": [
+        {
+          "column": "package",
+          "source": "core/mura/dbUpdates/5.1.288.cfm:11"
+        },
+        {
+          "column": "directory",
+          "source": "core/mura/dbUpdates/5.1.288.cfm:42"
+        },
+        {
+          "column": "loadPriority",
+          "source": "core/mura/dbUpdates/5.2.0.cfm:445"
+        }
+      ],
+      "columns": [
+        "pluginID",
+        "moduleID",
+        "name",
+        "created",
+        "provider",
+        "providerURL",
+        "category",
+        "version",
+        "deployed",
+        "package",
+        "directory",
+        "loadPriority"
+      ],
+      "decisionRef": "opt2/decision-list.json#tplugins",
+      "hasPrimaryKey": true,
+      "hasSiteId": false,
+      "liveCatalog": true,
+      "origin": "migration",
+      "owner": "decision-list",
+      "primaryKey": [
+        "pluginID"
+      ],
+      "rowIdentity": "key",
+      "ruleSteps": [
+        5
+      ],
+      "schema": "dbo",
+      "serializedDocumentColumns": [],
+      "siteIdColumn": null,
+      "source": {
+        "lines": [
+          8,
+          18
+        ],
+        "path": "core/mura/dbUpdates/5.0.594.cfm"
+      },
+      "table": "tplugins",
+      "targets": [],
+      "tenantResolution": null
+    },
+    {
+      "columnPolicy": "explicit",
+      "columns": [
+        "UserID",
+        "GroupName",
+        "Fname",
+        "Lname",
+        "UserName",
+        "Password",
+        "PasswordCreated",
+        "Email",
+        "Company",
+        "JobTitle",
+        "mobilePhone",
+        "Website",
+        "Type",
+        "subType",
+        "Ext",
+        "ContactForm",
+        "Admin",
+        "S2",
+        "LastLogin",
+        "LastUpdate",
+        "LastUpdateBy",
+        "LastUpdateByID",
+        "Perm",
+        "InActive",
+        "isPublic",
+        "SiteID",
+        "Subscribe",
+        "notes",
+        "description",
+        "interests",
+        "keepPrivate",
+        "photoFileID",
+        "IMName",
+        "IMService",
+        "created",
+        "remoteID",
+        "tags"
+      ],
+      "hasPrimaryKey": true,
+      "hasSiteId": true,
+      "liveCatalog": true,
+      "origin": "bootstrap",
+      "owner": "split",
+      "primaryKey": [
+        "UserID"
+      ],
+      "rowIdentity": "key",
+      "ruleSteps": [
+        1
+      ],
+      "schema": "dbo",
+      "serializedDocumentColumns": [],
+      "siteIdColumn": "SiteID",
+      "source": {
+        "lines": [
+          467,
+          505
+        ],
+        "path": "core/setup/db/mssql.sql"
+      },
+      "split": {
+        "by": "Type+column",
+        "liveColumnRule": "unassigned live column fails services/*/test/unit/mapping.test.ts",
+        "reassembly": "reverse projector reassembles the legacy row from every owner's columns",
+        "typeColumn": "Type"
+      },
+      "table": "tusers",
+      "targets": [
+        {
+          "columnPolicy": "explicit",
+          "keyColumns": [
+            "UserID"
+          ],
+          "ownedColumns": [
+            "UserID",
+            "UserName",
+            "Type",
+            "Admin",
+            "S2",
+            "Perm",
+            "InActive",
+            "isPublic",
+            "SiteID",
+            "remoteID"
+          ],
+          "owner": "identity",
+          "rowPredicate": "Type = 2",
+          "ruleSteps": [
+            1
+          ],
+          "schema": "identity",
+          "table": "user_account",
+          "unit": "identity.user_account"
+        },
+        {
+          "columnPolicy": "explicit",
+          "keyColumns": [
+            "UserID",
+            "SiteID"
+          ],
+          "notes": "UserID and SiteID are copied as the join key and owned by identity.user_account.",
+          "ownedColumns": [
+            "GroupName",
+            "Fname",
+            "Lname",
+            "Email",
+            "Company",
+            "JobTitle",
+            "mobilePhone",
+            "Website",
+            "subType",
+            "Ext",
+            "ContactForm",
+            "LastUpdate",
+            "LastUpdateBy",
+            "LastUpdateByID",
+            "Subscribe",
+            "notes",
+            "description",
+            "interests",
+            "keepPrivate",
+            "photoFileID",
+            "IMName",
+            "IMService",
+            "created",
+            "tags"
+          ],
+          "owner": "people",
+          "rowPredicate": "Type = 2",
+          "ruleSteps": [
+            1
+          ],
+          "schema": "people",
+          "table": "person",
+          "unit": "people.person"
+        }
+      ],
+      "tenantResolution": "siteID-or-umbrella"
+    },
+    {
+      "columns": [
+        "UserID",
+        "GroupID"
+      ],
+      "hasPrimaryKey": true,
+      "hasSiteId": false,
+      "liveCatalog": true,
+      "origin": "bootstrap",
+      "owner": "identity",
+      "primaryKey": [
+        "UserID",
+        "GroupID"
+      ],
+      "rowIdentity": "key",
+      "ruleSteps": [
+        2
+      ],
+      "schema": "dbo",
+      "serializedDocumentColumns": [],
+      "siteIdColumn": null,
+      "source": {
+        "lines": [
+          528,
+          531
+        ],
+        "path": "core/setup/db/mssql.sql"
+      },
+      "table": "tusersmemb",
+      "targets": [
+        {
+          "columnPolicy": "whole-table",
+          "keyColumns": [
+            "UserID",
+            "GroupID"
+          ],
+          "ownedColumns": [
+            "UserID",
+            "GroupID"
+          ],
+          "owner": "identity",
+          "rowPredicate": null,
+          "ruleSteps": [
+            2
+          ],
+          "schema": "identity",
+          "table": "membership",
+          "unit": "identity.membership"
+        }
+      ],
+      "tenantParent": {
+        "join": "tusersmemb.UserID = tusers.UserID",
+        "table": "tusers"
+      },
+      "tenantResolution": "parent:tusers"
+    }
+  ],
+  "units": [
+    {
+      "legacyTables": [
+        "tusersmemb"
+      ],
+      "notes": "Listed because loadTableOwnership rejects a target unit that units[] does not list.",
+      "owner": "identity",
+      "schema": "identity",
+      "table": "membership",
+      "tenantOwned": true,
+      "unit": "identity.membership"
+    },
+    {
+      "legacyTables": [
+        "tusers"
+      ],
+      "owner": "identity",
+      "schema": "identity",
+      "table": "user_account",
+      "tenantOwned": true,
+      "unit": "identity.user_account"
+    },
+    {
+      "legacyTables": [
+        "tusers"
+      ],
+      "owner": "people",
+      "schema": "people",
+      "table": "person",
+      "tenantOwned": true,
+      "unit": "people.person"
+    }
+  ]
+}

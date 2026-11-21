@@ -1,0 +1,1191 @@
+{
+  "capturedAt": "2026-11-21T04:44:20.233Z",
+  "fixtures": {
+    "available": true,
+    "reason": "fixtures loaded"
+  },
+  "generatedAt": "2026-11-21T04:44:21.885Z",
+  "generatedBy": "harness/src/golden/capture.ts",
+  "origin": "legacy",
+  "scenarioId": "GS-CO-15",
+  "sideEffects": {
+    "files": [],
+    "mail": [],
+    "rows": {},
+    "tasks": []
+  },
+  "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
+  "steps": [
+    {
+      "index": 0,
+      "name": "basic",
+      "normalised": {
+        "auth": {
+          "cookies": [],
+          "redirectTargets": [],
+          "wwwAuthenticate": []
+        },
+        "envelope": {
+          "apiversion": "v1",
+          "error": {
+            "code": "server_error",
+            "message": "Unhandled Exception"
+          },
+          "method": "invalid"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "index": 0,
+        "maskedPaths": {},
+        "name": "basic",
+        "routeKey": "rest:content.findone",
+        "status": 500
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {
+          "authorization": "Basic <secret>"
+        },
+        "method": "GET",
+        "url": "/_api/rest/v1/tenant-a/content/AEAEFD1B-B638-0F03-01B3D64831264009"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "error": {
+            "code": "server_error",
+            "message": "Unhandled Exception"
+          },
+          "method": "invalid"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "01eda81fa4d543bc05da5a7b3511b57feea935e5f057d855c3b157c4cf2ae58c",
+        "status": 500
+      },
+      "routeKey": "rest:content.findone"
+    },
+    {
+      "index": 1,
+      "name": "token",
+      "normalised": {
+        "auth": {
+          "cookies": [],
+          "redirectTargets": [],
+          "wwwAuthenticate": []
+        },
+        "envelope": {
+          "apiversion": "v1",
+          "error": {
+            "code": "server_error",
+            "message": "Unhandled Exception"
+          },
+          "method": "invalid"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "index": 1,
+        "maskedPaths": {},
+        "name": "token",
+        "routeKey": "rest:oauth2",
+        "status": 500
+      },
+      "request": {
+        "body": {
+          "kind": "form",
+          "value": {
+            "client_id": "410A1B90-37F7-4C3A-5D6F00B9A4533F63",
+            "client_secret": "<secret>",
+            "grant_type": "client_credentials"
+          }
+        },
+        "headers": {
+          "content-type": "application/x-www-form-urlencoded"
+        },
+        "method": "POST",
+        "url": "/_api/rest/v1/tenant-a/oauth2"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "error": {
+            "code": "server_error",
+            "message": "Unhandled Exception"
+          },
+          "method": "invalid"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "28e6931903fea6bd88176959da59626ba45a3ce78fd4a42db3c290c300b70b9e",
+        "status": 500
+      },
+      "routeKey": "rest:oauth2"
+    },
+    {
+      "index": 2,
+      "name": "bearer",
+      "normalised": {
+        "auth": {
+          "cookies": [],
+          "redirectTargets": [],
+          "wwwAuthenticate": [
+            "Bearer"
+          ]
+        },
+        "envelope": {
+          "apiversion": "v1",
+          "error": {
+            "code": "invalid_token",
+            "message": "Invalid Access Token"
+          },
+          "method": "invalid"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200",
+          "www-authenticate": "Bearer"
+        },
+        "index": 2,
+        "maskedPaths": {},
+        "name": "bearer",
+        "routeKey": "rest:content.findone",
+        "status": 401
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {
+          "authorization": "Bearer <token>"
+        },
+        "method": "GET",
+        "url": "/_api/rest/v1/tenant-a/content/AEAEFD1B-B638-0F03-01B3D64831264009"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "error": {
+            "code": "invalid_token",
+            "message": "Invalid Access Token"
+          },
+          "method": "invalid"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200",
+          "www-authenticate": "Bearer"
+        },
+        "rawSha256": "c006cb74817dc7e56ade8409df8c10c69c556dece6f672fe9817721fdc84a02d",
+        "status": 401
+      },
+      "routeKey": "rest:content.findone"
+    },
+    {
+      "index": 3,
+      "name": "invalid-parameters",
+      "normalised": {
+        "auth": {
+          "cookies": [
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "CFID",
+              "path": "/",
+              "persistence": "persistent",
+              "rotation": "first",
+              "secure": false,
+              "value": "<token>"
+            },
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "CFTOKEN",
+              "path": "/",
+              "persistence": "persistent",
+              "rotation": "first",
+              "secure": false,
+              "value": "<token>"
+            },
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "MXP_TRACKINGID",
+              "path": "/",
+              "persistence": "persistent",
+              "secure": false,
+              "value": "<token>"
+            },
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "mobileFormat",
+              "path": "/",
+              "persistence": "persistent",
+              "secure": false,
+              "value": "<token>"
+            }
+          ],
+          "redirectTargets": [],
+          "wwwAuthenticate": []
+        },
+        "envelope": {
+          "apiversion": "v1",
+          "error": {
+            "code": "invalid_request",
+            "message": "Invalid parameters"
+          },
+          "method": "invalid"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "index": 3,
+        "maskedPaths": {},
+        "name": "invalid-parameters",
+        "routeKey": "api:!invalidparameters",
+        "status": 400
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {},
+        "method": "GET",
+        "url": "/_api/json/v1/tenant-a/content/?siteid=gs-no-such-site"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "error": {
+            "code": "invalid_request",
+            "message": "Invalid parameters"
+          },
+          "method": "invalid"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "962d260c295ab34baf09b7256ce38ee95f434de31f0b5ea44bba1f8536e11e49",
+        "status": 400
+      },
+      "routeKey": "api:!invalidparameters"
+    },
+    {
+      "index": 4,
+      "name": "invalid-method-call",
+      "normalised": {
+        "auth": {
+          "cookies": [
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "CFID",
+              "path": "/",
+              "persistence": "persistent",
+              "rotation": "changed",
+              "secure": false,
+              "value": "<token>"
+            },
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "CFTOKEN",
+              "path": "/",
+              "persistence": "persistent",
+              "rotation": "changed",
+              "secure": false,
+              "value": "<token>"
+            },
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "MXP_TRACKINGID",
+              "path": "/",
+              "persistence": "persistent",
+              "secure": false,
+              "value": "<token>"
+            },
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "mobileFormat",
+              "path": "/",
+              "persistence": "persistent",
+              "secure": false,
+              "value": "<token>"
+            }
+          ],
+          "redirectTargets": [],
+          "wwwAuthenticate": []
+        },
+        "envelope": {
+          "apiversion": "v1",
+          "error": {
+            "code": "invalid_request",
+            "message": "Invalid method call"
+          },
+          "method": "save"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "index": 4,
+        "maskedPaths": {},
+        "name": "invalid-method-call",
+        "routeKey": "api:!invalidmethodcall",
+        "status": 400
+      },
+      "request": {
+        "body": {
+          "kind": "form",
+          "value": {
+            "method": "user.save"
+          }
+        },
+        "headers": {
+          "content-type": "application/x-www-form-urlencoded"
+        },
+        "method": "POST",
+        "url": "/_api/json/v1/tenant-a/content/"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "error": {
+            "code": "invalid_request",
+            "message": "Invalid method call"
+          },
+          "method": "save"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "c0d64fab83af4546e2b79d004862e8d1fa49e2a2d29203181e8a8c10c2b82cd0",
+        "status": 400
+      },
+      "routeKey": "api:!invalidmethodcall"
+    },
+    {
+      "index": 5,
+      "name": "unauthorized",
+      "normalised": {
+        "auth": {
+          "cookies": [],
+          "redirectTargets": [],
+          "wwwAuthenticate": [
+            "Basic"
+          ]
+        },
+        "envelope": {
+          "apiversion": "v1",
+          "error": {
+            "code": "invalid_request",
+            "message": "Insufficient Account Permissions"
+          },
+          "method": "invalid"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200",
+          "www-authenticate": "Basic"
+        },
+        "index": 5,
+        "maskedPaths": {},
+        "name": "unauthorized",
+        "routeKey": "rest:user.findall",
+        "status": 401
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {},
+        "method": "GET",
+        "url": "/_api/rest/v1/tenant-a/user/"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "error": {
+            "code": "invalid_request",
+            "message": "Insufficient Account Permissions"
+          },
+          "method": "invalid"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200",
+          "www-authenticate": "Basic"
+        },
+        "rawSha256": "9ffc50a5241c37d2fbfe34beb5af6cc657fe0df9d683f77f4d340e0f952a9cb4",
+        "status": 401
+      },
+      "routeKey": "rest:user.findall"
+    },
+    {
+      "decisionListRef": "api:content.save",
+      "expected": "withheld",
+      "index": 6,
+      "name": "forbidden-validation-errors",
+      "normalised": {
+        "auth": {
+          "cookies": [],
+          "redirectTargets": [],
+          "wwwAuthenticate": []
+        },
+        "envelope": {
+          "apiversion": "v1",
+          "data": {
+            "active": 1,
+            "approved": 0,
+            "assocurl": "tenant-a.<origin>/",
+            "changesetid": "",
+            "contenthistid": "<id:1>",
+            "contentid": "<id:2>",
+            "display": 1,
+            "displaystart": "",
+            "displaystop": "",
+            "entityname": "content",
+            "errors": {
+              "template": "invalid template"
+            },
+            "filename": "",
+            "id": "<id:1>",
+            "images": {},
+            "isnew": 1,
+            "links": {
+              "all": "<origin>/index.cfm/_api/json/v1/tenant-a/content",
+              "categoryassignments": "<origin>/index.cfm/_api/json/v1/tenant-a/contentCategoryAssign?contenthistid=<id:2>",
+              "comments": "<origin>/index.cfm/_api/json/v1/tenant-a/comment?contentid=<id:2>",
+              "crumbs": "<origin>/index.cfm/_api/json/v1/tenant-a/content/<id:2>/crumbs",
+              "entities": "<origin>/index.cfm/_api/json/v1/tenant-a",
+              "history": "<origin>/index.cfm/_api/json/v1/tenant-a/content/<id:2>/history",
+              "kids": "<origin>/index.cfm/_api/json/v1/tenant-a/content?parentid=<id:2>",
+              "parent": "<origin>/index.cfm/_api/json/v1/tenant-a/content/00000000000000000000000000000000001",
+              "permissions": "<origin>/index.cfm/_api/json/v1/tenant-a/content/<id:2>/permissions",
+              "properties": "<origin>/index.cfm/_api/json/v1/tenant-a/content/properties",
+              "relatedcontent": "<origin>/index.cfm/_api/json/v1/tenant-a/content/<id:2>/relatedcontent",
+              "rendered": "<origin>/index.cfm/_api/json/v1/tenant-a/content/_path/",
+              "self": "<origin>/index.cfm/_api/json/v1/tenant-a/content/<id:2>",
+              "site": "<origin>/index.cfm/_api/json/v1/tenant-a/site",
+              "stats": "<origin>/index.cfm/_api/json/v1/tenant-a/stats/<id:2>"
+            },
+            "menutitle": "",
+            "moduleid": "00000000000000000000000000000000000",
+            "parentid": "00000000000000000000000000000000001",
+            "path": "",
+            "remoteid": "",
+            "remoteurl": "",
+            "saveerrors": "",
+            "siteid": "tenant-a",
+            "subtype": "Default",
+            "summary": "",
+            "tags": "",
+            "title": "GS-CO-15 invalid template",
+            "type": "Page",
+            "url": "tenant-a.<origin>/"
+          },
+          "method": "save"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "index": 6,
+        "maskedPaths": {},
+        "name": "forbidden-validation-errors",
+        "routeKey": "api:content.save",
+        "status": 403
+      },
+      "request": {
+        "body": {
+          "kind": "form",
+          "value": {
+            "parentid": "00000000000000000000000000000000001",
+            "siteid": "tenant-a",
+            "template": "gs-co-15/invalid.cfm",
+            "title": "GS-CO-15 invalid template",
+            "type": "Page"
+          }
+        },
+        "headers": {
+          "content-type": "application/x-www-form-urlencoded",
+          "x-csrf_token": "<token>",
+          "x-csrf_token_expires": "<token>"
+        },
+        "method": "POST",
+        "url": "/_api/json/v1/tenant-a/content/"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "data": {
+            "active": 1,
+            "approved": 0,
+            "assocurl": "tenant-a.<origin>/",
+            "changesetid": "",
+            "contenthistid": "<id:1>",
+            "contentid": "<id:2>",
+            "display": 1,
+            "displaystart": "",
+            "displaystop": "",
+            "entityname": "content",
+            "errors": {
+              "template": "invalid template"
+            },
+            "filename": "",
+            "id": "<id:1>",
+            "images": {},
+            "isnew": 1,
+            "links": {
+              "all": "<origin>/index.cfm/_api/json/v1/tenant-a/content",
+              "categoryassignments": "<origin>/index.cfm/_api/json/v1/tenant-a/contentCategoryAssign?contenthistid=<id:2>",
+              "comments": "<origin>/index.cfm/_api/json/v1/tenant-a/comment?contentid=<id:2>",
+              "crumbs": "<origin>/index.cfm/_api/json/v1/tenant-a/content/<id:2>/crumbs",
+              "entities": "<origin>/index.cfm/_api/json/v1/tenant-a",
+              "history": "<origin>/index.cfm/_api/json/v1/tenant-a/content/<id:2>/history",
+              "kids": "<origin>/index.cfm/_api/json/v1/tenant-a/content?parentid=<id:2>",
+              "parent": "<origin>/index.cfm/_api/json/v1/tenant-a/content/00000000000000000000000000000000001",
+              "permissions": "<origin>/index.cfm/_api/json/v1/tenant-a/content/<id:2>/permissions",
+              "properties": "<origin>/index.cfm/_api/json/v1/tenant-a/content/properties",
+              "relatedcontent": "<origin>/index.cfm/_api/json/v1/tenant-a/content/<id:2>/relatedcontent",
+              "rendered": "<origin>/index.cfm/_api/json/v1/tenant-a/content/_path/",
+              "self": "<origin>/index.cfm/_api/json/v1/tenant-a/content/<id:2>",
+              "site": "<origin>/index.cfm/_api/json/v1/tenant-a/site",
+              "stats": "<origin>/index.cfm/_api/json/v1/tenant-a/stats/<id:2>"
+            },
+            "menutitle": "",
+            "moduleid": "00000000000000000000000000000000000",
+            "parentid": "00000000000000000000000000000000001",
+            "path": "",
+            "remoteid": "",
+            "remoteurl": "",
+            "saveerrors": "",
+            "siteid": "tenant-a",
+            "subtype": "Default",
+            "summary": "",
+            "tags": "",
+            "title": "GS-CO-15 invalid template",
+            "type": "Page",
+            "url": "tenant-a.<origin>/"
+          },
+          "method": "save"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "7b084af631ed2236417fe905a9400dcc4a50f3265e0f930f54cae187f1ed8e26",
+        "status": 403
+      },
+      "routeKey": "api:content.save"
+    },
+    {
+      "index": 7,
+      "name": "not-found-path",
+      "normalised": {
+        "auth": {
+          "cookies": [
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "CFID",
+              "path": "/",
+              "persistence": "persistent",
+              "rotation": "changed",
+              "secure": false,
+              "value": "<token>"
+            },
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "CFTOKEN",
+              "path": "/",
+              "persistence": "persistent",
+              "rotation": "changed",
+              "secure": false,
+              "value": "<token>"
+            },
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "MXP_TRACKINGID",
+              "path": "/",
+              "persistence": "persistent",
+              "secure": false,
+              "value": "<token>"
+            },
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "mobileFormat",
+              "path": "/",
+              "persistence": "persistent",
+              "secure": false,
+              "value": "<token>"
+            }
+          ],
+          "redirectTargets": [],
+          "wwwAuthenticate": []
+        },
+        "envelope": {
+          "apiversion": "v1",
+          "data": {
+            "active": 1,
+            "approvalchainoverride": false,
+            "approvalgroupid": "",
+            "approvalstatus": "",
+            "approved": 1,
+            "approvingchainrequest": false,
+            "assocfilename": "",
+            "audience": "",
+            "body": "<div class=\"mura-body\">\n\t\t\t<div class=\"mura-region mura-region-loose\">\n\t\t\t\t\t<div class=\"mura-region-local\">The requested page could not be found.</div>\n\t\t\t\t\t</div>\n\t\t</div>",
+            "categoryid": "",
+            "changesetid": "",
+            "childtemplate": "",
+            "conanicalurl": "",
+            "config": {
+              "adminpath": "tenant-a.<origin>/admin",
+              "adminpreview": "no",
+              "apiendpoint": "<origin>/index.cfm/_api/json/v1/tenant-a",
+              "assetpath": "tenant-a.<origin>/sites/umbrella",
+              "changesetid": "",
+              "contenthistid": "<id:3>",
+              "contentid": "00000000000000000000000000000000001",
+              "context": "tenant-a.<origin>",
+              "corepath": "tenant-a.<origin>/core",
+              "fileassetpath": "tenant-a.<origin>/sites/umbrella",
+              "loginurl": "?display=login",
+              "mobileformat": "false",
+              "nocache": "0",
+              "perm": "read",
+              "pluginspath": "tenant-a.<origin>/plugins",
+              "preloadermarkup": "\\x3Ci\\x20class\\x3D\\x22mura\\x2Dpreloader\\x20fas\\x20fa\\x2Dsync\\x20fa\\x2Dspin\\x22\\x3E\\x3C\\x2Fi\\x3E",
+              "rb": "en",
+              "recaptchalanguage": "en",
+              "rootpath": "tenant-a.<origin>",
+              "siteid": "tenant-a",
+              "sitespath": "",
+              "themepath": "tenant-a.<origin>/themes/default",
+              "windowdocumentdomain": ""
+            },
+            "contenthistid": "<id:3>",
+            "contentid": "00000000000000000000000000000000001",
+            "contentsubtype": "",
+            "contenttype": "",
+            "created": "<ts:serializer>",
+            "credits": "",
+            "display": 1,
+            "displayinterval": "Daily",
+            "displayregionnames": [
+              "Left Column",
+              "Main Content",
+              "Right Column"
+            ],
+            "displayregions": {
+              "leftcolumn": {
+                "footer": "</div>",
+                "header": "<div class=\"mura-region\">",
+                "inherited": {
+                  "footer": "</div>",
+                  "header": "<div class=\"mura-region-inherited\">",
+                  "items": []
+                },
+                "local": {
+                  "footer": "</div>",
+                  "header": "<div class=\"mura-region-local\">",
+                  "items": []
+                }
+              },
+              "maincontent": {
+                "footer": "</div>",
+                "header": "<div class=\"mura-region\">",
+                "inherited": {
+                  "footer": "</div>",
+                  "header": "<div class=\"mura-region-inherited\">",
+                  "items": []
+                },
+                "local": {
+                  "footer": "</div>",
+                  "header": "<div class=\"mura-region-local\">",
+                  "items": []
+                }
+              },
+              "rightcolumn": {
+                "footer": "</div>",
+                "header": "<div class=\"mura-region\">",
+                "inherited": {
+                  "footer": "</div>",
+                  "header": "<div class=\"mura-region-inherited\">",
+                  "items": []
+                },
+                "local": {
+                  "footer": "</div>",
+                  "header": "<div class=\"mura-region-local\">",
+                  "items": []
+                }
+              }
+            },
+            "displaystart": "",
+            "displaystop": "",
+            "displaytitle": 1,
+            "docache": 1,
+            "expires": "",
+            "extendsetid": "",
+            "featurestart": "",
+            "featurestop": "",
+            "fileext": "",
+            "fileid": "",
+            "filename": "404",
+            "filesize": 0,
+            "forcessl": 0,
+            "htmlfootqueue": "\r\n<script src=\"//tenant-a.<origin>/core/modules/v1/cta/js/mura.displayobject.cta.min.js\" defer=\"defer\"></script>\r\n<script defer=\"defer\" src=\"/core/modules/v1/gatedasset/assets/js/module.js\"></script>",
+            "htmlheadqueue": "\r\n<script type=\"text/javascript\" src=\"/core/modules/v1/core_assets/js/mura.js?v=7.6.1\" defer=\"defer\"></script>\n<script>\n(function(root,config){root.queuedMuraCmds=[],root.queuedMuraPreInitCmds=[],root.deferMuraInit=function(){void 0!==root.Mura&&\"function\"==typeof root.Mura.init?root.Mura.init(config):(\"function\"!=typeof root.Mura&&(root.mura=root.m=root.Mura=function(o){root.queuedMuraCmds.push(o)},root.Mura.preInit=function(o){root.queuedMuraPreInitCmds.push(o)}),setTimeout(root.deferMuraInit))},root.deferMuraInit();}\n)(this,{\nloginURL:\"?display=login\",\nsiteid:\"tenant-a\",\ncontentid:\"00000000000000000000000000000000001\",\ncontenthistid:\"<id:3>\",\nparentid:\"00000000000000000000000000000000END\",\nchangesetid:\"\",\ncontext:\"\",\nnocache:0,\nassetpath:\"/sites/umbrella\",\ncorepath:\"/core\",\nfileassetpath:\"/sites/umbrella\",\nthemepath:\"/themes/default\",\nreCAPTCHALanguage:\"en\",\npreloaderMarkup: \"\\x3Ci\\x20class\\x3D\\x22mura\\x2Dpreloader\\x20fas\\x20fa\\x2Dsync\\x20fa\\x2Dspin\\x22\\x3E\\x3C\\x2Fi\\x3E\",\nmobileformat: false,\nwindowdocumentdomain: \"\",\nlayoutmanager:true,\ntype:\"Page\",\nsubtype:\"Default\",\nqueueObjects: true,\nrb:{\"formcheckboxlabelclass\":\"form-check-label\",\"formgeneralcontrolclass\":\"form-control\",\"formrequiredlabel\":\"Required\",\"formcheckboxclass\":\"form-check-input\",\"formradiolabelclass\":\"form-check-label\",\"formbuttoncancelclass\":\"form-cancel btn btn-danger\",\"formwrapperbodyclass\":\"\",\"formbuttonsubmitclass\":\"form-submit  btn-primary\",\"formtextareaclass\":\"form-control\",\"formfileclass\":\"form-control\",\"formbuttoninnerclass\":\"\",\"formbuttonsubmitwaitlabel\":\"Please Wait...\",\"formbuttonwrapperclass\":\"btn-group\",\"formrequiredwrapperclass\":\"\",\"formbuttonnextlclass\":\"form-nav\",\"formbuttonclass\":\"btn btn-primary\",\"formbuttonnextlabel\":\"Next\",\"formradioclass\":\"form-check-input\",\"formbuttomsubmitclass\":\"form-submit btn btn-primary\",\"formfieldlabelclass\":\"control-label\",\"formbuttonbacklabel\":\"Back\",\"formerrorwrapperclass\":\"\",\"formwrapperclass\":\"\",\"formradiowrapperclass\":\"form-check\",\"formbuttonbackclass\":\"form-nav\",\"formresponsewrapperclass\":\"\",\"formselectclass\":\"form-control\",\"generalwrapperbodyclass\":\"\",\"formcheckboxwrapperclass\":\"form-check\",\"generalwrapperclass\":\"\",\"forminputclass\":\"form-control\",\"formfieldwrapperclass\":\"form-group\",\"formbuttonsubmitlabel\":\"Submit\",\"formbuttoncancellabel\":\"Cancel\"},\ndtExample:\"<ts:admin-date>\",\r\ndtCh:\"/\",\r\ndtFormat:[0,1,2],\r\ndtLocale:\"en-US\",\nindexfileinapi: false\n});\n</script>\r\n<meta name=\"robots\" content=\"noindex, follow\" />",
+            "htmltitle": "",
+            "id": "00000000000000000000000000000000001",
+            "imageheight": "AUTO",
+            "images": {},
+            "imagesize": "small",
+            "imagewidth": "AUTO",
+            "inheritobjects": "Inherit",
+            "isfeature": 0,
+            "islocked": 0,
+            "isnav": 1,
+            "isnew": 1,
+            "keypoints": "",
+            "lastupdate": "<ts:serializer>",
+            "links": {
+              "all": "<origin>/index.cfm/_api/json/v1/tenant-a/content",
+              "categoryassignments": "<origin>/index.cfm/_api/json/v1/tenant-a/contentCategoryAssign?contenthistid=00000000000000000000000000000000001",
+              "comments": "<origin>/index.cfm/_api/json/v1/tenant-a/comment?contentid=00000000000000000000000000000000001",
+              "crumbs": "<origin>/index.cfm/_api/json/v1/tenant-a/content/00000000000000000000000000000000001/crumbs",
+              "entities": "<origin>/index.cfm/_api/json/v1/tenant-a",
+              "history": "<origin>/index.cfm/_api/json/v1/tenant-a/content/00000000000000000000000000000000001/history",
+              "kids": "<origin>/index.cfm/_api/json/v1/tenant-a/content?parentid=00000000000000000000000000000000001",
+              "parent": "<origin>/index.cfm/_api/json/v1/tenant-a/content/00000000000000000000000000000000END",
+              "permissions": "<origin>/index.cfm/_api/json/v1/tenant-a/content/00000000000000000000000000000000001/permissions",
+              "properties": "<origin>/index.cfm/_api/json/v1/tenant-a/content/properties",
+              "relatedcontent": "<origin>/index.cfm/_api/json/v1/tenant-a/content/00000000000000000000000000000000001/relatedcontent",
+              "rendered": "<origin>/index.cfm/_api/json/v1/tenant-a/content/_path/404",
+              "self": "<origin>/index.cfm/_api/json/v1/tenant-a/content/00000000000000000000000000000000001",
+              "site": "<origin>/index.cfm/_api/json/v1/tenant-a/site",
+              "stats": "<origin>/index.cfm/_api/json/v1/tenant-a/stats/00000000000000000000000000000000001"
+            },
+            "majorversion": 0,
+            "menutitle": "404",
+            "metadesc": "",
+            "minorversion": 0,
+            "mobileexclude": 0,
+            "moduleassign": "",
+            "moduleid": "00000000000000000000000000000000000",
+            "newfile": "",
+            "nextn": 10,
+            "notes": "",
+            "objectparams": {
+              "isbodyobject": true
+            },
+            "oldfilename": "",
+            "orderno": 1,
+            "parentid": "00000000000000000000000000000000END",
+            "path": "00000000000000000000000000000000001",
+            "relatedcontentsetdata": "",
+            "releasedate": "",
+            "remoteid": "",
+            "remotepubdate": "",
+            "remotesource": "",
+            "remotesourceurl": "",
+            "remoteurl": "",
+            "requestid": "",
+            "responsechart": 0,
+            "responsedisplayfields": "",
+            "responsemessage": "",
+            "responsesendto": "",
+            "restricted": 0,
+            "restrictgroups": "",
+            "searchexclude": 0,
+            "siteid": "tenant-a",
+            "sortby": "orderno",
+            "sortdirection": "asc",
+            "sourceiterator": "",
+            "subtype": "Default",
+            "summary": "",
+            "tags": "",
+            "target": "_self",
+            "targetparams": "",
+            "tcontent_id": "0",
+            "template": "default.cfm",
+            "title": "404",
+            "type": "Page",
+            "urltitle": ""
+          },
+          "method": "findOne"
+        },
+        "headers": {
+          "content-language": "en-US",
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:mismatch>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "index": 7,
+        "maskedPaths": {},
+        "name": "not-found-path",
+        "routeKey": "api:content.findone",
+        "status": 404
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {},
+        "method": "GET",
+        "url": "/_api/json/v1/tenant-a/content/_path/gs-co-15/does-not-exist"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "data": {
+            "active": 1,
+            "approvalchainoverride": false,
+            "approvalgroupid": "",
+            "approvalstatus": "",
+            "approved": 1,
+            "approvingchainrequest": false,
+            "assocfilename": "",
+            "audience": "",
+            "body": "<div class=\"mura-body\">\n\t\t\t<div class=\"mura-region mura-region-loose\">\n\t\t\t\t\t<div class=\"mura-region-local\">The requested page could not be found.</div>\n\t\t\t\t\t</div>\n\t\t</div>",
+            "categoryid": "",
+            "changesetid": "",
+            "childtemplate": "",
+            "conanicalurl": "",
+            "config": {
+              "adminpath": "tenant-a.<origin>/admin",
+              "adminpreview": "no",
+              "apiendpoint": "<origin>/index.cfm/_api/json/v1/tenant-a",
+              "assetpath": "tenant-a.<origin>/sites/umbrella",
+              "changesetid": "",
+              "contenthistid": "<id:3>",
+              "contentid": "00000000000000000000000000000000001",
+              "context": "tenant-a.<origin>",
+              "corepath": "tenant-a.<origin>/core",
+              "fileassetpath": "tenant-a.<origin>/sites/umbrella",
+              "loginurl": "?display=login",
+              "mobileformat": "false",
+              "nocache": "0",
+              "perm": "read",
+              "pluginspath": "tenant-a.<origin>/plugins",
+              "preloadermarkup": "\\x3Ci\\x20class\\x3D\\x22mura\\x2Dpreloader\\x20fas\\x20fa\\x2Dsync\\x20fa\\x2Dspin\\x22\\x3E\\x3C\\x2Fi\\x3E",
+              "rb": "en",
+              "recaptchalanguage": "en",
+              "rootpath": "tenant-a.<origin>",
+              "siteid": "tenant-a",
+              "sitespath": "",
+              "themepath": "tenant-a.<origin>/themes/default",
+              "windowdocumentdomain": ""
+            },
+            "contenthistid": "<id:3>",
+            "contentid": "00000000000000000000000000000000001",
+            "contentsubtype": "",
+            "contenttype": "",
+            "created": "<ts:serializer>",
+            "credits": "",
+            "display": 1,
+            "displayinterval": "Daily",
+            "displayregionnames": [
+              "Left Column",
+              "Main Content",
+              "Right Column"
+            ],
+            "displayregions": {
+              "leftcolumn": {
+                "footer": "</div>",
+                "header": "<div class=\"mura-region\">",
+                "inherited": {
+                  "footer": "</div>",
+                  "header": "<div class=\"mura-region-inherited\">",
+                  "items": []
+                },
+                "local": {
+                  "footer": "</div>",
+                  "header": "<div class=\"mura-region-local\">",
+                  "items": []
+                }
+              },
+              "maincontent": {
+                "footer": "</div>",
+                "header": "<div class=\"mura-region\">",
+                "inherited": {
+                  "footer": "</div>",
+                  "header": "<div class=\"mura-region-inherited\">",
+                  "items": []
+                },
+                "local": {
+                  "footer": "</div>",
+                  "header": "<div class=\"mura-region-local\">",
+                  "items": []
+                }
+              },
+              "rightcolumn": {
+                "footer": "</div>",
+                "header": "<div class=\"mura-region\">",
+                "inherited": {
+                  "footer": "</div>",
+                  "header": "<div class=\"mura-region-inherited\">",
+                  "items": []
+                },
+                "local": {
+                  "footer": "</div>",
+                  "header": "<div class=\"mura-region-local\">",
+                  "items": []
+                }
+              }
+            },
+            "displaystart": "",
+            "displaystop": "",
+            "displaytitle": 1,
+            "docache": 1,
+            "expires": "",
+            "extendsetid": "",
+            "featurestart": "",
+            "featurestop": "",
+            "fileext": "",
+            "fileid": "",
+            "filename": "404",
+            "filesize": 0,
+            "forcessl": 0,
+            "htmlfootqueue": "\r\n<script src=\"//tenant-a.<origin>/core/modules/v1/cta/js/mura.displayobject.cta.min.js\" defer=\"defer\"></script>\r\n<script defer=\"defer\" src=\"/core/modules/v1/gatedasset/assets/js/module.js\"></script>",
+            "htmlheadqueue": "\r\n<script type=\"text/javascript\" src=\"/core/modules/v1/core_assets/js/mura.js?v=7.6.1\" defer=\"defer\"></script>\n<script>\n(function(root,config){root.queuedMuraCmds=[],root.queuedMuraPreInitCmds=[],root.deferMuraInit=function(){void 0!==root.Mura&&\"function\"==typeof root.Mura.init?root.Mura.init(config):(\"function\"!=typeof root.Mura&&(root.mura=root.m=root.Mura=function(o){root.queuedMuraCmds.push(o)},root.Mura.preInit=function(o){root.queuedMuraPreInitCmds.push(o)}),setTimeout(root.deferMuraInit))},root.deferMuraInit();}\n)(this,{\nloginURL:\"?display=login\",\nsiteid:\"tenant-a\",\ncontentid:\"00000000000000000000000000000000001\",\ncontenthistid:\"<id:3>\",\nparentid:\"00000000000000000000000000000000END\",\nchangesetid:\"\",\ncontext:\"\",\nnocache:0,\nassetpath:\"/sites/umbrella\",\ncorepath:\"/core\",\nfileassetpath:\"/sites/umbrella\",\nthemepath:\"/themes/default\",\nreCAPTCHALanguage:\"en\",\npreloaderMarkup: \"\\x3Ci\\x20class\\x3D\\x22mura\\x2Dpreloader\\x20fas\\x20fa\\x2Dsync\\x20fa\\x2Dspin\\x22\\x3E\\x3C\\x2Fi\\x3E\",\nmobileformat: false,\nwindowdocumentdomain: \"\",\nlayoutmanager:true,\ntype:\"Page\",\nsubtype:\"Default\",\nqueueObjects: true,\nrb:{\"formcheckboxlabelclass\":\"form-check-label\",\"formgeneralcontrolclass\":\"form-control\",\"formrequiredlabel\":\"Required\",\"formcheckboxclass\":\"form-check-input\",\"formradiolabelclass\":\"form-check-label\",\"formbuttoncancelclass\":\"form-cancel btn btn-danger\",\"formwrapperbodyclass\":\"\",\"formbuttonsubmitclass\":\"form-submit  btn-primary\",\"formtextareaclass\":\"form-control\",\"formfileclass\":\"form-control\",\"formbuttoninnerclass\":\"\",\"formbuttonsubmitwaitlabel\":\"Please Wait...\",\"formbuttonwrapperclass\":\"btn-group\",\"formrequiredwrapperclass\":\"\",\"formbuttonnextlclass\":\"form-nav\",\"formbuttonclass\":\"btn btn-primary\",\"formbuttonnextlabel\":\"Next\",\"formradioclass\":\"form-check-input\",\"formbuttomsubmitclass\":\"form-submit btn btn-primary\",\"formfieldlabelclass\":\"control-label\",\"formbuttonbacklabel\":\"Back\",\"formerrorwrapperclass\":\"\",\"formwrapperclass\":\"\",\"formradiowrapperclass\":\"form-check\",\"formbuttonbackclass\":\"form-nav\",\"formresponsewrapperclass\":\"\",\"formselectclass\":\"form-control\",\"generalwrapperbodyclass\":\"\",\"formcheckboxwrapperclass\":\"form-check\",\"generalwrapperclass\":\"\",\"forminputclass\":\"form-control\",\"formfieldwrapperclass\":\"form-group\",\"formbuttonsubmitlabel\":\"Submit\",\"formbuttoncancellabel\":\"Cancel\"},\ndtExample:\"<ts:admin-date>\",\r\ndtCh:\"/\",\r\ndtFormat:[0,1,2],\r\ndtLocale:\"en-US\",\nindexfileinapi: false\n});\n</script>\r\n<meta name=\"robots\" content=\"noindex, follow\" />",
+            "htmltitle": "",
+            "id": "00000000000000000000000000000000001",
+            "imageheight": "AUTO",
+            "images": {},
+            "imagesize": "small",
+            "imagewidth": "AUTO",
+            "inheritobjects": "Inherit",
+            "isfeature": 0,
+            "islocked": 0,
+            "isnav": 1,
+            "isnew": 1,
+            "keypoints": "",
+            "lastupdate": "<ts:serializer>",
+            "links": {
+              "all": "<origin>/index.cfm/_api/json/v1/tenant-a/content",
+              "categoryassignments": "<origin>/index.cfm/_api/json/v1/tenant-a/contentCategoryAssign?contenthistid=00000000000000000000000000000000001",
+              "comments": "<origin>/index.cfm/_api/json/v1/tenant-a/comment?contentid=00000000000000000000000000000000001",
+              "crumbs": "<origin>/index.cfm/_api/json/v1/tenant-a/content/00000000000000000000000000000000001/crumbs",
+              "entities": "<origin>/index.cfm/_api/json/v1/tenant-a",
+              "history": "<origin>/index.cfm/_api/json/v1/tenant-a/content/00000000000000000000000000000000001/history",
+              "kids": "<origin>/index.cfm/_api/json/v1/tenant-a/content?parentid=00000000000000000000000000000000001",
+              "parent": "<origin>/index.cfm/_api/json/v1/tenant-a/content/00000000000000000000000000000000END",
+              "permissions": "<origin>/index.cfm/_api/json/v1/tenant-a/content/00000000000000000000000000000000001/permissions",
+              "properties": "<origin>/index.cfm/_api/json/v1/tenant-a/content/properties",
+              "relatedcontent": "<origin>/index.cfm/_api/json/v1/tenant-a/content/00000000000000000000000000000000001/relatedcontent",
+              "rendered": "<origin>/index.cfm/_api/json/v1/tenant-a/content/_path/404",
+              "self": "<origin>/index.cfm/_api/json/v1/tenant-a/content/00000000000000000000000000000000001",
+              "site": "<origin>/index.cfm/_api/json/v1/tenant-a/site",
+              "stats": "<origin>/index.cfm/_api/json/v1/tenant-a/stats/00000000000000000000000000000000001"
+            },
+            "majorversion": 0,
+            "menutitle": "404",
+            "metadesc": "",
+            "minorversion": 0,
+            "mobileexclude": 0,
+            "moduleassign": "",
+            "moduleid": "00000000000000000000000000000000000",
+            "newfile": "",
+            "nextn": 10,
+            "notes": "",
+            "objectparams": {
+              "isbodyobject": true
+            },
+            "oldfilename": "",
+            "orderno": 1,
+            "parentid": "00000000000000000000000000000000END",
+            "path": "00000000000000000000000000000000001",
+            "relatedcontentsetdata": "",
+            "releasedate": "",
+            "remoteid": "",
+            "remotepubdate": "",
+            "remotesource": "",
+            "remotesourceurl": "",
+            "remoteurl": "",
+            "requestid": "",
+            "responsechart": 0,
+            "responsedisplayfields": "",
+            "responsemessage": "",
+            "responsesendto": "",
+            "restricted": 0,
+            "restrictgroups": "",
+            "searchexclude": 0,
+            "siteid": "tenant-a",
+            "sortby": "orderno",
+            "sortdirection": "asc",
+            "sourceiterator": "",
+            "subtype": "Default",
+            "summary": "",
+            "tags": "",
+            "target": "_self",
+            "targetparams": "",
+            "tcontent_id": "0",
+            "template": "default.cfm",
+            "title": "404",
+            "type": "Page",
+            "urltitle": ""
+          },
+          "method": "findOne"
+        },
+        "headers": {
+          "content-language": "en-US",
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:mismatch>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "4633fb0bbd9e453187eb2021e0a18550663c880648571e288a636bbc97f87514",
+        "status": 404
+      },
+      "routeKey": "api:content.findone"
+    },
+    {
+      "candidateIndex": 2,
+      "expected": "gap",
+      "index": 8,
+      "name": "server-error",
+      "normalised": {
+        "auth": {
+          "cookies": [
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "CFID",
+              "path": "/",
+              "persistence": "persistent",
+              "rotation": "changed",
+              "secure": false,
+              "value": "<token>"
+            },
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "CFTOKEN",
+              "path": "/",
+              "persistence": "persistent",
+              "rotation": "changed",
+              "secure": false,
+              "value": "<token>"
+            },
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "MXP_TRACKINGID",
+              "path": "/",
+              "persistence": "persistent",
+              "secure": false,
+              "value": "<token>"
+            },
+            {
+              "hop": 0,
+              "httpOnly": true,
+              "name": "mobileFormat",
+              "path": "/",
+              "persistence": "persistent",
+              "secure": false,
+              "value": "<token>"
+            }
+          ],
+          "redirectTargets": [],
+          "wwwAuthenticate": []
+        },
+        "envelope": {
+          "apiversion": "v1",
+          "error": {
+            "code": "server_error",
+            "message": "Unhandled Exception"
+          },
+          "method": "findQuery"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "index": 8,
+        "maskedPaths": {},
+        "name": "server-error",
+        "routeKey": "api:content.findquery",
+        "status": 500
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {},
+        "method": "GET",
+        "url": "/_api/json/v1/tenant-a/content/?sort=%27"
+      },
+      "response": {
+        "body": {
+          "apiversion": "v1",
+          "error": {
+            "code": "server_error",
+            "message": "Unhandled Exception"
+          },
+          "method": "findQuery"
+        },
+        "headers": {
+          "content-type": "application/json;charset=utf-8",
+          "etag": "<etag:ok>",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "7981df527f5ba84977bc6ad2a8b71c0bd02339b12520eb6a13f5cc18860fff15",
+        "status": 500
+      },
+      "routeKey": "api:content.findquery"
+    }
+  ],
+  "tableVersion": null
+}

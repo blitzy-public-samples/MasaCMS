@@ -1,0 +1,188 @@
+// Internal cut-over endpoints of the gateway contract: activate, freeze, unfreeze, status (v1 and v2) and evidence-backed orphan clearing.
+import { Readable } from 'node:stream';
+import { AuthDenial, Roles, type Opt2AuthContext } from '@opt2/platform/auth';
+import { LegacyApiError } from '@opt2/platform/legacy-compat';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from '@opt2/platform/service-kit';
+import type { components } from '../generated/openapi.js';
+import type { InflightStore } from './inflight.js';
+import { ActivationRejected, CutoverConflict, type CutoverState } from './state.js';
+import { STATUS_CONTENT_TYPE, statusJson, type CutoverStatusPages } from './status-pages.js';
+
+type CutoverActivateRequest = components['schemas']['CutoverActivateRequest'];
+type CutoverRoutesRequest = components['schemas']['CutoverRoutesRequest'];
+type InflightClearRequest = components['schemas']['InflightClearRequest'];
+type InflightClearResponse = components['schemas']['InflightClearResponse'];
+
+/** Stores the cut-over routes act on: the instance's cut-over state and the in-flight write registry. */
+export interface CutoverRouteDeps {
+  state: CutoverState;
+  inflight: InflightStore;
+}
+
+const OPERATOR = [Roles.platformOperator];
+const OPERATOR_OR_MIGRATION = [Roles.platformOperator, Roles.platformMigration];
+
+const TABLE_VERSION_PATTERN = '^v[0-9]{4}$';
+const ROUTE_KEY_PATTERN = '^[a-z0-9-]+:\\S+$';
+const TIMESTAMP_PATTERN = '^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,6})?(Z|[+-]\\d{2}:\\d{2})$';
+const UNIT_PATTERN = '^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$';
+
+// Request bodies as the contract components declare them; Fastify validates them once, before the handler.
+const ACTIVATE_BODY = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['tableVersion'],
+  properties: { tableVersion: { type: 'string', pattern: TABLE_VERSION_PATTERN } },
+} as const;
+
+const ROUTES_BODY = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['routes'],
+  properties: {
+    routes: { type: 'array', minItems: 1, uniqueItems: true, items: { type: 'string', pattern: ROUTE_KEY_PATTERN } },
+  },
+} as const;
+
+// The allOf pairs each side with the only evidence kind that can clear it, so a mismatch fails validation with the
+// contract's 400 before the store's own evidence check could raise.
+const CLEAR_ORPHANS_BODY = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['side', 'evidence'],
+  properties: {
+    side: { type: 'string', enum: ['legacy', 'target'] },
+    evidence: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['kind', 'holderId', 'at'],
+      properties: {
+        kind: { type: 'string', enum: ['legacy-restart', 'gates-closed'] },
+        holderId: { type: 'string', minLength: 1 },
+        at: { type: 'string', pattern: TIMESTAMP_PATTERN },
+        units: { type: 'array', minItems: 1, uniqueItems: true, items: { type: 'string', pattern: UNIT_PATTERN } },
+      },
+    },
+    instanceIds: { type: 'array', uniqueItems: true, items: { type: 'string' } },
+  },
+  allOf: [
+    {
+      if: { required: ['side'], properties: { side: { const: 'target' } } },
+      then: {
+        properties: {
+          evidence: { type: 'object', required: ['units'], properties: { kind: { const: 'gates-closed' }, units: { type: 'array' } } },
+        },
+      },
+    },
+    {
+      if: { required: ['side'], properties: { side: { const: 'legacy' } } },
+      then: { properties: { evidence: { type: 'object', properties: { kind: { const: 'legacy-restart' } } } } },
+    },
+  ],
+} as const;
+
+/** Refuses a body whose media type is not `application/json`, the only one the contract declares, with the legacy 400. */
+function requireJsonBody(request: FastifyRequest, _reply: FastifyReply, done: (err?: Error) => void): void {
+  const essence = request.headers['content-type']?.split(';', 1)[0]?.trim().toLowerCase();
+  done(essence === 'application/json' ? undefined : new LegacyApiError('badRequest'));
+}
+
+/** The verified caller recorded as `activated_by` / `frozen_by`: the calling service, else the user. */
+function actorOf(auth: Opt2AuthContext): string {
+  const actor = auth.service?.name ?? auth.user?.sub;
+  if (actor === undefined) throw AuthDenial.unauthenticated('missing-credential');
+  return actor;
+}
+
+/** Answers a refused cut-over operation with its `ValidationFindings`: 400 for findings, 409 for a conflict; rethrows anything else. */
+function sendFindings(reply: FastifyReply, error: unknown): FastifyReply {
+  if (error instanceof ActivationRejected) return reply.code(400).send({ findings: error.findings });
+  if (error instanceof CutoverConflict) return reply.code(409).send({ findings: error.findings });
+  throw error;
+}
+
+/** Answers `CutoverStatus` or `CutoverStatusV2` streamed a page at a time, so the body never has to be held whole. */
+function sendStatus(reply: FastifyReply, pages: CutoverStatusPages): FastifyReply {
+  return reply.type(STATUS_CONTENT_TYPE).send(Readable.from(statusJson(pages)));
+}
+
+/**
+ * Registers `cutoverActivate`, `cutoverFreeze`, `cutoverUnfreeze`, `cutoverStatus`, `cutoverStatusV2` and `inflightClearOrphans`
+ * of the gateway contract.
+ */
+export async function registerCutoverRoutes(app: FastifyInstance, { state, inflight }: CutoverRouteDeps): Promise<void> {
+  app.post<{ Body: CutoverActivateRequest }>(
+    '/internal/v1/cutover/activate',
+    { schema: { body: ACTIVATE_BODY }, preValidation: requireJsonBody, config: { opt2: { transport: 'service', requires: OPERATOR } } },
+    async (request, reply) => {
+      const actor = actorOf(request.opt2Auth);
+      try {
+        return await state.activate({ tableVersion: request.body.tableVersion, actor });
+      } catch (error) {
+        return sendFindings(reply, error);
+      }
+    },
+  );
+
+  const freezeRoute = (url: string, change: CutoverState['freezePages']): void => {
+    app.post<{ Body: CutoverRoutesRequest }>(
+      url,
+      { schema: { body: ROUTES_BODY }, preValidation: requireJsonBody, config: { opt2: { transport: 'service', requires: OPERATOR } } },
+      async (request, reply) => {
+        const actor = actorOf(request.opt2Auth);
+        let pages: CutoverStatusPages;
+        try {
+          pages = await change(request.body.routes, actor);
+        } catch (error) {
+          return sendFindings(reply, error);
+        }
+        return sendStatus(reply, pages);
+      },
+    );
+  };
+  freezeRoute('/internal/v1/cutover/freeze', (routes, actor) => state.freezePages(routes, actor));
+  freezeRoute('/internal/v1/cutover/unfreeze', (routes, actor) => state.unfreezePages(routes, actor));
+
+  // The contract declares no HEAD operation, so Fastify's automatic HEAD sibling is not registered.
+  // Migration polls the status, so its successful requests log at debug.
+  app.get(
+    '/internal/v1/cutover/status',
+    {
+      exposeHeadRoute: false,
+      config: { opt2: { transport: 'service', requires: OPERATOR_OR_MIGRATION }, opt2Log: { successLevel: 'debug' } },
+    },
+    async (_request, reply) => sendStatus(reply, await state.statusPages()),
+  );
+  app.get(
+    '/internal/v2/cutover/status',
+    {
+      exposeHeadRoute: false,
+      config: { opt2: { transport: 'service', requires: OPERATOR_OR_MIGRATION }, opt2Log: { successLevel: 'debug' } },
+    },
+    async (_request, reply) => sendStatus(reply, await state.statusV2Pages()),
+  );
+
+  // `::` is the router's literal colon, so the contract's `inflight:clear-orphans` is not read as a path parameter.
+  app.post<{ Body: InflightClearRequest }>(
+    '/internal/v1/inflight::clear-orphans',
+    {
+      schema: { body: CLEAR_ORPHANS_BODY },
+      preValidation: requireJsonBody,
+      config: { opt2: { transport: 'service', requires: OPERATOR_OR_MIGRATION } },
+    },
+    async (request): Promise<InflightClearResponse> => {
+      const actor = actorOf(request.opt2Auth);
+      // The store's `routes` narrowing is in-process only; the contract body carries no routes.
+      const { side, evidence, instanceIds } = request.body;
+      const { cleared } = await inflight.clearOrphans({ side, evidence, instanceIds });
+      // The platform logger keeps only log-record.v1 fields, so the cleanup context is in the message.
+      const units = evidence.units === undefined ? '' : ` units=${JSON.stringify(evidence.units)}`;
+      const instances = instanceIds === undefined ? '' : ` instances=${JSON.stringify(instanceIds)}`;
+      request.log.info(
+        `in-flight orphans cleared: count=${cleared} side=${side} evidence=${evidence.kind} holder=${evidence.holderId}` +
+          `${units}${instances} actor=${actor}`,
+      );
+      return { cleared };
+    },
+  );
+}

@@ -1,0 +1,11 @@
+{
+  "durationMs": 540000,
+  "evidence": [
+    "opt2/reports/platform-proof.json"
+  ],
+  "finishedAt": "2026-06-30T01:40:44.000Z",
+  "name": "Platform on stub",
+  "result": "pass",
+  "stage": 2,
+  "startedAt": "2026-06-30T01:31:44.000Z"
+}

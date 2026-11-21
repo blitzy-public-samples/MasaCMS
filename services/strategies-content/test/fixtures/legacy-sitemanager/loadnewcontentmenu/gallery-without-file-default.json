@@ -1,0 +1,97 @@
+{
+ "user": "admin",
+ "request": {
+  "siteid": "default",
+  "contentid": "222A4725-FB9A-487D-4F65B1A8315072DA",
+  "parentid": "222A4725-FB9A-487D-4F65B1A8315072DA",
+  "topid": "222A4725-FB9A-487D-4F65B1A8315072DA",
+  "ptype": "Gallery",
+  "moduleid": "00000000000000000000000000000000000",
+  "contenthistid": "ABC"
+ },
+ "model": {
+  "siteId": "default",
+  "contentId": "222A4725-FB9A-487D-4F65B1A8315072DA",
+  "contentHistId": "ABC",
+  "topId": "222A4725-FB9A-487D-4F65B1A8315072DA",
+  "moduleId": "00000000000000000000000000000000000",
+  "ptype": "Gallery",
+  "compactDisplay": "false",
+  "frontEndProxyLoc": false,
+  "powerUser": true,
+  "primaryContentTypes": "",
+  "availableSubTypes": "File/Brochure,Page/Default",
+  "subtypes": [
+   {
+    "type": "Component",
+    "subtype": "Widget",
+    "adminonly": 0,
+    "description": "A widget"
+   },
+   {
+    "type": "File",
+    "subtype": "Brochure",
+    "adminonly": 0,
+    "description": "PDF brochure"
+   },
+   {
+    "type": "Folder",
+    "subtype": "Locked",
+    "adminonly": 1,
+    "description": ""
+   },
+   {
+    "type": "Form",
+    "subtype": "Default",
+    "adminonly": 0,
+    "description": "Plain form"
+   },
+   {
+    "type": "Form",
+    "subtype": "Survey",
+    "adminonly": 0,
+    "description": "Survey form"
+   },
+   {
+    "type": "Link",
+    "subtype": "Default",
+    "adminonly": 1,
+    "description": "Link <desc> & \"q\""
+   },
+   {
+    "type": "Page",
+    "subtype": "Special",
+    "adminonly": 0,
+    "description": "A \"special\" page"
+   }
+  ],
+  "allowSimpleHtmlForms": false,
+  "allowMultiUpload": true
+ },
+ "iconRows": [
+  {
+   "siteid": "default",
+   "type": "Link",
+   "subtype": "Default",
+   "iconclass": ""
+  },
+  {
+   "siteid": "default",
+   "type": "Folder",
+   "subtype": "Locked",
+   "iconclass": ""
+  },
+  {
+   "siteid": "default",
+   "type": "Page",
+   "subtype": "Special",
+   "iconclass": "mi-star"
+  },
+  {
+   "siteid": "default",
+   "type": "File",
+   "subtype": "Brochure",
+   "iconclass": "ext-pdf"
+  }
+ ]
+}

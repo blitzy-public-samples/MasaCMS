@@ -1,0 +1,78 @@
+{
+  "name": "@opt2/harness",
+  "version": "1.0.0",
+  "private": true,
+  "description": "OPT-2 inventory, baseline, golden parity, reporting and reproducibility harness.",
+  "type": "module",
+  "engines": {
+    "node": "22.23.4"
+  },
+  "scripts": {
+    "postinstall": "npm ci --prefix ../platform && npm run build --prefix ../platform",
+    "generate": "openapi-typescript ../gateway/contracts/openapi.yaml -o src/generated/clients/gateway.ts && openapi-typescript ../migration/contracts/openapi.yaml -o src/generated/clients/migration.ts",
+    "prebuild": "npm run generate",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "lint": "eslint --config test/eslint.config.mjs .",
+    "test": "vitest run --coverage",
+    "test:contract": "vitest run test/reporting/check-pin test/reporting/check-synthetic test/golden/catalogue-response-paths test/route-key-parity",
+    "test:security": "vitest run test/security test/repro/secrets",
+    "test:e2e": "vitest run --config vitest.e2e.config.ts",
+    "inventory": "tsx src/inventory/generate.ts",
+    "inventory:cloc": "tsx src/inventory/cloc.ts",
+    "inventory:assumptions": "tsx src/inventory/assumptions.ts",
+    "baseline:environment": "tsx src/baseline/environment.ts",
+    "baseline:run": "tsx src/baseline/run.ts",
+    "baseline:compare": "tsx src/baseline/compare.ts",
+    "golden:capture": "tsx src/golden/capture.ts",
+    "golden:replay": "tsx src/golden/replay.ts",
+    "golden:compare": "tsx src/golden/compare.ts",
+    "golden:coverage": "tsx src/golden/coverage.ts",
+    "golden:workload": "tsx src/golden/workload.ts",
+    "check:pin": "tsx src/reporting/check-pin.ts",
+    "check:synthetic": "tsx src/reporting/check-synthetic.ts",
+    "check:reviewability": "tsx src/reporting/check-reviewability.ts",
+    "check:deck": "tsx src/reporting/check-deck.ts",
+    "report:speed": "tsx src/reporting/speed.ts",
+    "report:test-all": "tsx src/reporting/test-all.ts",
+    "report:isolation": "tsx src/isolation/report.ts",
+    "report:events": "tsx src/events/report.ts",
+    "security:scan": "tsx src/security/scan.ts",
+    "performance": "tsx src/performance/run.ts",
+    "topology": "tsx src/repro/pubsub-topology.ts",
+    "repro:secrets": "tsx src/repro/secrets.ts",
+    "repro:cutover": "tsx src/repro/cutover.ts",
+    "repro:up-state": "tsx src/repro/up-state.ts"
+  },
+  "dependencies": {
+    "@opt2/platform": "file:../platform",
+    "bcryptjs": "3.0.3",
+    "cheerio": "1.2.0",
+    "csv-parse": "7.0.3",
+    "exceljs": "4.4.0",
+    "jszip": "3.10.2",
+    "mssql": "12.7.13",
+    "pdfjs-dist": "6.4.299",
+    "tough-cookie": "6.0.2",
+    "yaml": "2.9.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.1",
+    "@redocly/cli": "2.72.1",
+    "@types/mssql": "12.3.0",
+    "@types/node": "22.20.5",
+    "@vitest/coverage-v8": "5.0.5",
+    "eslint": "10.13.0",
+    "fast-check": "4.10.2",
+    "openapi-typescript": "7.13.0",
+    "tsx": "4.23.15",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.72.1",
+    "vitest": "5.0.5"
+  },
+  "overrides": {
+    "exceljs": {
+      "uuid": "11.1.1"
+    }
+  }
+}

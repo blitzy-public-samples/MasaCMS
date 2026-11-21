@@ -1,0 +1,102 @@
+
+<div class="mura-panel panel">
+  <div class="mura-panel-heading" role="tab" id="heading-usagereport">
+    <h4 class="mura-panel-title">
+      <a class="collapse collapsed" role="button" data-toggle="collapse" data-parent="#content-panels" href="#panel-usagereport" aria-expanded="false" aria-controls="panel-usagereport">Usage Report</a>
+    </h4>
+  </div>
+    <div id="panel-usagereport" class="panel-collapse collapse" role="tabpanel" aria-labelledby="heading-usagereport" aria-expanded="false" style="height: 0px;">
+      <div class="mura-panel-body">
+    <span id="extendset-container-tabusagereporttop" class="extendset-container"></span>
+
+    <div class="mura-control-group">
+
+
+      <div id="usage__totals"></div>
+      
+      
+      <div class="bigui" id="bigui__usage" data-label="See Usage Details">
+        <div class="bigui__title">Usage Report</div>
+        <div class="bigui__controls">
+
+          <div class="mura-control-group">
+          
+              <label>This item is used in the following locations:</label>
+              <table class="mura-table-grid" id="table__usage__report">
+              <tr>
+                <th class="var-width">Title</th>
+                <th>Display</th>
+                <th>Update</th>
+                <th class="actions">&nbsp;</th>
+              </tr>
+               
+                  <tr>
+                  <td class="var-width"><ul class="breadcrumb">
+		
+			<li class="">
+			<a 
+				href="/admin/?muraAction=cArch.list&siteid=default&topid=00000000000000000000000000000000001&moduleid=00000000000000000000000000000000000&activeTab=0"
+			><i class="mi-file"></i>Home</a></li>
+		
+		<li class=""><strong>
+		<a 
+			href="/admin/?muraAction=cArch.list&siteid=default&topid=3FA63EA3-C88E-A644-BF557E9AB1C07F26&moduleid=00000000000000000000000000000000000&activeTab=0"
+		><i class="mi-file"></i>Usage Probe Page A</a></strong></li>
+		</ul></td>
+          		<td>
+          	    Yes</td>
+          		<td>11/317/2026</td>
+                  <td nowrap class="actions"><ul><li class="edit"><a title="Edit" href="./?muraAction=cArch.edit&contenthistid=3FA65964-E2CF-E173-ACF5ACA04810F916&contentid=3FA63EA3-C88E-A644-BF557E9AB1C07F26&type=Page&parentid=00000000000000000000000000000000001&topid=3FA63EA3-C88E-A644-BF557E9AB1C07F26&siteid=default&moduleid=00000000000000000000000000000000000"><i class="mi-pencil"></i></a></li><li class="version-history"><a title="Version History" href="./?muraAction=cArch.hist&contentid=3FA63EA3-C88E-A644-BF557E9AB1C07F26&type=Page&parentid=00000000000000000000000000000000001&topid=3FA63EA3-C88E-A644-BF557E9AB1C07F26&siteid=default&moduleid=00000000000000000000000000000000000"><i class="mi-history"></i></a></li></ul></td>
+                  </tr>
+              
+                  <tr>
+                  <td class="var-width"><ul class="breadcrumb">
+		
+			<li class="">
+			<a 
+				href="/admin/?muraAction=cArch.list&siteid=default&topid=00000000000000000000000000000000001&moduleid=00000000000000000000000000000000000&activeTab=0"
+			><i class="mi-file"></i>Home</a></li>
+		
+		<li class=""><strong>
+		<a 
+			href="/admin/?muraAction=cArch.list&siteid=default&topid=3FA66A17-FD4A-DD29-A40C01B6370791EC&moduleid=00000000000000000000000000000000000&activeTab=0"
+		><i class="mi-file"></i>Usage &amp; &lt;Probe&gt; Page B</a></strong></li>
+		</ul></td>
+          		<td>
+          	    Yes</td>
+          		<td>11/317/2026</td>
+                  <td nowrap class="actions"><ul><li class="edit"><a title="Edit" href="./?muraAction=cArch.edit&contenthistid=3FA67041-D295-7013-A3BE292B20C8BA00&contentid=3FA66A17-FD4A-DD29-A40C01B6370791EC&type=Page&parentid=00000000000000000000000000000000001&topid=3FA66A17-FD4A-DD29-A40C01B6370791EC&siteid=default&moduleid=00000000000000000000000000000000000"><i class="mi-pencil"></i></a></li><li class="version-history"><a title="Version History" href="./?muraAction=cArch.hist&contentid=3FA66A17-FD4A-DD29-A40C01B6370791EC&type=Page&parentid=00000000000000000000000000000000001&topid=3FA66A17-FD4A-DD29-A40C01B6370791EC&siteid=default&moduleid=00000000000000000000000000000000000"><i class="mi-history"></i></a></li></ul></td>
+                  </tr>
+              
+             </table>
+           
+
+          </div> 
+
+
+        </div>
+      </div> 
+    </div> 
+
+    <span id="extendset-container-usagereport" class="extendset-usagereport"></span>
+    <span id="extendset-container-tabusagereportbottom" class="extendset-container"></span>
+
+    </div>
+  </div>
+</div> 
+
+
+<script type="text/javascript">
+  var showUsageTotal = function(){
+    var usageStr = 'Not used';
+    var usageTotal = 2;
+    if (usageTotal == 1){
+      usageStr = "Used in 1 location";
+    } else if (usageTotal > 1) {
+      usageStr = "Used in " + usageTotal + " locations";
+    }
+    $('#usage__totals').html(usageStr);
+  }
+
+  showUsageTotal();
+</script> 

@@ -1,0 +1,226 @@
+# Reviewed admin role gates that harness/src/inventory merges into opt2/inventory/legacy-inventory.json controllers[].
+sourceSha: "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+
+# X is a module id's last three digits; shapes accept variables./application. prefixes, and/&&/not/! spellings and an arguments.rc.siteid or rc.siteid site argument with no default assigned before the gate; any other gate is an override.
+extractorPatterns:
+  - id: P0
+    shape: "before() calls no secure()"
+    requiredRole: public
+  - id: P1
+    shape: "!(Admin;<privateUserPoolID>;0 membership OR S2 membership), or the equivalent !Admin AND !S2, then secure()"
+    requiredRole: {anyOf: [s2, site-admin]}
+  - id: P2
+    shape: "(not Admin AND not S2) AND !(getModulePerm(X) [AND getModulePerm(000)]), or the shortcut-free !(getModulePerm(000) AND getModulePerm(X)), then secure(); a single getModulePerm(X) gives m:X alone"
+    requiredRole: {anyOf: [s2, site-admin, {allOf: ["m:X", "m:000"]}]}
+  - id: P3
+    shape: "!S2 membership, then secure()"
+    requiredRole: s2
+  - id: P4
+    shape: "!getModulePerm(X), then secure()"
+    requiredRole: {anyOf: [s2, site-admin, "m:X"]}
+  - id: P5
+    shape: "!session.mura.isLoggedIn, then secure()"
+    requiredRole: {anyOf: [system-user, member]}
+
+applicationGate:
+  source: {path: admin/Application.cfc, lines: [433, 453]}
+  siteFrom:
+    order: [rc.siteid, session.siteid, default]
+    except: {action: csettings.editsite, order: [rc.siteid, default]}
+    unknownSite: default
+    source: {path: admin/Application.cfc, lines: [342, 412]}
+  siteArray:
+    requiredRole: {anyOf: [s2, site-admin, "m:000"]}
+    built: "once per session, on the first logged-in admin request without session.siteArray, from every site where getModulePerm('00000000000000000000000000000000000', site) is true"
+    cleared: "at login [core/mura/user/userUtility.cfc:339] and at magic-link login [core/mura/user/userUtility.cfc:846]"
+    source: {path: admin/Application.cfc, lines: [433, 441]}
+  anonymous: "not affected: a logged-out session skips lines 433-453 and gets session.siteArray = [] [admin/Application.cfc:455-457]"
+  rules:
+    - id: return-login-check
+      on: request
+      predicate: "every admin request runs userUtility.returnLoginCheck(MuraScope) before the gate; it acts when returnID and returnUserID are non-empty"
+      outcome: "session effect only: logs the current user out, then logs in the userRedirect row's user when the link is valid, else 301 to /?display=login&linkinvalid=true; its writer is recorded in writer-overrides.yaml"
+      source: {path: admin/Application.cfc, lines: [423, 425]}
+    - id: admin-disabled
+      on: config
+      predicate: "configBean disableAdmin is true, or adminDomain is set and the request is not on the admin domain"
+      outcome: "contentServer.renderFilename('<adminDir>/') then abort, for every caller"
+      source: {path: admin/Application.cfc, lines: [428, 431]}
+    - id: no-site-not-private
+      on: session
+      predicate: "logged in, session.siteArray empty, memberships lack S2IsPrivate, and the circuit listLast(listFirst(rc.muraAction,'.'),':') is not clogin (case-insensitive)"
+      redirect: clogin.logout
+      source: {path: admin/Application.cfc, lines: [443, 445]}
+    - id: no-site
+      on: session
+      predicate: "logged in, session.siteArray empty, the previous rule not matched, and rc.muraAction is empty or its circuit is not clogin, cMessage or cEditprofile (case-insensitive)"
+      redirect: cMessage.noaccess
+      source: {path: admin/Application.cfc, lines: [446, 452]}
+
+denialDefault:
+  source: {path: admin/core/controllers/controller.cfc, lines: [83, 92]}
+  anonymous: "redirect cLogin.main with returnURL,compactDisplay"
+  authenticated: "utility.backUp(): cflocation to cgi.HTTP_REFERER, else ./ [core/mura/utility.cfc:302-310]"
+
+overrides:
+  - id: "role:carch.lockfile"
+    circuit: carch
+    action: lockfile
+    requiredRole: {anyOf: [s2, site-admin, "m:000"]}
+    nodePermission:
+      verdicts: [author, editor]
+      precedence: {path: core/mura/permission.cfc, lines: [220, 282]}
+      denial: "abort with an empty response; the file is neither locked nor served"
+      source: {path: admin/core/controllers/carch.cfc, lines: [582, 584]}
+    gate: {path: admin/core/controllers/carch.cfc, lines: [578, 590]}
+    reason: "The method locks and serves the file only for an author or editor node verdict or an S2 membership, a check inside the action that the extractor does not read, and the carch views are not gates because their getNodePerm verdicts only choose rendered controls."
+  - id: "role:carch.savequickedit"
+    circuit: carch
+    action: savequickedit
+    requiredRole: {anyOf: [s2, site-admin, "m:000"]}
+    nodePermission:
+      verdicts: [editor]
+      precedence: {path: core/mura/permission.cfc, lines: [220, 282]}
+      denial: "abort with an empty response and no write; an editor also writes nothing while the content has drafts"
+      source: {path: admin/core/controllers/carch.cfc, lines: [259, 279]}
+    gate: {path: admin/core/controllers/carch.cfc, lines: [254, 283]}
+    reason: "The before() gate is P4 for m:000, but the method saves only for an editor verdict on the node's crumb trail, which the extractor does not read."
+  - id: "role:carch.update"
+    circuit: carch
+    action: update
+    requiredRole: {anyOf: [s2, site-admin, "m:000"]}
+    nodePermission:
+      verdicts: [author, editor]
+      precedence: {path: core/mura/permission.cfc, lines: [220, 282]}
+      denial: "the add, delete, deleteall, deletehistall and multifileupload writes are skipped and the rest of the action runs unchanged"
+      source: {path: admin/core/controllers/carch.cfc, lines: [346, 356]}
+    gate: {path: admin/core/controllers/carch.cfc, lines: [346, 414]}
+    reason: "allowAction comes from the node verdict of contentid, or of parentid for new content, and new content without parentid reads the caller's own perm request parameter instead, none of which the extractor reads from before()."
+  - id: "role:carch.updateobjectparams"
+    circuit: carch
+    action: updateobjectparams
+    requiredRole: {anyOf: [s2, site-admin, "m:000"]}
+    nodePermission:
+      verdicts: [author, editor]
+      precedence: {path: core/mura/permission.cfc, lines: [220, 282]}
+      denial: "abort with an empty response and no write; an author's version is saved unapproved and an editor's with the request's approved value"
+      source: {path: admin/core/controllers/carch.cfc, lines: [550, 567]}
+    gate: {path: admin/core/controllers/carch.cfc, lines: [546, 567]}
+    reason: "The method aborts unless the node verdict of the version's content is author or editor, and also for an unknown contenthistid, which the extractor does not read from before()."
+  - id: "role:ccomments.*"
+    circuit: ccomments
+    action: "*"
+    requiredRole: {anyOf: [s2, site-admin, {allOf: ["m:015", "m:000"]}]}
+    siteFrom: [rc.siteid, session.siteid]
+    gate: {path: admin/core/controllers/ccomments.cfc, lines: [94, 100]}
+    reason: "The test is P2 for m:015, but it first assigns rc.siteid a session.siteid default, which the patterns exclude."
+  - id: "role:cdashboard.*"
+    circuit: cdashboard
+    action: "*"
+    requiredRole: {anyOf: [s2, site-admin, "m:000"]}
+    gate: {path: admin/core/controllers/cdashboard.cfc, lines: [86, 111]}
+    reason: "The test is P2 with the single module 000, but line 91 assigns rc.siteID an empty default before the gate, which the patterns exclude even though admin/Application.cfc has already defined rc.siteid."
+  - id: "role:cfeed.*"
+    circuit: cfeed
+    action: "*"
+    requiredRole: {anyOf: [s2, site-admin, {allOf: ["m:011", "m:000"]}]}
+    when:
+      - on: siteSetting
+        predicate: "site.getHasfeedManager() is false for rc.siteid"
+        requiredRole: deny
+        source: {path: admin/core/controllers/cfeed.cfc, lines: [87, 87]}
+    gate: {path: admin/core/controllers/cfeed.cfc, lines: [86, 89]}
+    reason: "One condition ORs the site's feed-manager flag with a P2 test for m:011, so by CFML precedence a site without the feed manager denies every caller, S2 included, which no pattern expresses."
+  - id: "role:cfilemanager.*"
+    circuit: cfilemanager
+    action: "*"
+    requiredRole: {anyOf: [s2, site-admin, "m:000"]}
+    siteFrom: [rc.siteid, session.siteid]
+    when:
+      - on: config
+        predicate: "configBean.getFilemanagerEnabled() is false"
+        requiredRole: deny
+        denial: "location(configBean.getAdminPath()) for callers who pass requiredRole; callers who fail it get denialDefault first"
+        source: {path: admin/core/controllers/cfilemanager.cfc, lines: [86, 88]}
+    gate: {path: admin/core/controllers/cfilemanager.cfc, lines: [78, 89]}
+    reason: "A P4 test for m:000 follows a session.siteid default on rc.siteid, and a config check then redirects every caller away while the file manager is disabled."
+  - id: "role:cmailinglist.*"
+    circuit: cmailinglist
+    action: "*"
+    requiredRole: {anyOf: [s2, site-admin, {allOf: ["m:009", "m:000"]}]}
+    gate: {path: admin/core/controllers/cmailinglist.cfc, lines: [82, 85]}
+    reason: "The test is P2 for m:009, but it passes the site to getModulePerm as the interpolated string '#rc.siteid#', which the patterns do not accept."
+  - id: "role:cmessage.*"
+    circuit: cmessage
+    action: "*"
+    requiredRole: system-user
+    denial: "location <context>/ (the site root), not secure()"
+    gate: {path: admin/core/controllers/cmessage.cfc, lines: [78, 82]}
+    reason: "The gate requires a login and the S2IsPrivate membership, which loginByQuery adds at every private-pool login [core/mura/user/userUtility.cfc:324-327], and redirects to the site root instead of calling secure(), so an S2 flag without S2IsPrivate is refused too."
+  - id: "role:cnav.*"
+    circuit: cnav
+    action: "*"
+    requiredRole: public
+    gate: {path: admin/Application.cfc, lines: [443, 453]}
+    reason: "cnav has no before(), so only applicationGate applies, and searchsitedata answers an anonymous caller with an empty list because getUserSites filters by the empty session.siteArray [core/mura/settings/settingsManager.cfc:615-617]."
+  - id: "role:controller.*"
+    circuit: controller
+    action: "*"
+    requiredRole: public
+    gate: {path: admin/Application.cfc, lines: [443, 453]}
+    reason: "The base controller.cfc defines no before() and no reproduced screen, so only applicationGate applies to its public methods."
+  - id: "role:cplugins.*"
+    circuit: cplugins
+    action: "*"
+    requiredRole: {anyOf: [system-user, member]}
+    gate: {path: admin/core/controllers/cplugins.cfc, lines: [82, 86]}
+    reason: "The P5 login test is the whole gate, but list then filters plugins per user through getSitePlugins(applyPermFilter=true) at lines 88-91, a per-plugin check no role expresses (plugins are on the decision list and stay legacy-served)."
+  - id: "role:csettings.*"
+    circuit: csettings
+    action: "*"
+    requiredRole: {anyOf: [s2, site-admin]}
+    when:
+      - on: request
+        predicate: "action listLast(rc.muraAction,'.') is one of list, editplugin, deployplugin, updateplugin, updatepluginversion, sitecopy, sitecopyselect, sitecopyresult (case-insensitive)"
+        requiredRole: s2
+        source: {path: admin/core/controllers/csettings.cfc, lines: [88, 89]}
+    gate: {path: admin/core/controllers/csettings.cfc, lines: [85, 95]}
+    reason: "The site-admin branch of the P1 test also requires the action to be outside a fixed list, so those actions are S2-only, which no pattern expresses."
+  - id: "role:cusers.*"
+    circuit: cusers
+    action: "*"
+    requiredRole: {anyOf: [s2, site-admin, {allOf: ["m:008", "m:000"]}]}
+    siteFrom: [rc.siteid, session.siteid, default]
+    when:
+      - on: request
+        predicate: "action is loadextendedattributes (ListLast(rc.muraAction,':') == 'cUsers.loadExtendedAttributes', case-insensitive), baseID is defined and baseID equals session.mura.userID, which is empty for an anonymous caller [core/mura/user/userUtility.cfc:787]"
+        requiredRole: public
+        source: {path: admin/core/controllers/cusers.cfc, lines: [101, 105]}
+      - on: siteSetting
+        predicate: "action is loadextendedattributes, baseID is defined and userManager.getReversePermLookUp(rc.siteid) is true; the lookup reads session memberships, module grants and tsettings pools and holds for s2, site-admin or m:008 on rc.siteid, m:008 on a site whose publicUserPoolID is rc.siteid, or site-admin of a site whose privateUserPoolID is rc.siteid [core/mura/user/userManager.cfc:1050-1086]"
+        requiredRole: {anyOf: [s2, site-admin, "m:008"]}
+        source: {path: admin/core/controllers/cusers.cfc, lines: [101, 108]}
+    gate: {path: admin/core/controllers/cusers.cfc, lines: [90, 124]}
+    reason: "The P2 test for m:008 runs through rc.isAdmin, built at line 95 from rc.$.currentUser().getMemberships() and rc.$.siteConfig('privateUserPoolID'), after which rc.s2 is stripped for non-S2 callers at lines 97-99, and the whole test is skipped for loadExtendedAttributes self and reverse-pool lookups, none of which the patterns read."
+  - id: "role:home.*"
+    circuit: home
+    action: "*"
+    requiredRole: public
+    gate: {path: admin/core/controllers/home.cfc, lines: [86, 130]}
+    reason: "home has no before(), and its one action redirect is itself the gate, sending anonymous callers to clogin.main, users with a site to cDashboard.main or cArch.list, S2IsPrivate users without one to cMessage.noAccess and anyone else to clogin.main."
+  - id: "role:scaffold.*"
+    circuit: scaffold
+    action: "*"
+    requiredRole: {anyOf: [s2, site-admin]}
+    siteFrom: session.siteid
+    when:
+      - on: session
+        predicate: "isDefined('session.siteid') is false, which admin/Application.cfc prevents by defining it at line 351"
+        requiredRole: deny
+        source: {path: admin/core/controllers/scaffold.cfc, lines: [78, 78]}
+      - on: request
+        predicate: "action listLast(rc.muraAction,'.') is one of assembler, sites, updatesites (case-insensitive)"
+        requiredRole: s2
+        source: {path: admin/core/controllers/scaffold.cfc, lines: [84, 84]}
+    gate: {path: admin/core/controllers/scaffold.cfc, lines: [77, 91]}
+    reason: "The site-admin branch tests session.siteid rather than rc.siteid, repeats an always-true m:000 test and excludes three actions, and a missing session.siteid denies every caller, which no pattern expresses."

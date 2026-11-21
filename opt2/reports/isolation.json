@@ -1,0 +1,338 @@
+{
+  "consumers": [
+    {
+      "crossTenantEffects": 0,
+      "fanoutRegistryOnly": null,
+      "subscription": "communications.identity.login-mail.requested.v1",
+      "tenantlessRejected": true
+    },
+    {
+      "crossTenantEffects": 0,
+      "fanoutRegistryOnly": null,
+      "subscription": "communications.programs-sites.site.changed.v1",
+      "tenantlessRejected": true
+    },
+    {
+      "crossTenantEffects": 0,
+      "fanoutRegistryOnly": null,
+      "subscription": "communications.surveys.survey.scheduled.v1",
+      "tenantlessRejected": true
+    },
+    {
+      "crossTenantEffects": 0,
+      "fanoutRegistryOnly": null,
+      "subscription": "e-signature.programs-sites.site.changed.v1",
+      "tenantlessRejected": true
+    },
+    {
+      "crossTenantEffects": 0,
+      "fanoutRegistryOnly": null,
+      "subscription": "finance.programs-sites.site.changed.v1",
+      "tenantlessRejected": true
+    },
+    {
+      "crossTenantEffects": 0,
+      "fanoutRegistryOnly": null,
+      "subscription": "identity.people.person.changed.v1",
+      "tenantlessRejected": true
+    },
+    {
+      "crossTenantEffects": 0,
+      "fanoutRegistryOnly": null,
+      "subscription": "identity.programs-sites.site.changed.v1",
+      "tenantlessRejected": true
+    },
+    {
+      "crossTenantEffects": 0,
+      "fanoutRegistryOnly": null,
+      "subscription": "people.identity.group.changed.v1",
+      "tenantlessRejected": true
+    },
+    {
+      "crossTenantEffects": 0,
+      "fanoutRegistryOnly": null,
+      "subscription": "people.programs-sites.site.changed.v1",
+      "tenantlessRejected": true
+    },
+    {
+      "crossTenantEffects": 0,
+      "fanoutRegistryOnly": null,
+      "subscription": "programs-sites.programs-sites.site.changed.v1",
+      "tenantlessRejected": true
+    },
+    {
+      "crossTenantEffects": 0,
+      "fanoutRegistryOnly": null,
+      "subscription": "reporting.programs-sites.site.changed.v1",
+      "tenantlessRejected": true
+    },
+    {
+      "crossTenantEffects": 0,
+      "fanoutRegistryOnly": null,
+      "subscription": "strategies-content.identity.group.changed.v1",
+      "tenantlessRejected": true
+    },
+    {
+      "crossTenantEffects": 0,
+      "fanoutRegistryOnly": null,
+      "subscription": "strategies-content.identity.membership.changed.v1",
+      "tenantlessRejected": true
+    },
+    {
+      "crossTenantEffects": 0,
+      "fanoutRegistryOnly": null,
+      "subscription": "strategies-content.identity.permission.changed.v1",
+      "tenantlessRejected": true
+    },
+    {
+      "crossTenantEffects": 0,
+      "fanoutRegistryOnly": null,
+      "subscription": "strategies-content.programs-sites.site.changed.v1",
+      "tenantlessRejected": true
+    },
+    {
+      "crossTenantEffects": 0,
+      "fanoutRegistryOnly": null,
+      "subscription": "stub.programs-sites.site.changed.v1",
+      "tenantlessRejected": true
+    },
+    {
+      "crossTenantEffects": 0,
+      "fanoutRegistryOnly": null,
+      "subscription": "stub.stub.note.created.v1",
+      "tenantlessRejected": true
+    },
+    {
+      "crossTenantEffects": 0,
+      "fanoutRegistryOnly": null,
+      "subscription": "surveys.programs-sites.site.changed.v1",
+      "tenantlessRejected": true
+    },
+    {
+      "crossTenantEffects": 0,
+      "fanoutRegistryOnly": true,
+      "subscription": "timesheets.people.person.archived.v1",
+      "tenantlessRejected": true
+    },
+    {
+      "crossTenantEffects": 0,
+      "fanoutRegistryOnly": null,
+      "subscription": "timesheets.programs-sites.site.changed.v1",
+      "tenantlessRejected": true
+    }
+  ],
+  "endToEnd": {
+    "crossTenantReads": 0,
+    "crossTenantWrites": 0,
+    "fanoutRegistryOnly": null,
+    "source": "${OPT2_STATE_DIR}/results/e2e-isolation.json",
+    "surveyGrantOnly": true,
+    "via": "gateway http://127.0.0.1:22000"
+  },
+  "generatedAt": "2026-11-21T06:34:09.613Z",
+  "generatedBy": "harness/src/isolation/report.ts",
+  "passCondition": "Zero cross-tenant reads and writes for every service, every event consumer and end to end through the gateway; RLS enabled and forced with USING and WITH CHECK on every tenant table; no service role with rolsuper or rolbypassrls, or a member of such a role directly or transitively; tenantless events dead-lettered; fan-out only to registry-derived tenants; survey responses only for granted tenants; and no finding.",
+  "result": "pass",
+  "roles": {
+    "membershipViolations": [],
+    "rolbypassrls": [],
+    "rolsuper": []
+  },
+  "services": [
+    {
+      "crossTenantReads": 0,
+      "crossTenantWrites": 0,
+      "pooledConnectionReuse": {
+        "rowsSeen": 0,
+        "writeBlocked": true
+      },
+      "rlsCatalog": {
+        "enabled": 35,
+        "forced": 35,
+        "tables": 35,
+        "usingAndWithCheck": 35
+      },
+      "schema": "identity",
+      "service": "identity",
+      "source": "${OPT2_STATE_DIR}/test-all/vitest/services-identity.json"
+    },
+    {
+      "crossTenantReads": 0,
+      "crossTenantWrites": 0,
+      "pooledConnectionReuse": {
+        "rowsSeen": 0,
+        "writeBlocked": true
+      },
+      "rlsCatalog": {
+        "enabled": 23,
+        "forced": 23,
+        "tables": 23,
+        "usingAndWithCheck": 23
+      },
+      "schema": "people",
+      "service": "people",
+      "source": "${OPT2_STATE_DIR}/test-all/vitest/services-people.json"
+    },
+    {
+      "crossTenantReads": 0,
+      "crossTenantWrites": 0,
+      "pooledConnectionReuse": {
+        "rowsSeen": 0,
+        "writeBlocked": true
+      },
+      "rlsCatalog": {
+        "enabled": 18,
+        "forced": 18,
+        "tables": 18,
+        "usingAndWithCheck": 18
+      },
+      "schema": "programs_sites",
+      "service": "programs-sites",
+      "source": "${OPT2_STATE_DIR}/test-all/vitest/services-programs-sites.json"
+    },
+    {
+      "crossTenantReads": 0,
+      "crossTenantWrites": 0,
+      "pooledConnectionReuse": {
+        "rowsSeen": 0,
+        "writeBlocked": true
+      },
+      "rlsCatalog": {
+        "enabled": 51,
+        "forced": 51,
+        "tables": 51,
+        "usingAndWithCheck": 51
+      },
+      "schema": "content",
+      "service": "strategies-content",
+      "source": "${OPT2_STATE_DIR}/test-all/vitest/services-strategies-content.json"
+    },
+    {
+      "crossTenantReads": 0,
+      "crossTenantWrites": 0,
+      "pooledConnectionReuse": {
+        "rowsSeen": 0,
+        "writeBlocked": true
+      },
+      "rlsCatalog": {
+        "enabled": 22,
+        "forced": 22,
+        "tables": 22,
+        "usingAndWithCheck": 22
+      },
+      "schema": "communications",
+      "service": "communications",
+      "source": "${OPT2_STATE_DIR}/test-all/vitest/services-communications.json"
+    },
+    {
+      "crossTenantReads": 0,
+      "crossTenantWrites": 0,
+      "pooledConnectionReuse": {
+        "rowsSeen": 0,
+        "writeBlocked": true
+      },
+      "rlsCatalog": {
+        "enabled": 16,
+        "forced": 16,
+        "tables": 16,
+        "usingAndWithCheck": 16
+      },
+      "schema": "reporting",
+      "service": "reporting",
+      "source": "${OPT2_STATE_DIR}/test-all/vitest/services-reporting.json"
+    },
+    {
+      "crossTenantReads": 0,
+      "crossTenantWrites": 0,
+      "pooledConnectionReuse": {
+        "rowsSeen": 0,
+        "writeBlocked": true
+      },
+      "rlsCatalog": {
+        "enabled": 18,
+        "forced": 18,
+        "tables": 18,
+        "usingAndWithCheck": 18
+      },
+      "schema": "surveys",
+      "service": "surveys",
+      "source": "${OPT2_STATE_DIR}/test-all/vitest/services-surveys.json"
+    },
+    {
+      "crossTenantReads": 0,
+      "crossTenantWrites": 0,
+      "pooledConnectionReuse": {
+        "rowsSeen": 0,
+        "writeBlocked": true
+      },
+      "rlsCatalog": {
+        "enabled": 15,
+        "forced": 15,
+        "tables": 15,
+        "usingAndWithCheck": 15
+      },
+      "schema": "timesheets",
+      "service": "timesheets",
+      "source": "${OPT2_STATE_DIR}/test-all/vitest/services-timesheets.json"
+    },
+    {
+      "crossTenantReads": 0,
+      "crossTenantWrites": 0,
+      "pooledConnectionReuse": {
+        "rowsSeen": 0,
+        "writeBlocked": true
+      },
+      "rlsCatalog": {
+        "enabled": 16,
+        "forced": 16,
+        "tables": 16,
+        "usingAndWithCheck": 16
+      },
+      "schema": "finance",
+      "service": "finance",
+      "source": "${OPT2_STATE_DIR}/test-all/vitest/services-finance.json"
+    },
+    {
+      "crossTenantReads": 0,
+      "crossTenantWrites": 0,
+      "pooledConnectionReuse": {
+        "rowsSeen": 0,
+        "writeBlocked": true
+      },
+      "rlsCatalog": {
+        "enabled": 14,
+        "forced": 14,
+        "tables": 14,
+        "usingAndWithCheck": 14
+      },
+      "schema": "esignature",
+      "service": "e-signature",
+      "source": "${OPT2_STATE_DIR}/test-all/vitest/services-e-signature.json"
+    },
+    {
+      "crossTenantReads": 0,
+      "crossTenantWrites": 0,
+      "pooledConnectionReuse": {
+        "rowsSeen": 0,
+        "writeBlocked": true
+      },
+      "rlsCatalog": {
+        "enabled": 9,
+        "forced": 9,
+        "tables": 9,
+        "usingAndWithCheck": 9
+      },
+      "schema": "stub",
+      "service": "stub",
+      "source": "${OPT2_STATE_DIR}/test-all/vitest/services-stub.json"
+    }
+  ],
+  "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
+  "status": "generated",
+  "tenants": {
+    "a": "tenant-a",
+    "b": "tenant-b",
+    "idRule": "tenantIdForSite(siteID): UUIDv5 of the lower-cased siteID; tenant-a = edec963e-3516-5bb6-845d-d01a710e32a7, tenant-b = 13ab03ed-8b4b-5174-b787-d32a11dd8793, umbrella = 455225fe-8c2a-5c61-b33e-f9a8f2cac49a",
+    "umbrella": "umbrella"
+  }
+}

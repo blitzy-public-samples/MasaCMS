@@ -1,0 +1,3824 @@
+{
+  "capturedAt": "2026-11-21T04:42:11.668Z",
+  "fixtures": {
+    "available": true,
+    "reason": "fixtures loaded"
+  },
+  "generatedAt": "2026-11-21T04:42:15.361Z",
+  "generatedBy": "harness/src/golden/capture.ts",
+  "origin": "legacy",
+  "scenarioId": "GS-PE-04",
+  "sideEffects": {
+    "files": [],
+    "mail": [],
+    "rows": {
+      "identity.credential": {
+        "checksum": "d1c41b809b2b2181a8b0260c626ec376b9391873c1c14150f082a36fb3f9fbbc",
+        "columns": [
+          {
+            "name": "UserID",
+            "type": "s"
+          },
+          {
+            "name": "Password",
+            "type": "s"
+          },
+          {
+            "name": "PasswordCreated",
+            "type": "s"
+          }
+        ],
+        "entries": [
+          {
+            "count": 1,
+            "encoding": "s6:<id:2>s42:$2a$10$<verifies:seed:wellington.schmeler>s14:<ts:iso-local>"
+          }
+        ],
+        "legacyTable": "tusers",
+        "unit": "identity.credential"
+      },
+      "identity.group_account": {
+        "checksum": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "columns": [
+          {
+            "name": "UserID",
+            "type": "s"
+          },
+          {
+            "name": "GroupName",
+            "type": "s"
+          },
+          {
+            "name": "Fname",
+            "type": "s"
+          },
+          {
+            "name": "Lname",
+            "type": "s"
+          },
+          {
+            "name": "UserName",
+            "type": "s"
+          },
+          {
+            "name": "Password",
+            "type": "s"
+          },
+          {
+            "name": "PasswordCreated",
+            "type": "s"
+          },
+          {
+            "name": "Email",
+            "type": "s"
+          },
+          {
+            "name": "Company",
+            "type": "s"
+          },
+          {
+            "name": "JobTitle",
+            "type": "s"
+          },
+          {
+            "name": "mobilePhone",
+            "type": "s"
+          },
+          {
+            "name": "Website",
+            "type": "s"
+          },
+          {
+            "name": "Type",
+            "type": "i"
+          },
+          {
+            "name": "subType",
+            "type": "s"
+          },
+          {
+            "name": "Ext",
+            "type": "i"
+          },
+          {
+            "name": "ContactForm",
+            "type": "s"
+          },
+          {
+            "name": "Admin",
+            "type": "i"
+          },
+          {
+            "name": "S2",
+            "type": "i"
+          },
+          {
+            "name": "LastLogin",
+            "type": "s"
+          },
+          {
+            "name": "LastUpdate",
+            "type": "s"
+          },
+          {
+            "name": "LastUpdateBy",
+            "type": "s"
+          },
+          {
+            "name": "LastUpdateByID",
+            "type": "s"
+          },
+          {
+            "name": "Perm",
+            "type": "i"
+          },
+          {
+            "name": "InActive",
+            "type": "i"
+          },
+          {
+            "name": "isPublic",
+            "type": "i"
+          },
+          {
+            "name": "SiteID",
+            "type": "s"
+          },
+          {
+            "name": "Subscribe",
+            "type": "i"
+          },
+          {
+            "name": "notes",
+            "type": "s"
+          },
+          {
+            "name": "description",
+            "type": "s"
+          },
+          {
+            "name": "interests",
+            "type": "s"
+          },
+          {
+            "name": "keepPrivate",
+            "type": "i"
+          },
+          {
+            "name": "photoFileID",
+            "type": "s"
+          },
+          {
+            "name": "IMName",
+            "type": "s"
+          },
+          {
+            "name": "IMService",
+            "type": "s"
+          },
+          {
+            "name": "created",
+            "type": "s"
+          },
+          {
+            "name": "remoteID",
+            "type": "s"
+          },
+          {
+            "name": "tags",
+            "type": "s"
+          },
+          {
+            "name": "tablist",
+            "type": "s"
+          }
+        ],
+        "entries": [],
+        "legacyTable": "tusers",
+        "unit": "identity.group_account"
+      },
+      "identity.login_state": {
+        "checksum": "da0b2b7e47bff7935b3cd4185fdc063a22557287e567a80048de9452063e6a40",
+        "columns": [
+          {
+            "name": "UserID",
+            "type": "s"
+          },
+          {
+            "name": "LastLogin",
+            "type": "s"
+          }
+        ],
+        "entries": [
+          {
+            "count": 1,
+            "encoding": "s6:<id:2>s14:<ts:iso-local>"
+          }
+        ],
+        "legacyTable": "tusers",
+        "unit": "identity.login_state"
+      },
+      "identity.user_account": {
+        "checksum": "e1498e167f21d771dcb26baaf075d5b327babacb106ba147a4657e9efaacd02d",
+        "columns": [
+          {
+            "name": "UserID",
+            "type": "s"
+          },
+          {
+            "name": "UserName",
+            "type": "s"
+          },
+          {
+            "name": "Type",
+            "type": "i"
+          },
+          {
+            "name": "Admin",
+            "type": "i"
+          },
+          {
+            "name": "S2",
+            "type": "i"
+          },
+          {
+            "name": "Perm",
+            "type": "i"
+          },
+          {
+            "name": "InActive",
+            "type": "i"
+          },
+          {
+            "name": "isPublic",
+            "type": "i"
+          },
+          {
+            "name": "SiteID",
+            "type": "s"
+          },
+          {
+            "name": "remoteID",
+            "type": "s"
+          },
+          {
+            "name": "tablist",
+            "type": "s"
+          }
+        ],
+        "entries": [
+          {
+            "count": 1,
+            "encoding": "s6:<id:2>s19:wellington.schmeleri1:2Ni1:0i1:0i1:0i1:0s8:tenant-as6:<id:2>N"
+          }
+        ],
+        "legacyTable": "tusers",
+        "unit": "identity.user_account"
+      },
+      "people.person": {
+        "checksum": "f24ba9974f239dcf7ea57673003f4c7aaa6854cb2e2422b92531173c902e9c7c",
+        "columns": [
+          {
+            "name": "UserID",
+            "type": "s"
+          },
+          {
+            "name": "GroupName",
+            "type": "s"
+          },
+          {
+            "name": "Fname",
+            "type": "s"
+          },
+          {
+            "name": "Lname",
+            "type": "s"
+          },
+          {
+            "name": "Email",
+            "type": "s"
+          },
+          {
+            "name": "Company",
+            "type": "s"
+          },
+          {
+            "name": "JobTitle",
+            "type": "s"
+          },
+          {
+            "name": "mobilePhone",
+            "type": "s"
+          },
+          {
+            "name": "Website",
+            "type": "s"
+          },
+          {
+            "name": "subType",
+            "type": "s"
+          },
+          {
+            "name": "Ext",
+            "type": "i"
+          },
+          {
+            "name": "ContactForm",
+            "type": "s"
+          },
+          {
+            "name": "LastUpdate",
+            "type": "s"
+          },
+          {
+            "name": "LastUpdateBy",
+            "type": "s"
+          },
+          {
+            "name": "LastUpdateByID",
+            "type": "s"
+          },
+          {
+            "name": "SiteID",
+            "type": "s"
+          },
+          {
+            "name": "Subscribe",
+            "type": "i"
+          },
+          {
+            "name": "notes",
+            "type": "s"
+          },
+          {
+            "name": "description",
+            "type": "s"
+          },
+          {
+            "name": "interests",
+            "type": "s"
+          },
+          {
+            "name": "keepPrivate",
+            "type": "i"
+          },
+          {
+            "name": "photoFileID",
+            "type": "s"
+          },
+          {
+            "name": "IMName",
+            "type": "s"
+          },
+          {
+            "name": "IMService",
+            "type": "s"
+          },
+          {
+            "name": "created",
+            "type": "s"
+          },
+          {
+            "name": "tags",
+            "type": "s"
+          }
+        ],
+        "entries": [
+          {
+            "count": 1,
+            "encoding": "s6:<id:2>Ns10:Wellingtons8:Schmelers34:wellington.schmeler@seed.opt2.tests27:Erdman, Marquardt and BoganNs19:530-795-1955 x44006s35:https://tepid-tentacle.example.tests7:DefaultNs1:0s14:<ts:iso-local>s19:Wellington Schmelers6:<id:2>s8:tenant-ai1:1s74:Cervus carmen delibero eum amita usitas depopulo vulariter demens adaugeo.NNi1:0NNNs14:<ts:iso-local>N"
+          }
+        ],
+        "legacyTable": "tusers",
+        "unit": "people.person"
+      }
+    },
+    "tasks": []
+  },
+  "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
+  "steps": [
+    {
+      "index": 0,
+      "name": "edit",
+      "normalised": {
+        "auth": {
+          "cookies": [],
+          "redirectTargets": [],
+          "wwwAuthenticate": []
+        },
+        "domModel": {
+          "alerts": [],
+          "buttons": [
+            "Update"
+          ],
+          "controls": [
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "subtype",
+              "type": "hidden",
+              "value": "Default"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "fname",
+              "type": "text",
+              "value": "Wellington"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "lname",
+              "type": "text",
+              "value": "Schmeler"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "company",
+              "type": "text",
+              "value": "Erdman, Marquardt and Bogan"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "jobtitle",
+              "type": "text",
+              "value": "Internal Mobility Associate"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "email",
+              "type": "text",
+              "value": "wellington.schmeler@seed.opt2.test"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "mobilePhone",
+              "type": "text",
+              "value": "530-795-1955 x44006"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "usernameNoCache",
+              "type": "text",
+              "value": "wellington.schmeler"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "passwordNoCache",
+              "type": "password"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "password2",
+              "type": "password"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "newFile",
+              "type": "file",
+              "value": ""
+            },
+            {
+              "checked": true,
+              "disabled": false,
+              "form": 0,
+              "name": "primaryAddressID",
+              "type": "radio",
+              "value": "<id:1>"
+            },
+            {
+              "checked": true,
+              "disabled": false,
+              "form": 0,
+              "name": "subscribe",
+              "type": "radio",
+              "value": "1"
+            },
+            {
+              "checked": false,
+              "disabled": false,
+              "form": 0,
+              "name": "subscribe",
+              "type": "radio",
+              "value": "0"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "tags",
+              "type": "text",
+              "value": ""
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "type",
+              "type": "hidden",
+              "value": "2"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "action",
+              "type": "hidden",
+              "value": ""
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "contact",
+              "type": "hidden",
+              "value": "0"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "userid",
+              "type": "hidden",
+              "value": "<id:2>"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "siteid",
+              "type": "hidden",
+              "value": "tenant-a"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "csrf_token",
+              "type": "hidden",
+              "value": "<token>"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "csrf_token_expires",
+              "type": "hidden",
+              "value": "<token>"
+            }
+          ],
+          "forms": [
+            {
+              "action": "./?muraAction=ceditprofile.update",
+              "method": "post",
+              "name": "form1"
+            }
+          ],
+          "headings": [
+            {
+              "level": 1,
+              "text": "Edit Profile"
+            },
+            {
+              "level": 3,
+              "text": "Basic"
+            },
+            {
+              "level": 3,
+              "text": "Address Information"
+            },
+            {
+              "level": 3,
+              "text": "Interests"
+            },
+            {
+              "level": 3,
+              "text": "Advanced"
+            }
+          ],
+          "labels": [
+            {
+              "text": "First Name*"
+            },
+            {
+              "text": "Last Name*"
+            },
+            {
+              "text": "Company"
+            },
+            {
+              "text": "Job Title"
+            },
+            {
+              "text": "Email*"
+            },
+            {
+              "text": "Mobile Phone"
+            },
+            {
+              "text": "Username**"
+            },
+            {
+              "text": "Password**"
+            },
+            {
+              "text": "Confirm Password**"
+            },
+            {
+              "text": "Profile Image"
+            },
+            {
+              "text": "Tenant A"
+            },
+            {
+              "text": "Default"
+            },
+            {
+              "text": "Subcribe to Email Broadcaster"
+            },
+            {
+              "text": "Yes"
+            },
+            {
+              "text": "No"
+            },
+            {
+              "text": "Tags"
+            }
+          ],
+          "links": [
+            {
+              "href": "#tabBasic",
+              "text": "Basic"
+            },
+            {
+              "href": "#tabAddressinformation",
+              "text": "Address Information"
+            },
+            {
+              "href": "#tabInterests",
+              "text": "Interests"
+            },
+            {
+              "href": "#tabAdvanced",
+              "text": "Advanced"
+            },
+            {
+              "href": "./?muraAction=cusers.editaddress&userID=<id:2>&siteid=tenant-a&routeID=editprofile&addressID=&returnURL=muraAction%3DcEditProfile.edit",
+              "text": "Add New Address"
+            },
+            {
+              "href": "./?muraAction=cusers.editaddress&userID=<id:2>&siteid=tenant-a&routeID=editprofile&addressID=<id:1>&returnURL=muraAction%3DcEditProfile.edit",
+              "text": ""
+            }
+          ],
+          "maskedText": [],
+          "tables": [
+            {
+              "headers": [
+                "Primary",
+                "Address",
+                ""
+              ],
+              "rows": [
+                [
+                  "",
+                  "Primary",
+                  ""
+                ]
+              ]
+            }
+          ],
+          "title": "Masa CMS - Edit Profile"
+        },
+        "index": 0,
+        "maskedPaths": {},
+        "name": "edit",
+        "routeKey": "admin:ceditprofile.edit",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {},
+        "method": "GET",
+        "url": "/admin/?muraAction=cEditProfile.edit"
+      },
+      "response": {
+        "domModel": {
+          "alerts": [],
+          "buttons": [
+            "Update"
+          ],
+          "controls": [
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "subtype",
+              "type": "hidden",
+              "value": "Default"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "fname",
+              "type": "text",
+              "value": "Wellington"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "lname",
+              "type": "text",
+              "value": "Schmeler"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "company",
+              "type": "text",
+              "value": "Erdman, Marquardt and Bogan"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "jobtitle",
+              "type": "text",
+              "value": "Internal Mobility Associate"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "email",
+              "type": "text",
+              "value": "wellington.schmeler@seed.opt2.test"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "mobilePhone",
+              "type": "text",
+              "value": "530-795-1955 x44006"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "usernameNoCache",
+              "type": "text",
+              "value": "wellington.schmeler"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "passwordNoCache",
+              "type": "password"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "password2",
+              "type": "password"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "newFile",
+              "type": "file",
+              "value": ""
+            },
+            {
+              "checked": true,
+              "disabled": false,
+              "form": 0,
+              "name": "primaryAddressID",
+              "type": "radio",
+              "value": "<id:1>"
+            },
+            {
+              "checked": true,
+              "disabled": false,
+              "form": 0,
+              "name": "subscribe",
+              "type": "radio",
+              "value": "1"
+            },
+            {
+              "checked": false,
+              "disabled": false,
+              "form": 0,
+              "name": "subscribe",
+              "type": "radio",
+              "value": "0"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "tags",
+              "type": "text",
+              "value": ""
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "type",
+              "type": "hidden",
+              "value": "2"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "action",
+              "type": "hidden",
+              "value": ""
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "contact",
+              "type": "hidden",
+              "value": "0"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "userid",
+              "type": "hidden",
+              "value": "<id:2>"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "siteid",
+              "type": "hidden",
+              "value": "tenant-a"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "csrf_token",
+              "type": "hidden",
+              "value": "<token>"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "csrf_token_expires",
+              "type": "hidden",
+              "value": "<token>"
+            }
+          ],
+          "forms": [
+            {
+              "action": "./?muraAction=ceditprofile.update",
+              "method": "post",
+              "name": "form1"
+            }
+          ],
+          "headings": [
+            {
+              "level": 1,
+              "text": "Edit Profile"
+            },
+            {
+              "level": 3,
+              "text": "Basic"
+            },
+            {
+              "level": 3,
+              "text": "Address Information"
+            },
+            {
+              "level": 3,
+              "text": "Interests"
+            },
+            {
+              "level": 3,
+              "text": "Advanced"
+            }
+          ],
+          "labels": [
+            {
+              "text": "First Name*"
+            },
+            {
+              "text": "Last Name*"
+            },
+            {
+              "text": "Company"
+            },
+            {
+              "text": "Job Title"
+            },
+            {
+              "text": "Email*"
+            },
+            {
+              "text": "Mobile Phone"
+            },
+            {
+              "text": "Username**"
+            },
+            {
+              "text": "Password**"
+            },
+            {
+              "text": "Confirm Password**"
+            },
+            {
+              "text": "Profile Image"
+            },
+            {
+              "text": "Tenant A"
+            },
+            {
+              "text": "Default"
+            },
+            {
+              "text": "Subcribe to Email Broadcaster"
+            },
+            {
+              "text": "Yes"
+            },
+            {
+              "text": "No"
+            },
+            {
+              "text": "Tags"
+            }
+          ],
+          "links": [
+            {
+              "href": "#tabBasic",
+              "text": "Basic"
+            },
+            {
+              "href": "#tabAddressinformation",
+              "text": "Address Information"
+            },
+            {
+              "href": "#tabInterests",
+              "text": "Interests"
+            },
+            {
+              "href": "#tabAdvanced",
+              "text": "Advanced"
+            },
+            {
+              "href": "./?muraAction=cusers.editaddress&userID=<id:2>&siteid=tenant-a&routeID=editprofile&addressID=&returnURL=muraAction%3DcEditProfile.edit",
+              "text": "Add New Address"
+            },
+            {
+              "href": "./?muraAction=cusers.editaddress&userID=<id:2>&siteid=tenant-a&routeID=editprofile&addressID=<id:1>&returnURL=muraAction%3DcEditProfile.edit",
+              "text": ""
+            }
+          ],
+          "maskedText": [],
+          "tables": [
+            {
+              "headers": [
+                "Primary",
+                "Address",
+                ""
+              ],
+              "rows": [
+                [
+                  "",
+                  "Primary",
+                  ""
+                ]
+              ]
+            }
+          ],
+          "title": "Masa CMS - Edit Profile"
+        },
+        "headers": {
+          "cache-control": "no-cache, no-store, must-revalidate",
+          "content-language": "en-US",
+          "content-type": "text/html;charset=UTF-8",
+          "expires": "06 Nov 1994 08:37:34 GMT",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "a6bc069b22e0080dea599a20ff0f66e1100bda4f9c20cc6fafa7b910996e7e3e",
+        "status": 200
+      },
+      "routeKey": "admin:ceditprofile.edit"
+    },
+    {
+      "index": 1,
+      "name": "update",
+      "normalised": {
+        "auth": {
+          "cookies": [],
+          "redirectTargets": [
+            {
+              "location": "./",
+              "status": 302
+            },
+            {
+              "location": "/admin/?muraAction=cmessage.noaccess",
+              "status": 302
+            }
+          ],
+          "wwwAuthenticate": []
+        },
+        "domModel": {
+          "alerts": [],
+          "buttons": [
+            "",
+            "",
+            "",
+            "",
+            "Tenant A",
+            "",
+            "",
+            "Wellington Schmeler",
+            ""
+          ],
+          "controls": [
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "keywords",
+              "type": "text",
+              "value": ""
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "muraAction",
+              "type": "hidden",
+              "value": "cArch.list"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "activetab",
+              "type": "hidden",
+              "value": "1"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "siteid",
+              "type": "hidden",
+              "value": "tenant-a"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "moduleid",
+              "type": "hidden",
+              "value": "00000000000000000000000000000000000"
+            }
+          ],
+          "forms": [
+            {
+              "action": "#",
+              "id": "globalSearch",
+              "method": "get",
+              "name": "globalSearch"
+            }
+          ],
+          "headings": [
+            {
+              "level": 1,
+              "text": "Access Denied"
+            }
+          ],
+          "labels": [],
+          "links": [
+            {
+              "href": "/admin/?muraAction=carch.list&siteid=tenant-a",
+              "text": "Content"
+            },
+            {
+              "href": "/admin/?muraAction=cfilemanager.default&siteid=tenant-a",
+              "text": "File Browser"
+            },
+            {
+              "href": "/admin/",
+              "text": "Help"
+            },
+            {
+              "href": "https://www.masacms.com/documentation",
+              "text": "Documentation"
+            },
+            {
+              "href": "http://docs.cksource.com/",
+              "text": "Editor/File Manager"
+            },
+            {
+              "href": "https://www.wearenorth.eu/",
+              "text": "Professional Support"
+            },
+            {
+              "href": "https://www.masacms.com/",
+              "text": "Community Support"
+            },
+            {
+              "href": "/admin/",
+              "text": "About"
+            },
+            {
+              "href": "#",
+              "text": "Core Version 7.6.1"
+            },
+            {
+              "href": "#",
+              "text": "App Server ColdFusion (2023,0,26,331018)"
+            },
+            {
+              "href": "#",
+              "text": "DB Server Microsoft SQL Server (Microsoft SQL Server 2022 - 16.0.4305.5)"
+            },
+            {
+              "href": "#",
+              "text": "OS Version UNIX (6.12.105+)"
+            },
+            {
+              "href": "https://github.com/blueriver/MuraCMS/blob/develop/license.txt",
+              "text": "Mura CMS © 2026 blueriver Licensed under GNU General Public License Version 2.0 with exceptions"
+            },
+            {
+              "href": "https://github.com/MasaCMS/MasaCMS/blob/main/license.txt",
+              "text": "Masa CMS © 2026 We Are North Groep BV Licensed under GNU General Public License Version 2.0 with exceptions"
+            },
+            {
+              "href": "tenant-a.<origin>/",
+              "text": "Tenant A"
+            },
+            {
+              "href": "/admin/?muraAction=ceditprofile.edit",
+              "text": "Wellington Schmeler"
+            },
+            {
+              "href": "/admin/?muraAction=ceditprofile.edit",
+              "text": "Edit Profile"
+            },
+            {
+              "href": "/admin/?muraAction=clogin.logout",
+              "text": "Log out"
+            },
+            {
+              "href": "mailto:admin%40example.com",
+              "text": "administrator"
+            }
+          ],
+          "maskedText": [],
+          "tables": [],
+          "title": "Masa CMS - Message"
+        },
+        "index": 1,
+        "maskedPaths": {
+          "domModel.forms[0].action": "header-search-404"
+        },
+        "name": "update",
+        "routeKey": "admin:ceditprofile.update",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "form",
+          "value": {
+            "action": "",
+            "contact": "0",
+            "csrf_token": "<token>",
+            "csrf_token_expires": "<token>",
+            "email": "wellington.schmeler@seed.opt2.test",
+            "fname": "Wellington",
+            "jobtitle": "GS-PE-04 Analyst",
+            "lname": "Schmeler",
+            "siteid": "tenant-a",
+            "subtype": "Default",
+            "type": "2",
+            "userid": "6CE54D92-E22E-AA90-91B74A0E1ABE732B",
+            "usernameNoCache": "wellington.schmeler"
+          }
+        },
+        "headers": {
+          "content-type": "application/x-www-form-urlencoded"
+        },
+        "method": "POST",
+        "url": "/admin/?muraAction=cEditProfile.update"
+      },
+      "response": {
+        "domModel": {
+          "alerts": [],
+          "buttons": [
+            "",
+            "",
+            "",
+            "",
+            "Tenant A",
+            "",
+            "",
+            "Wellington Schmeler",
+            ""
+          ],
+          "controls": [
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "keywords",
+              "type": "text",
+              "value": ""
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "muraAction",
+              "type": "hidden",
+              "value": "cArch.list"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "activetab",
+              "type": "hidden",
+              "value": "1"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "siteid",
+              "type": "hidden",
+              "value": "tenant-a"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "moduleid",
+              "type": "hidden",
+              "value": "00000000000000000000000000000000000"
+            }
+          ],
+          "forms": [
+            {
+              "action": "#",
+              "id": "globalSearch",
+              "method": "get",
+              "name": "globalSearch"
+            }
+          ],
+          "headings": [
+            {
+              "level": 1,
+              "text": "Access Denied"
+            }
+          ],
+          "labels": [],
+          "links": [
+            {
+              "href": "/admin/?muraAction=carch.list&siteid=tenant-a",
+              "text": "Content"
+            },
+            {
+              "href": "/admin/?muraAction=cfilemanager.default&siteid=tenant-a",
+              "text": "File Browser"
+            },
+            {
+              "href": "/admin/",
+              "text": "Help"
+            },
+            {
+              "href": "https://www.masacms.com/documentation",
+              "text": "Documentation"
+            },
+            {
+              "href": "http://docs.cksource.com/",
+              "text": "Editor/File Manager"
+            },
+            {
+              "href": "https://www.wearenorth.eu/",
+              "text": "Professional Support"
+            },
+            {
+              "href": "https://www.masacms.com/",
+              "text": "Community Support"
+            },
+            {
+              "href": "/admin/",
+              "text": "About"
+            },
+            {
+              "href": "#",
+              "text": "Core Version 7.6.1"
+            },
+            {
+              "href": "#",
+              "text": "App Server ColdFusion (2023,0,26,331018)"
+            },
+            {
+              "href": "#",
+              "text": "DB Server Microsoft SQL Server (Microsoft SQL Server 2022 - 16.0.4305.5)"
+            },
+            {
+              "href": "#",
+              "text": "OS Version UNIX (6.12.105+)"
+            },
+            {
+              "href": "https://github.com/blueriver/MuraCMS/blob/develop/license.txt",
+              "text": "Mura CMS © 2026 blueriver Licensed under GNU General Public License Version 2.0 with exceptions"
+            },
+            {
+              "href": "https://github.com/MasaCMS/MasaCMS/blob/main/license.txt",
+              "text": "Masa CMS © 2026 We Are North Groep BV Licensed under GNU General Public License Version 2.0 with exceptions"
+            },
+            {
+              "href": "tenant-a.<origin>/",
+              "text": "Tenant A"
+            },
+            {
+              "href": "/admin/?muraAction=ceditprofile.edit",
+              "text": "Wellington Schmeler"
+            },
+            {
+              "href": "/admin/?muraAction=ceditprofile.edit",
+              "text": "Edit Profile"
+            },
+            {
+              "href": "/admin/?muraAction=clogin.logout",
+              "text": "Log out"
+            },
+            {
+              "href": "mailto:admin%40example.com",
+              "text": "administrator"
+            }
+          ],
+          "maskedText": [],
+          "tables": [],
+          "title": "Masa CMS - Message"
+        },
+        "headers": {
+          "cache-control": "no-cache, no-store, must-revalidate",
+          "content-language": "en-US",
+          "content-type": "text/html;charset=UTF-8",
+          "expires": "06 Nov 1994 08:37:34 GMT",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "f5aaca57870ef08346ccc233e80dfdd1c76f5fe5699ea838d3636fe33a055f15",
+        "status": 200
+      },
+      "routeKey": "admin:ceditprofile.update"
+    },
+    {
+      "index": 2,
+      "name": "edit-photo",
+      "normalised": {
+        "auth": {
+          "cookies": [],
+          "redirectTargets": [],
+          "wwwAuthenticate": []
+        },
+        "domModel": {
+          "alerts": [],
+          "buttons": [
+            "",
+            "",
+            "",
+            "",
+            "Tenant A",
+            "",
+            "",
+            "Wellington Schmeler",
+            "",
+            "Update"
+          ],
+          "controls": [
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "keywords",
+              "type": "text",
+              "value": ""
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "muraAction",
+              "type": "hidden",
+              "value": "cArch.list"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "activetab",
+              "type": "hidden",
+              "value": "1"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "siteid",
+              "type": "hidden",
+              "value": "tenant-a"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "moduleid",
+              "type": "hidden",
+              "value": "00000000000000000000000000000000000"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "subtype",
+              "type": "hidden",
+              "value": "Default"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "fname",
+              "type": "text",
+              "value": "Wellington"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "lname",
+              "type": "text",
+              "value": "Schmeler"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "company",
+              "type": "text",
+              "value": "Erdman, Marquardt and Bogan"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "jobtitle",
+              "type": "text",
+              "value": "GS-PE-04 Analyst"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "email",
+              "type": "text",
+              "value": "wellington.schmeler@seed.opt2.test"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "mobilePhone",
+              "type": "text",
+              "value": "530-795-1955 x44006"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "usernameNoCache",
+              "type": "text",
+              "value": "wellington.schmeler"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "passwordNoCache",
+              "type": "password"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "password2",
+              "type": "password"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "newFile",
+              "type": "file",
+              "value": ""
+            },
+            {
+              "checked": true,
+              "disabled": false,
+              "form": 1,
+              "name": "primaryAddressID",
+              "type": "radio",
+              "value": "<id:1>"
+            },
+            {
+              "checked": true,
+              "disabled": false,
+              "form": 1,
+              "name": "subscribe",
+              "type": "radio",
+              "value": "1"
+            },
+            {
+              "checked": false,
+              "disabled": false,
+              "form": 1,
+              "name": "subscribe",
+              "type": "radio",
+              "value": "0"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "tags",
+              "type": "text",
+              "value": ""
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "type",
+              "type": "hidden",
+              "value": "2"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "action",
+              "type": "hidden",
+              "value": ""
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "contact",
+              "type": "hidden",
+              "value": "0"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "userid",
+              "type": "hidden",
+              "value": "<id:2>"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "siteid",
+              "type": "hidden",
+              "value": "tenant-a"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "csrf_token",
+              "type": "hidden",
+              "value": "<token>"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "csrf_token_expires",
+              "type": "hidden",
+              "value": "<token>"
+            }
+          ],
+          "forms": [
+            {
+              "action": "#",
+              "id": "globalSearch",
+              "method": "get",
+              "name": "globalSearch"
+            },
+            {
+              "action": "./?muraAction=ceditprofile.update",
+              "method": "post",
+              "name": "form1"
+            }
+          ],
+          "headings": [
+            {
+              "level": 1,
+              "text": "Edit Profile"
+            },
+            {
+              "level": 3,
+              "text": "Basic"
+            },
+            {
+              "level": 3,
+              "text": "Address Information"
+            },
+            {
+              "level": 3,
+              "text": "Interests"
+            },
+            {
+              "level": 3,
+              "text": "Advanced"
+            }
+          ],
+          "labels": [
+            {
+              "text": "First Name*"
+            },
+            {
+              "text": "Last Name*"
+            },
+            {
+              "text": "Company"
+            },
+            {
+              "text": "Job Title"
+            },
+            {
+              "text": "Email*"
+            },
+            {
+              "text": "Mobile Phone"
+            },
+            {
+              "text": "Username**"
+            },
+            {
+              "text": "Password**"
+            },
+            {
+              "text": "Confirm Password**"
+            },
+            {
+              "text": "Profile Image"
+            },
+            {
+              "text": "Tenant A"
+            },
+            {
+              "text": "Subcribe to Email Broadcaster"
+            },
+            {
+              "text": "Yes"
+            },
+            {
+              "text": "No"
+            },
+            {
+              "text": "Tags"
+            }
+          ],
+          "links": [
+            {
+              "href": "/admin/?muraAction=carch.list&siteid=tenant-a",
+              "text": "Content"
+            },
+            {
+              "href": "/admin/?muraAction=cfilemanager.default&siteid=tenant-a",
+              "text": "File Browser"
+            },
+            {
+              "href": "/admin/",
+              "text": "Help"
+            },
+            {
+              "href": "https://www.masacms.com/documentation",
+              "text": "Documentation"
+            },
+            {
+              "href": "http://docs.cksource.com/",
+              "text": "Editor/File Manager"
+            },
+            {
+              "href": "https://www.wearenorth.eu/",
+              "text": "Professional Support"
+            },
+            {
+              "href": "https://www.masacms.com/",
+              "text": "Community Support"
+            },
+            {
+              "href": "/admin/",
+              "text": "About"
+            },
+            {
+              "href": "#",
+              "text": "Core Version 7.6.1"
+            },
+            {
+              "href": "#",
+              "text": "App Server ColdFusion (2023,0,26,331018)"
+            },
+            {
+              "href": "#",
+              "text": "DB Server Microsoft SQL Server (Microsoft SQL Server 2022 - 16.0.4305.5)"
+            },
+            {
+              "href": "#",
+              "text": "OS Version UNIX (6.12.105+)"
+            },
+            {
+              "href": "https://github.com/blueriver/MuraCMS/blob/develop/license.txt",
+              "text": "Mura CMS © 2026 blueriver Licensed under GNU General Public License Version 2.0 with exceptions"
+            },
+            {
+              "href": "https://github.com/MasaCMS/MasaCMS/blob/main/license.txt",
+              "text": "Masa CMS © 2026 We Are North Groep BV Licensed under GNU General Public License Version 2.0 with exceptions"
+            },
+            {
+              "href": "tenant-a.<origin>/",
+              "text": "Tenant A"
+            },
+            {
+              "href": "/admin/?muraAction=ceditprofile.edit",
+              "text": "Wellington Schmeler"
+            },
+            {
+              "href": "/admin/?muraAction=ceditprofile.edit",
+              "text": "Edit Profile"
+            },
+            {
+              "href": "/admin/?muraAction=clogin.logout",
+              "text": "Log out"
+            },
+            {
+              "href": "#tabBasic",
+              "text": "Basic"
+            },
+            {
+              "href": "#tabAddressinformation",
+              "text": "Address Information"
+            },
+            {
+              "href": "#tabInterests",
+              "text": "Interests"
+            },
+            {
+              "href": "#tabAdvanced",
+              "text": "Advanced"
+            },
+            {
+              "href": "./?muraAction=cusers.editaddress&userID=<id:2>&siteid=tenant-a&routeID=editprofile&addressID=&returnURL=muraAction%3DcEditProfile.edit",
+              "text": "Add New Address"
+            },
+            {
+              "href": "./?muraAction=cusers.editaddress&userID=<id:2>&siteid=tenant-a&routeID=editprofile&addressID=<id:1>&returnURL=muraAction%3DcEditProfile.edit",
+              "text": ""
+            }
+          ],
+          "maskedText": [],
+          "tables": [
+            {
+              "headers": [
+                "Primary",
+                "Address",
+                ""
+              ],
+              "rows": [
+                [
+                  "",
+                  "Primary",
+                  ""
+                ]
+              ]
+            }
+          ],
+          "title": "Masa CMS - Edit Profile"
+        },
+        "index": 2,
+        "maskedPaths": {
+          "domModel.forms[0].action": "header-search-404"
+        },
+        "name": "edit-photo",
+        "routeKey": "admin:ceditprofile.edit",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {},
+        "method": "GET",
+        "url": "/admin/?muraAction=cEditProfile.edit"
+      },
+      "response": {
+        "domModel": {
+          "alerts": [],
+          "buttons": [
+            "",
+            "",
+            "",
+            "",
+            "Tenant A",
+            "",
+            "",
+            "Wellington Schmeler",
+            "",
+            "Update"
+          ],
+          "controls": [
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "keywords",
+              "type": "text",
+              "value": ""
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "muraAction",
+              "type": "hidden",
+              "value": "cArch.list"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "activetab",
+              "type": "hidden",
+              "value": "1"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "siteid",
+              "type": "hidden",
+              "value": "tenant-a"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "moduleid",
+              "type": "hidden",
+              "value": "00000000000000000000000000000000000"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "subtype",
+              "type": "hidden",
+              "value": "Default"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "fname",
+              "type": "text",
+              "value": "Wellington"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "lname",
+              "type": "text",
+              "value": "Schmeler"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "company",
+              "type": "text",
+              "value": "Erdman, Marquardt and Bogan"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "jobtitle",
+              "type": "text",
+              "value": "GS-PE-04 Analyst"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "email",
+              "type": "text",
+              "value": "wellington.schmeler@seed.opt2.test"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "mobilePhone",
+              "type": "text",
+              "value": "530-795-1955 x44006"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "usernameNoCache",
+              "type": "text",
+              "value": "wellington.schmeler"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "passwordNoCache",
+              "type": "password"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "password2",
+              "type": "password"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "newFile",
+              "type": "file",
+              "value": ""
+            },
+            {
+              "checked": true,
+              "disabled": false,
+              "form": 1,
+              "name": "primaryAddressID",
+              "type": "radio",
+              "value": "<id:1>"
+            },
+            {
+              "checked": true,
+              "disabled": false,
+              "form": 1,
+              "name": "subscribe",
+              "type": "radio",
+              "value": "1"
+            },
+            {
+              "checked": false,
+              "disabled": false,
+              "form": 1,
+              "name": "subscribe",
+              "type": "radio",
+              "value": "0"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "tags",
+              "type": "text",
+              "value": ""
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "type",
+              "type": "hidden",
+              "value": "2"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "action",
+              "type": "hidden",
+              "value": ""
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "contact",
+              "type": "hidden",
+              "value": "0"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "userid",
+              "type": "hidden",
+              "value": "<id:2>"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "siteid",
+              "type": "hidden",
+              "value": "tenant-a"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "csrf_token",
+              "type": "hidden",
+              "value": "<token>"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "csrf_token_expires",
+              "type": "hidden",
+              "value": "<token>"
+            }
+          ],
+          "forms": [
+            {
+              "action": "#",
+              "id": "globalSearch",
+              "method": "get",
+              "name": "globalSearch"
+            },
+            {
+              "action": "./?muraAction=ceditprofile.update",
+              "method": "post",
+              "name": "form1"
+            }
+          ],
+          "headings": [
+            {
+              "level": 1,
+              "text": "Edit Profile"
+            },
+            {
+              "level": 3,
+              "text": "Basic"
+            },
+            {
+              "level": 3,
+              "text": "Address Information"
+            },
+            {
+              "level": 3,
+              "text": "Interests"
+            },
+            {
+              "level": 3,
+              "text": "Advanced"
+            }
+          ],
+          "labels": [
+            {
+              "text": "First Name*"
+            },
+            {
+              "text": "Last Name*"
+            },
+            {
+              "text": "Company"
+            },
+            {
+              "text": "Job Title"
+            },
+            {
+              "text": "Email*"
+            },
+            {
+              "text": "Mobile Phone"
+            },
+            {
+              "text": "Username**"
+            },
+            {
+              "text": "Password**"
+            },
+            {
+              "text": "Confirm Password**"
+            },
+            {
+              "text": "Profile Image"
+            },
+            {
+              "text": "Tenant A"
+            },
+            {
+              "text": "Subcribe to Email Broadcaster"
+            },
+            {
+              "text": "Yes"
+            },
+            {
+              "text": "No"
+            },
+            {
+              "text": "Tags"
+            }
+          ],
+          "links": [
+            {
+              "href": "/admin/?muraAction=carch.list&siteid=tenant-a",
+              "text": "Content"
+            },
+            {
+              "href": "/admin/?muraAction=cfilemanager.default&siteid=tenant-a",
+              "text": "File Browser"
+            },
+            {
+              "href": "/admin/",
+              "text": "Help"
+            },
+            {
+              "href": "https://www.masacms.com/documentation",
+              "text": "Documentation"
+            },
+            {
+              "href": "http://docs.cksource.com/",
+              "text": "Editor/File Manager"
+            },
+            {
+              "href": "https://www.wearenorth.eu/",
+              "text": "Professional Support"
+            },
+            {
+              "href": "https://www.masacms.com/",
+              "text": "Community Support"
+            },
+            {
+              "href": "/admin/",
+              "text": "About"
+            },
+            {
+              "href": "#",
+              "text": "Core Version 7.6.1"
+            },
+            {
+              "href": "#",
+              "text": "App Server ColdFusion (2023,0,26,331018)"
+            },
+            {
+              "href": "#",
+              "text": "DB Server Microsoft SQL Server (Microsoft SQL Server 2022 - 16.0.4305.5)"
+            },
+            {
+              "href": "#",
+              "text": "OS Version UNIX (6.12.105+)"
+            },
+            {
+              "href": "https://github.com/blueriver/MuraCMS/blob/develop/license.txt",
+              "text": "Mura CMS © 2026 blueriver Licensed under GNU General Public License Version 2.0 with exceptions"
+            },
+            {
+              "href": "https://github.com/MasaCMS/MasaCMS/blob/main/license.txt",
+              "text": "Masa CMS © 2026 We Are North Groep BV Licensed under GNU General Public License Version 2.0 with exceptions"
+            },
+            {
+              "href": "tenant-a.<origin>/",
+              "text": "Tenant A"
+            },
+            {
+              "href": "/admin/?muraAction=ceditprofile.edit",
+              "text": "Wellington Schmeler"
+            },
+            {
+              "href": "/admin/?muraAction=ceditprofile.edit",
+              "text": "Edit Profile"
+            },
+            {
+              "href": "/admin/?muraAction=clogin.logout",
+              "text": "Log out"
+            },
+            {
+              "href": "#tabBasic",
+              "text": "Basic"
+            },
+            {
+              "href": "#tabAddressinformation",
+              "text": "Address Information"
+            },
+            {
+              "href": "#tabInterests",
+              "text": "Interests"
+            },
+            {
+              "href": "#tabAdvanced",
+              "text": "Advanced"
+            },
+            {
+              "href": "./?muraAction=cusers.editaddress&userID=<id:2>&siteid=tenant-a&routeID=editprofile&addressID=&returnURL=muraAction%3DcEditProfile.edit",
+              "text": "Add New Address"
+            },
+            {
+              "href": "./?muraAction=cusers.editaddress&userID=<id:2>&siteid=tenant-a&routeID=editprofile&addressID=<id:1>&returnURL=muraAction%3DcEditProfile.edit",
+              "text": ""
+            }
+          ],
+          "maskedText": [],
+          "tables": [
+            {
+              "headers": [
+                "Primary",
+                "Address",
+                ""
+              ],
+              "rows": [
+                [
+                  "",
+                  "Primary",
+                  ""
+                ]
+              ]
+            }
+          ],
+          "title": "Masa CMS - Edit Profile"
+        },
+        "headers": {
+          "cache-control": "no-cache, no-store, must-revalidate",
+          "content-language": "en-US",
+          "content-type": "text/html;charset=UTF-8",
+          "expires": "06 Nov 1994 08:37:34 GMT",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "9d90d9fa460d35b343052f92c76a820da8818e0124d8275cfeca2e9d5eb26fb7",
+        "status": 200
+      },
+      "routeKey": "admin:ceditprofile.edit"
+    },
+    {
+      "decisionListRef": "admin:ceditprofile.update{photo}",
+      "expected": "withheld",
+      "index": 3,
+      "name": "photo-upload",
+      "normalised": {
+        "auth": {
+          "cookies": [],
+          "redirectTargets": [
+            {
+              "location": "./",
+              "status": 302
+            },
+            {
+              "location": "/admin/?muraAction=cmessage.noaccess",
+              "status": 302
+            }
+          ],
+          "wwwAuthenticate": []
+        },
+        "domModel": {
+          "alerts": [],
+          "buttons": [
+            "",
+            "",
+            "",
+            "",
+            "Tenant A",
+            "",
+            "",
+            "Wellington Schmeler",
+            ""
+          ],
+          "controls": [
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "keywords",
+              "type": "text",
+              "value": ""
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "muraAction",
+              "type": "hidden",
+              "value": "cArch.list"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "activetab",
+              "type": "hidden",
+              "value": "1"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "siteid",
+              "type": "hidden",
+              "value": "tenant-a"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "moduleid",
+              "type": "hidden",
+              "value": "00000000000000000000000000000000000"
+            }
+          ],
+          "forms": [
+            {
+              "action": "#",
+              "id": "globalSearch",
+              "method": "get",
+              "name": "globalSearch"
+            }
+          ],
+          "headings": [
+            {
+              "level": 1,
+              "text": "Access Denied"
+            }
+          ],
+          "labels": [],
+          "links": [
+            {
+              "href": "/admin/?muraAction=carch.list&siteid=tenant-a",
+              "text": "Content"
+            },
+            {
+              "href": "/admin/?muraAction=cfilemanager.default&siteid=tenant-a",
+              "text": "File Browser"
+            },
+            {
+              "href": "/admin/",
+              "text": "Help"
+            },
+            {
+              "href": "https://www.masacms.com/documentation",
+              "text": "Documentation"
+            },
+            {
+              "href": "http://docs.cksource.com/",
+              "text": "Editor/File Manager"
+            },
+            {
+              "href": "https://www.wearenorth.eu/",
+              "text": "Professional Support"
+            },
+            {
+              "href": "https://www.masacms.com/",
+              "text": "Community Support"
+            },
+            {
+              "href": "/admin/",
+              "text": "About"
+            },
+            {
+              "href": "#",
+              "text": "Core Version 7.6.1"
+            },
+            {
+              "href": "#",
+              "text": "App Server ColdFusion (2023,0,26,331018)"
+            },
+            {
+              "href": "#",
+              "text": "DB Server Microsoft SQL Server (Microsoft SQL Server 2022 - 16.0.4305.5)"
+            },
+            {
+              "href": "#",
+              "text": "OS Version UNIX (6.12.105+)"
+            },
+            {
+              "href": "https://github.com/blueriver/MuraCMS/blob/develop/license.txt",
+              "text": "Mura CMS © 2026 blueriver Licensed under GNU General Public License Version 2.0 with exceptions"
+            },
+            {
+              "href": "https://github.com/MasaCMS/MasaCMS/blob/main/license.txt",
+              "text": "Masa CMS © 2026 We Are North Groep BV Licensed under GNU General Public License Version 2.0 with exceptions"
+            },
+            {
+              "href": "tenant-a.<origin>/",
+              "text": "Tenant A"
+            },
+            {
+              "href": "/admin/?muraAction=ceditprofile.edit",
+              "text": "Wellington Schmeler"
+            },
+            {
+              "href": "/admin/?muraAction=ceditprofile.edit",
+              "text": "Edit Profile"
+            },
+            {
+              "href": "/admin/?muraAction=clogin.logout",
+              "text": "Log out"
+            },
+            {
+              "href": "mailto:admin%40example.com",
+              "text": "administrator"
+            }
+          ],
+          "maskedText": [],
+          "tables": [],
+          "title": "Masa CMS - Message"
+        },
+        "index": 3,
+        "maskedPaths": {
+          "domModel.forms[0].action": "header-search-404"
+        },
+        "name": "photo-upload",
+        "routeKey": "admin:ceditprofile.update{photo}",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "multipart",
+          "value": {
+            "fields": {
+              "action": "",
+              "contact": "0",
+              "csrf_token": "<token>",
+              "csrf_token_expires": "<token>",
+              "email": "wellington.schmeler@seed.opt2.test",
+              "fname": "Wellington",
+              "lname": "Schmeler",
+              "siteid": "tenant-a",
+              "subtype": "Default",
+              "type": "2",
+              "userid": "6CE54D92-E22E-AA90-91B74A0E1ABE732B",
+              "usernameNoCache": "wellington.schmeler"
+            },
+            "files": [
+              {
+                "contentType": "image/png",
+                "field": "newfile",
+                "filename": "gs-photo.png",
+                "sha256": "f0fa347743261694a4d8b53a909f7d569618d7eff91095ac821571c97d0e183d",
+                "size": 268
+              }
+            ]
+          }
+        },
+        "headers": {
+          "content-type": "multipart/form-data; boundary=----formdata-undici-007739731595"
+        },
+        "method": "POST",
+        "url": "/admin/?muraAction=cEditProfile.update"
+      },
+      "response": {
+        "domModel": {
+          "alerts": [],
+          "buttons": [
+            "",
+            "",
+            "",
+            "",
+            "Tenant A",
+            "",
+            "",
+            "Wellington Schmeler",
+            ""
+          ],
+          "controls": [
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "keywords",
+              "type": "text",
+              "value": ""
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "muraAction",
+              "type": "hidden",
+              "value": "cArch.list"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "activetab",
+              "type": "hidden",
+              "value": "1"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "siteid",
+              "type": "hidden",
+              "value": "tenant-a"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "moduleid",
+              "type": "hidden",
+              "value": "00000000000000000000000000000000000"
+            }
+          ],
+          "forms": [
+            {
+              "action": "#",
+              "id": "globalSearch",
+              "method": "get",
+              "name": "globalSearch"
+            }
+          ],
+          "headings": [
+            {
+              "level": 1,
+              "text": "Access Denied"
+            }
+          ],
+          "labels": [],
+          "links": [
+            {
+              "href": "/admin/?muraAction=carch.list&siteid=tenant-a",
+              "text": "Content"
+            },
+            {
+              "href": "/admin/?muraAction=cfilemanager.default&siteid=tenant-a",
+              "text": "File Browser"
+            },
+            {
+              "href": "/admin/",
+              "text": "Help"
+            },
+            {
+              "href": "https://www.masacms.com/documentation",
+              "text": "Documentation"
+            },
+            {
+              "href": "http://docs.cksource.com/",
+              "text": "Editor/File Manager"
+            },
+            {
+              "href": "https://www.wearenorth.eu/",
+              "text": "Professional Support"
+            },
+            {
+              "href": "https://www.masacms.com/",
+              "text": "Community Support"
+            },
+            {
+              "href": "/admin/",
+              "text": "About"
+            },
+            {
+              "href": "#",
+              "text": "Core Version 7.6.1"
+            },
+            {
+              "href": "#",
+              "text": "App Server ColdFusion (2023,0,26,331018)"
+            },
+            {
+              "href": "#",
+              "text": "DB Server Microsoft SQL Server (Microsoft SQL Server 2022 - 16.0.4305.5)"
+            },
+            {
+              "href": "#",
+              "text": "OS Version UNIX (6.12.105+)"
+            },
+            {
+              "href": "https://github.com/blueriver/MuraCMS/blob/develop/license.txt",
+              "text": "Mura CMS © 2026 blueriver Licensed under GNU General Public License Version 2.0 with exceptions"
+            },
+            {
+              "href": "https://github.com/MasaCMS/MasaCMS/blob/main/license.txt",
+              "text": "Masa CMS © 2026 We Are North Groep BV Licensed under GNU General Public License Version 2.0 with exceptions"
+            },
+            {
+              "href": "tenant-a.<origin>/",
+              "text": "Tenant A"
+            },
+            {
+              "href": "/admin/?muraAction=ceditprofile.edit",
+              "text": "Wellington Schmeler"
+            },
+            {
+              "href": "/admin/?muraAction=ceditprofile.edit",
+              "text": "Edit Profile"
+            },
+            {
+              "href": "/admin/?muraAction=clogin.logout",
+              "text": "Log out"
+            },
+            {
+              "href": "mailto:admin%40example.com",
+              "text": "administrator"
+            }
+          ],
+          "maskedText": [],
+          "tables": [],
+          "title": "Masa CMS - Message"
+        },
+        "headers": {
+          "cache-control": "no-cache, no-store, must-revalidate",
+          "content-language": "en-US",
+          "content-type": "text/html;charset=UTF-8",
+          "expires": "06 Nov 1994 08:37:34 GMT",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "f5aaca57870ef08346ccc233e80dfdd1c76f5fe5699ea838d3636fe33a055f15",
+        "status": 200
+      },
+      "routeKey": "admin:ceditprofile.update{photo}"
+    },
+    {
+      "index": 4,
+      "name": "edit-photo-remove",
+      "normalised": {
+        "auth": {
+          "cookies": [],
+          "redirectTargets": [],
+          "wwwAuthenticate": []
+        },
+        "domModel": {
+          "alerts": [],
+          "buttons": [
+            "",
+            "",
+            "",
+            "",
+            "Tenant A",
+            "",
+            "",
+            "Wellington Schmeler",
+            "",
+            "Update"
+          ],
+          "controls": [
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "keywords",
+              "type": "text",
+              "value": ""
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "muraAction",
+              "type": "hidden",
+              "value": "cArch.list"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "activetab",
+              "type": "hidden",
+              "value": "1"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "siteid",
+              "type": "hidden",
+              "value": "tenant-a"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "moduleid",
+              "type": "hidden",
+              "value": "00000000000000000000000000000000000"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "subtype",
+              "type": "hidden",
+              "value": "Default"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "fname",
+              "type": "text",
+              "value": "Wellington"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "lname",
+              "type": "text",
+              "value": "Schmeler"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "company",
+              "type": "text",
+              "value": "Erdman, Marquardt and Bogan"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "jobtitle",
+              "type": "text",
+              "value": ""
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "email",
+              "type": "text",
+              "value": "wellington.schmeler@seed.opt2.test"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "mobilePhone",
+              "type": "text",
+              "value": "530-795-1955 x44006"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "usernameNoCache",
+              "type": "text",
+              "value": "wellington.schmeler"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "passwordNoCache",
+              "type": "password"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "password2",
+              "type": "password"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "newFile",
+              "type": "file",
+              "value": ""
+            },
+            {
+              "checked": false,
+              "disabled": false,
+              "form": 1,
+              "name": "removePhotoFile",
+              "type": "checkbox",
+              "value": "true"
+            },
+            {
+              "checked": true,
+              "disabled": false,
+              "form": 1,
+              "name": "primaryAddressID",
+              "type": "radio",
+              "value": "<id:1>"
+            },
+            {
+              "checked": true,
+              "disabled": false,
+              "form": 1,
+              "name": "subscribe",
+              "type": "radio",
+              "value": "1"
+            },
+            {
+              "checked": false,
+              "disabled": false,
+              "form": 1,
+              "name": "subscribe",
+              "type": "radio",
+              "value": "0"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "tags",
+              "type": "text",
+              "value": ""
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "type",
+              "type": "hidden",
+              "value": "2"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "action",
+              "type": "hidden",
+              "value": ""
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "contact",
+              "type": "hidden",
+              "value": "0"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "userid",
+              "type": "hidden",
+              "value": "<id:2>"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "siteid",
+              "type": "hidden",
+              "value": "tenant-a"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "csrf_token",
+              "type": "hidden",
+              "value": "<token>"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "csrf_token_expires",
+              "type": "hidden",
+              "value": "<token>"
+            }
+          ],
+          "forms": [
+            {
+              "action": "#",
+              "id": "globalSearch",
+              "method": "get",
+              "name": "globalSearch"
+            },
+            {
+              "action": "./?muraAction=ceditprofile.update",
+              "method": "post",
+              "name": "form1"
+            }
+          ],
+          "headings": [
+            {
+              "level": 1,
+              "text": "Edit Profile"
+            },
+            {
+              "level": 3,
+              "text": "Basic"
+            },
+            {
+              "level": 3,
+              "text": "Address Information"
+            },
+            {
+              "level": 3,
+              "text": "Interests"
+            },
+            {
+              "level": 3,
+              "text": "Advanced"
+            }
+          ],
+          "labels": [
+            {
+              "text": "First Name*"
+            },
+            {
+              "text": "Last Name*"
+            },
+            {
+              "text": "Company"
+            },
+            {
+              "text": "Job Title"
+            },
+            {
+              "text": "Email*"
+            },
+            {
+              "text": "Mobile Phone"
+            },
+            {
+              "text": "Username**"
+            },
+            {
+              "text": "Password**"
+            },
+            {
+              "text": "Confirm Password**"
+            },
+            {
+              "text": "Profile Image"
+            },
+            {
+              "text": "Tenant A"
+            },
+            {
+              "text": "Subcribe to Email Broadcaster"
+            },
+            {
+              "text": "Yes"
+            },
+            {
+              "text": "No"
+            },
+            {
+              "text": "Tags"
+            }
+          ],
+          "links": [
+            {
+              "href": "/admin/?muraAction=carch.list&siteid=tenant-a",
+              "text": "Content"
+            },
+            {
+              "href": "/admin/?muraAction=cfilemanager.default&siteid=tenant-a",
+              "text": "File Browser"
+            },
+            {
+              "href": "/admin/",
+              "text": "Help"
+            },
+            {
+              "href": "https://www.masacms.com/documentation",
+              "text": "Documentation"
+            },
+            {
+              "href": "http://docs.cksource.com/",
+              "text": "Editor/File Manager"
+            },
+            {
+              "href": "https://www.wearenorth.eu/",
+              "text": "Professional Support"
+            },
+            {
+              "href": "https://www.masacms.com/",
+              "text": "Community Support"
+            },
+            {
+              "href": "/admin/",
+              "text": "About"
+            },
+            {
+              "href": "#",
+              "text": "Core Version 7.6.1"
+            },
+            {
+              "href": "#",
+              "text": "App Server ColdFusion (2023,0,26,331018)"
+            },
+            {
+              "href": "#",
+              "text": "DB Server Microsoft SQL Server (Microsoft SQL Server 2022 - 16.0.4305.5)"
+            },
+            {
+              "href": "#",
+              "text": "OS Version UNIX (6.12.105+)"
+            },
+            {
+              "href": "https://github.com/blueriver/MuraCMS/blob/develop/license.txt",
+              "text": "Mura CMS © 2026 blueriver Licensed under GNU General Public License Version 2.0 with exceptions"
+            },
+            {
+              "href": "https://github.com/MasaCMS/MasaCMS/blob/main/license.txt",
+              "text": "Masa CMS © 2026 We Are North Groep BV Licensed under GNU General Public License Version 2.0 with exceptions"
+            },
+            {
+              "href": "tenant-a.<origin>/",
+              "text": "Tenant A"
+            },
+            {
+              "href": "/admin/?muraAction=ceditprofile.edit",
+              "text": "Wellington Schmeler"
+            },
+            {
+              "href": "/admin/?muraAction=ceditprofile.edit",
+              "text": "Edit Profile"
+            },
+            {
+              "href": "/admin/?muraAction=clogin.logout",
+              "text": "Log out"
+            },
+            {
+              "href": "#tabBasic",
+              "text": "Basic"
+            },
+            {
+              "href": "#tabAddressinformation",
+              "text": "Address Information"
+            },
+            {
+              "href": "#tabInterests",
+              "text": "Interests"
+            },
+            {
+              "href": "#tabAdvanced",
+              "text": "Advanced"
+            },
+            {
+              "href": "./index.cfm?muraAction=carch.imagedetails&userid=<id:2>&siteid=tenant-a&fileid=<id:3>",
+              "text": ""
+            },
+            {
+              "href": "./?muraAction=cusers.editaddress&userID=<id:2>&siteid=tenant-a&routeID=editprofile&addressID=&returnURL=muraAction%3DcEditProfile.edit",
+              "text": "Add New Address"
+            },
+            {
+              "href": "./?muraAction=cusers.editaddress&userID=<id:2>&siteid=tenant-a&routeID=editprofile&addressID=<id:1>&returnURL=muraAction%3DcEditProfile.edit",
+              "text": ""
+            }
+          ],
+          "maskedText": [],
+          "tables": [
+            {
+              "headers": [
+                "Primary",
+                "Address",
+                ""
+              ],
+              "rows": [
+                [
+                  "",
+                  "Primary",
+                  ""
+                ]
+              ]
+            }
+          ],
+          "title": "Masa CMS - Edit Profile"
+        },
+        "index": 4,
+        "maskedPaths": {
+          "domModel.forms[0].action": "header-search-404"
+        },
+        "name": "edit-photo-remove",
+        "routeKey": "admin:ceditprofile.edit",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "none"
+        },
+        "headers": {},
+        "method": "GET",
+        "url": "/admin/?muraAction=cEditProfile.edit"
+      },
+      "response": {
+        "domModel": {
+          "alerts": [],
+          "buttons": [
+            "",
+            "",
+            "",
+            "",
+            "Tenant A",
+            "",
+            "",
+            "Wellington Schmeler",
+            "",
+            "Update"
+          ],
+          "controls": [
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "keywords",
+              "type": "text",
+              "value": ""
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "muraAction",
+              "type": "hidden",
+              "value": "cArch.list"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "activetab",
+              "type": "hidden",
+              "value": "1"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "siteid",
+              "type": "hidden",
+              "value": "tenant-a"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "moduleid",
+              "type": "hidden",
+              "value": "00000000000000000000000000000000000"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "subtype",
+              "type": "hidden",
+              "value": "Default"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "fname",
+              "type": "text",
+              "value": "Wellington"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "lname",
+              "type": "text",
+              "value": "Schmeler"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "company",
+              "type": "text",
+              "value": "Erdman, Marquardt and Bogan"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "jobtitle",
+              "type": "text",
+              "value": ""
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "email",
+              "type": "text",
+              "value": "wellington.schmeler@seed.opt2.test"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "mobilePhone",
+              "type": "text",
+              "value": "530-795-1955 x44006"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "usernameNoCache",
+              "type": "text",
+              "value": "wellington.schmeler"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "passwordNoCache",
+              "type": "password"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "password2",
+              "type": "password"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "newFile",
+              "type": "file",
+              "value": ""
+            },
+            {
+              "checked": false,
+              "disabled": false,
+              "form": 1,
+              "name": "removePhotoFile",
+              "type": "checkbox",
+              "value": "true"
+            },
+            {
+              "checked": true,
+              "disabled": false,
+              "form": 1,
+              "name": "primaryAddressID",
+              "type": "radio",
+              "value": "<id:1>"
+            },
+            {
+              "checked": true,
+              "disabled": false,
+              "form": 1,
+              "name": "subscribe",
+              "type": "radio",
+              "value": "1"
+            },
+            {
+              "checked": false,
+              "disabled": false,
+              "form": 1,
+              "name": "subscribe",
+              "type": "radio",
+              "value": "0"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "tags",
+              "type": "text",
+              "value": ""
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "type",
+              "type": "hidden",
+              "value": "2"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "action",
+              "type": "hidden",
+              "value": ""
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "contact",
+              "type": "hidden",
+              "value": "0"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "userid",
+              "type": "hidden",
+              "value": "<id:2>"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "siteid",
+              "type": "hidden",
+              "value": "tenant-a"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "csrf_token",
+              "type": "hidden",
+              "value": "<token>"
+            },
+            {
+              "disabled": false,
+              "form": 1,
+              "name": "csrf_token_expires",
+              "type": "hidden",
+              "value": "<token>"
+            }
+          ],
+          "forms": [
+            {
+              "action": "#",
+              "id": "globalSearch",
+              "method": "get",
+              "name": "globalSearch"
+            },
+            {
+              "action": "./?muraAction=ceditprofile.update",
+              "method": "post",
+              "name": "form1"
+            }
+          ],
+          "headings": [
+            {
+              "level": 1,
+              "text": "Edit Profile"
+            },
+            {
+              "level": 3,
+              "text": "Basic"
+            },
+            {
+              "level": 3,
+              "text": "Address Information"
+            },
+            {
+              "level": 3,
+              "text": "Interests"
+            },
+            {
+              "level": 3,
+              "text": "Advanced"
+            }
+          ],
+          "labels": [
+            {
+              "text": "First Name*"
+            },
+            {
+              "text": "Last Name*"
+            },
+            {
+              "text": "Company"
+            },
+            {
+              "text": "Job Title"
+            },
+            {
+              "text": "Email*"
+            },
+            {
+              "text": "Mobile Phone"
+            },
+            {
+              "text": "Username**"
+            },
+            {
+              "text": "Password**"
+            },
+            {
+              "text": "Confirm Password**"
+            },
+            {
+              "text": "Profile Image"
+            },
+            {
+              "text": "Tenant A"
+            },
+            {
+              "text": "Subcribe to Email Broadcaster"
+            },
+            {
+              "text": "Yes"
+            },
+            {
+              "text": "No"
+            },
+            {
+              "text": "Tags"
+            }
+          ],
+          "links": [
+            {
+              "href": "/admin/?muraAction=carch.list&siteid=tenant-a",
+              "text": "Content"
+            },
+            {
+              "href": "/admin/?muraAction=cfilemanager.default&siteid=tenant-a",
+              "text": "File Browser"
+            },
+            {
+              "href": "/admin/",
+              "text": "Help"
+            },
+            {
+              "href": "https://www.masacms.com/documentation",
+              "text": "Documentation"
+            },
+            {
+              "href": "http://docs.cksource.com/",
+              "text": "Editor/File Manager"
+            },
+            {
+              "href": "https://www.wearenorth.eu/",
+              "text": "Professional Support"
+            },
+            {
+              "href": "https://www.masacms.com/",
+              "text": "Community Support"
+            },
+            {
+              "href": "/admin/",
+              "text": "About"
+            },
+            {
+              "href": "#",
+              "text": "Core Version 7.6.1"
+            },
+            {
+              "href": "#",
+              "text": "App Server ColdFusion (2023,0,26,331018)"
+            },
+            {
+              "href": "#",
+              "text": "DB Server Microsoft SQL Server (Microsoft SQL Server 2022 - 16.0.4305.5)"
+            },
+            {
+              "href": "#",
+              "text": "OS Version UNIX (6.12.105+)"
+            },
+            {
+              "href": "https://github.com/blueriver/MuraCMS/blob/develop/license.txt",
+              "text": "Mura CMS © 2026 blueriver Licensed under GNU General Public License Version 2.0 with exceptions"
+            },
+            {
+              "href": "https://github.com/MasaCMS/MasaCMS/blob/main/license.txt",
+              "text": "Masa CMS © 2026 We Are North Groep BV Licensed under GNU General Public License Version 2.0 with exceptions"
+            },
+            {
+              "href": "tenant-a.<origin>/",
+              "text": "Tenant A"
+            },
+            {
+              "href": "/admin/?muraAction=ceditprofile.edit",
+              "text": "Wellington Schmeler"
+            },
+            {
+              "href": "/admin/?muraAction=ceditprofile.edit",
+              "text": "Edit Profile"
+            },
+            {
+              "href": "/admin/?muraAction=clogin.logout",
+              "text": "Log out"
+            },
+            {
+              "href": "#tabBasic",
+              "text": "Basic"
+            },
+            {
+              "href": "#tabAddressinformation",
+              "text": "Address Information"
+            },
+            {
+              "href": "#tabInterests",
+              "text": "Interests"
+            },
+            {
+              "href": "#tabAdvanced",
+              "text": "Advanced"
+            },
+            {
+              "href": "./index.cfm?muraAction=carch.imagedetails&userid=<id:2>&siteid=tenant-a&fileid=<id:3>",
+              "text": ""
+            },
+            {
+              "href": "./?muraAction=cusers.editaddress&userID=<id:2>&siteid=tenant-a&routeID=editprofile&addressID=&returnURL=muraAction%3DcEditProfile.edit",
+              "text": "Add New Address"
+            },
+            {
+              "href": "./?muraAction=cusers.editaddress&userID=<id:2>&siteid=tenant-a&routeID=editprofile&addressID=<id:1>&returnURL=muraAction%3DcEditProfile.edit",
+              "text": ""
+            }
+          ],
+          "maskedText": [],
+          "tables": [
+            {
+              "headers": [
+                "Primary",
+                "Address",
+                ""
+              ],
+              "rows": [
+                [
+                  "",
+                  "Primary",
+                  ""
+                ]
+              ]
+            }
+          ],
+          "title": "Masa CMS - Edit Profile"
+        },
+        "headers": {
+          "cache-control": "no-cache, no-store, must-revalidate",
+          "content-language": "en-US",
+          "content-type": "text/html;charset=UTF-8",
+          "expires": "06 Nov 1994 08:37:34 GMT",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "887b002922d6e6f7029bb5e2622b5f7987561197c310dbe5d198dad03eefe7a9",
+        "status": 200
+      },
+      "routeKey": "admin:ceditprofile.edit"
+    },
+    {
+      "decisionListRef": "admin:ceditprofile.update{photo}",
+      "expected": "withheld",
+      "index": 5,
+      "name": "photo-remove",
+      "normalised": {
+        "auth": {
+          "cookies": [],
+          "redirectTargets": [
+            {
+              "location": "./",
+              "status": 302
+            },
+            {
+              "location": "/admin/?muraAction=cmessage.noaccess",
+              "status": 302
+            }
+          ],
+          "wwwAuthenticate": []
+        },
+        "domModel": {
+          "alerts": [],
+          "buttons": [
+            "",
+            "",
+            "",
+            "",
+            "Tenant A",
+            "",
+            "",
+            "Wellington Schmeler",
+            ""
+          ],
+          "controls": [
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "keywords",
+              "type": "text",
+              "value": ""
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "muraAction",
+              "type": "hidden",
+              "value": "cArch.list"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "activetab",
+              "type": "hidden",
+              "value": "1"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "siteid",
+              "type": "hidden",
+              "value": "tenant-a"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "moduleid",
+              "type": "hidden",
+              "value": "00000000000000000000000000000000000"
+            }
+          ],
+          "forms": [
+            {
+              "action": "#",
+              "id": "globalSearch",
+              "method": "get",
+              "name": "globalSearch"
+            }
+          ],
+          "headings": [
+            {
+              "level": 1,
+              "text": "Access Denied"
+            }
+          ],
+          "labels": [],
+          "links": [
+            {
+              "href": "/admin/?muraAction=carch.list&siteid=tenant-a",
+              "text": "Content"
+            },
+            {
+              "href": "/admin/?muraAction=cfilemanager.default&siteid=tenant-a",
+              "text": "File Browser"
+            },
+            {
+              "href": "/admin/",
+              "text": "Help"
+            },
+            {
+              "href": "https://www.masacms.com/documentation",
+              "text": "Documentation"
+            },
+            {
+              "href": "http://docs.cksource.com/",
+              "text": "Editor/File Manager"
+            },
+            {
+              "href": "https://www.wearenorth.eu/",
+              "text": "Professional Support"
+            },
+            {
+              "href": "https://www.masacms.com/",
+              "text": "Community Support"
+            },
+            {
+              "href": "/admin/",
+              "text": "About"
+            },
+            {
+              "href": "#",
+              "text": "Core Version 7.6.1"
+            },
+            {
+              "href": "#",
+              "text": "App Server ColdFusion (2023,0,26,331018)"
+            },
+            {
+              "href": "#",
+              "text": "DB Server Microsoft SQL Server (Microsoft SQL Server 2022 - 16.0.4305.5)"
+            },
+            {
+              "href": "#",
+              "text": "OS Version UNIX (6.12.105+)"
+            },
+            {
+              "href": "https://github.com/blueriver/MuraCMS/blob/develop/license.txt",
+              "text": "Mura CMS © 2026 blueriver Licensed under GNU General Public License Version 2.0 with exceptions"
+            },
+            {
+              "href": "https://github.com/MasaCMS/MasaCMS/blob/main/license.txt",
+              "text": "Masa CMS © 2026 We Are North Groep BV Licensed under GNU General Public License Version 2.0 with exceptions"
+            },
+            {
+              "href": "tenant-a.<origin>/",
+              "text": "Tenant A"
+            },
+            {
+              "href": "/admin/?muraAction=ceditprofile.edit",
+              "text": "Wellington Schmeler"
+            },
+            {
+              "href": "/admin/?muraAction=ceditprofile.edit",
+              "text": "Edit Profile"
+            },
+            {
+              "href": "/admin/?muraAction=clogin.logout",
+              "text": "Log out"
+            },
+            {
+              "href": "mailto:admin%40example.com",
+              "text": "administrator"
+            }
+          ],
+          "maskedText": [],
+          "tables": [],
+          "title": "Masa CMS - Message"
+        },
+        "index": 5,
+        "maskedPaths": {
+          "domModel.forms[0].action": "header-search-404"
+        },
+        "name": "photo-remove",
+        "routeKey": "admin:ceditprofile.update{photo}",
+        "status": 200
+      },
+      "request": {
+        "body": {
+          "kind": "form",
+          "value": {
+            "action": "",
+            "contact": "0",
+            "csrf_token": "<token>",
+            "csrf_token_expires": "<token>",
+            "email": "wellington.schmeler@seed.opt2.test",
+            "fname": "Wellington",
+            "lname": "Schmeler",
+            "removePhotoFile": "true",
+            "siteid": "tenant-a",
+            "subtype": "Default",
+            "type": "2",
+            "userid": "6CE54D92-E22E-AA90-91B74A0E1ABE732B",
+            "usernameNoCache": "wellington.schmeler"
+          }
+        },
+        "headers": {
+          "content-type": "application/x-www-form-urlencoded"
+        },
+        "method": "POST",
+        "url": "/admin/?muraAction=cEditProfile.update"
+      },
+      "response": {
+        "domModel": {
+          "alerts": [],
+          "buttons": [
+            "",
+            "",
+            "",
+            "",
+            "Tenant A",
+            "",
+            "",
+            "Wellington Schmeler",
+            ""
+          ],
+          "controls": [
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "keywords",
+              "type": "text",
+              "value": ""
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "muraAction",
+              "type": "hidden",
+              "value": "cArch.list"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "activetab",
+              "type": "hidden",
+              "value": "1"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "siteid",
+              "type": "hidden",
+              "value": "tenant-a"
+            },
+            {
+              "disabled": false,
+              "form": 0,
+              "name": "moduleid",
+              "type": "hidden",
+              "value": "00000000000000000000000000000000000"
+            }
+          ],
+          "forms": [
+            {
+              "action": "#",
+              "id": "globalSearch",
+              "method": "get",
+              "name": "globalSearch"
+            }
+          ],
+          "headings": [
+            {
+              "level": 1,
+              "text": "Access Denied"
+            }
+          ],
+          "labels": [],
+          "links": [
+            {
+              "href": "/admin/?muraAction=carch.list&siteid=tenant-a",
+              "text": "Content"
+            },
+            {
+              "href": "/admin/?muraAction=cfilemanager.default&siteid=tenant-a",
+              "text": "File Browser"
+            },
+            {
+              "href": "/admin/",
+              "text": "Help"
+            },
+            {
+              "href": "https://www.masacms.com/documentation",
+              "text": "Documentation"
+            },
+            {
+              "href": "http://docs.cksource.com/",
+              "text": "Editor/File Manager"
+            },
+            {
+              "href": "https://www.wearenorth.eu/",
+              "text": "Professional Support"
+            },
+            {
+              "href": "https://www.masacms.com/",
+              "text": "Community Support"
+            },
+            {
+              "href": "/admin/",
+              "text": "About"
+            },
+            {
+              "href": "#",
+              "text": "Core Version 7.6.1"
+            },
+            {
+              "href": "#",
+              "text": "App Server ColdFusion (2023,0,26,331018)"
+            },
+            {
+              "href": "#",
+              "text": "DB Server Microsoft SQL Server (Microsoft SQL Server 2022 - 16.0.4305.5)"
+            },
+            {
+              "href": "#",
+              "text": "OS Version UNIX (6.12.105+)"
+            },
+            {
+              "href": "https://github.com/blueriver/MuraCMS/blob/develop/license.txt",
+              "text": "Mura CMS © 2026 blueriver Licensed under GNU General Public License Version 2.0 with exceptions"
+            },
+            {
+              "href": "https://github.com/MasaCMS/MasaCMS/blob/main/license.txt",
+              "text": "Masa CMS © 2026 We Are North Groep BV Licensed under GNU General Public License Version 2.0 with exceptions"
+            },
+            {
+              "href": "tenant-a.<origin>/",
+              "text": "Tenant A"
+            },
+            {
+              "href": "/admin/?muraAction=ceditprofile.edit",
+              "text": "Wellington Schmeler"
+            },
+            {
+              "href": "/admin/?muraAction=ceditprofile.edit",
+              "text": "Edit Profile"
+            },
+            {
+              "href": "/admin/?muraAction=clogin.logout",
+              "text": "Log out"
+            },
+            {
+              "href": "mailto:admin%40example.com",
+              "text": "administrator"
+            }
+          ],
+          "maskedText": [],
+          "tables": [],
+          "title": "Masa CMS - Message"
+        },
+        "headers": {
+          "cache-control": "no-cache, no-store, must-revalidate",
+          "content-language": "en-US",
+          "content-type": "text/html;charset=UTF-8",
+          "expires": "06 Nov 1994 08:37:34 GMT",
+          "generator": "Masa CMS 7.6.1",
+          "strict-transport-security": "max-age=1200"
+        },
+        "rawSha256": "f5aaca57870ef08346ccc233e80dfdd1c76f5fe5699ea838d3636fe33a055f15",
+        "status": 200
+      },
+      "routeKey": "admin:ceditprofile.update{photo}"
+    }
+  ],
+  "tableVersion": null
+}

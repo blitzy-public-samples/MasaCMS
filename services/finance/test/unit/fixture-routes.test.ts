@@ -1,0 +1,584 @@
+// SYNTHETIC: finance - no Masa equivalent; legacy oracle in legacy-fixtures/
+/** Finance fixture routes through `app.inject` against a throwaway `finance` schema, compared with legacy-fixtures/cfml/modules/finance.cfc. */
+import { mkdtemp, rm } from 'node:fs/promises';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { INVOCATION_HEADER, Roles, collectRouteMatrix } from '@opt2/platform/auth';
+import { cfHash } from '@opt2/platform/legacy-compat';
+import { REDACTED, createLogger, validateLogRecord } from '@opt2/platform/logging';
+import { closeGates, ensureUnitGates, openGates, registerWritePositionHeader } from '@opt2/platform/migration-kit';
+import { createService, fixedClock, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
+import { createLocalStorageAdapter, type LocalStorageAdapter } from '@opt2/platform/storage';
+import { tenantDbFromPool, type TenantDb } from '@opt2/platform/tenancy';
+import {
+  TENANT_A,
+  TENANT_B,
+  TENANT_UMBRELLA,
+  createThrowawaySchema,
+  mintServiceToken,
+  mintUserToken,
+  pgAvailable,
+  seedRegistry,
+  testVerifier,
+  type ThrowawaySchema,
+} from '@opt2/platform/testing';
+import { createFinanceRepository } from '../../src/repo/repository.js';
+import { UNITS } from '../../src/repo/tables.js';
+import { FIXTURE_PREFIX, registerFixtureRoutes } from '../../src/routes/fixture.js';
+
+const NOW = new Date(2026, 5, 30, 10, 0, 0, 0);
+const P = FIXTURE_PREFIX;
+const PREPARER = [Roles.systemUser, Roles.financePreparer];
+const APPROVER = [Roles.systemUser, Roles.financeApprover];
+const BOTH = [Roles.financePreparer, Roles.financeApprover];
+const USER_ID = '11111111-2222-3333-4444555566667777';
+const MISSING_ID = '00000000-0000-0000-0000000000000000';
+const GOOD_TOKEN = 'VALIDCSRFTOKEN';
+const CSRF = { 'x-csrf_token': GOOD_TOKEN, 'x-csrf_token_expires': '991231235959000' };
+const VALID = { title: 'Q2 travel', amount: '1250.5', period: '2026-06' };
+const FILE_BYTES = Buffer.from([0x25, 0x50, 0x44, 0x46, 0x00, 0xff, 0x0a, 0x0d]);
+const BOUNDARY = 'opt2finance';
+
+const errorBody = (method: string, code: string, message: string): string =>
+  `{"apiversion":"v1","method":"${method}","error":{"code":"${code}","message":"${message}"}}`;
+
+type Injected = Awaited<ReturnType<FastifyInstance['inject']>>;
+
+const available = await pgAvailable();
+
+describe.skipIf(!available)('finance fixture routes', () => {
+  let handle: ThrowawaySchema;
+  let stagingDb: TenantDb;
+  let storage: LocalStorageAdapter;
+  let stateDir: string;
+  let identity: http.Server;
+  let app: FastifyInstance;
+  const consumed: Array<{ sessionId: string; token: string; context: string }> = [];
+  /** HTTP status identity's consume route answers; a non-2xx one carries no verdict. */
+  let identityStatus = 200;
+  const logLines: string[] = [];
+  /** Spies on each request logger's `error`, holding the calls before the logger serializes them. */
+  const errorSpies: { mock: { calls: unknown[][] } }[] = [];
+
+  beforeAll(async () => {
+    handle = await createThrowawaySchema({ service: 'finance', migrationsDir: fileURLToPath(new URL('../../db/migrations', import.meta.url)) });
+    stagingDb = tenantDbFromPool(handle.connect('app', { max: 1 }), { schema: handle.schema });
+    await ensureUnitGates(handle.app, UNITS);
+    await seedRegistry(handle.app);
+    for (const [site, programId] of [
+      [TENANT_A, 1],
+      [TENANT_B, 2],
+    ] as const) {
+      await handle.app.withTenant(site.tenantId, (tx) =>
+        tx.query(`INSERT INTO ${handle.schema}.program_binding (tenant_id, site_id, legacy_program_id, updated_at) VALUES ($1, $2, $3, $4)`, [
+          site.tenantId,
+          site.siteId,
+          programId,
+          NOW,
+        ]),
+      );
+    }
+    stateDir = await mkdtemp(path.join(tmpdir(), 'opt2-finance-fixture-'));
+    storage = await createLocalStorageAdapter({ stateDir, hmacKey: 'finance-fixture-test-hmac-key' });
+    identity = http.createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on('data', (chunk: Buffer) => chunks.push(chunk));
+      req.on('end', () => {
+        const consume = JSON.parse(Buffer.concat(chunks).toString('utf8')) as (typeof consumed)[number];
+        consumed.push(consume);
+        res.statusCode = identityStatus;
+        res.setHeader('content-type', 'application/json');
+        res.end(identityStatus === 200 ? JSON.stringify({ valid: consume.token === GOOD_TOKEN }) : '{}');
+      });
+    });
+    await new Promise<void>((resolve) => identity.listen(0, '127.0.0.1', resolve));
+    app = await createService({
+      name: 'finance',
+      version: '1.0.0',
+      env: loadEnv(undefined, {
+        PORT: '8119',
+        OPT2_SERVICE_NAME: 'finance',
+        OPT2_ENV: 'local',
+        OPT2_JWKS_URL: 'http://127.0.0.1:9/jwks',
+        OPT2_TOKEN_ISSUER: 'opt2-local-identity',
+        OPT2_TOKEN_AUDIENCE: 'opt2-local',
+        OPT2_STATE_DIR: stateDir,
+        OPT2_SERVICE_URLS: JSON.stringify({ identity: `http://127.0.0.1:${(identity.address() as AddressInfo).port}` }),
+        TZ: 'UTC',
+      }),
+      verifierOverride: testVerifier('finance'),
+      pool: handle.app,
+      logger: createLogger({ service: 'finance', version: '1.0.0', env: 'local', destination: { write: (line: string) => void logLines.push(line) } }),
+    });
+    app.addHook('onRequest', async (request) => {
+      errorSpies.push(vi.spyOn(request.log, 'error'));
+    });
+    registerWritePositionHeader(app);
+    const clock = fixedClock(NOW);
+    const repository = createFinanceRepository({ db: handle.app, stagingDb, storage, clock });
+    await registerFixtureRoutes(app, { db: handle.app, repository, storage, clock });
+    await app.ready();
+  });
+
+  afterAll(async () => {
+    await app?.opt2.shutdown();
+    await new Promise((resolve) => identity?.close(resolve));
+    await stagingDb?.end();
+    await handle?.drop();
+    await rm(stateDir, { recursive: true, force: true });
+  });
+
+  /** Moves every finance gate to `state` through the holder compare-and-set. */
+  async function setGates(state: 'open' | 'legacy'): Promise<void> {
+    await closeGates(handle.app, { units: UNITS, holderId: 'fixture-routes-test', allowLegacy: true });
+    await openGates(handle.app, { units: UNITS, holderId: 'fixture-routes-test', state });
+  }
+
+  beforeEach(async () => {
+    consumed.length = 0;
+    identityStatus = 200;
+    await setGates('open');
+  });
+
+  /** A user token for `roles` on `site` plus the gateway's invocation credential. */
+  async function headersFor(roles: readonly string[], site: string = TENANT_A.siteId): Promise<Record<string, string>> {
+    const [token, invocation] = await Promise.all([
+      mintUserToken({ sub: USER_ID, site, roles }),
+      mintServiceToken({ caller: 'gateway', audience: 'finance' }),
+    ]);
+    return { authorization: `Bearer ${token}`, [INVOCATION_HEADER]: `Bearer ${invocation}` };
+  }
+
+  /** A JSON-body POST as `roles`, with a valid CSRF token unless `csrf` is false. */
+  async function post(url: string, roles: readonly string[], payload?: Record<string, unknown>, csrf = true): Promise<Injected> {
+    const headers = { ...(await headersFor(roles)), ...(csrf ? CSRF : {}) };
+    return app.inject({ method: 'POST', url: `${P}${url}`, headers, ...(payload === undefined ? {} : { payload }) });
+  }
+
+  /** A GET as `roles`. */
+  async function get(url: string, roles: readonly string[] = APPROVER): Promise<Injected> {
+    return app.inject({ url: `${P}${url}`, headers: await headersFor(roles) });
+  }
+
+  /** A record created by a preparer; returns its fixture row. */
+  async function createRecord(): Promise<{ record_id: string; version: number }> {
+    const res = await post('/records', PREPARER, VALID);
+    expect(res.statusCode).toBe(200);
+    return res.json().data;
+  }
+
+  /** A multipart body with one part named `field` of content type `type`. */
+  function multipart(field: string, fileName?: string, type = 'application/pdf'): Buffer {
+    const disposition = fileName === undefined ? `name="${field}"` : `name="${field}"; filename="${fileName}"`;
+    return Buffer.concat([
+      Buffer.from(`--${BOUNDARY}\r\nContent-Disposition: form-data; ${disposition}\r\nContent-Type: ${type}\r\n\r\n`),
+      fileName === undefined ? Buffer.from('not a file') : FILE_BYTES,
+      Buffer.from(`\r\n--${BOUNDARY}--\r\n`),
+    ]);
+  }
+
+  /** Uploads a multipart body to record `id` as a preparer. */
+  async function upload(id: string, body: Buffer): Promise<Injected> {
+    const headers = { ...(await headersFor(PREPARER)), ...CSRF, 'content-type': `multipart/form-data; boundary=${BOUNDARY}` };
+    return app.inject({ method: 'POST', url: `${P}/records/${id}/attachments`, headers, payload: body });
+  }
+
+  it('declares the nine contract routes with the fixture role sets on the service transport, site-checked', () => {
+    const routes = collectRouteMatrix(app).routes.filter((route) => route.url.startsWith(P));
+    expect(routes.map(({ method, url, requires, transport, siteCheck }) => [method, url.slice(P.length), requires, transport, siteCheck])).toEqual([
+      ['GET', '/records', BOTH, 'service', true],
+      ['POST', '/records', [Roles.financePreparer], 'service', true],
+      ['GET', '/records/:id', BOTH, 'service', true],
+      ['POST', '/records/:id/:action', BOTH, 'service', true],
+      ['GET', '/records/:id/attachments', BOTH, 'service', true],
+      ['POST', '/records/:id/attachments', [Roles.financePreparer], 'service', true],
+      ['GET', '/records/:id/attachments/:aid', BOTH, 'service', true],
+      ['GET', '/records/:id/versions', BOTH, 'service', true],
+      ['GET', '/rollups', BOTH, 'service', true],
+    ]);
+  });
+
+  it.each<[string, () => Promise<Injected>, number, string]>([
+    ['no credential', () => app.inject({ url: `${P}/records` }), 401, errorBody('finance.records', 'invalid_request', 'Insufficient Account Permissions')],
+    [
+      'a role-less user on a lifecycle action',
+      async () => app.inject({ method: 'POST', url: `${P}/records/${MISSING_ID}/Submit`, headers: await headersFor([Roles.member]) }),
+      403,
+      errorBody('finance.records.submit', 'invalid_request', 'Insufficient Account Permissions'),
+    ],
+    ['an approver creating a record', () => post('/records', APPROVER, VALID), 403, errorBody('finance.records', 'invalid_request', 'Insufficient Account Permissions')],
+    [
+      'a siteid other than the token site',
+      () => get(`/rollups?siteid=${TENANT_B.siteId}`),
+      403,
+      errorBody('finance.rollups', 'invalid_request', 'Insufficient Account Permissions'),
+    ],
+    [
+      'a role-less user of an unregistered site',
+      async () => app.inject({ url: `${P}/records`, headers: await headersFor([Roles.member], 'retired-site') }),
+      400,
+      errorBody('finance.records', 'invalid_request', 'Invalid parameters'),
+    ],
+  ])('answers %s in the fixture error envelope', async (_case, send, status, body) => {
+    const res = await send();
+    expect([res.statusCode, res.body]).toEqual([status, body]);
+    expect(res.headers.etag).toBe(cfHash(res.body));
+    expect(res.headers['content-type']).toBe('application/json;charset=utf-8');
+  });
+
+  it('answers a rejected user token with its invalid_token envelope and bearer challenge', async () => {
+    const invocation = (await headersFor(PREPARER))[INVOCATION_HEADER] ?? '';
+    const res = await app.inject({ url: `${P}/records`, headers: { authorization: 'Bearer not-a-token', [INVOCATION_HEADER]: invocation } });
+    expect([res.statusCode, res.json()]).toEqual([401, { apiversion: 'v1', method: 'finance.records', error: { code: 'invalid_token', message: 'Invalid Access Token' } }]);
+    expect(res.headers['www-authenticate']).toBe('Bearer error="invalid_access_token"');
+  });
+
+  it.each<[string, (id: string) => Promise<Injected>, number, string, string]>([
+    ['path: an unknown action', (id) => post(`/records/${id}/archive`, PREPARER), 404, 'finance.records.archive', 'Not Found'],
+    ['path: a POST to versions', (id) => post(`/records/${id}/versions`, PREPARER), 404, 'finance.records.versions', 'Not Found'],
+    [
+      'site: an unregistered token site',
+      async () => app.inject({ url: `${P}/records`, headers: await headersFor(PREPARER, 'retired-site') }),
+      400,
+      'finance.records',
+      'Invalid parameters',
+    ],
+    [
+      'site: a site without a program',
+      async () => app.inject({ url: `${P}/rollups`, headers: await headersFor(APPROVER, TENANT_UMBRELLA.siteId) }),
+      400,
+      'finance.rollups',
+      'Invalid parameters',
+    ],
+    ['csrf: a write without a token', (id) => post(`/records/${id}/submit`, PREPARER, undefined, false), 400, 'finance.records.submit', 'Invalid CSRF tokens'],
+    ['existence: an unknown record', () => get(`/records/${MISSING_ID}/versions`), 404, 'finance.records.versions', 'Not Found'],
+    ['existence: an unknown attachment', (id) => get(`/records/${id}/attachments/${MISSING_ID}`), 404, 'finance.records.attachments', 'Not Found'],
+    ['validation: an edit missing fields', (id) => post(`/records/${id}/edit`, PREPARER, { title: 'Only a title' }), 400, 'finance.records.edit', 'Invalid parameters'],
+    [
+      'validation: a create whose form title is only a NUL',
+      async () =>
+        app.inject({
+          method: 'POST',
+          url: `${P}/records`,
+          headers: { ...(await headersFor(PREPARER)), ...CSRF, 'content-type': 'application/x-www-form-urlencoded' },
+          payload: 'title=%00&amount=1&period=2026-06',
+        }),
+      400,
+      'finance.records',
+      'Invalid parameters',
+    ],
+    ['validation: a JSON number amount', () => post('/records', PREPARER, { ...VALID, amount: 1250.5 }), 400, 'finance.records', 'Invalid parameters'],
+    ['validation: a part that is not a file', (id) => upload(id, multipart('file')), 400, 'finance.records.attachments', 'Invalid parameters'],
+    ['validation: a zero page size', (id) => get(`/records/${id}/attachments?itemsPerPage=0`), 400, 'finance.records.attachments', 'Invalid parameters'],
+    ['validation: a page size over 1000', () => get('/records?itemsPerPage=1001'), 400, 'finance.records', 'Invalid parameters'],
+    ['validation: a decimal page index', () => get('/rollups?pageIndex=1.5'), 400, 'finance.rollups', 'Invalid parameters'],
+    ['validation: non-ASCII digits outside the bounds', () => get('/records?itemsPerPage=%D9%A1'), 400, 'finance.records', 'Invalid parameters'],
+    ['validation: non-ASCII digits inside the bounds', () => get('/records?pageIndex=1%D9%A1'), 500, 'finance.records', 'Unhandled Exception'],
+    [
+      'storage: an edited title PostgreSQL cannot store',
+      (id) => post(`/records/${id}/edit`, PREPARER, { ...VALID, title: 'Q2\u0000travel' }),
+      400,
+      'finance.records.edit',
+      'Invalid parameters',
+    ],
+    ['state: an illegal transition', (id) => post(`/records/${id}/resubmit`, PREPARER), 409, 'finance.records.resubmit', 'illegalTransition'],
+    ['state: a role that may not take the action', (id) => post(`/records/${id}/submit`, APPROVER), 403, 'finance.records.submit', 'Insufficient Account Permissions'],
+  ])('fails on %s alone, leaving the record unchanged', async (_case, send, status, method, message) => {
+    const { record_id: id } = await createRecord();
+    const res = await send(id);
+    expect([res.statusCode, res.json()]).toEqual([status, { apiversion: 'v1', method, error: { code: status === 500 ? 'server_error' : 'invalid_request', message } }]);
+    const after = (await get(`/records/${id}`)).json().data;
+    expect([after.state, after.version]).toEqual(['IN-PROGRESS', 1]);
+  });
+
+  it('logs an unhandled exception as its serialized error record, without the request parameter values', async () => {
+    const [before, spiesBefore] = [logLines.length, errorSpies.length];
+    const res = await get('/records?pageIndex=1%D9%A1&note=finance-log-probe');
+    expect([res.statusCode, res.json().error.code]).toEqual([500, 'server_error']);
+    const record = { type: 'Error', message: REDACTED, stack: expect.stringMatching(/^Error: \[REDACTED\](?:\n {4}at \S.*)+$/) };
+    const calls = errorSpies.slice(spiesBefore).flatMap((spy) => spy.mock.calls);
+    const [fields] = calls.find(([, message]) => message === 'unhandled fixture exception') ?? [];
+    expect(fields).toStrictEqual({ error: record });
+    const lines = logLines.slice(before).filter((line) => line.includes('unhandled fixture exception'));
+    expect(lines).toHaveLength(1);
+    const [line] = lines.map((text) => JSON.parse(text) as Record<string, unknown>);
+    expect(validateLogRecord(line)).toStrictEqual({ valid: true, errors: [] });
+    expect(line?.error).toStrictEqual(record);
+    for (const value of ['1\u0661', '1%D9%A1', 'finance-log-probe', 'non-ASCII']) expect(lines.join('')).not.toContain(value);
+  });
+
+  it.each<[string, (id: string) => Promise<Injected>, number, string | null]>([
+    ['a NUL title PostgreSQL cannot store', () => post('/records', PREPARER, { ...VALID, title: 'nul-probe\u0000title' }), 400, 'request rejected: 22021'],
+    ['a NUL record id, which no stored record has', () => get('/records/nul-probe%00/versions'), 404, null],
+    ['no credential', () => app.inject({ url: `${P}/records` }), 401, 'request denied: missing-credential'],
+    [
+      'no credential on a NUL title',
+      () => app.inject({ method: 'POST', url: `${P}/records`, payload: { ...VALID, title: 'nul-probe\u0000title' } }),
+      401,
+      'request denied: missing-credential',
+    ],
+    [
+      'a role-less user of an unregistered site',
+      async () => app.inject({ url: `${P}/records`, headers: await headersFor([Roles.member], 'retired-site') }),
+      400,
+      'request rejected: invalidParameters',
+    ],
+    ['a write without a CSRF token', (id) => post(`/records/${id}/submit`, PREPARER, undefined, false), 400, 'request rejected: invalidTokens'],
+    ['an edit missing fields', (id) => post(`/records/${id}/edit`, PREPARER, { title: 'Only a title' }), 400, 'request rejected: invalidParameters'],
+    ['a role that may not take the action', (id) => post(`/records/${id}/submit`, APPROVER), 403, 'request denied: forbidden'],
+    [
+      'identity unable to consume the token',
+      (id) => {
+        identityStatus = 503;
+        return post(`/records/${id}/submit`, PREPARER);
+      },
+      503,
+      'service unavailable',
+    ],
+    ['an unknown record', () => get(`/records/${MISSING_ID}`), 404, null],
+    ['an unhandled exception', () => get('/records?pageIndex=1%D9%A1'), 500, null],
+  ])('logs %s with its fixed reason, if any, ahead of the completion line, storing nothing', async (_case, send, status, warning) => {
+    const { record_id: id } = await createRecord();
+    const stored = async (): Promise<number> => (await get('/records?itemsPerPage=1000')).json().data.totalitems;
+    const total = await stored();
+    const before = logLines.length;
+    const res = await send(id);
+    const lines = logLines.slice(before).map((text) => JSON.parse(text) as Record<string, unknown>);
+    expect(res.statusCode).toBe(status);
+    expect(lines.filter(({ severity, message }) => severity === 'WARNING' || message === 'request completed').map(({ severity, message }) => [severity, message])).toStrictEqual([
+      ...(warning === null ? [] : [['WARNING', warning]]),
+      ['INFO', 'request completed'],
+    ]);
+    expect(lines.filter(({ severity }) => severity === 'ERROR')).toHaveLength(status === 500 ? 1 : 0);
+    for (const line of lines) expect(validateLogRecord(line).errors).toStrictEqual([]);
+    expect(`${JSON.stringify(lines)}${res.body}`).not.toMatch(/nul-probe|invalid byte sequence|0x00/);
+    expect(await stored()).toBe(total);
+  });
+
+  // finance.cfc's char(35) lookup matches no row for an id that is no CF UUID; one holding NUL would fail in PostgreSQL if queried.
+  const UNSTORED_IDS = ['x%00.cfm', `${MISSING_ID}%00`, '%20' + MISSING_ID, 'not-a-uuid', '0f8fad5b-d9cb-469f-a165-70867728950e'];
+  // api.cfm appends a tail that is no CF UUID to the method, lower-cased.
+  const ID_ROUTES: ReadonlyArray<readonly [string, (id: string, recordId: string) => Promise<Injected>, (id: string) => string, boolean]> = [
+    ['GET {id}', (id) => get(`/records/${id}`), () => 'finance.records', false],
+    ['GET {id}/versions', (id) => get(`/records/${id}/versions`), () => 'finance.records.versions', false],
+    ['GET {id}/attachments', (id) => get(`/records/${id}/attachments`), () => 'finance.records.attachments', false],
+    [
+      'GET {record}/attachments/{id}',
+      (id, recordId) => get(`/records/${recordId}/attachments/${id}`),
+      (id) => JSON.stringify(`finance.records.attachments.${decodeURIComponent(id).toLowerCase()}`).slice(1, -1),
+      false,
+    ],
+    ['POST {id}/submit', (id) => post(`/records/${id}/submit`, PREPARER), () => 'finance.records.submit', true],
+    ['POST {id}/attachments', (id) => upload(id, multipart('file', 'scan.pdf')), () => 'finance.records.attachments', true],
+  ];
+  it.each(ID_ROUTES.flatMap(([route, send, method, write]) => UNSTORED_IDS.map((id) => [route, id, send, method, write] as const)))(
+    'answers %s with id %s as notFound after the CSRF check, storing nothing',
+    async (_route, id, send, method, write) => {
+      const { record_id: recordId } = await createRecord();
+      consumed.length = 0;
+      const before = logLines.length;
+      const res = await send(id, recordId);
+      expect([res.statusCode, res.body]).toEqual([404, errorBody(method(id), 'invalid_request', 'Not Found')]);
+      expect(consumed.map(({ context }) => context)).toEqual(write ? [decodeURIComponent(id)] : []);
+      expect(logLines.slice(before).filter((line) => line.includes('"WARNING"') || line.includes('"ERROR"'))).toEqual([]);
+      expect((await get(`/records/${recordId}/attachments`)).json().data.totalitems).toBe(0);
+    },
+  );
+
+  // The oracle's answers to a NUL path id on every id route (EX-UNSTORABLE-TEXT-NUL): no user 401, a write without a CSRF token 400, else notFound.
+  const NUL_ID_ROUTES: ReadonlyArray<readonly ['GET' | 'POST', string, string]> = [
+    ['GET', '', 'finance.records'],
+    ['GET', '/versions', 'finance.records.versions'],
+    ['GET', '/attachments', 'finance.records.attachments'],
+    ['GET', `/attachments/${MISSING_ID}`, 'finance.records.attachments'],
+    ['POST', '/submit', 'finance.records.submit'],
+    ['POST', '/approve', 'finance.records.approve'],
+    ['POST', '/reject', 'finance.records.reject'],
+    ['POST', '/resubmit', 'finance.records.resubmit'],
+    ['POST', '/edit', 'finance.records.edit'],
+    ['POST', '/attachments', 'finance.records.attachments'],
+  ];
+  const NUL_IDS: ReadonlyArray<readonly [string, (recordId: string) => string]> = [
+    ['in an id no record has', () => 'abc%00def'],
+    ['after a stored id', (recordId) => `${recordId}%00`],
+    ['inside a stored id', (recordId) => `${recordId.slice(0, 8)}%00${recordId.slice(8)}`],
+  ];
+  it.each(NUL_ID_ROUTES.flatMap(([method, tail, envelope]) => NUL_IDS.map(([where, idOf]) => [method, tail, where, idOf, envelope] as const)))(
+    'answers %s {id}%s with a NUL %s as the oracle does, storing nothing',
+    async (method, tail, _where, idOf, envelope) => {
+      const { record_id: recordId } = await createRecord();
+      const id = idOf(recordId);
+      const url = `${P}/records/${id}${tail}?siteid=${TENANT_A.siteId}`;
+      const payload = method === 'POST' ? { payload: tail === '/edit' ? VALID : {} } : {};
+      const user = await headersFor([Roles.systemUser, ...BOTH]);
+      const answer = async (headers: Record<string, string>): Promise<[number, string]> => {
+        const res = await app.inject({ method, url, headers, ...payload });
+        return [res.statusCode, res.body];
+      };
+      consumed.length = 0;
+
+      expect(await answer({ [INVOCATION_HEADER]: user[INVOCATION_HEADER] ?? '' })).toEqual([401, errorBody(envelope, 'invalid_request', 'Insufficient Account Permissions')]);
+      if (method === 'POST') expect(await answer(user)).toEqual([400, errorBody(envelope, 'invalid_request', 'Invalid CSRF tokens')]);
+      expect(await answer({ ...user, ...(method === 'POST' ? CSRF : {}) })).toEqual([404, errorBody(envelope, 'invalid_request', 'Not Found')]);
+      expect(consumed.filter(({ token }) => token === GOOD_TOKEN).map(({ context }) => context)).toEqual(method === 'POST' ? [decodeURIComponent(id)] : []);
+      const after = (await get(`/records/${recordId}`)).json().data;
+      expect([after.state, after.version]).toEqual(['IN-PROGRESS', 1]);
+      expect((await get(`/records/${recordId}/attachments`)).json().data.totalitems).toBe(0);
+    },
+  );
+
+  it('creates, reads, edits and moves a record through its lifecycle with one version row each, rebuilding the rollup', async () => {
+    const created = await post('/records', PREPARER, VALID);
+    expect(created.json()).toMatchObject({ method: 'finance.records', data: { siteid: 'tenant-a', amount: '1250.5000', state: 'IN-PROGRESS', version: 1 } });
+    expect(created.headers['x-opt2-write-position']).toMatch(/^finance=\d+$/);
+    const id: string = created.json().data.record_id;
+
+    const read = await get(`/records/${id.toLowerCase()}%20`);
+    expect([read.statusCode, read.json().method, read.json().data]).toEqual([200, 'finance.records', created.json().data]);
+
+    const edit = await post(`/records/${id}/edit`, PREPARER, { ...VALID, title: 'Q2 travel, revised', amount: '99.99' });
+    expect(edit.json().data).toMatchObject({ title: 'Q2 travel, revised', amount: '99.9900', state: 'IN-PROGRESS', version: 2 });
+    const submit = await post(`/records/${id}/SUBMIT`, PREPARER);
+    expect([submit.statusCode, submit.json().method, submit.json().data.state]).toEqual([200, 'finance.records.submit', 'SUBMITTED']);
+    const approve = await post(`/records/${id}/approve`, APPROVER);
+    expect(approve.json().data).toMatchObject({ state: 'APPROVED', version: 4, lastupdatebyid: USER_ID, lastupdate: '2026-06-30T10:00:00' });
+
+    const versions = await get(`/records/${id}/versions?pageIndex=2&itemsPerPage=3`);
+    expect(versions.json()).toMatchObject({
+      method: 'finance.records.versions',
+      data: { startindex: 4, endindex: 4, itemsperpage: 3, totalitems: 4, totalpages: 2, pageindex: 2 },
+    });
+    expect(versions.json().data.items.map(({ version, action }: { version: number; action: string }) => [version, action])).toEqual([[4, 'approve']]);
+
+    const records = await get('/records?itemsPerPage=1000');
+    expect(records.json().data.items.find((row: { record_id: string }) => row.record_id === id)).toMatchObject({ state: 'APPROVED' });
+    const rollups = await get('/rollups');
+    expect(rollups.json().method).toBe('finance.rollups');
+    expect(rollups.json().data.items).toContainEqual({ period: '2026-06', state: 'APPROVED', record_count: 1, total_amount: '99.9900', computed_at: '2026-06-30T10:00:00' });
+  });
+
+  it('reads record fields from a form body and has identity consume each write token for the route id as sent', async () => {
+    const form = await app.inject({
+      method: 'POST',
+      url: `${P}/records`,
+      headers: { ...(await headersFor(PREPARER)), 'content-type': 'application/x-www-form-urlencoded' },
+      payload: `title=Form&amount=-1.25&period=2026-07&csrf_token=${GOOD_TOKEN}&csrf_token_expires=991231235959000`,
+    });
+    expect([form.statusCode, form.json().data.amount]).toEqual([200, '-1.2500']);
+    const id: string = form.json().data.record_id;
+    expect((await post(`/records/${id.toLowerCase()}/submit`, PREPARER)).statusCode).toBe(200);
+    expect(consumed.map(({ token, context }) => [token, context])).toEqual([
+      [GOOD_TOKEN, ''],
+      [GOOD_TOKEN, id.toLowerCase()],
+    ]);
+    expect(consumed.every(({ sessionId }) => sessionId.length > 0)).toBe(true);
+  });
+
+  describe.each([
+    ['create', 1],
+    ['edit', 2],
+  ] as const)('Masa Portcullis scan on the %s route', (mode, version) => {
+    const FIELDS = { title: 'P', amount: '1', period: '2027-03' };
+    const UNTITLED = { amount: '1', period: '2027-03' };
+
+    /** A preparer's `mode` write with `query` as its query string and `fields` as a form or JSON body. */
+    async function write(body: 'form' | 'json', query: Record<string, string>, fields: Record<string, string>): Promise<Injected> {
+      const route = mode === 'create' ? '/records' : `/records/${(await createRecord()).record_id}/edit`;
+      const search = Object.entries(query).map(([key, value]) => `${key}=${encodeURIComponent(value)}`);
+      const headers = { ...(await headersFor(PREPARER)), ...CSRF, 'content-type': body === 'form' ? 'application/x-www-form-urlencoded' : 'application/json' };
+      const payload = body === 'form' ? new URLSearchParams(fields).toString() : JSON.stringify(fields);
+      return app.inject({ method: 'POST', url: `${P}${route}${search.length === 0 ? '' : `?${search.join('&')}`}`, headers, payload });
+    }
+
+    /** The stored record row of `id` and its version row at `version`. */
+    async function storedRows(id: string): Promise<Record<string, unknown>[]> {
+      return handle.app.withTenant(TENANT_A.tenantId, async (tx) => {
+        const record = await tx.query(`SELECT title, amount::text, period FROM ${handle.schema}.record WHERE record_id = $1`, [id]);
+        const versions = await tx.query(
+          `SELECT title, amount::text, period, action FROM ${handle.schema}.record_version WHERE record_id = $1 AND version = $2`,
+          [id, version],
+        );
+        return [...record.rows, ...versions.rows];
+      });
+    }
+
+    it.each<[string, 'form' | 'json', Record<string, string>, Record<string, string>, string]>([
+      ['a space-padded form title', 'form', {}, { ...FIELDS, title: '  Padded title  ' }, 'Padded title'],
+      ['a tab- and newline-padded form title', 'form', {}, { ...FIELDS, title: '\tTabbed\n' }, 'Tabbed'],
+      ['a space-padded form period', 'form', {}, { ...FIELDS, period: ' 2027-03 ' }, 'P'],
+      ['a padded query-string title', 'form', { title: '  Query title  ' }, UNTITLED, 'Query title'],
+      ['a query-string script title and padded period', 'form', { title: '<script>alert(1)</script>', period: ' 2027-03 ' }, { amount: '1' }, '[INVALID]'],
+      ['a form script tag', 'form', {}, { ...FIELDS, title: '<script>alert(1)</script>' }, '[INVALID]'],
+      ['a form iframe tag', 'form', {}, { ...FIELDS, title: '<iframe src=x></iframe>' }, '[INVALID]'],
+      ['a form onerror attribute', 'form', {}, { ...FIELDS, title: '<img src=x onerror=alert(1)>' }, '<img src=x [INVALID]=alert(1)>'],
+      ['a form javascript: scheme', 'form', {}, { ...FIELDS, title: 'javascript:alert(1)' }, '[INVALID]alert(1)'],
+      ['a form object tag', 'form', {}, { ...FIELDS, title: '<object data=x>' }, '[INVALID]'],
+      ['a form title holding a NUL', 'form', {}, { ...FIELDS, title: 'a\u0000b' }, 'ab'],
+      ['a query-string title holding a NUL', 'form', { title: 'c\u0000d' }, UNTITLED, 'cd'],
+      ['a form period holding a NUL', 'form', {}, { ...FIELDS, period: '2027\u0000-03' }, 'P'],
+      ['a form title under a NUL-holding name', 'form', {}, { ...UNTITLED, 'ti\u0000tle': 'Named title' }, 'Named title'],
+      ['a query-string title under a NUL-holding name', 'form', { 'ti%00tle': 'Query named' }, UNTITLED, 'Query named'],
+      ['a form title of JSON text escaping a NUL', 'form', {}, { ...FIELDS, title: '{"k":"a\\u0000b"}' }, '{"k":"a\\u0000b"}'],
+      ['a padded, script-bearing JSON title', 'json', {}, { ...FIELDS, title: '  <script>x</script>  ' }, '  <script>x</script>  '],
+      ['a padded query-string title beside a JSON body', 'json', { title: '  Query title  ' }, UNTITLED, 'Query title'],
+    ])('answers and stores %s as legacy leaves it', async (_case, body, query, fields, title) => {
+      const stored = { title, amount: '1.0000', period: FIELDS.period };
+      const res = await write(body, query, fields);
+      const { data } = res.json<{ data: { record_id: string } }>();
+      expect([res.statusCode, data]).toMatchObject([200, { ...stored, version }]);
+      expect(await storedRows(data.record_id)).toStrictEqual([stored, { ...stored, action: mode }]);
+    });
+  });
+
+  it('stores the multipart file part, lists its metadata and downloads its bytes exactly', async () => {
+    const { record_id: id } = await createRecord();
+    const stored = await upload(id, multipart('FILE', 'scan é.pdf'));
+    expect(stored.json()).toMatchObject({
+      method: 'finance.records.attachments',
+      data: { record_id: id, file_name: 'scan é.pdf', content_type: 'application/pdf', size_bytes: FILE_BYTES.length },
+    });
+    const attachmentId: string = stored.json().data.attachment_id;
+
+    const listed = await get(`/records/${id}/attachments`);
+    expect(listed.json().data).toMatchObject({ items: [stored.json().data], totalitems: 1 });
+
+    const file = await get(`/records/${id}/attachments/${attachmentId.toLowerCase()}`, PREPARER);
+    expect(file.statusCode).toBe(200);
+    expect(file.rawPayload.equals(FILE_BYTES)).toBe(true);
+    expect(file.headers).toMatchObject({
+      'content-type': 'application/pdf',
+      'content-length': String(FILE_BYTES.length),
+      'content-disposition': `attachment; filename="scan _.pdf"; filename*=UTF-8''scan%20%C3%A9.pdf`,
+    });
+    expect(file.headers.etag).toBeUndefined();
+  });
+
+  it('answers a file name longer than its nvarchar(255) column with server_error, storing nothing', async () => {
+    const { record_id: id } = await createRecord();
+    const res = await upload(id, multipart('file', `${'a'.repeat(252)}.pdf`));
+    expect([res.statusCode, res.body]).toEqual([500, errorBody('finance.records.attachments', 'server_error', 'Unhandled Exception')]);
+    expect((await get(`/records/${id}/attachments`)).json().data).toMatchObject({ items: [], totalitems: 0 });
+  });
+
+  it.each<[string, () => Promise<void>]>([
+    ['the finance units are legacy-authoritative', () => setGates('legacy')],
+    [
+      'identity cannot consume its token',
+      async () => {
+        identityStatus = 503;
+      },
+    ],
+  ])('fails a write closed with a 503 in the fixture envelope while %s', async (_case, close) => {
+    const { record_id: id } = await createRecord();
+    await close();
+    const res = await post(`/records/${id}/submit`, PREPARER);
+    expect([res.statusCode, res.body]).toEqual([503, errorBody('finance.records.submit', 'server_error', 'Unhandled Exception')]);
+    expect(res.headers.etag).toBe(cfHash(res.body));
+    await setGates('open');
+    expect((await get(`/records/${id}`)).json().data.state).toBe('IN-PROGRESS');
+  });
+});

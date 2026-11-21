@@ -1,0 +1,946 @@
+{
+  "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
+  "generatedBy": "gateway/src/cutover/build-groups.ts",
+  "inputs": {
+    "inventorySha256": "7ed593981c104cf634068fd01b17361e98a53e69b4e33efabc38e7aeb9212b93",
+    "tableOwnershipSha256": "bd8bb32df7f719aff9da87a78d8fdfe985dea1535571e982c6a4cacfccf1adb6"
+  },
+  "groups": [
+    {
+      "id": "grp:communications.delivery_status",
+      "units": [
+        "communications.delivery_status",
+        "communications.message"
+      ],
+      "writeEntries": [
+        "fixture:communications/messages@post"
+      ],
+      "hasCarryWrite": true
+    },
+    {
+      "id": "grp:communications.email",
+      "units": [
+        "communications.email"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:communications.email_return_stat",
+      "units": [
+        "communications.email_return_stat"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:communications.email_stat",
+      "units": [
+        "communications.email_stat"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:communications.extend_attribute",
+      "units": [
+        "communications.extend_attribute"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:communications.extend_data",
+      "units": [
+        "communications.extend_data"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:communications.extend_rc_set",
+      "units": [
+        "communications.extend_rc_set"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:communications.extend_set",
+      "units": [
+        "communications.extend_set"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:communications.extend_subtype",
+      "units": [
+        "communications.extend_subtype"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:communications.mailing_list",
+      "units": [
+        "communications.mailing_list"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:communications.mailing_list_member",
+      "units": [
+        "communications.mailing_list_member"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:communications.message_template",
+      "units": [
+        "communications.message_template"
+      ],
+      "writeEntries": [
+        "fixture:communications/templates@post"
+      ],
+      "hasCarryWrite": true
+    },
+    {
+      "id": "grp:communications.trash",
+      "units": [
+        "communications.trash"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:content.approval_action",
+      "units": [
+        "content.approval_action",
+        "content.approval_chain",
+        "content.approval_membership",
+        "content.approval_request",
+        "content.category",
+        "content.changeset",
+        "content.changeset_category_assign",
+        "content.changeset_tag_assign",
+        "content.content",
+        "content.content_assignment",
+        "content.content_category_assign",
+        "content.content_object",
+        "content.content_related",
+        "content.content_remote_pointer",
+        "content.content_tag",
+        "content.extend_data",
+        "content.feed",
+        "content.feed_advanced_param",
+        "content.feed_item",
+        "content.file",
+        "content.file_metadata",
+        "content.filename_archive",
+        "content.source_map",
+        "content.trash",
+        "content.variation_targeting"
+      ],
+      "writeEntries": [
+        "admin:carch.approvalaction",
+        "admin:carch.list",
+        "admin:ccategory.update",
+        "admin:cchain.delete",
+        "admin:cchangesets.delete",
+        "admin:cchangesets.removeitem",
+        "admin:cchangesets.save",
+        "admin:cfeed.update",
+        "admin:cform.importform",
+        "api:category.delete",
+        "api:category.save",
+        "api:changeset.delete",
+        "api:changeset.save",
+        "api:changesetcategoryassignment.delete",
+        "api:changesetcategoryassignment.save",
+        "api:content.delete",
+        "api:contentcategoryassign.delete",
+        "api:contentcategoryassign.save",
+        "api:contentnav.delete",
+        "api:feed.delete",
+        "api:feed.save",
+        "api:file.delete",
+        "api:file.save",
+        "api:filemetadata.delete",
+        "api:filemetadata.save",
+        "api:variationtargeting.delete",
+        "api:variationtargeting.save",
+        "rest:category.delete",
+        "rest:category.save",
+        "rest:changeset.delete",
+        "rest:changeset.save",
+        "rest:changesetcategoryassignment.delete",
+        "rest:changesetcategoryassignment.save",
+        "rest:content.delete",
+        "rest:contentcategoryassign.delete",
+        "rest:contentcategoryassign.save",
+        "rest:contentnav.delete",
+        "rest:feed.delete",
+        "rest:feed.save",
+        "rest:file.delete",
+        "rest:file.save",
+        "rest:filemetadata.delete",
+        "rest:filemetadata.save",
+        "rest:variationtargeting.delete",
+        "rest:variationtargeting.save"
+      ],
+      "hasCarryWrite": true
+    },
+    {
+      "id": "grp:content.approval_assignment",
+      "units": [
+        "content.approval_assignment"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:content.changeset_rollback",
+      "units": [
+        "content.changeset_rollback"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:content.comment",
+      "units": [
+        "content.comment",
+        "content.commenter",
+        "content.content_rating",
+        "content.content_stats"
+      ],
+      "writeEntries": [
+        "admin:carch.lockfile",
+        "admin:carch.unlockfile",
+        "admin:carch.unlocknode",
+        "admin:ccomments.approve",
+        "admin:ccomments.bulkedit",
+        "admin:ccomments.delete",
+        "admin:ccomments.markasspam",
+        "admin:ccomments.purgedeletedcomments",
+        "admin:ccomments.singleedit",
+        "admin:ccomments.unapprove",
+        "api:stats.delete",
+        "api:stats.save",
+        "cfm:/core/modules/v1/rater/ajax/saverate.cfm",
+        "rest:stats.delete",
+        "rest:stats.save"
+      ],
+      "hasCarryWrite": true
+    },
+    {
+      "id": "grp:content.display_title_approval",
+      "units": [
+        "content.display_title_approval"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:content.extend_attribute",
+      "units": [
+        "content.extend_attribute"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:content.extend_rc_set",
+      "units": [
+        "content.extend_rc_set"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:content.extend_set",
+      "units": [
+        "content.extend_set"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:content.extend_subtype",
+      "units": [
+        "content.extend_subtype"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:content.form_response_packet",
+      "units": [
+        "content.form_response_packet"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:content.form_response_question",
+      "units": [
+        "content.form_response_question"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:content.public_submission_approval",
+      "units": [
+        "content.public_submission_approval"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:esignature.audit_entry",
+      "units": [
+        "esignature.audit_entry",
+        "esignature.signature",
+        "esignature.signature_request"
+      ],
+      "writeEntries": [
+        "fixture:esignature/requests/{id}/sign@post",
+        "fixture:esignature/requests@post"
+      ],
+      "hasCarryWrite": true
+    },
+    {
+      "id": "grp:esignature.extend_attribute",
+      "units": [
+        "esignature.extend_attribute"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:esignature.extend_data",
+      "units": [
+        "esignature.extend_data"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:esignature.extend_rc_set",
+      "units": [
+        "esignature.extend_rc_set"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:esignature.extend_set",
+      "units": [
+        "esignature.extend_set"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:esignature.extend_subtype",
+      "units": [
+        "esignature.extend_subtype"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:esignature.trash",
+      "units": [
+        "esignature.trash"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:finance.attachment",
+      "units": [
+        "finance.attachment"
+      ],
+      "writeEntries": [
+        "fixture:finance/records/{id}/attachments@post"
+      ],
+      "hasCarryWrite": true
+    },
+    {
+      "id": "grp:finance.extend_attribute",
+      "units": [
+        "finance.extend_attribute"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:finance.extend_data",
+      "units": [
+        "finance.extend_data"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:finance.extend_rc_set",
+      "units": [
+        "finance.extend_rc_set"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:finance.extend_set",
+      "units": [
+        "finance.extend_set"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:finance.extend_subtype",
+      "units": [
+        "finance.extend_subtype"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:finance.record",
+      "units": [
+        "finance.record",
+        "finance.record_version",
+        "finance.rollup"
+      ],
+      "writeEntries": [
+        "fixture:finance/records/{id}/approve@post",
+        "fixture:finance/records/{id}/edit@post",
+        "fixture:finance/records/{id}/reject@post",
+        "fixture:finance/records/{id}/resubmit@post",
+        "fixture:finance/records/{id}/submit@post",
+        "fixture:finance/records@post"
+      ],
+      "hasCarryWrite": true
+    },
+    {
+      "id": "grp:finance.trash",
+      "units": [
+        "finance.trash"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:identity.credential",
+      "units": [
+        "identity.credential",
+        "identity.group_account",
+        "identity.login_state",
+        "identity.membership",
+        "identity.oauth_client",
+        "identity.oauth_token",
+        "identity.redirect",
+        "identity.user_account",
+        "identity.user_address",
+        "identity.user_device",
+        "identity.user_interest",
+        "identity.user_strike",
+        "identity.user_tag",
+        "people.person",
+        "people.user_address",
+        "people.user_interest",
+        "people.user_tag"
+      ],
+      "writeEntries": [
+        "admin:clogin.login",
+        "admin:cusers.updateaddress",
+        "admin:cusers.update{type=1}",
+        "admin:cusers.update{type=2,action=add}",
+        "admin:cwebservice.delete",
+        "rest:login",
+        "rest:oauth",
+        "rest:oauth2",
+        "rest:tokeninfo"
+      ],
+      "hasCarryWrite": true
+    },
+    {
+      "id": "grp:identity.extend_attribute",
+      "units": [
+        "identity.extend_attribute"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:identity.extend_data",
+      "units": [
+        "identity.extend_data"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:identity.extend_data_user_activity",
+      "units": [
+        "identity.extend_data_user_activity"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:identity.extend_rc_set",
+      "units": [
+        "identity.extend_rc_set"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:identity.extend_set",
+      "units": [
+        "identity.extend_set"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:identity.extend_subtype",
+      "units": [
+        "identity.extend_subtype"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:identity.permission",
+      "units": [
+        "identity.permission"
+      ],
+      "writeEntries": [
+        "admin:cperm.updatemodule"
+      ],
+      "hasCarryWrite": true
+    },
+    {
+      "id": "grp:identity.remote_session",
+      "units": [
+        "identity.remote_session"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:identity.trash",
+      "units": [
+        "identity.trash"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:identity.user_favorite",
+      "units": [
+        "identity.user_favorite"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:people.extend_attribute",
+      "units": [
+        "people.extend_attribute"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:people.extend_data",
+      "units": [
+        "people.extend_data"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:people.extend_data_user_activity",
+      "units": [
+        "people.extend_data_user_activity"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:people.extend_rc_set",
+      "units": [
+        "people.extend_rc_set"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:people.extend_set",
+      "units": [
+        "people.extend_set"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:people.extend_subtype",
+      "units": [
+        "people.extend_subtype"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:people.person_archive",
+      "units": [
+        "people.person_archive",
+        "timesheets.blackout"
+      ],
+      "writeEntries": [
+        "fixture:people/persons/{id}/archive@post"
+      ],
+      "hasCarryWrite": true
+    },
+    {
+      "id": "grp:people.trash",
+      "units": [
+        "people.trash"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:people.user_favorite",
+      "units": [
+        "people.user_favorite"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:programs_sites.directory",
+      "units": [
+        "programs_sites.directory"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:programs_sites.extend_attribute",
+      "units": [
+        "programs_sites.extend_attribute"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:programs_sites.extend_data",
+      "units": [
+        "programs_sites.extend_data"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:programs_sites.extend_rc_set",
+      "units": [
+        "programs_sites.extend_rc_set"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:programs_sites.extend_set",
+      "units": [
+        "programs_sites.extend_set"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:programs_sites.extend_subtype",
+      "units": [
+        "programs_sites.extend_subtype"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:programs_sites.image_size",
+      "units": [
+        "programs_sites.image_size"
+      ],
+      "writeEntries": [
+        "admin:csettings.loadcustomimages"
+      ],
+      "hasCarryWrite": true
+    },
+    {
+      "id": "grp:programs_sites.site",
+      "units": [
+        "programs_sites.site"
+      ],
+      "writeEntries": [
+        "admin:csettings.list"
+      ],
+      "hasCarryWrite": true
+    },
+    {
+      "id": "grp:programs_sites.system_object",
+      "units": [
+        "programs_sites.system_object"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:programs_sites.trash",
+      "units": [
+        "programs_sites.trash"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:reporting.export_definition",
+      "units": [
+        "reporting.export_definition"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:reporting.export_job",
+      "units": [
+        "reporting.export_job"
+      ],
+      "writeEntries": [
+        "fixture:reporting/exports@post"
+      ],
+      "hasCarryWrite": true
+    },
+    {
+      "id": "grp:reporting.extend_attribute",
+      "units": [
+        "reporting.extend_attribute"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:reporting.extend_data",
+      "units": [
+        "reporting.extend_data"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:reporting.extend_rc_set",
+      "units": [
+        "reporting.extend_rc_set"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:reporting.extend_set",
+      "units": [
+        "reporting.extend_set"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:reporting.extend_subtype",
+      "units": [
+        "reporting.extend_subtype"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:reporting.session_tracking",
+      "units": [
+        "reporting.session_tracking"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:reporting.trash",
+      "units": [
+        "reporting.trash"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:surveys.extend_attribute",
+      "units": [
+        "surveys.extend_attribute"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:surveys.extend_data",
+      "units": [
+        "surveys.extend_data"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:surveys.extend_rc_set",
+      "units": [
+        "surveys.extend_rc_set"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:surveys.extend_set",
+      "units": [
+        "surveys.extend_set"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:surveys.extend_subtype",
+      "units": [
+        "surveys.extend_subtype"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:surveys.survey",
+      "units": [
+        "communications.scheduled_task",
+        "surveys.survey",
+        "surveys.survey_reminder",
+        "surveys.survey_schedule"
+      ],
+      "writeEntries": [
+        "fixture:surveys/surveys/{id}/launch@get",
+        "fixture:surveys/surveys/{id}/launch@post",
+        "fixture:surveys/surveys/{id}/remind@get",
+        "fixture:surveys/surveys/{id}/remind@post",
+        "fixture:surveys/surveys/{id}/schedule@post",
+        "fixture:surveys/surveys@post"
+      ],
+      "hasCarryWrite": true
+    },
+    {
+      "id": "grp:surveys.survey_response",
+      "units": [
+        "surveys.survey_response"
+      ],
+      "writeEntries": [
+        "fixture:surveys/surveys/{id}/responses@post"
+      ],
+      "hasCarryWrite": true
+    },
+    {
+      "id": "grp:surveys.survey_target",
+      "units": [
+        "surveys.survey_target"
+      ],
+      "writeEntries": [
+        "fixture:surveys/surveys/{id}/targets/bulk@post"
+      ],
+      "hasCarryWrite": true
+    },
+    {
+      "id": "grp:surveys.trash",
+      "units": [
+        "surveys.trash"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:timesheets.approval_action",
+      "units": [
+        "timesheets.approval_action",
+        "timesheets.timesheet_day"
+      ],
+      "writeEntries": [
+        "fixture:timesheets/days/{id}/primary-approve@post",
+        "fixture:timesheets/days/{id}/resubmit@post",
+        "fixture:timesheets/days/{id}/return@post",
+        "fixture:timesheets/days/{id}/secondary-approve@post",
+        "fixture:timesheets/days/{id}/submit@post"
+      ],
+      "hasCarryWrite": true
+    },
+    {
+      "id": "grp:timesheets.extend_attribute",
+      "units": [
+        "timesheets.extend_attribute"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:timesheets.extend_data",
+      "units": [
+        "timesheets.extend_data"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:timesheets.extend_rc_set",
+      "units": [
+        "timesheets.extend_rc_set"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:timesheets.extend_set",
+      "units": [
+        "timesheets.extend_set"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:timesheets.extend_subtype",
+      "units": [
+        "timesheets.extend_subtype"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:timesheets.timesheet",
+      "units": [
+        "timesheets.timesheet"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    },
+    {
+      "id": "grp:timesheets.trash",
+      "units": [
+        "timesheets.trash"
+      ],
+      "writeEntries": [],
+      "hasCarryWrite": false
+    }
+  ]
+}

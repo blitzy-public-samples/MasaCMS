@@ -1,0 +1,12 @@
+<?xml version="1.0" ?>
+		<rss version="0.92"
+			xmlns:dc="http://purl.org/dc/elements/1.1/">
+			<channel>
+				<title>Empty 092</title>
+				<link>http://localhost:21080</link>
+				<description></description>
+				<webMaster>admin@example.com</webMaster>
+				<language>en-us</language>
+			
+			</channel>
+		</rss> 

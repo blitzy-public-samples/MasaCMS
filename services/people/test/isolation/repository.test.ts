@@ -1,0 +1,1512 @@
+/** People repository against a throwaway `people` schema: legacy DAO rules, orderings, gates, changelog rows and the archive and roster guards. */
+import { fileURLToPath } from 'node:url';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import {
+  RepositoryError,
+  UnitNotAuthoritativeError,
+  closeGates,
+  ensureUnitGates,
+  openGates,
+  type RepositoryRow,
+} from '@opt2/platform/migration-kit';
+import { LegacyServiceUnavailableError, cfUuid } from '@opt2/platform/legacy-compat';
+import type { TenantTx } from '@opt2/platform/tenancy';
+import { TENANT_A, TENANT_B, TENANT_UMBRELLA, createThrowawaySchema, fixedClock, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
+import {
+  DuplicateArchiveError,
+  LegacyStorageError,
+  RosterLockTimeoutError,
+  RosterOperationClaimedError,
+  RosterOperationOpenError,
+  createPeopleRepository,
+  lastUpdateInfo,
+  type AddressInput,
+  type ExtendAttributeFilter,
+  type ExtendDataValues,
+  type HaltedRosterCursor,
+  type PeopleRepository,
+  type PersonArchiveInput,
+  type PersonCursor,
+  type PersonInput,
+  type PersonQuery,
+  type PersonUpdate,
+  type RosterLockMode,
+  type RosterOperationClaim,
+  type RosterOperationCursor,
+  type RosterOperationOwner,
+  type TrashInput,
+} from '../../src/repo/repository.js';
+import { FAVORITE, FINISH_PENDING_ERROR, PEOPLE_UNITS, PERSON, type PersonRow, type RosterOperationRow } from '../../src/repo/tables.js';
+
+const NOW = new Date(2026, 5, 30, 10, 0, 0, 0);
+const LATER = new Date(2026, 5, 30, 11, 0, 0, 0);
+const CF_UUID = /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16}$/;
+
+const available = await pgAvailable();
+
+describe.skipIf(!available)('people repository against PostgreSQL', () => {
+  let handle: ThrowawaySchema;
+  let repo: PeopleRepository;
+
+  beforeAll(async () => {
+    handle = await createThrowawaySchema({ service: 'people', migrationsDir: fileURLToPath(new URL('../../db/migrations', import.meta.url)) });
+    await ensureUnitGates(handle.app, PEOPLE_UNITS);
+  });
+
+  afterAll(async () => {
+    await handle?.drop();
+  });
+
+  beforeEach(async () => {
+    await setGates('open');
+    repo = createPeopleRepository({ clock: fixedClock(NOW), schema: handle.schema });
+  });
+
+  async function setGates(state: 'open' | 'legacy'): Promise<void> {
+    await closeGates(handle.app, { units: PEOPLE_UNITS, holderId: 'repository-test', allowLegacy: true });
+    await openGates(handle.app, { units: PEOPLE_UNITS, holderId: 'repository-test', state });
+  }
+
+  function inTenant<T>(fn: (tx: TenantTx) => Promise<T>, tenant = TENANT_A.tenantId): Promise<T> {
+    return handle.app.withTenant(tenant, fn);
+  }
+
+  function rows<T = RepositoryRow>(sql: string, params: unknown[] = [], tenant = TENANT_A.tenantId): Promise<T[]> {
+    return inTenant(async (tx) => (await tx.query(sql.replaceAll('<s>', handle.schema), params)).rows as T[], tenant);
+  }
+
+  /** Changelog rows of `table` whose key or row image holds `id`. */
+  function changelog(table: string, id: string): Promise<{ op: string; columns: string[]; operation_id: string | null }[]> {
+    const sql = 'SELECT op, columns, operation_id FROM <s>.changelog WHERE "table" = $1 AND (key LIKE $2 OR coalesce(after, before) LIKE $2) ORDER BY seq';
+    return rows(sql, [table, `%${id}%`]);
+  }
+
+  /** Rows of the transaction tenant (`$1`) that make a tenant-only index condition unselective, so plans pick the most specific index. */
+  const FILLERS: Readonly<Record<string, string>> = {
+    person: "INSERT INTO <s>.person (tenant_id, userid) SELECT $1, 'FILL-' || g FROM generate_series(1, 3000) AS g",
+    user_address: "INSERT INTO <s>.user_address (tenant_id, addressid, userid) SELECT $1, 'FILL-' || g, 'FILL-' || g FROM generate_series(1, 3000) AS g",
+    user_tag: "INSERT INTO <s>.user_tag (tenant_id, tagid, userid) SELECT $1, 1000000000 + g, 'FILL-' || g FROM generate_series(1, 3000) AS g",
+    user_interest: "INSERT INTO <s>.user_interest (tenant_id, userid, categoryid) SELECT $1, 'FILL-' || g, 'FILL-' || g FROM generate_series(1, 3000) AS g",
+    user_favorite:
+      "INSERT INTO <s>.user_favorite (tenant_id, favoriteid, userid, favorite, type, datecreated) SELECT $1, 'FILL-' || g, 'FILL-' || g, 'c', 'Page', now()" +
+      ' FROM generate_series(1, 3000) AS g',
+    extend_data_user_activity:
+      "INSERT INTO <s>.extend_data_user_activity (tenant_id, dataid, baseid, attributeid) SELECT $1, 1000000000 + g, 'FILL-' || g, g FROM generate_series(1, 3000) AS g",
+    extend_set: "INSERT INTO <s>.extend_set (tenant_id, extendsetid, subtypeid) SELECT $1, 'FILL-' || g, 'FILL-' || g FROM generate_series(1, 3000) AS g",
+    extend_attribute: "INSERT INTO <s>.extend_attribute (tenant_id, attributeid, extendsetid) SELECT $1, 1000000000 + g, 'FILL-' || g FROM generate_series(1, 3000) AS g",
+    trash:
+      'INSERT INTO <s>.trash (tenant_id, objectid, parentid, siteid, objectlabel, objectclass, objecttype, objectsubtype, deletedby)' +
+      " SELECT $1, 'FILL-' || g, 'P', 's', 'l', 'c', 't', 's', 'd' FROM generate_series(1, 3000) AS g",
+    person_archive:
+      'INSERT INTO <s>.person_archive (tenant_id, archive_id, person_id, siteid, effective_from, archived_at)' +
+      " SELECT $1, 'FILL-' || g, 'FILL-' || g, 's', now(), now() FROM generate_series(1, 3000) AS g",
+    group_name: "INSERT INTO <s>.group_name (tenant_id, group_id, aggregate_version) SELECT $1, 'FILL-' || g, 1 FROM generate_series(1, 3000) AS g",
+    person_tombstone: "INSERT INTO <s>.person_tombstone (tenant_id, userid, row_version) SELECT $1, 'FILL-' || g, 1 FROM generate_series(1, 3000) AS g",
+    roster_operation:
+      'INSERT INTO <s>.roster_operation (tenant_id, operation_id, kind, user_id, payload, state, started_at, updated_at)' +
+      " SELECT $1, 'FILL-' || g, 'admin-update', 'FILL-' || g, '{}', 'done', now(), now() FROM generate_series(1, 3000) AS g",
+  };
+
+  /** Every node of an `EXPLAIN (FORMAT JSON)` result as `planOf` returns it. */
+  function planNodes(plan: string): Record<string, unknown>[] {
+    const walk = (node: Record<string, unknown>): Record<string, unknown>[] => [node, ...((node.Plans ?? []) as Record<string, unknown>[]).flatMap(walk)];
+    return (JSON.parse(plan) as { 'QUERY PLAN': { Plan: Record<string, unknown> }[] }[]).flatMap((row) => row['QUERY PLAN'].flatMap((entry) => walk(entry.Plan)));
+  }
+
+  /** Runs `call` on `tx` and returns the statements it issued, with their parameters. */
+  async function issuedBy(tx: TenantTx, call: (tx: TenantTx) => Promise<unknown>): Promise<[string, unknown[]][]> {
+    const issued: [string, unknown[]][] = [];
+    const recording: TenantTx = {
+      ...tx,
+      query(text, values) {
+        issued.push([text as string, values ?? []]);
+        return tx.query(text, values);
+      },
+    };
+    await call(recording);
+    return issued;
+  }
+
+  /** The JSON plan of the first statement on `table` that `call` issues, with sequential scans off, in tenant A over filler rows or in `analyzedTenant` over its committed ones; nothing persists. */
+  function planOf(call: (tx: TenantTx) => Promise<unknown>, table: string, analyzedTenant?: string): Promise<string> {
+    return inTenant(async (tx) => {
+      const statement = (await issuedBy(tx, call)).find(([sql]) => sql.includes(`"${handle.schema}"."${table}"`));
+      if (statement === undefined) throw new Error(`no statement reads ${table}`);
+      await tx.query('SAVEPOINT plan');
+      if (analyzedTenant === undefined) await tx.query((FILLERS[table] ?? '').replaceAll('<s>', handle.schema), [tx.tenantId]);
+      await tx.query('SET LOCAL enable_seqscan = off');
+      const plan = JSON.stringify((await tx.query(`EXPLAIN (FORMAT JSON) ${statement[0]}`, statement[1])).rows);
+      await tx.query('ROLLBACK TO SAVEPOINT plan');
+      return plan;
+    }, analyzedTenant);
+  }
+
+  function personInput(overrides: Partial<PersonInput> = {}): PersonInput {
+    return {
+      userid: cfUuid(),
+      groupname: '',
+      fname: 'Pat',
+      lname: 'Lee',
+      email: 'pat@example.com',
+      company: '',
+      jobtitle: '',
+      mobilephone: '',
+      website: '',
+      subtype: 'Default',
+      contactform: '',
+      lastupdateby: 'Ada Admin',
+      lastupdatebyid: 'ACTOR',
+      siteid: 'tenant-a',
+      subscribe: 1,
+      notes: '',
+      description: '',
+      interests: '',
+      keepprivate: 0,
+      photofileid: '',
+      imname: '',
+      imservice: '',
+      tags: '',
+      ...overrides,
+    };
+  }
+
+  async function addPerson(overrides: Partial<PersonInput> = {}, tenant = TENANT_A.tenantId): Promise<PersonRow> {
+    return inTenant((tx) => repo.insertPerson(tx, personInput(overrides)), tenant);
+  }
+
+  /** `tx` with the text of every statement it runs appended to `statements`. */
+  function recorded(tx: TenantTx, statements: string[]): TenantTx {
+    const query = (...args: Parameters<TenantTx['query']>): ReturnType<TenantTx['query']> => {
+      statements.push(typeof args[0] === 'string' ? args[0] : args[0].text);
+      return tx.query(...args);
+    };
+    return { ...tx, query: query as TenantTx['query'] };
+  }
+
+  /** Runs `write` in a transaction that commits past its error, expecting the LegacyStorageError of `table`.`column`. */
+  async function rejectsStorage(write: (tx: TenantTx) => Promise<unknown>, table: string, column: string, violation: 'width' | 'range'): Promise<void> {
+    const outcome = await inTenant((tx) => write(tx).then(() => undefined, (err: unknown) => err));
+    expect(outcome).toBeInstanceOf(LegacyStorageError);
+    expect(outcome).toMatchObject({ table, column, violation });
+  }
+
+  describe('persons', () => {
+    it('inserts with the DAO NULL rule, both timestamps now and row_version 1', async () => {
+      const stored = await addPerson({ userid: 'short-id', company: 'Acme' });
+      expect(stored).toMatchObject({ userid: 'short-id'.padEnd(35), company: 'Acme', groupname: null, notes: null, ext: null, subscribe: 1 });
+      expect([stored.created, stored.lastupdate, stored.row_version]).toEqual([NOW, NOW, '1']);
+      expect(await changelog('person', 'short-id')).toEqual([expect.objectContaining({ op: 'insert' })]);
+    });
+
+    it.each([
+      ['one past its tombstone', '7', '8'],
+      ['at 1 without a tombstone', null, '1'],
+    ] as const)('inserts a person %s', async (_label, tombstone, expected) => {
+      const userid = cfUuid();
+      if (tombstone !== null) await inTenant((tx) => repo.recordPersonTombstone(tx, userid, tombstone));
+      expect(await inTenant((tx) => repo.personTombstoneVersion(tx, userid))).toBe(tombstone);
+      expect(await inTenant((tx) => repo.personTombstoneVersion(tx, userid), TENANT_B.tenantId)).toBeNull();
+      expect((await addPerson({ userid })).row_version).toBe(expected);
+    });
+
+    it('updates the DAO columns, keeps created and ext, trims siteid and adds 1 to row_version in one changelog row', async () => {
+      const stored = await addPerson();
+      repo = createPeopleRepository({ clock: fixedClock(LATER), schema: handle.schema });
+      const { userid: _userid, ...update } = personInput({ fname: 'Patricia', siteid: '  ', notes: 'n' });
+      const updated = await inTenant((tx) => repo.updatePerson(tx, stored.userid, update, { operationId: 'OP-1' }));
+      expect(updated).toMatchObject({ fname: 'Patricia', siteid: '', notes: 'n', created: NOW, lastupdate: LATER, row_version: '2', ext: null });
+      const log = await changelog('person', stored.userid);
+      expect(log).toHaveLength(2);
+      expect(log[1]).toMatchObject({ op: 'update', operation_id: 'OP-1' });
+      expect(log[1]?.columns).toEqual(expect.arrayContaining(['fname', 'siteid', 'notes', 'lastupdate', 'row_version']));
+      expect(await inTenant((tx) => repo.updatePerson(tx, cfUuid(), update))).toBeNull();
+    });
+
+    it.each([
+      ['rounds .875 up', 875, 877],
+      ['rounds .412 up', 412, 413],
+      ['rounds .001 down', 1, 0],
+      ['carries .999 into the next second', 999, 1000],
+    ])('stamps created and lastupdate at datetime precision: %s', async (_label, clockMs, storedMs) => {
+      const at = (base: Date, ms: number): Date => new Date(base.getTime() + ms);
+      repo = createPeopleRepository({ clock: fixedClock(at(NOW, clockMs)), schema: handle.schema });
+      const stored = await addPerson();
+      expect([stored.created, stored.lastupdate]).toEqual([at(NOW, storedMs), at(NOW, storedMs)]);
+      repo = createPeopleRepository({ clock: fixedClock(at(LATER, clockMs)), schema: handle.schema });
+      const { userid: _userid, ...update } = personInput();
+      expect(await inTenant((tx) => repo.updatePerson(tx, stored.userid, update))).toMatchObject({ created: at(NOW, storedMs), lastupdate: at(LATER, storedMs) });
+      expect(await inTenant((tx) => repo.findPerson(tx, stored.userid))).toMatchObject({ created: at(NOW, storedMs), lastupdate: at(LATER, storedMs) });
+    });
+
+    it.each<[string, Partial<PersonInput>, string, 'width' | 'range']>([
+      ['fname of 51 characters', { fname: 'x'.repeat(51) }, 'fname', 'width'],
+      ['keepprivate -1', { keepprivate: -1 }, 'keepprivate', 'range'],
+      ['keepprivate 256', { keepprivate: 256 }, 'keepprivate', 'range'],
+    ])('rejects %s on insert and update, writing nothing', async (_label, values, column, violation) => {
+      const userid = cfUuid();
+      await rejectsStorage((tx) => repo.insertPerson(tx, personInput({ userid, ...values })), 'person', column, violation);
+      expect(await inTenant((tx) => repo.findPerson(tx, userid))).toBeNull();
+      const stored = await addPerson();
+      const update: PersonUpdate = personInput(values);
+      await rejectsStorage((tx) => repo.updatePerson(tx, stored.userid, update), 'person', column, violation);
+      await rejectsStorage((tx) => repo.updatePerson(tx, cfUuid(), update), 'person', column, violation);
+      expect(await inTenant((tx) => repo.findPerson(tx, stored.userid))).toEqual(stored);
+      expect(await changelog('person', stored.userid)).toHaveLength(1);
+    });
+
+    it.each([0, 255])('stores keepprivate %i', async (keepprivate) => {
+      expect((await addPerson({ keepprivate })).keepprivate).toBe(keepprivate);
+    });
+
+    it('stores a value beyond its width by trailing spaces only cut to the width', async () => {
+      const stored = await addPerson({ company: `${'c'.repeat(50)}   `, email: `${'e'.repeat(255)} ` });
+      expect([stored.company, stored.email]).toEqual(['c'.repeat(50), 'e'.repeat(255)]);
+    });
+
+    // Oracle readback of tusers/tuseraddresses/tuserstags after cUsers.update Add: each UTF-16 code unit outside
+    // Windows-1252 is '?', with no best fit, U+0081 and U+008D included.
+    it('stores person, address and tag text in code page 1252 as legacy stores it', async () => {
+      const stored = await addPerson({ fname: 'CP\u00e9\u20ac\u2013\u0100\u0142\u0155\u0081\u008d\u00a0e\u0301\u65e5\u{1F600}', company: '\u00c9moji \u{1F600} Co \u2713' });
+      expect([stored.fname, stored.company]).toEqual(['CP\u00e9\u20ac\u2013?????\u00a0e????', '\u00c9moji ?? Co ?']);
+      const address = await inTenant((tx) => repo.insertAddress(tx, { addressid: cfUuid(), userid: stored.userid, siteid: 'tenant-a', city: 'Z\u00fcrich \u65e5\u672c \u2713' }));
+      expect(address.city).toBe('Z\u00fcrich ?? ?');
+      const tags = await inTenant((tx) => repo.replaceTags(tx, { userId: stored.userid, siteId: 'tenant-a', tags: '\u65e5\u672c,caf\u00e9' }));
+      expect(tags.map((row) => row.tag)).toEqual(['??', 'caf\u00e9']);
+      expect(await inTenant((tx) => repo.findPerson(tx, stored.userid))).toMatchObject({ fname: stored.fname, company: stored.company });
+    });
+
+    it('finds persons in input order, omitting missing ids and repeats', async () => {
+      const [first, second] = [await addPerson(), await addPerson()];
+      const found = await inTenant((tx) => repo.findPersons(tx, [second.userid, cfUuid(), first.userid, second.userid]));
+      expect(found.map((row) => row.userid)).toEqual([second.userid, first.userid]);
+      expect(await inTenant((tx) => repo.findPersons(tx, []))).toEqual([]);
+      expect(await inTenant((tx) => repo.findPerson(tx, first.userid))).toMatchObject({ userid: first.userid });
+      expect(await inTenant((tx) => repo.findPerson(tx, first.userid), TENANT_B.tenantId)).toBeNull();
+    });
+
+    it('lists a site by last then first name, case-insensitively with NULLs first', async () => {
+      const siteid = `order-${cfUuid()}`;
+      const names: [string, string][] = [['', 'Zed'], ['beta', 'b'], ['Alpha', 'z'], ['alpha', 'A']];
+      const ids: string[] = [];
+      for (const [lname, fname] of names) ids.push((await addPerson({ siteid, lname, fname })).userid);
+      const listed = await inTenant((tx) => repo.listPersonsForSite(tx, siteid));
+      expect(listed.map((row) => [row.lname, row.fname])).toEqual([[null, 'Zed'], ['alpha', 'A'], ['Alpha', 'z'], ['beta', 'b']]);
+      const only = await inTenant((tx) => repo.listPersonsForSite(tx, siteid, { userIds: [ids[1] as string] }));
+      expect(only.map((row) => row.lname)).toEqual(['beta']);
+    });
+
+    describe('planned over analyzed statistics', () => {
+      // Its own schema, so the statistics hold only these 3000 persons of one site, stored in two spellings.
+      const site = 'PLAN-site ';
+      let planned: ThrowawaySchema;
+      let planRepo: PeopleRepository;
+
+      beforeAll(async () => {
+        planned = await createThrowawaySchema({ service: 'people', migrationsDir: fileURLToPath(new URL('../../db/migrations', import.meta.url)) });
+        await ensureUnitGates(planned.app, PEOPLE_UNITS);
+        planRepo = createPeopleRepository({ clock: fixedClock(NOW), schema: planned.schema });
+        await planned.app.withTenant(TENANT_A.tenantId, (tx) =>
+          tx.query(
+            `INSERT INTO "${planned.schema}".person (tenant_id, userid, siteid, lname, fname)` +
+              " SELECT $1::uuid, upper(left(md5(g::text), 32)), CASE WHEN g % 10 = 0 THEN 'Plan-Site  ' ELSE 'plan-site' END," +
+              " CASE WHEN g % 50 = 0 THEN NULL ELSE 'Name ' || (g % 37) END, 'f' || (g % 5) FROM generate_series(1, 3000) AS g",
+            [TENANT_A.tenantId],
+          ),
+        );
+        // Only the table owner may ANALYZE.
+        const client = await planned.migratorPool.connect();
+        try {
+          await client.query('BEGIN');
+          await client.query(`SET LOCAL ROLE "${planned.roles.owner}"`);
+          await client.query(`ANALYZE "${planned.schema}".person`);
+          await client.query('COMMIT');
+        } finally {
+          client.release();
+        }
+      });
+
+      afterAll(async () => {
+        await planned?.drop();
+      });
+
+      /** The JSON plan of the last statement on person that `call` issues, with every planner method enabled. */
+      function analyzedPlan(call: (tx: TenantTx) => Promise<unknown>): Promise<string> {
+        return planned.app.withTenant(TENANT_A.tenantId, async (tx) => {
+          const statement = (await issuedBy(tx, call)).findLast(([sql]) => sql.includes(`"${planned.schema}"."person"`));
+          if (statement === undefined) throw new Error('no statement reads person');
+          return JSON.stringify((await tx.query(`EXPLAIN (FORMAT JSON) ${statement[0]}`, statement[1])).rows);
+        });
+      }
+
+      it.each<[string, (tx: TenantTx) => Promise<unknown>]>([
+        ['the first page of a site', (tx) => planRepo.pagePersonsForSite(tx, site)],
+        ['the next page of a site', async (tx) => planRepo.pagePersonsForSite(tx, site, { after: (await planRepo.pagePersonsForSite(tx, site)).next })],
+        ['a page of a site list', (tx) => planRepo.pageQueryPersons(tx, { siteIds: ['other-site', site] })],
+      ])('reads %s in the order of person_tenant_name_order_idx without sorting', async (_label, call) => {
+        const nodes = planNodes(await analyzedPlan(call));
+        expect(nodes.find((node) => node['Index Name'] === 'person_tenant_name_order_idx')).toMatchObject({
+          'Node Type': 'Index Scan',
+          'Index Cond': expect.stringContaining('tenant_id = '),
+          Filter: expect.stringContaining('(siteid)::bpchar = '),
+        });
+        expect(nodes.filter((node) => String(node['Node Type']).includes('Sort'))).toEqual([]);
+      });
+
+      it('lists every person of the site under another spelling', async () => {
+        expect(await planned.app.withTenant(TENANT_A.tenantId, (tx) => planRepo.listPersonsForSite(tx, site))).toHaveLength(3000);
+      });
+    });
+
+    it('searches the person columns as getSearch does', async () => {
+      const siteId = `search-${cfUuid()}`;
+      const a = await addPerson({ siteid: siteId, lname: 'Smith', company: 'Back\\Slash' });
+      const b = await addPerson({ siteid: siteId, lname: 'Jones', jobtitle: 'Smithy' });
+      const c = await addPerson({ siteid: siteId, lname: null, email: 'other@example.com' });
+      const search = (term: string, extra: object = {}): Promise<string[]> =>
+        inTenant(async (tx) => (await repo.searchPersons(tx, { siteId, term, ...extra })).map((row) => row.userid));
+      expect(await search('')).toEqual([]);
+      expect(await search('SMITH')).toEqual([b.userid, a.userid]);
+      expect(await search('k\\s')).toEqual([a.userid]);
+      expect(await search('j_nes')).toEqual([b.userid]);
+      expect(await search('nomatch', { orUserIds: [c.userid] })).toEqual([c.userid]);
+      expect(await search('smith', { restrictUserIds: [a.userid] })).toEqual([a.userid]);
+      expect(await search('example', { limit: 1 })).toEqual([c.userid]);
+    });
+
+    describe('queryPersons', () => {
+      const siteId = `query-${cfUuid()}`;
+      let people: Record<string, PersonRow>;
+
+      beforeAll(async () => {
+        repo = createPeopleRepository({ clock: fixedClock(NOW), schema: handle.schema });
+        await setGates('open');
+        people = {
+          ann: await addPerson({ siteid: siteId, fname: 'Ann', lname: 'Able', company: 'Acme', subscribe: 0 }),
+          bob: await addPerson({ siteid: siteId, fname: 'Bob', lname: 'baker', company: 'Bolt ', subscribe: 1 }),
+          cy: await addPerson({ siteid: siteId, fname: 'Cy', lname: 'Cole', company: '', subscribe: 2 }),
+        };
+      });
+
+      it.each<[string, PersonQuery, string[]]>([
+        ['eq ignores case and trailing spaces', { conditions: [{ column: 'company', op: 'eq', value: 'BOLT' }] }, ['bob']],
+        ['neq skips NULL', { conditions: [{ column: 'company', op: 'neq', value: 'acme' }] }, ['bob']],
+        ['like', { conditions: [{ column: 'lname', op: 'like', value: 'OL' }] }, ['cy']],
+        ['begins', { conditions: [{ column: 'fname', op: 'begins', value: 'b' }] }, ['bob']],
+        ['gt on a number', { conditions: [{ column: 'subscribe', op: 'gt', value: 0 }] }, ['bob', 'cy']],
+        ['gte on text', { conditions: [{ column: 'lname', op: 'gte', value: 'B' }] }, ['bob', 'cy']],
+        ['lt', { conditions: [{ column: 'subscribe', op: 'lt', value: 1 }] }, ['ann']],
+        ['lte', { conditions: [{ column: 'subscribe', op: 'lte', value: 1 }] }, ['ann', 'bob']],
+        ['in on text', { conditions: [{ column: 'fname', op: 'in', value: ['ANN', 'cy'] }] }, ['ann', 'cy']],
+        ['in on a number', { conditions: [{ column: 'subscribe', op: 'in', value: 2 }] }, ['cy']],
+        ['null', { conditions: [{ column: 'company', op: 'null' }] }, ['cy']],
+        ['notnull', { conditions: [{ column: 'company', op: 'notnull' }] }, ['ann', 'bob']],
+        ['or', { combine: 'or', conditions: [{ column: 'fname', op: 'eq', value: 'ann' }, { column: 'fname', op: 'eq', value: 'cy' }] }, ['ann', 'cy']],
+        ['order and limit', { orderBy: [{ column: 'subscribe', direction: 'desc' }], limit: 2 }, ['cy', 'bob']],
+      ])('%s', async (_label, query, expected) => {
+        const found = await inTenant((tx) => repo.queryPersons(tx, { siteIds: [siteId], ...query }));
+        const names = Object.fromEntries(Object.entries(people).map(([key, row]) => [row.userid, key]));
+        expect(found.map((row) => names[row.userid])).toEqual(expected);
+      });
+
+      it('restricts to user ids and rejects an unknown column', async () => {
+        const found = await inTenant((tx) => repo.queryPersons(tx, { userIds: [people.bob?.userid as string] }));
+        expect(found.map((row) => row.fname)).toEqual(['Bob']);
+        const bad = { conditions: [{ column: 'username; --', op: 'eq', value: 'x' }] } as unknown as PersonQuery;
+        await expect(inTenant((tx) => repo.queryPersons(tx, bad))).rejects.toBeInstanceOf(RepositoryError);
+      });
+    });
+
+    it('refuses writes to a legacy-authoritative unit and hides other tenants', async () => {
+      const stored = await addPerson({}, TENANT_B.tenantId);
+      expect(await inTenant((tx) => repo.listPersonsForSite(tx, 'tenant-a'))).not.toContainEqual(expect.objectContaining({ userid: stored.userid }));
+      await setGates('legacy');
+      await expect(addPerson()).rejects.toBeInstanceOf(UnitNotAuthoritativeError);
+    });
+
+    it('stores the empty lastUpdateInfo label of a nameless person as NULL', async () => {
+      const userid = cfUuid();
+      const stored = await addPerson({ userid, fname: '', lname: '', ...lastUpdateInfo(undefined, { userid, fname: '', lname: '' }) });
+      expect(stored).toMatchObject({ fname: null, lname: null, lastupdateby: null, lastupdatebyid: userid });
+    });
+  });
+
+  describe('addresses', () => {
+    it('inserts with addressBean defaults, updates without isprimary and lists primary first', async () => {
+      const userid = cfUuid();
+      const first = await inTenant((tx) => repo.insertAddress(tx, { userid, siteid: '', city: 'Oslo', isprimary: null }));
+      expect(first.addressid).toMatch(CF_UUID);
+      expect(first).toMatchObject({ siteid: null, city: 'Oslo', zip: null, isprimary: null, longitude: 0, latitude: 0 });
+      const second = await inTenant((tx) => repo.insertAddress(tx, { userid, addressid: 'A2', isprimary: 1 }));
+      expect(second.isprimary).toBe(1);
+      const updated = await inTenant((tx) => repo.updateAddress(tx, first.addressid, { userid, siteid: ' tenant-a ', city: '', zip: '0150' }));
+      expect(updated).toMatchObject({ siteid: 'tenant-a', city: null, zip: '0150', isprimary: null, userid });
+      expect((await inTenant((tx) => repo.listAddresses(tx, userid))).map((row) => row.addressid)).toEqual([second.addressid, first.addressid]);
+      expect(await inTenant((tx) => repo.findAddress(tx, second.addressid))).toMatchObject({ isprimary: 1 });
+      expect(await inTenant((tx) => repo.updateAddress(tx, cfUuid(), {}))).toBeNull();
+    });
+
+    // SQL Server's Sort of `order by isPrimary desc` over the addressID-clustered rows is not stable.
+    it.each([
+      ['one primary rotates the rows after it to the front', [0, 1, 0, 0], [1, 2, 3, 0]],
+      ['the primary first keeps addressID order', [1, 0, 0], [0, 1, 2]],
+      ['a right run of more bits starts the merge', [1, 0, 1, 1, 1, 1], [2, 3, 4, 5, 0, 1]],
+    ])('lists addresses as SQL Server orders them: %s', async (_label, primaries, order) => {
+      const userid = cfUuid();
+      const ids = primaries.map((_, index) => `${userid.slice(0, 23)}${String(index).padStart(12, '0')}`);
+      // Inserted in reverse, so the stored order cannot stand in for addressID order.
+      for (const index of [...ids.keys()].reverse()) {
+        await inTenant((tx) => repo.insertAddress(tx, { userid, addressid: ids[index], isprimary: primaries[index] }));
+      }
+      const expected = order.map((index) => ids[index]);
+      expect((await inTenant((tx) => repo.listAddresses(tx, userid))).map((row) => row.addressid)).toEqual(expected);
+      expect((await inTenant((tx) => repo.listAddressesOf(tx, [userid]))).get(userid)?.map((row) => row.addressid)).toEqual(expected);
+    });
+
+    it.each<[string, AddressInput, string, 'width' | 'range']>([
+      ['city of 51 characters', { userid: '', city: 'c'.repeat(51) }, 'city', 'width'],
+      ['isprimary -1', { userid: '', isprimary: -1 }, 'isprimary', 'range'],
+      ['isprimary 256', { userid: '', isprimary: 256 }, 'isprimary', 'range'],
+      ['longitude NaN', { userid: '', longitude: Number.NaN }, 'longitude', 'range'],
+    ])('rejects an address with %s, writing nothing', async (_label, values, column, violation) => {
+      const userid = cfUuid();
+      await rejectsStorage((tx) => repo.insertAddress(tx, { ...values, userid }), 'user_address', column, violation);
+      expect(await inTenant((tx) => repo.listAddresses(tx, userid))).toEqual([]);
+    });
+
+    it('rejects an over-width update of a stored address, keeping it, and changes no row for an unknown id, as legacy\'s UPDATE matches none', async () => {
+      const stored = await inTenant((tx) => repo.insertAddress(tx, { userid: cfUuid(), city: 'Oslo' }));
+      const update = { userid: stored.userid ?? '', city: 'c'.repeat(51) };
+      await rejectsStorage((tx) => repo.updateAddress(tx, stored.addressid, update), 'user_address', 'city', 'width');
+      const unknown = cfUuid();
+      expect(await inTenant((tx) => repo.updateAddress(tx, unknown, update))).toBeNull();
+      expect(await inTenant((tx) => repo.findAddress(tx, unknown))).toBeNull();
+      expect(await inTenant((tx) => repo.findAddress(tx, stored.addressid))).toEqual(stored);
+    });
+
+    it('sets the only primary address, updating only rows that change', async () => {
+      const userid = cfUuid();
+      const ids: string[] = [];
+      for (const isprimary of [1, null, 0]) ids.push((await inTenant((tx) => repo.insertAddress(tx, { userid, isprimary }))).addressid);
+      const [was, unset, zero] = ids as [string, string, string];
+      await inTenant((tx) => repo.setPrimaryAddress(tx, userid, zero));
+      const stored = await inTenant((tx) => repo.listAddresses(tx, userid));
+      expect(Object.fromEntries(stored.map((row) => [row.addressid, row.isprimary]))).toEqual({ [was]: 0, [unset]: 0, [zero]: 1 });
+      expect((await changelog('user_address', zero)).map((row) => row.op)).toEqual(['insert', 'update']);
+      await inTenant((tx) => repo.setPrimaryAddress(tx, userid, zero));
+      expect(await changelog('user_address', zero)).toHaveLength(2);
+    });
+
+    it('deletes the address with its extended data', async () => {
+      const address = await inTenant((tx) => repo.insertAddress(tx, { userid: cfUuid() }));
+      await inTenant((tx) => repo.replaceExtendData(tx, address.addressid, [{ attributeId: 7, row: extendValues('v') }]));
+      expect(await inTenant((tx) => repo.deleteAddress(tx, address.addressid))).toBe(true);
+      expect(await inTenant((tx) => repo.listExtendData(tx, [address.addressid]))).toEqual([]);
+      expect(await inTenant((tx) => repo.deleteAddress(tx, address.addressid))).toBe(false);
+    });
+  });
+
+  describe('interests, tags and favorites', () => {
+    it('replaces interests, skipping empty, over-long and repeated ids, within the scope', async () => {
+      const userid = cfUuid();
+      const kept = cfUuid();
+      await inTenant((tx) => repo.replaceInterests(tx, userid, [kept, 'OLD']));
+      const inserted = await inTenant((tx) =>
+        repo.replaceInterests(tx, userid, ['new', '', 'x'.repeat(36), 'NEW', kept.toLowerCase(), 'old'], { scopeCategoryIds: ['OLD'] }),
+      );
+      expect(inserted.map((row) => row.categoryid.trim())).toEqual(['new', 'old']);
+      const stored = await rows<{ categoryid: string }>('SELECT categoryid FROM <s>.user_interest WHERE userid = $1 ORDER BY categoryid', [userid]);
+      expect(stored.map((row) => row.categoryid.trim()).sort()).toEqual([kept, 'new', 'old'].sort());
+    });
+
+    it('replaces tags with trimmed, non-empty items and new sequence ids', async () => {
+      const userId = cfUuid();
+      await inTenant((tx) => repo.replaceTags(tx, { userId, siteId: 'tenant-a', tags: 'old' }));
+      const created = await inTenant((tx) => repo.replaceTags(tx, { userId, siteId: '', tags: ' red ,, ,blue,red' }));
+      expect(created.map((row) => [row.tag, row.siteid])).toEqual([['red', ''], ['blue', ''], ['red', '']]);
+      expect(new Set(created.map((row) => row.tagid)).size).toBe(3);
+      const stored = await rows<{ tag: string }>('SELECT tag FROM <s>.user_tag WHERE userid = $1', [userId]);
+      expect(stored.map((row) => row.tag).sort()).toEqual(['blue', 'red', 'red']);
+      expect(await inTenant((tx) => repo.replaceTags(tx, { userId, siteId: '', tags: null }))).toEqual([]);
+    });
+
+    it.each([['one tag', 'a'], ['four tags', 'a,b,c,d']])('allocates the ids of %s in one statement, ascending in list order', async (_label, tags) => {
+      const userId = cfUuid();
+      const statements: string[] = [];
+      const created = await inTenant((tx) => repo.replaceTags(recorded(tx, statements), { userId, siteId: 'tenant-a', tags }));
+      expect(statements.filter((sql) => sql.includes('nextval'))).toHaveLength(1);
+      expect(created.map((row) => row.tag)).toEqual(tags.split(','));
+      const ids = created.map((row) => row.tagid);
+      expect(ids).toEqual([...ids].sort((a, b) => a - b));
+      const cleared: string[] = [];
+      expect(await inTenant((tx) => repo.replaceTags(recorded(tx, cleared), { userId, siteId: 'tenant-a', tags: ' , ' }))).toEqual([]);
+      expect(cleared.filter((sql) => sql.includes('nextval'))).toEqual([]);
+    });
+
+    it('stores tags of exactly 100 characters, trailing spaces trimmed first', async () => {
+      const userId = cfUuid();
+      const tag = 't'.repeat(100);
+      const created = await inTenant((tx) => repo.replaceTags(tx, { userId, siteId: 's'.repeat(25), tags: `${tag},${tag}   ` }));
+      expect(created.map((row) => [row.tag, row.siteid])).toEqual([[tag, 's'.repeat(25)], [tag, 's'.repeat(25)]]);
+    });
+
+    it.each([
+      ['a tag of 101 characters', 'tenant-a', `ok,${'x'.repeat(101)}`, 'tag'],
+      ['a site id of 26 characters', 's'.repeat(26), 'ok', 'siteid'],
+    ])('rejects %s, deleting and inserting nothing', async (_label, siteId, tags, column) => {
+      const userId = cfUuid();
+      await inTenant((tx) => repo.replaceTags(tx, { userId, siteId: 'tenant-a', tags: 'old' }));
+      await rejectsStorage((tx) => repo.replaceTags(tx, { userId, siteId, tags }), 'user_tag', column, 'width');
+      const stored = await rows<{ tag: string }>('SELECT tag FROM <s>.user_tag WHERE userid = $1', [userId]);
+      expect(stored.map((row) => row.tag)).toEqual(['old']);
+      expect((await changelog('user_tag', userId)).map((row) => row.op)).toEqual(['insert']);
+    });
+
+    it('lists favorites by creation time', async () => {
+      const userid = cfUuid();
+      for (const [favoriteid, datecreated] of [['F2', LATER], ['F1', NOW]] as const) {
+        await inTenant((tx) => repo.insert(tx, FAVORITE.table, { favoriteid, userid, favorite: 'c', type: 'Page', datecreated }));
+      }
+      expect((await inTenant((tx) => repo.listFavorites(tx, userid))).map((row) => row.favoriteid.trim())).toEqual(['F1', 'F2']);
+    });
+  });
+
+  describe('extended data and definitions', () => {
+    it('replaces values per attribute and deletes a base', async () => {
+      const baseId = cfUuid();
+      await inTenant((tx) => repo.replaceExtendData(tx, baseId, [{ attributeId: 1, row: extendValues('a') }, { attributeId: 2, row: extendValues('b') }]));
+      const inserted = await inTenant((tx) => repo.replaceExtendData(tx, baseId, [{ attributeId: 1, row: extendValues('c') }, { attributeId: 2, row: null }]));
+      expect(inserted.map((row) => [row.attributeid, row.stringvalue, row.baseid])).toEqual([[1, 'c', baseId]]);
+      expect((await inTenant((tx) => repo.listExtendData(tx, [baseId]))).map((row) => row.stringvalue)).toEqual(['c']);
+      expect(await inTenant((tx) => repo.listExtendData(tx, []))).toEqual([]);
+      expect(await inTenant((tx) => repo.deleteExtendDataForBase(tx, baseId))).toBe(1);
+    });
+
+    it.each([[[2]], [[3, 1, 4, 2]]])('locks and allocates for attributes %j in one statement each, in entry order', async (attributeIds) => {
+      const baseId = cfUuid();
+      await inTenant(async (tx) => {
+        await repo.replaceExtendData(tx, baseId, [1, 2, 3].map((attributeId) => ({ attributeId, row: extendValues(`old${attributeId}`) })));
+        // A second stored row of attribute 2, as legacy can leave beside an empty value.
+        await repo.insert(tx, 'extend_data_user_activity', { ...extendValues('extra'), dataid: 2_000_000_000, baseid: baseId, attributeid: 2 });
+      });
+      const statements: string[] = [];
+      const entries = attributeIds.map((attributeId) => ({ attributeId, row: extendValues(`new${attributeId}`) }));
+      const inserted = await inTenant((tx) => repo.replaceExtendData(recorded(tx, statements), baseId, entries));
+      expect(statements.filter((sql) => sql.includes('extend_data_user_activity') && sql.includes('FOR UPDATE'))).toHaveLength(1);
+      expect(statements.filter((sql) => sql.includes('nextval'))).toHaveLength(1);
+      expect(inserted.map((row) => [row.attributeid, row.stringvalue])).toEqual(attributeIds.map((id) => [id, `new${id}`]));
+      const ids = inserted.map((row) => row.dataid);
+      expect(ids).toEqual([...ids].sort((a, b) => a - b));
+      const kept = [1, 3].filter((id) => !attributeIds.includes(id)).map((id) => `old${id}`);
+      const stored = await inTenant((tx) => repo.listExtendData(tx, [baseId]));
+      expect(stored.map((row) => row.stringvalue).sort()).toEqual([...kept, ...attributeIds.map((id) => `new${id}`)].sort());
+      const replaced = entries.flatMap(({ attributeId }) => [...(attributeId === 2 ? ['delete', 'delete'] : attributeId === 4 ? [] : ['delete']), 'insert']);
+      expect((await changelog('extend_data_user_activity', baseId)).map((row) => row.op).slice(4)).toEqual(replaced);
+    });
+
+    it('replaces a repeated attribute in entry order, keeping only its last row', async () => {
+      const baseId = cfUuid();
+      await inTenant((tx) => repo.replaceExtendData(tx, baseId, [{ attributeId: 5, row: extendValues('old') }]));
+      const entries = [{ attributeId: 5, row: extendValues('first') }, { attributeId: 6, row: null }, { attributeId: 5, row: extendValues('last') }];
+      const inserted = await inTenant((tx) => repo.replaceExtendData(tx, baseId, entries));
+      expect(inserted.map((row) => row.stringvalue)).toEqual(['first', 'last']);
+      expect((await inTenant((tx) => repo.listExtendData(tx, [baseId]))).map((row) => row.stringvalue)).toEqual(['last']);
+      expect((await changelog('extend_data_user_activity', baseId)).map((row) => row.op)).toEqual(['insert', 'delete', 'insert', 'delete', 'insert']);
+    });
+
+    it.each<[string, ExtendDataValues, string, 'width' | 'range']>([
+      ['a stringvalue of 256 characters', extendValues('x'.repeat(256)), 'stringvalue', 'width'],
+      ['a datetimevalue in 1700', { ...extendValues('d'), datetimevalue: new Date(1700, 0, 1) }, 'datetimevalue', 'range'],
+    ])('rejects %s before deleting any attribute', async (_label, invalid, column, violation) => {
+      const baseId = cfUuid();
+      await inTenant((tx) => repo.replaceExtendData(tx, baseId, [{ attributeId: 1, row: extendValues('a') }]));
+      const entries = [{ attributeId: 1, row: extendValues('b') }, { attributeId: 2, row: invalid }];
+      await rejectsStorage((tx) => repo.replaceExtendData(tx, baseId, entries), 'extend_data_user_activity', column, violation);
+      expect((await inTenant((tx) => repo.listExtendData(tx, [baseId]))).map((row) => row.stringvalue)).toEqual(['a']);
+    });
+
+    it('lists subtypes, sets and attributes in legacy order with their filters', async () => {
+      const siteid = `ext-${cfUuid()}`;
+      const subtypes = [
+        ['S1', 'User', 'Zeta', 'tusers'],
+        ['S2', 'Address', 'Default', 'tusersaddresses'],
+        ['S3', 'user', 'alpha', 'tusers'],
+      ];
+      await inTenant(async (tx) => {
+        for (const [subtypeid, type, subtype, basetable] of subtypes) await repo.insert(tx, 'extend_subtype', { subtypeid, siteid, type, subtype, basetable });
+        for (const [extendsetid, orderno] of [['SET2', 2], ['SET1', 1]] as const) await repo.insert(tx, 'extend_set', { extendsetid, subtypeid: 'S1', siteid, orderno });
+        for (const [attributeid, name, orderno] of [[30, 'b', 1], [20, 'a', 1], [10, 'z', 0]] as const) {
+          await repo.insert(tx, 'extend_attribute', { attributeid, extendsetid: 'SET1', siteid, name, orderno });
+        }
+      });
+      const ids = (list: readonly object[], key: string): string[] => list.map((row) => String((row as Record<string, unknown>)[key]).trim());
+      expect(ids(await inTenant((tx) => repo.listExtendSubtypes(tx, { siteId: siteid })), 'subtypeid')).toEqual(['S2', 'S3', 'S1']);
+      expect(ids(await inTenant((tx) => repo.listExtendSubtypes(tx, { siteId: siteid, types: ['USER '] })), 'subtypeid')).toEqual(['S3', 'S1']);
+      expect(ids(await inTenant((tx) => repo.listExtendSets(tx, ['S1'])), 'extendsetid')).toEqual(['SET1', 'SET2']);
+      expect(await inTenant((tx) => repo.listExtendSets(tx, []))).toEqual([]);
+      expect(ids(await inTenant((tx) => repo.listExtendAttributes(tx, { setIds: ['SET1'] })), 'attributeid')).toEqual(['10', '20', '30']);
+      const filtered = await inTenant((tx) => repo.listExtendAttributes(tx, { attributeIds: [20, 30], siteId: siteid }));
+      expect(ids(filtered, 'attributeid')).toEqual(['20', '30']);
+    });
+
+    describe('attribute filters, as SQL Server compares set and site ids', () => {
+      const site = `Ci-${cfUuid()}`;
+      let seeded: Promise<void> | undefined;
+      // Seeded on first use, after beforeEach has opened the gates.
+      const seed = (): Promise<void> =>
+        (seeded ??= inTenant(async (tx) => {
+          const attributes = [
+            [101, 'CI-SET', site],
+            [102, 'ci-set', site.toUpperCase()],
+            [103, null, site],
+            [104, 'CI-SET', null],
+            [105, 'CI-OTHER', `${site}  `],
+          ] as const;
+          for (const [attributeid, extendsetid, siteid] of attributes) {
+            await repo.insert(tx, 'extend_attribute', { attributeid, extendsetid, siteid, name: `a${attributeid}`, orderno: 0 });
+          }
+        }));
+
+      it.each<[string, ExtendAttributeFilter, number[]]>([
+        ['set ids in another case', { setIds: ['ci-SET'] }, [101, 102, 104]],
+        ['set ids with trailing spaces', { setIds: ['CI-SET   '] }, [101, 102, 104]],
+        ['a site id in another case', { setIds: ['CI-SET', 'ci-other'], siteId: site.toLowerCase() }, [101, 102, 105]],
+        ['a site id with trailing spaces', { attributeIds: [101, 102, 103, 104, 105], siteId: `${site}   ` }, [101, 102, 103, 105]],
+        ['no NULL set id, even for an empty id', { attributeIds: [103, 104], setIds: [''] }, []],
+        ['no NULL site id, even for an empty id', { attributeIds: [103, 104], siteId: '' }, []],
+      ])('match %s', async (_label, filter, expected) => {
+        await seed();
+        expect((await inTenant((tx) => repo.listExtendAttributes(tx, filter))).map((row) => row.attributeid)).toEqual(expected);
+      });
+    });
+  });
+
+  function trashRow(overrides: Partial<TrashInput> = {}): TrashInput {
+    return {
+      objectid: cfUuid(),
+      parentid: cfUuid(),
+      siteid: 'tenant-a',
+      objectlabel: 'Pat Lee',
+      objectclass: 'userBean',
+      objecttype: '2',
+      objectsubtype: 'Default',
+      objectstring: '<wddxPacket/>',
+      deleteddate: NOW,
+      deletedby: 'Ada Admin',
+      deleteid: cfUuid(),
+      orderno: 1,
+      ...overrides,
+    };
+  }
+
+  it('inserts a trash row only when none exists for its object', async () => {
+    const row = trashRow();
+    expect(await inTenant((tx) => repo.insertTrashIfAbsent(tx, row))).toMatchObject({ objectlabel: 'Pat Lee' });
+    expect(await inTenant((tx) => repo.insertTrashIfAbsent(tx, { ...row, objectlabel: 'again' }))).toBeNull();
+    // trashManager inserts only after finding no row, so an existing row is never checked against the limits.
+    expect(await inTenant((tx) => repo.insertTrashIfAbsent(tx, { ...row, objectlabel: 'x'.repeat(256) }))).toBeNull();
+  });
+
+  it.each<[string, Partial<TrashInput>]>([
+    ['objectlabel', { objectlabel: 'x'.repeat(256) }],
+    ['siteid', { siteid: 's'.repeat(26) }],
+  ])('rejects a trash %s beyond its width, writing nothing', async (column, overrides) => {
+    const row = trashRow(overrides);
+    await rejectsStorage((tx) => repo.insertTrashIfAbsent(tx, row), 'trash', column, 'width');
+    expect(await inTenant((tx) => repo.findByKey(tx, 'trash', { objectid: row.objectid }))).toBeNull();
+  });
+
+  describe('archive', () => {
+    const archiveRow = (person_id: string, effective_from: Date) => ({ person_id, siteid: 'tenant-a', effective_from, archived_by_id: null, archived_by: null });
+
+    it('stores one archive per person and rejects any repeat without writing', async () => {
+      const personId = cfUuid();
+      const stored = await inTenant((tx) => repo.insertPersonArchive(tx, archiveRow(personId, NOW)));
+      expect(stored).toMatchObject({ person_id: personId, archived_at: NOW });
+      expect(stored.archive_id).toMatch(CF_UUID);
+      for (const effectiveFrom of [NOW, LATER]) {
+        await expect(inTenant((tx) => repo.insertPersonArchive(tx, archiveRow(personId, effectiveFrom)))).rejects.toBeInstanceOf(DuplicateArchiveError);
+      }
+      expect(await changelog('person_archive', personId)).toHaveLength(1);
+      expect(await inTenant((tx) => repo.findPersonArchive(tx, personId, LATER))).toBeNull();
+      expect(await inTenant((tx) => repo.findPersonArchive(tx, personId, NOW))).toMatchObject({ archive_id: stored.archive_id });
+      expect(await inTenant((tx) => repo.findPersonArchive(tx, personId))).toMatchObject({ archive_id: stored.archive_id });
+    });
+
+    it.each<[string, Partial<PersonArchiveInput>, string, 'width' | 'range']>([
+      ['archived_by of 51 characters', { archived_by: 'x'.repeat(51) }, 'archived_by', 'width'],
+      ['siteid of 51 characters', { siteid: 's'.repeat(51) }, 'siteid', 'width'],
+      ['effective_from before 1753', { effective_from: new Date(1700, 0, 1) }, 'effective_from', 'range'],
+    ])('rejects %s, writing nothing', async (_label, values, column, violation) => {
+      const personId = cfUuid();
+      await rejectsStorage((tx) => repo.insertPersonArchive(tx, { ...archiveRow(personId, NOW), ...values }), 'person_archive', column, violation);
+      expect(await inTenant((tx) => repo.findPersonArchive(tx, personId))).toBeNull();
+    });
+
+    it.each([
+      ['the same spelling', (id: string) => id],
+      ['a lower-case spelling', (id: string) => id.toLowerCase()],
+    ])('turns a concurrent duplicate under %s that reaches a unique key into DuplicateArchiveError', async (_label, spell) => {
+      const personId = cfUuid();
+      let release: () => void = () => undefined;
+      let inserted: () => void = () => undefined;
+      const held = new Promise<void>((resolve) => (release = resolve));
+      const written = new Promise<void>((resolve) => (inserted = resolve));
+      // The writer bypasses the archive guard, as a migration apply does, and keeps its row uncommitted.
+      const writer = inTenant(async (tx) => {
+        await repo.insert(tx, 'person_archive', { ...archiveRow(personId, NOW), archive_id: cfUuid(), archived_at: NOW });
+        inserted();
+        await held;
+      });
+      await written;
+      const waiting = async (): Promise<boolean> =>
+        (await handle.adminPool.query('SELECT 1 FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid WHERE NOT l.granted AND a.usename = $1', [handle.roles.app])).rows.length > 0;
+      const second = inTenant((tx) => repo.insertPersonArchive(tx, archiveRow(spell(personId), NOW)));
+      const outcome = second.catch((err: unknown) => err);
+      while (!(await waiting())) await new Promise((resolve) => setTimeout(resolve, 20));
+      release();
+      await writer;
+      expect(await outcome).toBeInstanceOf(DuplicateArchiveError);
+    });
+  });
+
+  describe('roster operations', () => {
+    it('allows one open operation per user and finds open and stale ones', async () => {
+      const userId = cfUuid();
+      const op = await inTenant((tx) => repo.insertRosterOperation(tx, { kind: 'admin-update', userId, payload: '{}' }));
+      expect(op).toMatchObject({ state: 'started', user_id: userId, started_at: NOW, updated_at: NOW, before_image: null });
+      expect(op.operation_id).toMatch(CF_UUID);
+      await expect(inTenant((tx) => repo.insertRosterOperation(tx, { kind: 'admin-update', userId, payload: '{}' }))).rejects.toBeInstanceOf(
+        RosterOperationOpenError,
+      );
+      expect(await inTenant((tx) => repo.findOpenRosterOperation(tx, userId))).toMatchObject({ operation_id: op.operation_id });
+      expect((await inTenant((tx) => repo.listStaleRosterOperations(tx, LATER))).map((row) => row.operation_id)).toContain(op.operation_id);
+      expect((await inTenant((tx) => repo.listStaleRosterOperations(tx, NOW))).map((row) => row.operation_id)).not.toContain(op.operation_id);
+
+      repo = createPeopleRepository({ clock: fixedClock(LATER), schema: handle.schema });
+      const committed = await inTenant((tx) =>
+        repo.setRosterOperationState(tx, op.operation_id, { state: 'people-committed', beforeImage: '{"a":1}', identityXid: '42' }),
+      );
+      expect(committed).toMatchObject({ state: 'people-committed', before_image: '{"a":1}', identity_xid: '42', error: null, updated_at: LATER });
+      const afterLater = new Date(LATER.getTime() + 1);
+      await inTenant((tx) => repo.setRosterOperationState(tx, op.operation_id, { state: 'done', error: FINISH_PENDING_ERROR }));
+      expect((await inTenant((tx) => repo.listStaleRosterOperations(tx, afterLater))).map((row) => row.operation_id)).toContain(op.operation_id);
+      const done = await inTenant((tx) => repo.setRosterOperationState(tx, op.operation_id, { state: 'done', error: null }));
+      expect(done).toMatchObject({ state: 'done', before_image: '{"a":1}' });
+      expect((await inTenant((tx) => repo.listStaleRosterOperations(tx, afterLater))).map((row) => row.operation_id)).not.toContain(op.operation_id);
+      expect(await inTenant((tx) => repo.findOpenRosterOperation(tx, userId))).toBeNull();
+      expect(await inTenant((tx) => repo.findRosterOperation(tx, op.operation_id))).toMatchObject({ state: 'done' });
+      expect(await inTenant((tx) => repo.insertRosterOperation(tx, { kind: 'admin-update', userId, payload: '{}' }))).toMatchObject({ state: 'started' });
+    });
+
+    it('keeps the first halt time through later writes and lists every operation of the tenant that ever halted, oldest first, through its partial index', async () => {
+      const resolved = await startedOperation();
+      repo = createPeopleRepository({ clock: fixedClock(LATER), schema: handle.schema });
+      const halted = await startedOperation();
+      const never = await startedOperation();
+      const second = new Date(LATER.getTime() + 1_000);
+      await inTenant((tx) => repo.setRosterOperationState(tx, resolved.operation_id, { state: 'halted', haltedAt: LATER }));
+      await inTenant((tx) => repo.setRosterOperationState(tx, resolved.operation_id, { state: 'halted', haltedAt: second }));
+      await inTenant((tx) => repo.setRosterOperationState(tx, resolved.operation_id, { state: 'rolled-back', identityUnreachableSince: null }));
+      await inTenant((tx) => repo.setRosterOperationState(tx, halted.operation_id, { state: 'halted', haltedAt: second }));
+      await inTenant((tx) => repo.setRosterOperationState(tx, never.operation_id, { state: 'rolled-back' }));
+      const ids = [resolved, halted, never].map((row) => row.operation_id);
+
+      const page = await inTenant((tx) => repo.pageHaltedRosterOperations(tx));
+      const listed = page.rows.filter((row) => ids.includes(row.operation_id));
+
+      expect(page.next).toBeNull();
+      expect(listed.map((row) => [row.operation_id, row.state, row.halted_at])).toEqual([
+        [resolved.operation_id, 'rolled-back', LATER],
+        [halted.operation_id, 'halted', second],
+      ]);
+      expect(await inTenant((tx) => repo.pageHaltedRosterOperations(tx), TENANT_B.tenantId)).toEqual({ rows: [], next: null });
+      // The second halt changes no stored value, so it writes no changelog row.
+      expect((await changelog('roster_operation', resolved.operation_id)).map((change) => [change.op, change.columns.includes('halted_at')])).toEqual([
+        ['insert', true],
+        ['update', true],
+        ['update', false],
+      ]);
+      const plan = planNodes(await planOf((tx) => repo.pageHaltedRosterOperations(tx), 'roster_operation'));
+      expect(plan.map((node) => node['Index Name'])).toContain('roster_operation_tenant_halted_idx');
+    });
+
+    it('pages the halted operations of the tenant in (started_at, operation_id) order with only their summary columns, each page resuming after its next, through the partial index', async () => {
+      const halts: RosterOperationRow[] = [];
+      for (const at of [NOW, LATER, NOW, LATER]) {
+        repo = createPeopleRepository({ clock: fixedClock(at), schema: handle.schema });
+        const op = await startedOperation();
+        await inTenant((tx) => repo.setRosterOperationState(tx, op.operation_id, { state: 'halted', haltedAt: LATER }));
+        halts.push(op);
+      }
+      const whole = await inTenant((tx) => repo.pageHaltedRosterOperations(tx, { limit: 1000 }));
+      const pages: Awaited<ReturnType<PeopleRepository['pageHaltedRosterOperations']>>[] = [];
+      let after: HaltedRosterCursor | null = null;
+      do {
+        const page = await inTenant((tx) => repo.pageHaltedRosterOperations(tx, { after, limit: 2 }));
+        pages.push(page);
+        after = page.next;
+      } while (after !== null && pages.length <= whole.rows.length);
+
+      const key = (row: { started_at: Date; operation_id: string }): string => `${row.started_at.toISOString()} ${row.operation_id}`;
+      const mine = (rows: readonly { operation_id: string }[]): string[] => rows.map((row) => row.operation_id).filter((id) => halts.some((op) => op.operation_id === id));
+      expect(mine(whole.rows)).toEqual([...halts].sort((a, b) => (key(a) < key(b) ? -1 : 1)).map((op) => op.operation_id));
+      expect(whole.rows.map(key)).toEqual(whole.rows.map(key).sort());
+      expect(pages.flatMap((page) => page.rows)).toEqual(whole.rows);
+      expect(pages.map((page) => page.rows.length).every((length) => length >= 1 && length <= 2)).toBe(true);
+      expect(pages.slice(0, -1).map((page) => page.next)).toEqual(pages.slice(0, -1).map((page) => ({ startedAt: page.rows.at(-1)?.started_at, operationId: page.rows.at(-1)?.operation_id })));
+      expect(new Set(whole.rows.flatMap((row) => Object.keys(row)))).toEqual(
+        new Set(['operation_id', 'kind', 'user_id', 'state', 'started_at', 'updated_at', 'identity_unreachable_since', 'halted_at']),
+      );
+      const [first] = whole.rows;
+      if (first === undefined) throw new Error('no halted operation listed');
+      const resumed = planNodes(
+        await planOf((tx) => repo.pageHaltedRosterOperations(tx, { after: { startedAt: first.started_at, operationId: first.operation_id }, limit: 2 }), 'roster_operation'),
+      );
+      expect(resumed.map((node) => node['Index Name'])).toContain('roster_operation_tenant_halted_idx');
+    });
+
+    it('rethrows other insert failures', async () => {
+      await expect(
+        inTenant((tx) => repo.insertRosterOperation(tx, { kind: 'x', userId: 'x'.repeat(36), payload: '{}' })),
+      ).rejects.not.toBeInstanceOf(RosterOperationOpenError);
+    });
+
+    /** A new `started` operation of a new user, written at NOW. */
+    function startedOperation(): Promise<RosterOperationRow> {
+      return inTenant((tx) => repo.insertRosterOperation(tx, { kind: 'admin-update', userId: cfUuid(), payload: '{}' }));
+    }
+
+    it.each<[string, Partial<RosterOperationClaim>]>([
+      ['another state than the stored one', { state: 'people-committed' }],
+      ['another claim than the stored one', { claimedBy: 'OTHER' }],
+      ['an operation updated at the stale bound', { staleBefore: NOW }],
+    ])('claims nothing for %s', async (_label, observed) => {
+      const op = await startedOperation();
+      const claim: RosterOperationClaim = { token: 'TOKEN', state: 'started', claimedBy: null, staleBefore: LATER, ...observed };
+      expect(await inTenant((tx) => repo.claimRosterOperation(tx, op.operation_id, claim))).toBeNull();
+      expect(await inTenant((tx) => repo.findRosterOperation(tx, op.operation_id))).toMatchObject({ claimed_by: null, updated_at: NOW });
+    });
+
+    it('claims a stale operation for one token, fences every other writer, and hands a stale claim over', async () => {
+      const { operation_id: id } = await startedOperation();
+      repo = createPeopleRepository({ clock: fixedClock(LATER), schema: handle.schema });
+      const observed = { state: 'started', claimedBy: null, staleBefore: LATER } as const;
+      expect(await inTenant((tx) => repo.claimRosterOperation(tx, id, { ...observed, token: 'TOKEN-1' }))).toMatchObject({ claimed_by: 'TOKEN-1', updated_at: LATER });
+      expect(await inTenant((tx) => repo.claimRosterOperation(tx, id, { ...observed, token: 'TOKEN-2', staleBefore: null }))).toBeNull();
+      expect((await changelog('roster_operation', id)).at(-1)).toMatchObject({ op: 'update', columns: ['updated_at', 'claimed_by'] });
+
+      const others: RosterOperationOwner[] = [{}, { claim: 'TOKEN-2' }];
+      for (const owner of others) {
+        const write = inTenant((tx) => repo.setRosterOperationState(tx, id, { state: 'done' }, {}, owner));
+        await expect(write).rejects.toBeInstanceOf(RosterOperationClaimedError);
+        await expect(write).rejects.toBeInstanceOf(LegacyServiceUnavailableError);
+        await expect(write).rejects.toMatchObject({ operationId: id, reason: 'roster-operation-claimed' });
+        await expect(inTenant((tx) => repo.holdRosterOperation(tx, id, 'started', owner))).rejects.toBeInstanceOf(RosterOperationClaimedError);
+      }
+      await expect(inTenant((tx) => repo.holdRosterOperation(tx, id, 'people-committed', { claim: 'TOKEN-1' }))).rejects.toBeInstanceOf(RosterOperationClaimedError);
+      expect(await inTenant((tx) => repo.holdRosterOperation(tx, id, 'started', { claim: 'TOKEN-1' }))).toMatchObject({ state: 'started', claimed_by: 'TOKEN-1' });
+
+      const renewed = new Date(LATER.getTime() + 1_000);
+      repo = createPeopleRepository({ clock: fixedClock(renewed), schema: handle.schema });
+      expect(await inTenant((tx) => repo.setRosterOperationState(tx, id, { state: 'people-committed' }, {}, { claim: 'TOKEN-1' }))).toMatchObject({
+        state: 'people-committed',
+        claimed_by: 'TOKEN-1',
+        updated_at: renewed,
+      });
+      const takeover = { token: 'TOKEN-2', state: 'people-committed', claimedBy: 'TOKEN-1' } as const;
+      expect(await inTenant((tx) => repo.claimRosterOperation(tx, id, { ...takeover, staleBefore: renewed }))).toBeNull();
+      expect(await inTenant((tx) => repo.claimRosterOperation(tx, id, { ...takeover, staleBefore: new Date(renewed.getTime() + 1) }))).toMatchObject({ claimed_by: 'TOKEN-2' });
+      await expect(inTenant((tx) => repo.setRosterOperationState(tx, id, { state: 'rolled-back' }, {}, { claim: 'TOKEN-1' }))).rejects.toBeInstanceOf(RosterOperationClaimedError);
+      expect(await inTenant((tx) => repo.findRosterOperation(tx, id))).toMatchObject({ state: 'people-committed', claimed_by: 'TOKEN-2' });
+    });
+
+    it('reports an absent operation as null to every claim-aware call', async () => {
+      const id = cfUuid();
+      expect(await inTenant((tx) => repo.claimRosterOperation(tx, id, { token: 'TOKEN', state: 'started', claimedBy: null, staleBefore: null }))).toBeNull();
+      expect(await inTenant((tx) => repo.holdRosterOperation(tx, id, 'started'))).toBeNull();
+      expect(await inTenant((tx) => repo.setRosterOperationState(tx, id, { state: 'done' }, {}, { claim: 'TOKEN' }))).toBeNull();
+    });
+
+    it('makes a claim wait for a request transition holding the row, then refuse the state it moved to', async () => {
+      const { operation_id: id } = await startedOperation();
+      let release: () => void = () => undefined;
+      let moved: () => void = () => undefined;
+      const released = new Promise<void>((resolve) => (release = resolve));
+      const holding = new Promise<void>((resolve) => (moved = resolve));
+      const transition = inTenant(async (tx) => {
+        await repo.setRosterOperationState(tx, id, { state: 'people-committed' });
+        moved();
+        await released;
+      });
+      await holding;
+      const claim = inTenant((tx) => repo.claimRosterOperation(tx, id, { token: 'TOKEN', state: 'started', claimedBy: null, staleBefore: null }));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      release();
+      await transition;
+      expect(await claim).toBeNull();
+      expect(await inTenant((tx) => repo.findRosterOperation(tx, id))).toMatchObject({ state: 'people-committed', claimed_by: null });
+    });
+  });
+
+  describe('roster locks', () => {
+    const A = TENANT_A.tenantId;
+    const B = TENANT_B.tenantId;
+    type Hold = (tx: TenantTx) => Promise<unknown>;
+
+    /** How many transactions of the schema's app role wait for an advisory lock. */
+    async function advisoryWaiters(): Promise<number> {
+      const sql = "SELECT count(*)::int AS n FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid WHERE NOT l.granted AND l.locktype = 'advisory' AND a.usename = $1";
+      return (await handle.adminPool.query<{ n: number }>(sql, [handle.roles.app])).rows[0]?.n ?? 0;
+    }
+
+    /** True while a transaction of the schema's app role waits for an advisory lock. */
+    async function advisoryWait(): Promise<boolean> {
+      return (await advisoryWaiters()) > 0;
+    }
+
+    /** Whether `second`, run in `tenants[1]` while `first` holds its transaction in `tenants[0]` open, waits until that transaction ends. */
+    async function blocks(first: Hold, second: Hold, tenants: [string, string] = [A, A]): Promise<boolean> {
+      let release: () => void = () => undefined;
+      let taken: () => void = () => undefined;
+      const released = new Promise<void>((resolve) => (release = resolve));
+      const holding = new Promise<void>((resolve) => (taken = resolve));
+      const holder = inTenant(async (tx) => {
+        await first(tx);
+        taken();
+        await released;
+      }, tenants[0]);
+      await holding;
+      let done = false as boolean;
+      const outcome = inTenant(second, tenants[1]).then(() => (done = true));
+      while (!done && !(await advisoryWait())) await new Promise((resolve) => setTimeout(resolve, 20));
+      const waited = !done;
+      release();
+      await holder;
+      await outcome;
+      return waited;
+    }
+
+    it.each<[string, RosterLockMode, RosterLockMode, (id: string) => string, string, boolean]>([
+      ['shared beside shared', 'shared', 'shared', (id) => id, A, false],
+      ['shared behind exclusive', 'exclusive', 'shared', (id) => id, A, true],
+      ['exclusive behind shared', 'shared', 'exclusive', (id) => id, A, true],
+      ['a lower-case spelling behind exclusive', 'exclusive', 'shared', (id) => id.toLowerCase(), A, true],
+      ['a trailing-space spelling behind shared', 'shared', 'exclusive', (id) => `${id}  `, A, true],
+      ['another user beside exclusive', 'exclusive', 'exclusive', () => cfUuid(), A, false],
+      ['the same user of another tenant beside exclusive', 'exclusive', 'exclusive', (id) => id, B, false],
+    ])('takes a user lock %s', async (_label, held, wanted, spell, tenant, expected) => {
+      const userId = cfUuid();
+      const first: Hold = (tx) => repo.lockRosterUsers(tx, [userId], held);
+      expect(await blocks(first, (tx) => repo.lockRosterUsers(tx, [spell(userId)], wanted), [A, tenant])).toBe(expected);
+    });
+
+    it.each<[string, RosterLockMode, RosterLockMode, string, boolean]>([
+      ['shared beside shared', 'shared', 'shared', A, false],
+      ['shared behind exclusive', 'exclusive', 'shared', A, true],
+      ['exclusive behind shared', 'shared', 'exclusive', A, true],
+      ['exclusive of another tenant beside exclusive', 'exclusive', 'exclusive', B, false],
+    ])('takes the tenant lock %s', async (_label, held, wanted, tenant, expected) => {
+      expect(await blocks((tx) => repo.lockRosterTenant(tx, held), (tx) => repo.lockRosterTenant(tx, wanted), [A, tenant])).toBe(expected);
+    });
+
+    it('takes one user lock per collation-equal id, in ascending key order, and none for no id', async () => {
+      const [first, second] = [cfUuid(), cfUuid()];
+      const issued = await inTenant((tx) => issuedBy(tx, (t) => repo.lockRosterUsers(t, [first, second.toLowerCase(), `${first}  `, second], 'shared')));
+      const keys = issued.filter(([sql]) => sql.includes('pg_advisory_xact_lock_shared')).map(([, params]) => params[1] as number);
+      expect(keys).toHaveLength(2);
+      expect(keys).toEqual([...keys].sort((x, y) => x - y));
+      expect(await inTenant((tx) => issuedBy(tx, (t) => repo.lockRosterUsers(t, [], 'exclusive')))).toEqual([]);
+    });
+
+    it.each<[string, (tx: TenantTx, userId: string) => Promise<unknown>]>([
+      ['a fenced transaction of another spelling of the user', (tx, userId) => repo.lockRosterUsers(tx, [userId.toLowerCase()], 'shared')],
+      ['a tenant-wide reader', (tx) => repo.lockRosterTenant(tx, 'shared')],
+    ])('records an intent only once %s ends', async (_label, hold) => {
+      const userId = cfUuid();
+      const intent: Hold = (tx) => repo.insertRosterOperation(tx, { kind: 'admin-update', userId, payload: '{}' });
+      expect(await blocks((tx) => hold(tx, userId), intent)).toBe(true);
+      expect(await inTenant((tx) => repo.findOpenRosterOperation(tx, userId))).toMatchObject({ state: 'started' });
+    });
+
+    it('queues an intent behind a fenced user without blocking a tenant-wide reader', async () => {
+      const userId = cfUuid();
+      let release: () => void = () => undefined;
+      let taken: () => void = () => undefined;
+      const released = new Promise<void>((resolve) => (release = resolve));
+      const holding = new Promise<void>((resolve) => (taken = resolve));
+      const fenced = inTenant(async (tx) => {
+        await repo.lockRosterUsers(tx, [userId], 'shared');
+        taken();
+        await released;
+      });
+      await holding;
+      const intent = inTenant((tx) => repo.insertRosterOperation(tx, { kind: 'admin-update', userId, payload: '{}' }));
+      while (!(await advisoryWait())) await new Promise((resolve) => setTimeout(resolve, 20));
+      let read = false as boolean;
+      const reader = inTenant((tx) => repo.lockRosterTenant(tx, 'shared')).then(() => (read = true));
+      // Done, or queued as a second advisory waiter behind the intent.
+      while (!read && (await advisoryWaiters()) < 2) await new Promise((resolve) => setTimeout(resolve, 20));
+      const readerWaited = !read;
+      const intentWaiting = await advisoryWait();
+      release();
+      await Promise.all([fenced, reader]);
+      expect({ readerWaited, intentWaiting }).toEqual({ readerWaited: false, intentWaiting: true });
+      expect(await intent).toMatchObject({ state: 'started', user_id: userId });
+    });
+
+    type UserHold = (tx: TenantTx, userId: string) => Promise<unknown>;
+    it.each<[string, UserHold, (tx: TenantTx, userId: string, timeoutMs: number) => Promise<unknown>, string]>([
+      [
+        'a shared user lock behind an exclusive one',
+        (tx, userId) => repo.lockRosterUsers(tx, [userId], 'exclusive'),
+        (tx, userId, timeoutMs) => repo.lockRosterUsers(tx, [userId], 'shared', { timeoutMs }),
+        'user',
+      ],
+      ['a shared tenant lock behind an exclusive one', (tx) => repo.lockRosterTenant(tx, 'exclusive'), (tx, _userId, timeoutMs) => repo.lockRosterTenant(tx, 'shared', { timeoutMs }), 'tenant'],
+      [
+        'an intent behind a tenant-wide reader',
+        (tx) => repo.lockRosterTenant(tx, 'shared'),
+        (tx, userId, timeoutMs) => repo.insertRosterOperation(tx, { kind: 'admin-update', userId, payload: '{}' }, {}, { timeoutMs }),
+        'tenant',
+      ],
+    ])('gives up %s once its timeout passes, while the holder still holds it', async (_label, hold, wait, subject) => {
+      const userId = cfUuid();
+      let release: () => void = () => undefined;
+      let taken: () => void = () => undefined;
+      const released = new Promise<void>((resolve) => (release = resolve));
+      const holding = new Promise<void>((resolve) => (taken = resolve));
+      const holder = inTenant(async (tx) => {
+        await hold(tx, userId);
+        taken();
+        await released;
+      });
+      await holding;
+      const started = Date.now();
+      const error = await inTenant((tx) => wait(tx, userId, 300)).then(
+        () => undefined,
+        (err: unknown) => err,
+      );
+      const elapsed = Date.now() - started;
+      release();
+      await holder;
+      expect(error).toBeInstanceOf(RosterLockTimeoutError);
+      expect(error).toMatchObject({ timeoutMs: 300, reason: 'roster-lock-timeout', message: expect.stringContaining(`roster lock of ${subject}`) as unknown });
+      expect(elapsed).toBeGreaterThanOrEqual(280);
+      expect(elapsed).toBeLessThan(2_000);
+      expect(await inTenant((tx) => repo.findOpenRosterOperation(tx, userId))).toBeNull();
+    });
+
+    it('restores the transaction lock_timeout after a bounded lock is granted', async () => {
+      const setting = await inTenant(async (tx) => {
+        await tx.query("SET LOCAL lock_timeout = '7s'");
+        await repo.lockRosterUsers(tx, [cfUuid(), cfUuid()], 'shared', { timeoutMs: 500 });
+        await repo.lockRosterTenant(tx, 'shared', { timeoutMs: 500 });
+        return (await tx.query<{ value: string }>("SELECT current_setting('lock_timeout') AS value")).rows[0]?.value;
+      });
+      expect(setting).toBe('7s');
+    });
+
+    it('finds the open operations of any listed id under any spelling, oldest first', async () => {
+      const [first, second, closed, unlisted] = [cfUuid(), cfUuid(), cfUuid(), cfUuid()];
+      const record = (userId: string) => inTenant((tx) => repo.insertRosterOperation(tx, { kind: 'admin-update', userId, payload: '{}' }));
+      const older = await record(first);
+      repo = createPeopleRepository({ clock: fixedClock(LATER), schema: handle.schema });
+      const newer = await record(second);
+      const done = await record(closed);
+      await inTenant((tx) => repo.setRosterOperationState(tx, done.operation_id, { state: 'rolled-back' }));
+      await record(unlisted);
+      const found = await inTenant((tx) => repo.findOpenRosterOperations(tx, [`${second}  `, first.toLowerCase(), closed]));
+      expect(found.map((row) => row.operation_id)).toEqual([older.operation_id, newer.operation_id]);
+      expect(await inTenant((tx) => repo.findOpenRosterOperations(tx, [first]), B)).toEqual([]);
+      expect(await inTenant((tx) => repo.findOpenRosterOperations(tx, []))).toEqual([]);
+    });
+
+    it('counts the operations of any listed id in every state under any spelling, in the transaction tenant only', async () => {
+      const [first, second, unlisted] = [cfUuid(), cfUuid(), cfUuid()];
+      const record = (userId: string) => inTenant((tx) => repo.insertRosterOperation(tx, { kind: 'admin-update', userId, payload: '{}' }));
+      const count = (userIds: readonly string[], tenant = TENANT_A.tenantId) => inTenant((tx) => repo.countRosterOperations(tx, userIds), tenant);
+      expect(await count([first, second])).toBe(0);
+      const done = await record(first);
+      await inTenant((tx) => repo.setRosterOperationState(tx, done.operation_id, { state: 'done' }));
+      await record(first.toLowerCase());
+      await record(second);
+      await record(unlisted);
+      expect(await count([first])).toBe(2);
+      expect(await count([`${first}  `, second.toLowerCase()])).toBe(3);
+      expect(await count([first], B)).toBe(0);
+      expect(await count([])).toBe(0);
+    });
+
+    it('finds every open operation of the tenant when no id is listed, and counts only listed operations when given', async () => {
+      const [first, second] = [cfUuid(), cfUuid()];
+      const record = (userId: string) => inTenant((tx) => repo.insertRosterOperation(tx, { kind: 'admin-update', userId, payload: '{}' }));
+      const done = await record(first);
+      await inTenant((tx) => repo.setRosterOperationState(tx, done.operation_id, { state: 'done' }));
+      const open = await record(first.toLowerCase());
+      const other = await record(second);
+      const ours = new Set([done.operation_id, open.operation_id, other.operation_id]);
+      const tenantOpen = (tenant = A) => inTenant(async (tx) => (await repo.findOpenRosterOperations(tx)).map((row) => row.operation_id).filter((id) => ours.has(id)), tenant);
+      expect((await tenantOpen()).sort()).toEqual([open.operation_id, other.operation_id].sort());
+      expect(await tenantOpen(B)).toEqual([]);
+      const among = (userIds: readonly string[], operationIds: readonly string[]) => inTenant((tx) => repo.countRosterOperations(tx, userIds, operationIds));
+      expect(await among([`${first}  `], [done.operation_id, open.operation_id, other.operation_id])).toBe(2);
+      expect(await among([first], [other.operation_id])).toBe(0);
+      expect(await among([first, second], [])).toBe(0);
+    });
+  });
+
+  it('upserts, lists and deletes group-name projection rows', async () => {
+    const groupId = cfUuid();
+    const row = { group_id: groupId, site_id: 'tenant-a', group_name: 'Editors', is_public: 0, deleted: false, aggregate_version: 1 };
+    await inTenant((tx) => repo.upsertGroupName(tx, row));
+    expect(await inTenant((tx) => repo.upsertGroupName(tx, { ...row, group_name: 'Writers', aggregate_version: 2 }))).toMatchObject({
+      group_name: 'Writers',
+      aggregate_version: '2',
+    });
+    expect((await inTenant((tx) => repo.listGroupNames(tx, [groupId]))).map((r) => r.group_name)).toEqual(['Writers']);
+    expect((await inTenant((tx) => repo.listGroupNames(tx))).length).toBeGreaterThan(0);
+    expect(await inTenant((tx) => repo.deleteGroupName(tx, groupId))).toBe(true);
+    expect(await inTenant((tx) => repo.deleteGroupName(tx, groupId))).toBe(false);
+  });
+
+  describe('keyset pages', () => {
+    /** Every page of a listing, following `next` until it is null. */
+    async function pages<R, C>(fetch: (after: C | null) => Promise<{ rows: R[]; next: C | null }>): Promise<R[][]> {
+      const all: R[][] = [];
+      let after: C | null = null;
+      do {
+        const page = await fetch(after);
+        all.push(page.rows);
+        after = page.next;
+      } while (after !== null);
+      return all;
+    }
+
+    const ids = (found: readonly { userid: string }[]): string[] => found.map((row) => row.userid);
+
+    describe('of persons', () => {
+      const siteId = `pages-${cfUuid()}`;
+      const bulkSite = `bulk-${cfUuid()}`;
+
+      beforeAll(async () => {
+        repo = createPeopleRepository({ clock: fixedClock(NOW), schema: handle.schema });
+        await setGates('open');
+        const people: [string | null, string | null, string | null, number | null][] = [
+          [null, 'a', null, null],
+          [null, 'b', 'Acme', 1],
+          [null, null, 'acme', 0],
+          ['Same', 'X', null, 2],
+          ['Same', 'X', 'Bolt', null],
+          ['Same', 'X', 'Bolt', 1],
+          ['same', 'X', 'zeta', 1],
+          ['Zed', 'q', null, 2],
+          ['alpha', 'r', 'Acme', 0],
+        ];
+        for (const [lname, fname, company, subscribe] of people) await addPerson({ siteid: siteId, lname, fname, company, subscribe });
+        // Seven repeated last names across 2101 persons, so ties straddle every page boundary.
+        await rows(
+          "INSERT INTO <s>.person (tenant_id, userid, siteid, lname, fname) SELECT $1::uuid, upper(left(md5($2::text || g), 32)), $2::text, 'Bulk ' || (g % 7), 'f' || g" +
+            ' FROM generate_series(1, 2101) AS g',
+          [TENANT_A.tenantId, bulkSite],
+        );
+      });
+
+      /** The site's userids in `order`, read in one statement. */
+      async function ordered(site: string, order: string): Promise<string[]> {
+        return ids(await rows<{ userid: string }>(`SELECT userid FROM <s>.person WHERE siteid = $1 ORDER BY ${order}`, [site]));
+      }
+
+      it.each<[string, PersonQuery['orderBy'], string]>([
+        ['the default order', undefined, 'lower(lname) ASC NULLS FIRST, lower(fname) ASC NULLS FIRST, userid'],
+        [
+          'a descending text key with NULLs last',
+          [{ column: 'company', direction: 'desc' }, { column: 'lname', direction: 'asc' }],
+          'lower(company) DESC NULLS LAST, lower(lname) ASC NULLS FIRST, userid',
+        ],
+        ['a descending number key with NULLs last', [{ column: 'subscribe', direction: 'desc' }], 'subscribe DESC NULLS LAST, userid'],
+        ['a timestamp key every person shares', [{ column: 'created', direction: 'asc' }], 'created ASC NULLS FIRST, userid'],
+      ])('splits %s into pages that join to the unpaged order', async (_label, orderBy, order) => {
+        const query: PersonQuery = { siteIds: [siteId], ...(orderBy === undefined ? {} : { orderBy }) };
+        const paged = await pages((after: PersonCursor | null) => inTenant((tx) => repo.pageQueryPersons(tx, query, { after, limit: 2 })));
+        expect(paged.map((page) => page.length)).toEqual([2, 2, 2, 2, 1]);
+        expect(paged.flat().map((row) => Object.keys(row))).toEqual(paged.flat().map(() => PERSON.columns.map((column) => column.name)));
+        expect(ids(paged.flat())).toEqual(await ordered(siteId, order));
+        expect(ids(await inTenant((tx) => repo.queryPersons(tx, query)))).toEqual(await ordered(siteId, order));
+      });
+
+      it('pages a site, optionally only some users, and rejects a cursor of another ordering', async () => {
+        const all = await inTenant((tx) => repo.listPersonsForSite(tx, siteId));
+        const paged = await pages((after: PersonCursor | null) => inTenant((tx) => repo.pagePersonsForSite(tx, siteId, { after, limit: 4 })));
+        expect(paged.map((page) => page.length)).toEqual([4, 4, 1]);
+        expect(ids(paged.flat())).toEqual(ids(all));
+        const only = [all[5]?.userid as string, all[1]?.userid as string];
+        expect(ids((await inTenant((tx) => repo.pagePersonsForSite(tx, siteId, { userIds: only }))).rows)).toEqual([only[1], only[0]]);
+        const next = (await inTenant((tx) => repo.pagePersonsForSite(tx, siteId, { limit: 1 }))).next;
+        expect(next).toEqual({ userid: all[0]?.userid, keys: [null, null] });
+        await expect(inTenant((tx) => repo.pageQueryPersons(tx, { siteIds: [siteId], orderBy: [{ column: 'subscribe', direction: 'asc' }] }, { after: next }))).rejects.toBeInstanceOf(
+          RangeError,
+        );
+      });
+
+      it('caps pages at 1000 rows, iterates every page for full results and caps queries at their limit', async () => {
+        const all = await inTenant((tx) => repo.listPersonsForSite(tx, bulkSite));
+        expect(ids(all)).toEqual(await ordered(bulkSite, 'lower(lname) ASC NULLS FIRST, lower(fname) ASC NULLS FIRST, userid'));
+        expect(new Set(ids(all)).size).toBe(2101);
+        const clamped = await inTenant((tx) => repo.pagePersonsForSite(tx, bulkSite, { limit: 5000 }));
+        expect([clamped.rows.length, clamped.next?.userid]).toEqual([1000, all[999]?.userid]);
+        expect((await inTenant((tx) => repo.pagePersonsForSite(tx, bulkSite))).rows).toHaveLength(500);
+        expect(ids(await inTenant((tx) => repo.queryPersons(tx, { siteIds: [bulkSite], limit: 1500 })))).toEqual(ids(all).slice(0, 1500));
+      });
+
+      it('bounds a search without a limit at getSearch maxrows', async () => {
+        expect(await inTenant((tx) => repo.searchPersons(tx, { siteId: bulkSite, term: 'bulk' }))).toHaveLength(2100);
+        expect(await inTenant((tx) => repo.searchPersons(tx, { siteId: bulkSite, term: 'bulk', limit: 2101 }))).toHaveLength(2101);
+      });
+    });
+
+    it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY])('rejects the limit %s', async (limit) => {
+      const calls: ((tx: TenantTx) => Promise<unknown>)[] = [
+        (tx) => repo.pagePersonsForSite(tx, 'tenant-a', { limit }),
+        (tx) => repo.pageQueryPersons(tx, {}, { limit }),
+        (tx) => repo.pageStaleRosterOperations(tx, NOW, { limit }),
+        (tx) => repo.pageGroupNames(tx, { limit }),
+        (tx) => repo.queryPersons(tx, { limit }),
+        (tx) => repo.searchPersons(tx, { siteId: 'tenant-a', term: 'x', limit }),
+      ];
+      for (const call of calls) await expect(inTenant(call)).rejects.toBeInstanceOf(RangeError);
+    });
+
+    it('pages stale roster operations oldest first, ties by operation id', async () => {
+      const [first, second, olderThan] = [new Date(2001, 0, 1, 10), new Date(2001, 0, 1, 11), new Date(2001, 0, 2)];
+      const ops: string[] = [];
+      for (const at of [first, second, first]) {
+        repo = createPeopleRepository({ clock: fixedClock(at), schema: handle.schema });
+        ops.push((await inTenant((tx) => repo.insertRosterOperation(tx, { kind: 'admin-update', userId: cfUuid(), payload: '{}' }))).operation_id);
+      }
+      const opIds = (found: readonly { operation_id: string }[]): string[] => found.map((row) => row.operation_id);
+      const expected = [...[ops[0] as string, ops[2] as string].sort(), ops[1] as string];
+      const paged = await pages((after: RosterOperationCursor | null) => inTenant((tx) => repo.pageStaleRosterOperations(tx, olderThan, { after, limit: 2 })));
+      expect(paged.map(opIds)).toEqual([expected.slice(0, 2), expected.slice(2)]);
+      expect(opIds(await inTenant((tx) => repo.listStaleRosterOperations(tx, olderThan)))).toEqual(expected);
+    });
+
+    it('pages group-name projection rows by group id', async () => {
+      const groupIds = [cfUuid(), cfUuid(), cfUuid()];
+      for (const group_id of groupIds) {
+        await inTenant((tx) => repo.upsertGroupName(tx, { group_id, site_id: 'tenant-a', group_name: 'G', is_public: 0, deleted: false, aggregate_version: 1 }));
+      }
+      const paged = await pages((after: string | null) => inTenant((tx) => repo.pageGroupNames(tx, { groupIds, after, limit: 2 })));
+      expect(paged.map((page) => page.map((row) => row.group_id))).toEqual([[...groupIds].sort().slice(0, 2), [...groupIds].sort().slice(2)]);
+      const all = await pages((after: string | null) => inTenant((tx) => repo.pageGroupNames(tx, { after, limit: 1 })));
+      expect(all.flat().map((row) => row.group_id)).toEqual((await inTenant((tx) => repo.listGroupNames(tx))).map((row) => row.group_id));
+    });
+  });
+
+  describe('ids and sites compared as the SQL Server collation does', () => {
+    const spellings: [string, (id: string) => string][] = [
+      ['lower-case', (id) => id.toLowerCase()],
+      ['trailing-space', (id) => `${id}  `],
+    ];
+    const archiveOf = (person_id: string) => ({ person_id, siteid: 'tenant-a', effective_from: NOW, archived_by_id: null, archived_by: null });
+    const groupOf = (group_id: string) => ({ group_id, site_id: 'tenant-a', group_name: 'Editors', is_public: 0, deleted: false, aggregate_version: 1 });
+
+    it.each(spellings)('reads persons and their child rows under a %s spelling, in their stored spelling', async (_label, spell) => {
+      const [stored, other] = [await addPerson(), await addPerson()];
+      const userid = stored.userid;
+      const address = await inTenant((tx) => repo.insertAddress(tx, { userid }));
+      await inTenant((tx) => repo.insert(tx, FAVORITE.table, { favoriteid: cfUuid(), userid, favorite: 'c', type: 'Page', datecreated: NOW }));
+      await inTenant((tx) => repo.replaceExtendData(tx, userid, [{ attributeId: 3, row: extendValues('x') }]));
+      expect(await inTenant((tx) => repo.findPerson(tx, spell(userid)))).toMatchObject({ userid });
+      const found = await inTenant((tx) => repo.findPersons(tx, [spell(other.userid), spell(userid), userid, other.userid]));
+      expect(found.map((row) => row.userid)).toEqual([other.userid, userid]);
+      expect((await inTenant((tx) => repo.listAddresses(tx, spell(userid)))).map((row) => row.addressid)).toEqual([address.addressid]);
+      expect(await inTenant((tx) => repo.findAddress(tx, spell(address.addressid)))).toMatchObject({ addressid: address.addressid, userid });
+      expect((await inTenant((tx) => repo.listFavorites(tx, spell(userid)))).map((row) => row.userid)).toEqual([userid]);
+      expect((await inTenant((tx) => repo.listExtendData(tx, [spell(userid)]))).map((row) => row.baseid)).toEqual([userid]);
+    });
+
+    it.each(spellings)('writes persons, addresses and interests under a %s spelling through their stored keys', async (_label, spell) => {
+      const { userid } = await addPerson();
+      expect(await inTenant((tx) => repo.updatePerson(tx, spell(userid), personInput({ fname: 'Spelled' })))).toMatchObject({ userid, fname: 'Spelled' });
+      const first = await inTenant((tx) => repo.insertAddress(tx, { userid, isprimary: 1 }));
+      const second = await inTenant((tx) => repo.insertAddress(tx, { userid, isprimary: null }));
+      expect(await inTenant((tx) => repo.updateAddress(tx, spell(second.addressid), { userid, city: 'Bergen' }))).toMatchObject({
+        addressid: second.addressid,
+        city: 'Bergen',
+      });
+      await inTenant((tx) => repo.setPrimaryAddress(tx, spell(userid), spell(second.addressid)));
+      const primaries = (await inTenant((tx) => repo.listAddresses(tx, userid))).map((row) => [row.addressid, row.isprimary]);
+      expect(Object.fromEntries(primaries)).toEqual({ [first.addressid]: 0, [second.addressid]: 1 });
+      // The target address is not also taken for another primary, so it is written once.
+      expect((await changelog('user_address', second.addressid)).map((row) => row.op)).toEqual(['insert', 'update', 'update']);
+      await inTenant((tx) => repo.replaceExtendData(tx, second.addressid, [{ attributeId: 4, row: extendValues('v') }]));
+      expect(await inTenant((tx) => repo.deleteAddress(tx, spell(second.addressid)))).toBe(true);
+      expect(await inTenant((tx) => repo.findAddress(tx, second.addressid))).toBeNull();
+      expect(await inTenant((tx) => repo.listExtendData(tx, [second.addressid]))).toEqual([]);
+
+      const category = cfUuid();
+      await inTenant((tx) => repo.replaceInterests(tx, userid, [category, 'KEEP']));
+      expect(await inTenant((tx) => repo.replaceInterests(tx, spell(userid), [spell('KEEP')], { scopeCategoryIds: [spell(category)] }))).toEqual([]);
+      const held = await rows<{ categoryid: string }>('SELECT categoryid FROM <s>.user_interest WHERE userid = $1', [userid]);
+      expect(held.map((row) => row.categoryid.trim())).toEqual(['KEEP']);
+    });
+
+    it('matches site ids ignoring case and trailing spaces', async () => {
+      const siteid = `Mixed-${cfUuid()}  `;
+      const variant = `${siteid.trimEnd().toLowerCase()} `;
+      const { userid } = await addPerson({ siteid, lname: 'Sitewise' });
+      const subtypeid = cfUuid();
+      await inTenant(async (tx) => {
+        await repo.insert(tx, 'extend_subtype', { subtypeid, siteid, type: 'User', subtype: 'Default', basetable: 'tusers' });
+        await repo.insert(tx, 'extend_attribute', { attributeid: 9001, extendsetid: cfUuid(), siteid, name: 'a', orderno: 1 });
+      });
+      const ids = (found: readonly { userid: string }[]): string[] => found.map((row) => row.userid);
+      expect(ids(await inTenant((tx) => repo.listPersonsForSite(tx, variant)))).toEqual([userid]);
+      expect(ids(await inTenant((tx) => repo.searchPersons(tx, { siteId: variant, term: 'sitewise' })))).toEqual([userid]);
+      expect(ids(await inTenant((tx) => repo.queryPersons(tx, { siteIds: [variant] })))).toEqual([userid]);
+      expect((await inTenant((tx) => repo.listExtendSubtypes(tx, { siteId: variant }))).map((row) => row.subtypeid)).toEqual([subtypeid]);
+      expect((await inTenant((tx) => repo.listExtendAttributes(tx, { siteId: variant, attributeIds: [9001] }))).map((row) => row.attributeid)).toEqual([9001]);
+    });
+
+    it.each(spellings)('finds archives, open roster operations and group names under a %s spelling', async (_label, spell) => {
+      const personId = cfUuid();
+      const archived = await inTenant((tx) => repo.insertPersonArchive(tx, archiveOf(personId)));
+      expect(await inTenant((tx) => repo.findPersonArchive(tx, spell(personId)))).toMatchObject({ archive_id: archived.archive_id, person_id: personId });
+      const userId = cfUuid();
+      const op = await inTenant((tx) => repo.insertRosterOperation(tx, { kind: 'admin-update', userId, payload: '{}' }));
+      expect(await inTenant((tx) => repo.findOpenRosterOperation(tx, spell(userId)))).toMatchObject({ operation_id: op.operation_id, user_id: userId });
+      const groupId = cfUuid();
+      await inTenant((tx) => repo.upsertGroupName(tx, groupOf(groupId)));
+      const renamed = await inTenant((tx) => repo.upsertGroupName(tx, { ...groupOf(spell(groupId)), group_name: 'Writers', aggregate_version: 2 }));
+      expect(renamed).toMatchObject({ group_id: groupId, group_name: 'Writers' });
+      expect((await inTenant((tx) => repo.listGroupNames(tx, [spell(groupId)]))).map((row) => [row.group_id, row.group_name])).toEqual([[groupId, 'Writers']]);
+      expect(await inTenant((tx) => repo.deleteGroupName(tx, spell(groupId)))).toBe(true);
+      expect(await inTenant((tx) => repo.listGroupNames(tx, [groupId]))).toEqual([]);
+    });
+
+    it.each(spellings)('continues a tombstone recorded under another spelling, keeping one row, under a %s spelling', async (_label, spell) => {
+      const userid = cfUuid();
+      await inTenant((tx) => repo.recordPersonTombstone(tx, userid, '4'));
+      expect(await inTenant((tx) => repo.personTombstoneVersion(tx, spell(userid)))).toBe('4');
+      await inTenant((tx) => repo.recordPersonTombstone(tx, spell(userid), '6'));
+      const stored = await rows('SELECT userid, row_version FROM <s>.person_tombstone WHERE userid COLLATE <s>.legacy_char_ci = $1::bpchar', [userid]);
+      expect(stored).toEqual([{ userid, row_version: '6' }]);
+      expect((await addPerson({ userid: spell(userid) })).row_version).toBe('7');
+    });
+
+    it('rejects a second key that differs from a stored one only in case', async () => {
+      const { userid } = await addPerson();
+      await expect(addPerson({ userid: userid.toLowerCase() })).rejects.toMatchObject({ code: '23505', constraint: 'person_tenant_ci_userid_uidx' });
+      const { addressid } = await inTenant((tx) => repo.insertAddress(tx, { userid }));
+      await expect(inTenant((tx) => repo.insertAddress(tx, { userid, addressid: addressid.toLowerCase() }))).rejects.toMatchObject({
+        code: '23505',
+        constraint: 'user_address_tenant_ci_addressid_uidx',
+      });
+      const userId = cfUuid();
+      await inTenant((tx) => repo.insertRosterOperation(tx, { kind: 'admin-update', userId, payload: '{}' }));
+      await expect(inTenant((tx) => repo.insertRosterOperation(tx, { kind: 'admin-update', userId: userId.toLowerCase(), payload: '{}' }))).rejects.toBeInstanceOf(
+        RosterOperationOpenError,
+      );
+      const personId = cfUuid();
+      await inTenant((tx) => repo.insertPersonArchive(tx, archiveOf(personId)));
+      await expect(inTenant((tx) => repo.insertPersonArchive(tx, archiveOf(personId.toLowerCase())))).rejects.toBeInstanceOf(DuplicateArchiveError);
+      const trash = { ...trashRow(), objectid: cfUuid() };
+      await inTenant((tx) => repo.insertTrashIfAbsent(tx, trash));
+      expect(await inTenant((tx) => repo.insertTrashIfAbsent(tx, { ...trash, objectid: trash.objectid.toLowerCase() }))).toBeNull();
+    });
+
+    it.each<[string, string, (tx: TenantTx, ids: readonly string[]) => Promise<Map<string, unknown[]>>, (tx: TenantTx, id: string) => Promise<unknown[]>]>([
+      ['listAddressesOf', 'user_address', (tx, ids) => repo.listAddressesOf(tx, ids), (tx, id) => repo.listAddresses(tx, id)],
+      ['listInterestsOf', 'user_interest', (tx, ids) => repo.listInterestsOf(tx, ids), (tx, id) => repo.listInterests(tx, id)],
+      ['listExtendDataOf', 'extend_data_user_activity', (tx, ids) => repo.listExtendDataOf(tx, ids), (tx, id) => repo.listExtendData(tx, [id])],
+    ])('%s reads every requested id in one statement, keyed by the id as given and each listed as its single-id read lists it', async (_label, table, many, one) => {
+      const owners = [cfUuid(), cfUuid()];
+      for (const userid of owners) {
+        await inTenant(async (tx) => {
+          await repo.insertAddress(tx, { userid, isprimary: null });
+          await repo.insertAddress(tx, { userid, isprimary: 1 });
+          await repo.replaceInterests(tx, userid, ['B-CATEGORY', 'A-CATEGORY']);
+          await repo.replaceExtendData(tx, userid, [{ attributeId: 2, row: extendValues('b') }, { attributeId: 1, row: extendValues('a') }]);
+        });
+      }
+      const [first, second] = owners as [string, string];
+      const absent = cfUuid();
+      const requested = [first.toLowerCase(), `${second}  `, first.toLowerCase(), absent];
+      const statements: string[] = [];
+      const found = await inTenant((tx) => many(recorded(tx, statements), requested));
+      expect(statements.filter((sql) => sql.includes(`"${handle.schema}"."${table}"`))).toHaveLength(1);
+      expect([...found.keys()]).toEqual([first.toLowerCase(), `${second}  `, absent]);
+      for (const [id, listed] of found) expect(listed).toEqual(await inTenant((tx) => one(tx, id)));
+      expect(found.get(first.toLowerCase())).toHaveLength(2);
+      expect(found.get(absent)).toEqual([]);
+      const none: string[] = [];
+      expect(await inTenant((tx) => many(recorded(tx, none), []))).toEqual(new Map());
+      expect(none.filter((sql) => sql.includes(`"${handle.schema}"."${table}"`))).toEqual([]);
+    });
+
+    it('findAddresses reads every requested id in one statement, keyed by the id as given, each as findAddress finds it and an unmatched id absent', async () => {
+      const userid = cfUuid();
+      const first = await inTenant((tx) => repo.insertAddress(tx, { userid, city: 'Oslo' }));
+      const second = await inTenant((tx) => repo.insertAddress(tx, { userid, city: 'Bergen' }));
+      const requested = [first.addressid.toLowerCase(), `${second.addressid}  `, first.addressid.toLowerCase(), cfUuid()];
+      const statements: string[] = [];
+      const found = await inTenant((tx) => repo.findAddresses(recorded(tx, statements), requested));
+      expect(statements.filter((sql) => sql.includes(`"${handle.schema}"."user_address"`))).toHaveLength(1);
+      expect([...found.keys()]).toEqual([first.addressid.toLowerCase(), `${second.addressid}  `]);
+      for (const [id, row] of found) expect(row).toEqual(await inTenant((tx) => repo.findAddress(tx, id)));
+      expect(await inTenant((tx) => repo.findAddresses(tx, [first.addressid]), TENANT_B.tenantId)).toEqual(new Map());
+      const none: string[] = [];
+      expect(await inTenant((tx) => repo.findAddresses(recorded(tx, none), []))).toEqual(new Map());
+      expect(none.filter((sql) => sql.includes(`"${handle.schema}"."user_address"`))).toEqual([]);
+    });
+
+    describe('planned over analyzed filler statistics', () => {
+      // Committed in a tenant no other test reads, then analyzed, so the plans no longer depend on the statistics autovacuum last gathered.
+      const tenant = TENANT_UMBRELLA.tenantId;
+
+      beforeAll(async () => {
+        await inTenant(async (tx) => {
+          for (const sql of Object.values(FILLERS)) await tx.query(sql.replaceAll('<s>', handle.schema), [tx.tenantId]);
+        }, tenant);
+        // Only the table owner may ANALYZE.
+        const client = await handle.migratorPool.connect();
+        try {
+          await client.query('BEGIN');
+          await client.query(`SET LOCAL ROLE "${handle.roles.owner}"`);
+          for (const table of Object.keys(FILLERS)) await client.query(`ANALYZE "${handle.schema}".${table}`);
+          await client.query('COMMIT');
+        } finally {
+          client.release();
+        }
+      });
+
+      it.each<[string, (tx: TenantTx) => Promise<unknown>, string, string, string]>([
+        ['findPerson', (tx) => repo.findPerson(tx, cfUuid()), 'person', 'person_tenant_ci_userid_uidx', 'userid'],
+        ['findPersons', (tx) => repo.findPersons(tx, [cfUuid()]), 'person', 'person_tenant_ci_userid_uidx', 'userid'],
+        ['findAddress', (tx) => repo.findAddress(tx, cfUuid()), 'user_address', 'user_address_tenant_ci_addressid_uidx', 'addressid'],
+        ['findAddresses', (tx) => repo.findAddresses(tx, [cfUuid()]), 'user_address', 'user_address_tenant_ci_addressid_uidx', 'addressid'],
+        ['listAddresses', (tx) => repo.listAddresses(tx, cfUuid()), 'user_address', 'user_address_tenant_ci_userid_idx', 'userid'],
+        ['listAddressesOf', (tx) => repo.listAddressesOf(tx, [cfUuid()]), 'user_address', 'user_address_tenant_ci_userid_idx', 'userid'],
+        ['listInterestsOf', (tx) => repo.listInterestsOf(tx, [cfUuid()]), 'user_interest', 'user_interest_tenant_ci_key_uidx', 'userid'],
+        ['replaceTags', (tx) => repo.replaceTags(tx, { userId: cfUuid(), siteId: 'tenant-a', tags: null }), 'user_tag', 'user_tag_tenant_ci_userid_idx', 'userid'],
+        ['listFavorites', (tx) => repo.listFavorites(tx, cfUuid()), 'user_favorite', 'user_favorite_tenant_ci_userid_idx', 'userid'],
+        ['listExtendData', (tx) => repo.listExtendData(tx, [cfUuid()]), 'extend_data_user_activity', 'extend_data_user_activity_tenant_ci_baseid_idx', 'baseid'],
+        ['listExtendDataOf', (tx) => repo.listExtendDataOf(tx, [cfUuid()]), 'extend_data_user_activity', 'extend_data_user_activity_tenant_ci_baseid_idx', 'baseid'],
+        ['listExtendSets', (tx) => repo.listExtendSets(tx, [cfUuid()]), 'extend_set', 'extend_set_tenant_ci_subtypeid_idx', 'subtypeid'],
+        ['listExtendAttributes', (tx) => repo.listExtendAttributes(tx, { setIds: [cfUuid()] }), 'extend_attribute', 'extend_attribute_tenant_extendsetid_ci_idx', 'extendsetid'],
+        ['insertTrashIfAbsent', (tx) => repo.insertTrashIfAbsent(tx, { ...trashRow(), objectid: cfUuid() }), 'trash', 'trash_tenant_ci_objectid_uidx', 'objectid'],
+        ['findPersonArchive', (tx) => repo.findPersonArchive(tx, cfUuid()), 'person_archive', 'person_archive_tenant_ci_person_effective_uidx', 'person_id'],
+        ['listGroupNames', (tx) => repo.listGroupNames(tx, [cfUuid()]), 'group_name', 'group_name_tenant_ci_group_id_uidx', 'group_id'],
+        ['personTombstoneVersion', (tx) => repo.personTombstoneVersion(tx, cfUuid()), 'person_tombstone', 'person_tombstone_tenant_ci_userid_uidx', 'userid'],
+        ['countRosterOperations', (tx) => repo.countRosterOperations(tx, [cfUuid()]), 'roster_operation', 'roster_operation_tenant_ci_user_id_idx', 'user_id'],
+      ])('looks %s up through its case-insensitive index', async (_label, call, table, index, column) => {
+        const scan = planNodes(await planOf(call, table, tenant)).find((node) => node['Index Name'] === index);
+        expect(scan?.['Index Cond']).toMatch(new RegExp(`\\b${column}\\b`));
+      });
+    });
+  });
+});
+
+function extendValues(stringvalue: string) {
+  return { siteid: 'tenant-a', attributevalue: stringvalue, remoteid: null, datetimevalue: null, numericvalue: null, stringvalue };
+}

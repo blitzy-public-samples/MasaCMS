@@ -1,0 +1,260 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://opt2.local/gateway/cutover-table.schema.json",
+  "title": "OPT-2 cut-over table version",
+  "type": "object",
+  "required": [
+    "tableVersion",
+    "previous",
+    "sourceSha",
+    "createdAt",
+    "groupAuthority",
+    "rollbackRefs",
+    "entries"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "tableVersion": {
+      "$ref": "#/$defs/version"
+    },
+    "previous": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/version"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "sourceSha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "createdAt": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{3})?Z$"
+    },
+    "groupAuthority": {
+      "description": "Authority of every generated cut-over group.",
+      "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^grp:[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/authority"
+      }
+    },
+    "rollbackRefs": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/rollbackRef"
+      }
+    },
+    "entries": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/entry"
+      }
+    }
+  },
+  "$defs": {
+    "version": {
+      "type": "string",
+      "pattern": "^v[0-9]{4}$"
+    },
+    "authority": {
+      "type": "string",
+      "enum": [
+        "legacy",
+        "target"
+      ]
+    },
+    "groupId": {
+      "type": "string",
+      "pattern": "^grp:[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+    },
+    "unitId": {
+      "description": "Target-table unit <schema>.<table>.",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+    },
+    "routeKey": {
+      "description": "Lower-case <family>:<body>[{variant}] route key.",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*:[^\\sA-Z]+$"
+    },
+    "owningService": {
+      "type": "string",
+      "enum": [
+        "identity",
+        "people",
+        "programs-sites",
+        "strategies-content",
+        "communications",
+        "reporting",
+        "surveys",
+        "timesheets",
+        "finance",
+        "e-signature",
+        "stub",
+        "web",
+        "gateway",
+        "none"
+      ]
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "read",
+        "write",
+        "legacy-write",
+        "job",
+        "static"
+      ]
+    },
+    "disposition": {
+      "type": "string",
+      "enum": [
+        "retired",
+        "carry",
+        "legacy-served",
+        "decision"
+      ]
+    },
+    "rollbackRef": {
+      "type": "object",
+      "required": [
+        "groups",
+        "rollbackSet",
+        "report",
+        "evidence"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "groups": {
+          "description": "Groups this version returns to legacy.",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/groupId"
+          }
+        },
+        "rollbackSet": {
+          "description": "Computed roster group set.",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/groupId"
+          }
+        },
+        "report": {
+          "type": "string",
+          "pattern": "^opt2/reports/reconciliation/[a-z0-9-]+\\.json$"
+        },
+        "evidence": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9._/-]+$"
+          }
+        }
+      }
+    },
+    "entry": {
+      "type": "object",
+      "required": [
+        "route",
+        "owningService",
+        "tableVersion",
+        "state",
+        "kind",
+        "units",
+        "disposition"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "route": {
+          "$ref": "#/$defs/routeKey"
+        },
+        "owningService": {
+          "$ref": "#/$defs/owningService"
+        },
+        "tableVersion": {
+          "$ref": "#/$defs/version"
+        },
+        "state": {
+          "$ref": "#/$defs/authority"
+        },
+        "kind": {
+          "$ref": "#/$defs/kind"
+        },
+        "group": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/groupId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "units": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/unitId"
+          }
+        },
+        "disposition": {
+          "$ref": "#/$defs/disposition"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "type": "object",
+            "required": [
+              "kind",
+              "units"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "write"
+              },
+              "units": {
+                "type": "array",
+                "minItems": 1
+              }
+            }
+          },
+          "then": {
+            "type": "object",
+            "required": [
+              "group"
+            ],
+            "properties": {
+              "group": {
+                "type": "string"
+              }
+            }
+          },
+          "else": {
+            "type": "object",
+            "properties": {
+              "group": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

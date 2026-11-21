@@ -1,0 +1,121 @@
+
+<div class="mura-panel panel">
+	<div class="mura-panel-heading" role="tab" id="heading-assoc">
+		<h4 class="mura-panel-title">
+			<a class="collapse collapsed" role="button" data-toggle="collapse" data-parent="#content-panels" href="#panel-assoc" aria-expanded="true" aria-controls="panel-assoc">
+				
+				Image 
+			</a>
+		</h4>
+	</div>
+	<div id="panel-assoc" class="panel-collapse collapse" role="tabpanel" aria-labelledby="heading-assoc" aria-expanded="false" style="height: 0px;">
+		<div class="mura-panel-body">
+			
+				<span id="extendset-container-tabassoctop" class="extendset-container"></span>
+
+								
+				
+<div id="assocFileContainer" class="mura-control-group" style="display:none">
+	
+   		<label>
+		
+		<span data-toggle="popover" title="" data-placement="right"
+  	data-content="Associate&#x20;an&#x20;image&#x20;for&#x20;this&#x20;content.&#x20;Upon&#x20;saving,&#x20;three&#x20;versions&#x20;of&#x20;this&#x20;image&#x20;will&#x20;be&#x20;created&#x3a;&#x20;Small,&#x20;Medium&#x20;and&#x20;Large.&#x20;These&#x20;sizes&#x20;are&#x20;defined&#x20;in&#x20;Site&#x20;Settings.&#x20;Supported&#x20;Formats&#x3a;&#x20;JPG,PNG."
+  	data-original-title="Associated&#x20;Image">
+  		Associated Image <i class="mi-question-circle"></i></span>
+		</label>
+	
+		<div id="assocImagePreviewContainer">
+			<img id="assocImagePreview" src="" style="display: none;">
+		</div>
+		
+
+			
+			
+			<div class="bigui" id="bigui__associmg" data-label="Select Image">
+				<div class="bigui__title">Associated&#x20;Image</div>
+
+				<div class="bigui__controls">
+						
+	<div data-name="newfile" data-property="fileid" data-fileid="" data-filetype="Image" data-contentid="4529E65F-C3A2-811D-575B002B01560F1E" data-siteid="default" class="mura-file-selector ">			
+		<div class="mura-input-set mura-file-selector-tabs" data-toggle="buttons-radio">
+			<button type="button" style="display:none">placeholder</button>
+			<button type="button" class="btn btn-default mura-file-type-selector active" value="Upload"><i class="mi-upload"></i> Via Upload</button>
+			<button type="button" class="btn btn-default mura-file-type-selector" value="URL"><i class="mi-download"></i> Via URL</button>
+			<button type="button" class="btn btn-default mura-file-type-selector" value="Existing"><i class="mi-file-picture-o"></i> Select Existing</button>
+			
+		</div>
+
+		<div id="mura-file-upload-newfile" class="mura-file-option mura-file-upload fileTypeOptionnewfile">
+
+			<div class="mura-control-group">
+					<input name="newfile" type="file" class="mura-file-selector-newfile"
+						data-label="" data-label="newfile" data-validation="" data-regex="" data-message="">
+					<a style="display:none;" class="btn btn-default" href="" onclick="return openFileMetaData('4529E6F5-F29F-ADD1-F2AE8D5C7F9CE2A7','','default','fileid');"><i class="mi-info-circle"></i></a>
+			</div>
+
+		</div>
+		<div id="mura-file-url-newfile" class="mura-file-option mura-file-url fileTypeOptionnewfile">
+
+			<div class="mura-control-group">
+					<input type="text" name="newfile" class="mura-file-selector-newfile span6" type="url" placeholder="http://www.domain.com/yourfile.png"	value=""
+					data-label="" data-label="newfile" data-validate="" data-regex="" data-message="">
+					<a style="display:none;" class="btn btn-default file-meta-open" href="" onclick="return openFileMetaData('4529E6F5-F29F-ADD1-F2AE8D5C7F9CE2A7','','default','fileid');"><i class="mi-info-circle"></i></a>
+			</div>
+
+		</div>
+
+		<div id="mura-file-existing-newfile" class="mura-file-option mura-file-existing fileTypeOptionnewfile">
+
+		</div>
+		
+	</div>
+
+
+
+				</div>
+			</div> 
+
+		
+	<script>
+		siteManager.hasFileLock=false;
+		siteManager.unlockfileconfirm="Unlock\x20this\x20File\x3F";
+	</script>
+
+	<script type="text/javascript">
+		$('#assocImagePreview').click(function(){
+			$(this).parents().siblings('.bigui__launch').trigger('click');
+		})
+		function updateAssocPreview(){
+			var imgsrc = $('#assocImage').attr('src');
+			if (imgsrc){
+				$('#assocImagePreview').attr('src',imgsrc).show();
+			}			
+		}
+		// run on load
+		updateAssocPreview();
+	</script>
+
+	<input type="hidden" id="unlockfilewithnew" name="unlockfilewithnew" value="false" />
+</div>
+
+
+				<span id="extendset-container-assoc" class="extendset-container"></span>
+
+				<div class="mura-control-group extendedattributes-group" id="extendedattributes-container-image">
+					<div class="bigui" id="bigui__image" data-label="Manage Extended Attributes">
+						<div class="bigui__title">Manage Extended Attributes</div>
+						<div class="bigui__controls">
+							<span id="extendset-container-tabextendedattributestop"></span>
+							<span id="extendset-container-image" class="extendset-container extendedattributes-body" data-controlparent="extendedattributes-container-image"></span>
+							<span id="extendset-container-tabextendedattributesbottom"></span>
+						</div>
+					</div>
+					
+				</div>
+
+				<span id="extendset-container-tabassocbottom" class="extendset-container"></span>
+
+		</div>
+	</div>
+</div> 

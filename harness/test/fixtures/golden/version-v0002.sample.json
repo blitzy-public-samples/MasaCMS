@@ -1,0 +1,127 @@
+{
+  "tableVersion": "v0002",
+  "previous": "v0001",
+  "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
+  "createdAt": "2026-06-02T00:00:00.000Z",
+  "groupAuthority": {
+    "grp:content.approval_action": "target",
+    "grp:identity.user_account": "target"
+  },
+  "rollbackRefs": [],
+  "entries": [
+    {
+      "route": "admin:cusers.update{type=2,action=add}",
+      "owningService": "people",
+      "tableVersion": "v0002",
+      "state": "target",
+      "kind": "write",
+      "group": "grp:identity.user_account",
+      "units": [
+        "identity.user_account",
+        "people.person"
+      ],
+      "disposition": "carry"
+    },
+    {
+      "route": "api:content.findone",
+      "owningService": "strategies-content",
+      "tableVersion": "v0002",
+      "state": "target",
+      "kind": "read",
+      "group": null,
+      "units": [
+        "content.content"
+      ],
+      "disposition": "carry"
+    },
+    {
+      "route": "admin:carch.update{upload=image}",
+      "owningService": "none",
+      "tableVersion": "v0002",
+      "state": "legacy",
+      "kind": "legacy-write",
+      "group": null,
+      "units": [
+        "content.approval_action",
+        "content.approval_request",
+        "content.changeset",
+        "content.changeset_category_assign",
+        "content.changeset_tag_assign",
+        "content.content",
+        "content.content_assignment",
+        "content.content_category_assign",
+        "content.content_object",
+        "content.content_related",
+        "content.content_remote_pointer",
+        "content.content_stats",
+        "content.content_tag",
+        "content.extend_data",
+        "content.file",
+        "content.file_metadata",
+        "content.filename_archive",
+        "content.public_submission_approval",
+        "content.source_map",
+        "content.trash",
+        "identity.redirect"
+      ],
+      "disposition": "decision"
+    },
+    {
+      "route": "admin:cdashboard.listsessions",
+      "owningService": "reporting",
+      "tableVersion": "v0002",
+      "state": "legacy",
+      "kind": "read",
+      "group": null,
+      "units": [
+        "reporting.export_definition",
+        "reporting.export_job",
+        "reporting.session_tracking"
+      ],
+      "disposition": "legacy-served"
+    },
+    {
+      "route": "sitemonitor:run",
+      "owningService": "programs-sites",
+      "tableVersion": "v0002",
+      "state": "target",
+      "kind": "job",
+      "group": null,
+      "units": [
+        "communications.email",
+        "communications.email_return_stat",
+        "communications.email_stat",
+        "content.approval_action",
+        "content.approval_request",
+        "content.changeset",
+        "content.changeset_category_assign",
+        "content.changeset_rollback",
+        "content.changeset_tag_assign",
+        "content.content",
+        "content.content_assignment",
+        "content.content_category_assign",
+        "content.content_object",
+        "content.content_related",
+        "content.content_stats",
+        "content.content_tag",
+        "content.extend_data",
+        "content.file",
+        "content.file_metadata",
+        "content.filename_archive",
+        "content.public_submission_approval",
+        "content.source_map"
+      ],
+      "disposition": "carry"
+    },
+    {
+      "route": "static:/admin/assets/**",
+      "owningService": "none",
+      "tableVersion": "v0002",
+      "state": "legacy",
+      "kind": "static",
+      "group": null,
+      "units": [],
+      "disposition": "legacy-served"
+    }
+  ]
+}

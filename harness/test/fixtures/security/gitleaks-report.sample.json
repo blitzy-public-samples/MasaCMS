@@ -1,0 +1,42 @@
+[
+  {
+    "RuleID": "gcp-api-key",
+    "Description": "Uncovered a GCP API key, which could lead to unauthorized access to Google Cloud services and data breaches.",
+    "StartLine": 45,
+    "EndLine": 45,
+    "StartColumn": 34,
+    "EndColumn": 73,
+    "Match": "REDACTED'",
+    "Secret": "REDACTED",
+    "File": "core/vendor/ckeditor/plugins/leaflet/dialogs/leaflet.js",
+    "SymlinkFile": "",
+    "Commit": "",
+    "Entropy": 4.5606675,
+    "Author": "",
+    "Email": "",
+    "Date": "",
+    "Message": "",
+    "Tags": [],
+    "Fingerprint": "core/vendor/ckeditor/plugins/leaflet/dialogs/leaflet.js:gcp-api-key:45"
+  },
+  {
+    "RuleID": "generic-api-key",
+    "Description": "Detected a Generic API Key, potentially exposing access to various services and sensitive operations.",
+    "StartLine": 12,
+    "EndLine": 12,
+    "StartColumn": 7,
+    "EndColumn": 52,
+    "Match": "REDACTED",
+    "Secret": "REDACTED",
+    "File": "services/people/src/config.ts",
+    "SymlinkFile": "",
+    "Commit": "",
+    "Entropy": 4.12,
+    "Author": "",
+    "Email": "",
+    "Date": "",
+    "Message": "",
+    "Tags": [],
+    "Fingerprint": "services/people/src/config.ts:generic-api-key:12"
+  }
+]

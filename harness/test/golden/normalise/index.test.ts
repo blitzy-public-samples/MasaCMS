@@ -1,0 +1,807 @@
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import JSZip from 'jszip';
+import { LEGACY_JSON_CONTENT_TYPE, cfHash, cfUuid, legacyHeaders } from '@opt2/platform/legacy-compat';
+import { encodeRow, type CanonicalColumn } from '@opt2/platform/migration-kit';
+import { parse as parseCsv } from 'csv-parse/sync';
+import { beforeAll, describe, expect, it } from 'vitest';
+import { goldenRun, readGoldenSet, type GoldenSet } from '../../../src/golden/capture.js';
+import {
+  loadCatalogue,
+  scenarioById,
+  scenarioSchema,
+  type Catalogue,
+  type CompareKind,
+  type Scenario,
+} from '../../../src/golden/catalogue.js';
+import {
+  ETAG_OK,
+  SIDE_EFFECTS_STEP,
+  compareNormalised,
+  createNormaliseState,
+  loadRules,
+  normaliseBody,
+  normaliseSideEffects,
+  normaliseStep,
+  type Difference,
+  type DomControl,
+  type NormaliseRules,
+  type NormaliseState,
+  type NormalisedRun,
+  type NormalisedSideEffects,
+  type NormalisedStep,
+  type StateTransitions,
+} from '../../../src/golden/normalise/index.js';
+import type { RowSnapshot, SideEffects } from '../../../src/golden/side-effects.js';
+import type { RecordedResponse, StepRecord } from '../../../src/golden/steps.js';
+
+const LEGACY = 'http://127.0.0.1:8500';
+const GATEWAY = 'http://127.0.0.1:8100';
+const JSON_TYPE = 'application/json; charset=utf-8';
+const HTML_TYPE = 'text/html; charset=UTF-8';
+const CF_UUID = /[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16}/g;
+const CONTENT_ROUTE = 'api:content.findone';
+const EDIT_USER_ROUTE = 'admin:cusers.edituser';
+const ROWS_UNIT = 'content.content';
+const ROW_COLUMNS: CanonicalColumn[] = [
+  { name: 'ContentID', type: 's' },
+  { name: 'Title', type: 's' },
+];
+
+const ENVELOPES: readonly [string, number][] = [
+  ['envelope-success.json', 200],
+  ['envelope-error-400-invalid-parameters.json', 400],
+  ['envelope-error-400-invalid-method.json', 400],
+  ['envelope-error-400-bad-request.json', 400],
+  ['envelope-error-400-invalid-csrf.json', 400],
+  ['envelope-error-401-insufficient-permissions.json', 401],
+  ['envelope-error-401-invalid-token.json', 401],
+  ['envelope-error-500-server-error.json', 500],
+];
+
+const fixturePath = (path: string): string => fileURLToPath(new URL(`../../fixtures/${path}`, import.meta.url));
+const readFixture = (path: string): string => readFileSync(fixturePath(path), 'utf8');
+
+const SUCCESS = readFixture('http/envelope-success.json');
+const EDIT_USER_HTML = readFixture('html/admin-edituser.html');
+const SITE_MANAGER = readFixture('html/site-manager.json');
+
+let rules: NormaliseRules;
+let catalogue: Catalogue;
+let contentRead: Scenario;
+
+beforeAll(async () => {
+  rules = loadRules(undefined, { PORT: '8500' });
+  catalogue = await loadCatalogue(fixturePath('golden/catalogue.valid.yaml'));
+  contentRead = scenarioById(catalogue, 'GS-CO-05');
+});
+
+interface RecordSpec {
+  name?: string;
+  index?: number;
+  routeKey?: string;
+  status?: number;
+  contentType: string;
+  text?: string;
+  bytes?: Buffer;
+  headers?: Record<string, string | string[]>;
+  hops?: RecordedResponse['hops'];
+}
+
+/** A step record shaped as the step runner records it; a JSON body carries the legacy ETag of its exact text. */
+function stepRecord(spec: RecordSpec): StepRecord {
+  const raw = spec.bytes ?? Buffer.from(spec.text ?? '', 'utf8');
+  const headers: Record<string, string | string[]> = { 'content-type': spec.contentType };
+  if (spec.text !== undefined && spec.contentType.startsWith('application/json')) headers.etag = cfHash(spec.text);
+  const base = {
+    status: spec.status ?? 200,
+    headers: { ...headers, ...spec.headers },
+    contentType: spec.contentType,
+    sha256: createHash('sha256').update(raw).digest('hex'),
+    hops: spec.hops ?? [],
+  };
+  const response: RecordedResponse =
+    spec.bytes === undefined ? { ...base, text: spec.text ?? '' } : { ...base, bytesBase64: spec.bytes.toString('base64') };
+  return {
+    name: spec.name ?? 'findone',
+    index: spec.index ?? 0,
+    routeKey: spec.routeKey ?? CONTENT_ROUTE,
+    request: { method: 'GET', url: '/index.cfm/_api/json/v1/tenant-a/content/', headers: {}, body: { kind: 'none' } },
+    response,
+    extracted: {},
+  };
+}
+
+function comparing(compare: CompareKind[], extra: Partial<Scenario> = {}): Scenario {
+  return scenarioSchema.parse({ ...contentRead, compare, ...extra });
+}
+
+async function normalise(records: readonly StepRecord[], scenario: Scenario): Promise<NormalisedStep[]> {
+  const ctx = { state: createNormaliseState(), rules, scenario };
+  const steps: NormalisedStep[] = [];
+  for (const record of records) steps.push(await normaliseStep(record, ctx));
+  return steps;
+}
+
+async function normaliseOne(
+  record: StepRecord,
+  scenario: Scenario,
+  state: NormaliseState = createNormaliseState(),
+): Promise<NormalisedStep> {
+  return normaliseStep(record, { state, rules, scenario });
+}
+
+const run = (steps: readonly NormalisedStep[], sideEffects: NormalisedSideEffects = {}): NormalisedRun => ({
+  steps,
+  sideEffects,
+});
+
+const ordinal = (n: number): string => rules.ids.placeholder.replace('{n}', String(n));
+
+const verdicts = (differences: readonly Difference[]): Record<string, string> =>
+  Object.fromEntries(
+    differences.map((d) => [d.path, d.maskId === undefined ? d.classification : `${d.classification}:${d.maskId}`]),
+  );
+
+function gatewayCopy(text: string): string {
+  const remapped = new Map<string, string>();
+  return text
+    .replaceAll(LEGACY, GATEWAY)
+    .replaceAll('FIXTURE-TOKEN-1', 'FIXTURE-TOKEN-2')
+    .replace(/"csrf_token": "[^"]*"/, '"csrf_token": "FIXTURECSRFTOKEN0000000000000002"')
+    .replace(/"csrf_token_expires": "[^"]*"/, '"csrf_token_expires": "260630140000000"')
+    .replace(CF_UUID, (id) => {
+      const next = remapped.get(id) ?? cfUuid();
+      remapped.set(id, next);
+      return next;
+    });
+}
+
+function controlPath(step: NormalisedStep, match: (control: DomControl) => boolean, field: string): string {
+  const index = step.domModel?.controls.findIndex(match) ?? -1;
+  expect(index, 'fixture control').toBeGreaterThanOrEqual(0);
+  return `domModel.controls[${index}].${field}`;
+}
+
+function replaced(text: string, from: string, to: string): string {
+  expect(text).toContain(from);
+  return text.replace(from, to);
+}
+
+describe('normaliseStep representations', () => {
+  it.each(ENVELOPES)('represents %s by its envelope alone', async (file, status) => {
+    const text = readFixture(`http/${file}`);
+    const raw = JSON.parse(text) as Record<string, unknown>;
+    const step = await normaliseOne(stepRecord({ status, contentType: JSON_TYPE, text }), comparing(['status', 'envelope']));
+    const envelope = step.envelope as Record<string, unknown>;
+    expect(step.status).toBe(status);
+    expect(envelope).toMatchObject({ apiversion: 'v1', method: raw.method });
+    expect(Object.keys(envelope).sort()).toStrictEqual(Object.keys(raw).sort());
+    expect(envelope.error).toStrictEqual(raw.error);
+    expect(envelope.params).toStrictEqual(raw.params);
+    expect(step.maskedPaths).toStrictEqual({});
+    for (const part of ['body', 'domModel', 'export', 'headers', 'auth'] as const) expect(step[part]).toBeUndefined();
+  });
+
+  it('adds headers only when compared, with the ETag checked against the raw body', async () => {
+    const record = stepRecord({
+      contentType: JSON_TYPE,
+      text: SUCCESS,
+      headers: { date: 'Tue, 30 Jun 2026 12:00:00 GMT', generator: 'Masa CMS 7.6.1' },
+    });
+    const without = await normaliseOne(record, comparing(['status', 'envelope']));
+    const step = await normaliseOne(record, comparing(['status', 'envelope', 'headers']));
+    expect(without.headers).toBeUndefined();
+    expect(step.headers).toStrictEqual({ 'content-type': JSON_TYPE, etag: ETAG_OK, generator: 'Masa CMS 7.6.1' });
+    expect(step.auth).toBeUndefined();
+  });
+
+  it('adds auth only when compared, from the Set-Cookie of every hop', async () => {
+    const setCookie = ['CFID=FIXTURE-CFID-1;Path=/;HttpOnly'];
+    const hop = {
+      method: 'GET',
+      url: `${LEGACY}/index.cfm/_api/json/v1/tenant-a/content/`,
+      status: 200,
+      setCookie,
+      requestHeaders: {},
+      responseHeaders: { 'content-type': JSON_TYPE, 'set-cookie': setCookie },
+    };
+    const record = stepRecord({ contentType: JSON_TYPE, text: SUCCESS, headers: { 'set-cookie': setCookie }, hops: [hop] });
+    const without = await normaliseOne(record, comparing(['status', 'envelope']));
+    const step = await normaliseOne(record, comparing(['status', 'envelope', 'auth']));
+    expect(without.auth).toBeUndefined();
+    expect(step.auth).toStrictEqual({
+      cookies: [
+        {
+          name: 'CFID',
+          value: rules.auth.cookies.value,
+          path: '/',
+          httpOnly: true,
+          secure: false,
+          persistence: 'session',
+          hop: 0,
+          rotation: 'first',
+        },
+      ],
+      wwwAuthenticate: [],
+      redirectTargets: [],
+    });
+    expect(step.headers).toBeUndefined();
+  });
+
+  it('represents admin HTML by its DOM model when the DOM is compared, else as normalised text', async () => {
+    const record = stepRecord({ name: 'form', routeKey: EDIT_USER_ROUTE, contentType: HTML_TYPE, text: EDIT_USER_HTML });
+    const step = await normaliseOne(record, comparing(['status', 'dom']));
+    expect(step.domModel?.controls).toContainEqual(expect.objectContaining({ name: 'fname', value: 'Fixture' }));
+    expect(step.envelope).toBeUndefined();
+    expect(step.body).toBeUndefined();
+    const text = await normaliseOne(record, comparing(['status', 'envelope']));
+    expect(text.domModel).toBeUndefined();
+    expect(typeof text.body).toBe('string');
+  });
+
+  it('represents a CSV download by its cell grid when exports are compared', async () => {
+    const csv = readFixture('exports/users.csv');
+    const record = stepRecord({ routeKey: 'admin:cusers.download', contentType: 'text/csv', text: csv });
+    const step = await normaliseOne(record, comparing(['status', 'export']));
+    expect(step.export?.kind).toBe('csv');
+    expect(step.export).toMatchObject({ rows: expect.arrayContaining([expect.arrayContaining(['COMPANY', 'USERID'])]) });
+    expect(JSON.stringify(step.export)).not.toMatch(new RegExp(CF_UUID.source));
+    expect(step.body).toBeUndefined();
+  });
+
+  it('represents a PDF download by the text of each page when exports are compared, else by its digest', async () => {
+    const bytes = readFileSync(fixturePath('exports/tiny.pdf'));
+    const record = stepRecord({ routeKey: 'admin:carch.downloaddata', contentType: 'application/pdf', bytes });
+    const step = await normaliseOne(record, comparing(['status', 'export']));
+    const digest = await normaliseOne(record, comparing(['status', 'envelope']));
+    expect(step.export).toStrictEqual({ kind: 'pdf', pages: ['Fixture report page 1'] });
+    expect(digest.export).toStrictEqual({ kind: 'file', sha256: record.response.sha256, contentType: 'application/pdf' });
+  });
+
+  it('represents a ZIP download by its files when only the DOM is compared, whatever its entry times', async () => {
+    const zipType = 'application/zip; charset=UTF-8';
+    const download = async (date: Date): Promise<StepRecord> => {
+      const zip = new JSZip().file('wddx_rstcontent.xml', '<wddxPacket/>', { date });
+      const bytes = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+      return stepRecord({ routeKey: 'admin:carch.export', contentType: zipType, bytes });
+    };
+    const capture = await download(new Date(Date.UTC(2026, 10, 16, 23, 43)));
+    const replay = await download(new Date(Date.UTC(2026, 10, 16, 23, 50)));
+    const scenario = comparing(['status', 'dom']);
+
+    const step = await normaliseOne(capture, scenario);
+
+    expect(replay.response.sha256).not.toBe(capture.response.sha256);
+    expect(step.export).toStrictEqual({
+      kind: 'zip',
+      contentType: zipType,
+      entries: [
+        { name: 'wddx_rstcontent.xml', sha256: createHash('sha256').update('<wddxPacket/>').digest('hex'), size: 13 },
+      ],
+    });
+    expect((await normaliseOne(replay, scenario)).export).toStrictEqual(step.export);
+  });
+
+  it("reads a legacy body whose JSON escapes ' as \\'", async () => {
+    const text = String.raw`{"apiversion":"v1","method":"findOne","data":{"title":"Masa\'s page"}}`;
+    const step = await normaliseOne(stepRecord({ contentType: JSON_TYPE, text }), comparing(['status', 'envelope']));
+    expect(step.envelope).toStrictEqual({ apiversion: 'v1', data: { title: "Masa's page" }, method: 'findOne' });
+  });
+});
+
+describe('normaliseBody', () => {
+  it('turns embedded admin markup into its DOM model and keeps the other fields of the response', () => {
+    const scenario = comparing(['status', 'dom']);
+    const body = normaliseBody(JSON_TYPE, SITE_MANAGER, { state: createNormaliseState(), rules, scenario });
+    expect(body.envelope).toBeUndefined();
+    expect(body.body).toMatchObject({ perm: 'editor', sortby: 'orderno', html: { controls: expect.any(Array) } });
+    expect(JSON.stringify(body)).not.toMatch(/77777777-|88888888-|FIXTURECSRFTOKEN/);
+    expect(body.maskedPaths).toStrictEqual({});
+  });
+
+  it('normalises a JSON XHR body by the same rules as a step envelope', async () => {
+    const scenario = comparing(['status', 'envelope']);
+    const xhr = normaliseBody(JSON_TYPE, SUCCESS, { state: createNormaliseState(), rules, scenario });
+    const step = await normaliseOne(stepRecord({ contentType: JSON_TYPE, text: SUCCESS }), scenario);
+    expect(xhr).toStrictEqual({ envelope: step.envelope, maskedPaths: {} });
+    const plain = JSON.stringify({ contentid: cfUuid(), csrf_token: 'FIXTURECSRFTOKEN0000000000000001' });
+    expect(normaliseBody(JSON_TYPE, plain, { state: createNormaliseState(), rules, scenario })).toStrictEqual({
+      body: { contentid: ordinal(1), csrf_token: rules.tokens.placeholder },
+      maskedPaths: {},
+    });
+  });
+});
+
+describe('scenario normalisationOverrides', () => {
+  it('drops, sorts and keeps literal the JSON paths a scenario names', async () => {
+    const scenario = comparing(['status', 'envelope'], {
+      normalisationOverrides: {
+        dropPaths: ['data.links'],
+        sortArrays: ['data.items'],
+        literalPaths: ['data.items[*].contenthistid'],
+      },
+    });
+    const raw = JSON.parse(SUCCESS) as { data: { items: unknown[]; links: Record<string, string> } };
+    const reordered = JSON.stringify({
+      ...raw,
+      data: { ...raw.data, items: [...raw.data.items].reverse(), links: { self: `${GATEWAY}/elsewhere` } },
+    });
+    const golden = await normaliseOne(stepRecord({ contentType: JSON_TYPE, text: SUCCESS }), scenario);
+    const replay = await normaliseOne(stepRecord({ contentType: JSON_TYPE, text: reordered }), scenario);
+    const data = (golden.envelope as { data: Record<string, unknown> }).data;
+    expect(data).not.toHaveProperty('links');
+    expect(data.items).toContainEqual(
+      expect.objectContaining({ contenthistid: '8A9B0C1D-2E3F-4A5B-9C6D7E8F9A0B1C2D', contentid: expect.stringMatching(/^<id:\d+>$/) }),
+    );
+    expect(compareNormalised(run([golden]), run([replay]), { rules, scenario })).toStrictEqual([]);
+  });
+
+  it("compares GS-PE-05's exports whatever order legacy gives rows tying on their declared keys", async () => {
+    const userExports = scenarioById(await loadCatalogue(), 'GS-PE-05');
+    const { records } = JSON.parse(readFixture('golden/gs-pe-05-exports.json')) as { records: StepRecord[] };
+    const keyed = new Map([
+      ['advanced-csv', ['LNAME']],
+      ['download', ['LNAME', 'FNAME']],
+      ['group-members', ['LNAME']],
+    ]);
+    // Each run of rows tying on the step's keys reversed, as another plan or parallel sort may return it.
+    const reversedTies = (record: StepRecord): StepRecord => {
+      // The fixture holds one record per line, so lines move whole and keep legacy's quoting.
+      const lines = ('text' in record.response ? record.response.text : '').trimEnd().split('\n');
+      const cells = (line: string): string[] => parseCsv(line)[0] ?? [];
+      const at = (keyed.get(record.name) ?? []).map((name) => cells(lines[0] ?? '').indexOf(name));
+      const key = (line: string): string => at.map((i) => cells(line)[i]).join('\u0000');
+      const rows: string[] = [];
+      for (let start = 1, end = 2; start < lines.length; start = end, end = start + 1) {
+        while (end < lines.length && key(lines[end] as string) === key(lines[start] as string)) end += 1;
+        rows.push(...lines.slice(start, end).reverse());
+      }
+      return { ...record, response: { ...record.response, text: `${[lines[0], ...rows].join('\n')}\n` } };
+    };
+    const shuffled = records.map(reversedTies);
+    const unordered = { ...userExports, normalisationOverrides: {} };
+
+    expect(shuffled.map((r) => ('text' in r.response ? r.response.text : ''))).not.toStrictEqual(
+      records.map((r) => ('text' in r.response ? r.response.text : '')),
+    );
+    const differences = async (scenario: Scenario): Promise<Difference[]> =>
+      compareNormalised(run(await normalise(records, scenario)), run(await normalise(shuffled, scenario)), { rules, scenario });
+    expect(await differences(userExports)).toStrictEqual([]);
+    const without = await differences(unordered);
+    expect(new Set(without.map((d) => d.step))).toStrictEqual(new Set(keyed.keys()));
+    expect(without.every((d) => d.path.startsWith('export.rows['))).toBe(true);
+  });
+
+  it('drops the error stack trace only when the scenario applies error-stacktrace', async () => {
+    const raw = JSON.parse(readFixture('http/envelope-error-500-server-error.json')) as { error: object };
+    const text = JSON.stringify({ ...raw, error: { ...raw.error, stacktrace: { type: 'expression' } } });
+    const record = stepRecord({ status: 500, contentType: JSON_TYPE, text });
+    const kept = await normaliseOne(record, comparing(['status', 'envelope']));
+    const dropped = await normaliseOne(
+      record,
+      comparing(['status', 'envelope'], { normalisationOverrides: { applyRules: ['error-stacktrace'] } }),
+    );
+    expect(kept.envelope).toHaveProperty('error.stacktrace');
+    expect(dropped.envelope).toMatchObject({ error: raw.error });
+    expect(dropped.envelope).not.toHaveProperty('error.stacktrace');
+  });
+
+  // cwebservice.edit repeats the generated client secret in its Example Usage link and that link's text.
+  const secret = createHash('sha256').update('opt2-client').digest('hex').toUpperCase();
+  const secretPage = (control: string): string =>
+    `<form name="form1">${control}</form>` +
+    `<a href="/_api/rest/v1/tenant-a/oauth2?client_secret=${secret}">oauth2?client_secret${secret}</a>` +
+    `<div class="alert alert-info">${secret}</div>`;
+  const secretTokenScenario = (): Scenario =>
+    comparing(['status', 'dom'], { normalisationOverrides: { extraTokenFields: ['clientsecret'] } });
+
+  it.each<[string, string]>([
+    ['a hidden input', `<input type="hidden" name="clientsecret" value="${secret}">`],
+    ['a textarea named in another case', `<textarea name="ClientSecret">${secret}</textarea>`],
+  ])('masks the value of %s an extraTokenFields name covers wherever the page repeats it', async (_label, control) => {
+    const record = stepRecord({ contentType: HTML_TYPE, text: secretPage(control) });
+    const plain = await normaliseOne(record, comparing(['status', 'dom']));
+    const masked = await normaliseOne(record, secretTokenScenario());
+    const token = rules.tokens.placeholder;
+    expect(plain.domModel?.links).toStrictEqual([
+      { href: `/_api/rest/v1/tenant-a/oauth2?client_secret=${secret}`, text: `oauth2?client_secret${secret}` },
+    ]);
+    expect(masked.domModel?.controls.map((control) => control.value)).toStrictEqual([token]);
+    expect(masked.domModel?.links).toStrictEqual([
+      { href: `/_api/rest/v1/tenant-a/oauth2?client_secret=${token}`, text: `oauth2?client_secret${token}` },
+    ]);
+    expect(masked.domModel?.alerts).toStrictEqual([{ kind: 'alert-info', text: token }]);
+    expect(JSON.stringify(masked)).not.toContain(secret);
+  });
+
+  it('leaves the page as served when the control an extraTokenFields name covers is empty', async () => {
+    const record = stepRecord({ contentType: HTML_TYPE, text: secretPage('<input name="clientsecret" value="">') });
+    const masked = await normaliseOne(record, secretTokenScenario());
+    expect(masked.domModel).toStrictEqual((await normaliseOne(record, comparing(['status', 'dom']))).domModel);
+    expect(masked.domModel?.alerts).toStrictEqual([{ kind: 'alert-info', text: secret }]);
+  });
+});
+
+describe('Mailpit message ids in the GS-CM-02 envelopes', () => {
+  // Mailpit message IDs: 22-character base57 short UUIDs.
+  const SENT = 'jP4qsXbu9KJuRQ9KBXVkPu';
+  const OTHER = 'Gq3nC7ZJm7dxuRPjZpUFrd';
+  const MESSAGE = '7A8B9C0D-1E2F-4A3B-8C4D5E6F7A8B9C0D';
+  let delivery: Scenario;
+
+  beforeAll(async () => {
+    delivery = scenarioById(await loadCatalogue(), 'GS-CM-02');
+  });
+
+  // The fixture detail() envelope: queued, sent and delivered rows, the delivered one carrying the Mailpit ID.
+  const detail = (method: string, mailpitId: string): string =>
+    JSON.stringify({
+      apiversion: 'v1',
+      method,
+      params: {},
+      data: {
+        message_id: MESSAGE,
+        state: 'delivered',
+        history: ['queued', 'sent', 'delivered'].map((status) => ({
+          status,
+          mailpit_id: status === 'delivered' ? mailpitId : '',
+        })),
+      },
+    });
+
+  const record = (name: string, index: number, mailpitId: string): StepRecord =>
+    stepRecord({ name, index, routeKey: 'fixture:communications/messages', contentType: JSON_TYPE, text: detail(name, mailpitId) });
+
+  const side = async (sent: string, polled: string, scenario: Scenario = delivery): Promise<NormalisedStep[]> =>
+    normalise([record('send', 0, sent), record('history', 1, polled)], scenario);
+
+  const mailpitIds = (steps: readonly NormalisedStep[]): string[][] =>
+    steps.map((step) => (step.envelope as { data: { history: { mailpit_id: string }[] } }).data.history.map((row) => row.mailpit_id));
+
+  it('gives a repeated Mailpit ID one ordinal across the steps and keeps the empty ones', async () => {
+    expect(mailpitIds(await side(SENT, SENT))).toStrictEqual([
+      ['', '', '<mailpit:1>'],
+      ['', '', '<mailpit:1>'],
+    ]);
+  });
+
+  it.each<[string, string, string, string[]]>([
+    ['another Mailpit ID for the same message', OTHER, OTHER, []],
+    ['a second Mailpit ID on the later step', SENT, OTHER, ['history:envelope.data.history[2].mailpit_id']],
+    ['no Mailpit ID', '', '', ['send', 'history'].map((step) => `${step}:envelope.data.history[2].mailpit_id`)],
+  ])('compares a replay carrying %s', async (_label, sent, polled, paths) => {
+    const differences = compareNormalised(run(await side(SENT, SENT)), run(await side(sent, polled)), {
+      rules,
+      scenario: delivery,
+    });
+    expect(differences.map((diff) => `${diff.step}:${diff.path}`)).toStrictEqual(paths);
+  });
+
+  it('keeps Mailpit IDs literal on a literalPaths override', async () => {
+    const literal = scenarioSchema.parse({
+      ...delivery,
+      normalisationOverrides: { literalPaths: ['data.history[*].mailpit_id'] },
+    });
+    expect(mailpitIds(await side(SENT, SENT, literal))).toStrictEqual([
+      ['', '', SENT],
+      ['', '', SENT],
+    ]);
+  });
+});
+
+describe('compareNormalised steps', () => {
+  it('normalises a legacy response and its gateway replay to the same step', async () => {
+    const served = { ...legacyHeaders(), date: 'Tue, 30 Jun 2026 12:00:00 GMT' };
+    const replayText = gatewayCopy(SUCCESS);
+    expect(replayText.match(CF_UUID)).not.toStrictEqual(SUCCESS.match(CF_UUID));
+    const legacy = stepRecord({ contentType: LEGACY_JSON_CONTENT_TYPE, text: SUCCESS, headers: served });
+    const gateway = stepRecord({
+      contentType: LEGACY_JSON_CONTENT_TYPE,
+      text: replayText,
+      headers: {
+        ...served,
+        traceparent: '00-00000000000000000000000000000001-0000000000000001-01',
+        'x-request-id': 'fixture-request-2',
+      },
+    });
+    const golden = await normaliseOne(legacy, contentRead);
+    const replay = await normaliseOne(gateway, contentRead);
+    expect(replay).toStrictEqual(golden);
+    expect(golden.headers).toMatchObject({ etag: ETAG_OK });
+    expect(compareNormalised(run([golden]), run([replay]), { rules, scenario: contentRead })).toStrictEqual([]);
+  });
+
+  it('finds no difference between the committed golden set and replay output samples', async () => {
+    const golden = goldenRun(await readGoldenSet('GS-CO-05', fixturePath('golden/golden-set.sample.json')));
+    const output = JSON.parse(readFixture('golden/replay-output.sample.json')) as Pick<GoldenSet, 'steps' | 'sideEffects'>;
+    const replay = goldenRun(output);
+    expect(replay.steps.map((step) => [step.name, step.routeKey])).toStrictEqual([['findone', CONTENT_ROUTE]]);
+    expect(compareNormalised(golden, replay, { rules, scenario: contentRead })).toStrictEqual([]);
+  });
+
+  it('reports a step on one side only as missing or extra at the root path', async () => {
+    const scenario = comparing(['status', 'envelope']);
+    const record = (name: string, index: number): StepRecord =>
+      stepRecord({ name, index, contentType: JSON_TYPE, text: SUCCESS });
+    const golden = await normalise([record('findone', 0), record('again', 1)], scenario);
+    const replay = await normalise([record('findone', 0), record('later', 2)], scenario);
+    expect(compareNormalised(run(golden), run(replay), { rules, scenario })).toStrictEqual([
+      {
+        step: 'again',
+        path: '',
+        kind: 'missing',
+        expected: { index: 1, routeKey: CONTENT_ROUTE },
+        actual: undefined,
+        classification: 'difference',
+      },
+      {
+        step: 'later',
+        path: '',
+        kind: 'extra',
+        expected: undefined,
+        actual: { index: 2, routeKey: CONTENT_ROUTE },
+        classification: 'difference',
+      },
+    ]);
+  });
+
+  it('compares the status exactly', async () => {
+    const scenario = comparing(['status', 'envelope']);
+    const golden = await normaliseOne(stepRecord({ contentType: JSON_TYPE, text: SUCCESS }), scenario);
+    const replay = await normaliseOne(stepRecord({ status: 201, contentType: JSON_TYPE, text: SUCCESS }), scenario);
+    expect(compareNormalised(run([golden]), run([replay]), { rules, scenario })).toStrictEqual([
+      { step: 'findone', path: 'status', kind: 'status', expected: 200, actual: 201, classification: 'difference' },
+    ]);
+  });
+
+  it('reports a changed body field at its envelope path', async () => {
+    const scenario = comparing(['status', 'envelope']);
+    const renamed = replaced(SUCCESS, '"title": "About Us"', '"title": "About Them"');
+    const golden = await normaliseOne(stepRecord({ contentType: JSON_TYPE, text: SUCCESS }), scenario);
+    const replay = await normaliseOne(stepRecord({ contentType: JSON_TYPE, text: renamed }), scenario);
+    expect(compareNormalised(run([golden]), run([replay]), { rules, scenario })).toStrictEqual([
+      {
+        step: 'findone',
+        path: 'envelope.data.items[0].title',
+        kind: 'changed',
+        expected: 'About Us',
+        actual: 'About Them',
+        classification: 'difference',
+      },
+    ]);
+  });
+});
+
+describe('compareNormalised side effects', () => {
+  const sequences = (a: string[], b: string[]): StateTransitions[] => [
+    { aggregate: ordinal(1), states: a },
+    { aggregate: ordinal(2), states: b },
+  ];
+
+  it('compares state sequences per aggregate, whatever order the aggregates are listed in', () => {
+    const scenario = comparing(['status', 'envelope', 'transitions']);
+    const golden = sequences(['DRAFT', 'SUBMITTED', 'APPROVED'], ['DRAFT', 'SUBMITTED']);
+    const listedOtherwise = [...golden].reverse();
+    const reordered = sequences(['DRAFT', 'APPROVED', 'SUBMITTED'], ['DRAFT', 'SUBMITTED']);
+    const compare = (replay: StateTransitions[]): Difference[] =>
+      compareNormalised(run([], { transitions: golden }), run([], { transitions: replay }), { rules, scenario });
+    expect(compare(listedOtherwise)).toStrictEqual([]);
+    expect(compare(reordered)).toStrictEqual([
+      {
+        step: SIDE_EFFECTS_STEP,
+        path: `${SIDE_EFFECTS_STEP}.transitions.${ordinal(1)}`,
+        kind: 'order',
+        expected: ['DRAFT', 'SUBMITTED', 'APPROVED'],
+        actual: ['DRAFT', 'APPROVED', 'SUBMITTED'],
+        classification: 'difference',
+      },
+    ]);
+  });
+
+  it('compares stored rows as multisets of canonical encodings', async () => {
+    const scenario = comparing(['status', 'rows'], { rows: [{ table: 'tcontent', where: { siteID: 'tenant-a' } }] });
+    const about = { ContentID: cfUuid(), Title: 'About Us' };
+    const contact = { ContentID: cfUuid(), Title: 'Contact Us' };
+    const effects = (rows: Record<string, string>[]): SideEffects => {
+      const snapshot: RowSnapshot = {
+        unit: ROWS_UNIT,
+        owner: 'strategies-content',
+        legacyTable: 'tcontent',
+        columns: ROW_COLUMNS,
+        keyColumns: [],
+        keyless: true,
+        rows: rows.map((row) => encodeRow(ROW_COLUMNS, row)),
+      };
+      return { mail: [], rows: { [ROWS_UNIT]: snapshot }, tasks: [], files: [] };
+    };
+    const side = async (rows: Record<string, string>[]): Promise<NormalisedRun> => {
+      const ctx = { state: createNormaliseState(), rules, scenario };
+      return run([], await normaliseSideEffects(effects(rows), ctx));
+    };
+    const golden = await side([about, about, contact]);
+    expect(Object.keys(golden.sideEffects)).toStrictEqual(['rows']);
+    const duplicated = golden.sideEffects.rows?.[ROWS_UNIT]?.entries.find((entry) => entry.count === 2)?.encoding;
+    expect(duplicated).toContain('About Us');
+    const compare = async (rows: Record<string, string>[]): Promise<Difference[]> =>
+      compareNormalised(golden, await side(rows), { rules, scenario });
+    expect(await compare([contact, about, about])).toStrictEqual([]);
+    expect(await compare([contact, about])).toStrictEqual([
+      {
+        step: SIDE_EFFECTS_STEP,
+        path: `${SIDE_EFFECTS_STEP}.rows.${ROWS_UNIT}`,
+        kind: 'missing',
+        expected: duplicated,
+        actual: undefined,
+        classification: 'difference',
+      },
+    ]);
+  });
+
+  it('normalises and compares only the side-effect kinds the scenario compares', async () => {
+    const scenario = comparing(['status', 'mail', 'tasks', 'files'], {
+      tasks: { source: 'scheduled-tasks', prefix: 'opt2-survey-' },
+    });
+    const effects = (fileId: string, smallSha: string): SideEffects => ({
+      mail: [
+        {
+          to: ['member@example.test'],
+          from: 'admin@example.test',
+          subject: 'Login information',
+          text: 'Your login information',
+          htmlText: 'Your login information',
+          headers: {},
+        },
+      ],
+      rows: {},
+      tasks: [
+        {
+          name: 'opt2-survey-1-launch',
+          kind: 'launch',
+          target: '/internal/v1/surveys/1/launch',
+          scheduledAt: '2026-06-30T09:00:00',
+          base: '2026-06-30T09:00:00',
+        },
+      ],
+      files: [
+        { fileId, name: '_small', contentType: 'image/png', sha256: smallSha, size: 10 },
+        { fileId, name: 'original', contentType: 'image/png', sha256: 'a'.repeat(64), size: 40 },
+      ],
+    });
+    const side = async (fileId: string, smallSha: string): Promise<NormalisedRun> =>
+      run([], await normaliseSideEffects(effects(fileId, smallSha), { state: createNormaliseState(), rules, scenario }));
+    const golden = await side(cfUuid(), 'b'.repeat(64));
+    expect(Object.keys(golden.sideEffects).sort()).toStrictEqual(['files', 'mail', 'tasks']);
+    expect(golden.sideEffects.files?.map((file) => [file.variant, file.name])).toStrictEqual([
+      ['original', ordinal(1)],
+      ['_small', ordinal(1)],
+    ]);
+    expect(compareNormalised(golden, await side(cfUuid(), 'b'.repeat(64)), { rules, scenario })).toStrictEqual([]);
+    expect(verdicts(compareNormalised(golden, await side(cfUuid(), 'c'.repeat(64)), { rules, scenario }))).toStrictEqual({
+      [`${SIDE_EFFECTS_STEP}.files[1].sha256`]: 'difference',
+    });
+  });
+
+  it('rejects a files.compare field it cannot produce', async () => {
+    const scenario = comparing(['status', 'files']);
+    const misnamed = { ...rules, files: { ...rules.files, compare: ['variant', 'checksum'] } };
+    const effects: SideEffects = {
+      mail: [],
+      rows: {},
+      tasks: [],
+      files: [{ fileId: cfUuid(), name: 'original', contentType: 'image/png', sha256: 'a'.repeat(64), size: 1 }],
+    };
+    await expect(
+      normaliseSideEffects(effects, { state: createNormaliseState(), rules: misnamed, scenario }),
+    ).rejects.toThrow(RangeError);
+  });
+});
+
+describe('compareNormalised known-issue masks', () => {
+  const editUser = (text: string, scenario: Scenario): Promise<NormalisedStep> =>
+    normaliseOne(stepRecord({ name: 'form', routeKey: EDIT_USER_ROUTE, contentType: HTML_TYPE, text }), scenario);
+  const datepicker = (control: DomControl): boolean => control.type === 'text' && control.name === undefined;
+  const named =
+    (name: string, value?: string) =>
+    (control: DomControl): boolean =>
+      control.name === name && (value === undefined || control.value === value);
+
+  it('classifies the datepicker difference as date-mask and keeps a sibling control a difference', async () => {
+    const roster = scenarioById(catalogue, 'GS-PE-01');
+    const date = 'value="10/302/2026" maxlength="12" id="mura-datepicker-startDate"';
+    const firstName = 'id="fname" name="fname" type="text" value="Fixture"';
+    const replayHtml = replaced(
+      replaced(EDIT_USER_HTML, date, date.replace('10/302/2026', '2026-06-30')),
+      firstName,
+      firstName.replace('"Fixture"', '"Replayed"'),
+    );
+    const golden = await editUser(EDIT_USER_HTML, roster);
+    const replay = await editUser(replayHtml, roster);
+    expect(verdicts(compareNormalised(run([golden]), run([replay]), { rules, scenario: roster }))).toStrictEqual({
+      [controlPath(golden, datepicker, 'value')]: 'known-issue:date-mask',
+      [controlPath(golden, named('fname'), 'value')]: 'difference',
+    });
+  });
+
+  // date-mask is declared for every scenario and route, so scenario scoping is shown with default-member, the
+  // edit-user page mask declared for listed scenarios only.
+  it.each<[string, string, () => Scenario]>([
+    ['GS-PE-01', 'known-issue:default-member', () => scenarioById(catalogue, 'GS-PE-01')],
+    ['GS-CO-05', 'difference', () => comparing(['status', 'dom'])],
+  ])('classifies a User Type change under %s as %s', async (_id, verdict, scenarioOf) => {
+    const scenario = scenarioOf();
+    const replayHtml = replaced(
+      replaced(EDIT_USER_HTML, 'value="1" Checked> Site Member', 'value="1"> Site Member'),
+      'value="0"> System User',
+      'value="0" checked> System User',
+    );
+    const golden = await editUser(EDIT_USER_HTML, scenario);
+    const replay = await editUser(replayHtml, scenario);
+    expect(verdicts(compareNormalised(run([golden]), run([replay]), { rules, scenario }))).toStrictEqual({
+      [controlPath(golden, named('isPublic', '1'), 'checked')]: verdict,
+      [controlPath(golden, named('isPublic', '0'), 'checked')]: verdict,
+    });
+  });
+
+  // Text carriers of date-mask selectors, each with the model path that holds the lifted date's placeholder.
+  const CARRIERS: readonly [string, (text: string) => string, string][] = [
+    ['td', (text) => `<table><tr><th>Last Login</th></tr><tr><td>${text}</td></tr></table>`, 'tables[0].rows[0][0]'],
+    [
+      '.meta-label span',
+      (text) => `<a href="#"><span class="meta-label">Last Update: <span>${text}</span></span></a>`,
+      'links[0].text',
+    ],
+  ];
+  // date-mask is narrowed to MASKED_IN, so GS-CO-05 shows the same pages unmasked.
+  const MASKED_IN = 'GS-PE-01';
+  const DATE_MASK = 'known-issue:date-mask';
+  // Golden and replay text, the scenario, and the verdicts of the lifted date and of its carrier.
+  const DATE_TEXTS: readonly [string, string, string, string, string | undefined, string][] = [
+    ['a day-of-year date against an ISO date', '11/317/2026', '2026-11-13', MASKED_IN, DATE_MASK, DATE_MASK],
+    ['a date with a time', '11/317/2026 10:30 AM', '2026-11-13 10:30 AM', MASKED_IN, DATE_MASK, DATE_MASK],
+    ['other words changed', 'Updated 11/317/2026 by admin', 'Updated 2026-11-13 by root', MASKED_IN, DATE_MASK, 'difference'],
+    ['a date outside the mask scenarios', '11/317/2026', '2026-11-13', 'GS-CO-05', undefined, 'difference'],
+  ];
+  const CARRIED = CARRIERS.flatMap(([carrier, page, path]) =>
+    DATE_TEXTS.map((text) => [carrier, ...text, page, path] as const),
+  );
+
+  it.each(CARRIED)(
+    'classifies a %s carrying %s',
+    async (_carrier, _label, goldenText, replayText, scenarioId, liftedVerdict, carrierVerdict, page, path) => {
+      const narrowed: NormaliseRules = {
+        ...rules,
+        knownIssues: rules.knownIssues.map((issue) =>
+          issue.id === 'date-mask' ? { ...issue, appliesTo: [MASKED_IN] } : issue,
+        ),
+      };
+      const scenario = scenarioId === MASKED_IN ? scenarioById(catalogue, scenarioId) : comparing(['status', 'dom']);
+      expect(scenario.id).toBe(scenarioId);
+      const side = async (text: string): Promise<NormalisedRun> => {
+        const record = stepRecord({ name: 'list', routeKey: 'admin:cusers.list', contentType: HTML_TYPE, text: page(text) });
+        return run([await normaliseStep(record, { state: createNormaliseState(), rules: narrowed, scenario })]);
+      };
+      const opts = { rules: narrowed, scenario };
+      const differences = compareNormalised(await side(goldenText), await side(replayText), opts);
+      expect(verdicts(differences)).toStrictEqual({
+        ...(liftedVerdict === undefined ? {} : { 'domModel.maskedText[0]': liftedVerdict }),
+        [`domModel.${path}`]: carrierVerdict,
+      });
+    },
+  );
+});
+
+describe('NormaliseState', () => {
+  it('carries id ordinals across scenarios that share it, and a fresh state restores them', async () => {
+    const other = scenarioById(catalogue, 'GS-ID-01');
+    const replayed = stepRecord({ contentType: JSON_TYPE, text: gatewayCopy(SUCCESS) });
+    const shared = createNormaliseState();
+    const first = await normaliseOne(stepRecord({ contentType: JSON_TYPE, text: SUCCESS }), contentRead, shared);
+    const continued = await normaliseOne(replayed, other, shared);
+    const fresh = await normaliseOne(replayed, other);
+    expect(continued.envelope).not.toStrictEqual(first.envelope);
+    expect(JSON.stringify(continued.envelope)).toContain(ordinal(new Set(SUCCESS.match(CF_UUID)).size + 1));
+    expect(fresh.envelope).toStrictEqual(first.envelope);
+  });
+});

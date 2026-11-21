@@ -1,0 +1,326 @@
+// SYNTHETIC: timesheets - no Masa equivalent; legacy oracle in legacy-fixtures/
+// The timesheets sheet detail over the timesheets fixtures: DOM snapshot, per-role day actions, CSRF, roles, errors.
+import * as cheerio from 'cheerio';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { Roles, type Role } from '@opt2/platform/auth';
+import { GatewayUnavailableError } from '@/lib/gateway-client';
+import { toString } from '@/lib/html';
+import type { AdminRequest } from '@/lib/request-context';
+import type { Opt2ScreenDefinition } from '@/screens/registry';
+import { alertBox, GUARDED_SUBMIT } from '@/screens/opt2/shared';
+import { timesheetsScreens } from '@/screens/opt2/timesheets';
+import { loadSheet, sheetBody } from '@/screens/opt2/timesheets/sheet';
+import { TIMESHEETS_AS_OF, TIMESHEET_IDS, timesheetsAnswersByRole } from '../../../fixtures/opt2/timesheets';
+import { makeAdminRequest, opt2RoleRequest } from '../../../helpers/admin-request';
+import { fragmentModel, type DomControl, type DomModel } from '../../../helpers/dom-model';
+import { useTestEnv } from '../../../helpers/env';
+import {
+  fakeGatewayClient,
+  routeKey,
+  type FakeGatewayClient,
+  type FakeRouteTable,
+} from '../../../helpers/fake-gateway';
+import { FIXED_CSRF, makeScreenContext, renderScreenPage } from '../../../helpers/screen-context';
+
+// The registry loads every circuit's screens; the screen context reads only its shell hooks.
+vi.mock('@/screens/registry', () => ({ shellHooks: Object.freeze({ secondaryMenus: Object.freeze({}) }) }));
+
+type RoleKey = keyof typeof timesheetsAnswersByRole;
+
+const SITE = 'tenant-a';
+const SHEET_ROUTE = routeKey('GET', 'timesheets', `/v1/timesheets/sheets/${TIMESHEET_IDS.sheetReturned}`);
+const ACTION_URL = `/opt2/admin-actions/timesheets/day-action?siteid=${SITE}&asOf=${TIMESHEETS_AS_OF}`;
+const LIST_URL = `/opt2/admin/timesheets/sheets?siteid=${SITE}&asOf=${TIMESHEETS_AS_OF}`;
+
+const ROLE_OF: Readonly<Record<RoleKey, Role>> = {
+  employee: Roles.timesheetsEmployee,
+  primaryApprover: Roles.timesheetsPrimaryApprover,
+  secondaryApprover: Roles.timesheetsSecondaryApprover,
+};
+
+function sheetScreen(): Opt2ScreenDefinition {
+  const def = timesheetsScreens.find(({ screen }) => screen === 'sheet');
+  if (def === undefined) throw new TypeError('timesheets/sheet is not registered');
+  return def;
+}
+
+const sheetRequest = (role: Role): AdminRequest =>
+  opt2RoleRequest(role, { rc: { siteid: SITE, timesheetid: TIMESHEET_IDS.sheetReturned, asOf: TIMESHEETS_AS_OF } });
+
+const hidden = (name: string, value: string): DomControl => ({
+  tag: 'input',
+  name,
+  type: 'hidden',
+  value,
+  checked: false,
+  selected: [],
+  options: [],
+});
+
+/** The hidden fields of one day action form. */
+const formControls = (dayId: string, action: string): DomControl[] => [
+  hidden('timesheetid', TIMESHEET_IDS.sheetReturned),
+  hidden('dayid', dayId),
+  hidden('dayaction', action),
+  hidden('csrf_token', FIXED_CSRF.token),
+  hidden('csrf_token_expires', FIXED_CSRF.expires),
+];
+
+/** Days of the returned sheet as rendered rows, with `actions` as each day's action cell text. */
+const dayRows = (actions: Readonly<Record<string, string>>): string[][] =>
+  [
+    ['2026-06-22', '8.0000', 'Draft', 'No', TIMESHEET_IDS.dayDraft],
+    ['2026-06-23', '8.0000', 'Submitted', 'No', TIMESHEET_IDS.daySubmitted],
+    ['2026-06-24', '7.5000', 'Resubmitted', 'No', TIMESHEET_IDS.dayResubmitted],
+    ['2026-06-25', '8.0000', 'Primary Approved', 'No', TIMESHEET_IDS.dayPrimaryApproved],
+    ['2026-06-26', '6.0000', 'Approved', 'No', TIMESHEET_IDS.dayApproved],
+    ['2026-06-27', '4.0000', 'Returned', 'No', TIMESHEET_IDS.dayReturned],
+    ['2026-06-28', '0.0000', 'Draft', 'Yes', TIMESHEET_IDS.dayBlackout],
+  ].map(([date = '', hours = '', state = '', blackout = '', dayId = '']) => [
+    date,
+    hours,
+    state,
+    blackout,
+    actions[dayId] ?? '',
+  ]);
+
+/** Each role's day actions on the returned sheet, as the fixture's `allowedActions` give them. */
+const ROLE_CASES: ReadonlyArray<{ role: RoleKey; forms: ReadonlyArray<readonly [string, string, string]> }> = [
+  {
+    role: 'employee',
+    forms: [
+      [TIMESHEET_IDS.dayDraft, 'submit', 'Submit'],
+      [TIMESHEET_IDS.dayReturned, 'resubmit', 'Resubmit'],
+    ],
+  },
+  {
+    role: 'primaryApprover',
+    forms: [
+      [TIMESHEET_IDS.daySubmitted, 'primary-approve', 'Primary Approve'],
+      [TIMESHEET_IDS.daySubmitted, 'return', 'Return'],
+      [TIMESHEET_IDS.dayResubmitted, 'primary-approve', 'Primary Approve'],
+      [TIMESHEET_IDS.dayResubmitted, 'return', 'Return'],
+    ],
+  },
+  {
+    role: 'secondaryApprover',
+    forms: [
+      [TIMESHEET_IDS.dayPrimaryApproved, 'secondary-approve', 'Secondary Approve'],
+      [TIMESHEET_IDS.dayPrimaryApproved, 'return', 'Return'],
+    ],
+  },
+];
+
+/** The model a role's sheet detail renders: summary, days and one post form per allowed day action. */
+function expectedModel(forms: ReadonlyArray<readonly [string, string, string]>): DomModel {
+  const actions: Record<string, string> = {};
+  for (const [dayId, , label] of forms) {
+    actions[dayId] = actions[dayId] === undefined ? label : `${actions[dayId]} ${label}`;
+  }
+  return {
+    title: '',
+    headings: ['Timesheet'],
+    labels: [],
+    controls: forms.flatMap(([dayId, action]) => formControls(dayId, action)),
+    buttons: forms.map(([, , label]) => ({ text: label, type: 'submit', hasOnclick: false })),
+    links: [{ href: LIST_URL, text: 'Timesheets' }],
+    tables: [
+      {
+        headers: ['Person', 'Period', 'Due Date', 'Status', 'Overdue'],
+        rows: [[TIMESHEET_IDS.employee, '2026-06-22 - 2026-06-28', '2026-07-03', 'Returned', 'No']],
+      },
+      { headers: ['Work Date', 'Hours', 'State', 'Blackout', 'Actions'], rows: dayRows(actions) },
+    ],
+    alerts: [],
+  };
+}
+
+async function renderBody(role: Role, routes: FakeRouteTable): Promise<{ markup: string; gateway: FakeGatewayClient }> {
+  const gateway = fakeGatewayClient(routes);
+  const ctx = makeScreenContext({ req: sheetRequest(role), gateway });
+  return { markup: toString(sheetBody(ctx, await loadSheet(ctx))), gateway };
+}
+
+let restoreEnv: () => void;
+beforeEach(() => {
+  restoreEnv = useTestEnv();
+});
+afterEach(() => restoreEnv());
+
+describe('timesheets sheet detail', () => {
+  it.each(ROLE_CASES)('offers $role exactly the day actions timesheets allows (DOM snapshot)', async (roleCase) => {
+    const { role, forms } = roleCase;
+    const { markup, gateway } = await renderBody(ROLE_OF[role], timesheetsAnswersByRole[role]);
+
+    expect(fragmentModel(markup)).toEqual(expectedModel(forms));
+    const $ = cheerio.load(markup, null, false);
+    // The sheet status, then each day state, as legacy admin label badges.
+    expect($('td > .label').toArray().map((badge) => $(badge).attr('class'))).toEqual(
+      ['important', 'inverse', 'info', 'info', 'info', 'success', 'important', 'inverse'].map(
+        (tone) => `label label-${tone}`,
+      ),
+    );
+    const guard = cheerio.load(`<form${GUARDED_SUBMIT.value}></form>`, null, false)('form').attr('onsubmit');
+    // Each day action is a write, submitted once through legacy submitForm.
+    expect(
+      $('form')
+        .toArray()
+        .map((form) => [$(form).attr('method'), $(form).attr('action'), $(form).attr('onsubmit')]),
+    ).toEqual(forms.map(() => ['post', ACTION_URL, guard]));
+    expect(gateway.calls.filter(({ service }) => service === 'timesheets')).toEqual([
+      {
+        service: 'timesheets',
+        method: 'GET',
+        path: `/v1/timesheets/sheets/${TIMESHEET_IDS.sheetReturned}`,
+        query: { asOf: TIMESHEETS_AS_OF },
+      },
+    ]);
+    // One identity call for the days with an action, each form carrying the pair of its own day id.
+    const csrfCalls = gateway.calls.filter(({ service, path }) => service === 'identity' && path === '/v1/csrf/tokens');
+    expect(csrfCalls.map(({ json }) => json)).toEqual([{ contexts: [...new Set(forms.map(([dayId]) => dayId))] }]);
+  });
+
+  it('asks identity for no CSRF pair when the caller may act on no day', async () => {
+    const detail = timesheetsAnswersByRole.employee[SHEET_ROUTE];
+    if (detail === undefined || typeof detail === 'function') throw new TypeError('fixture detail route missing');
+    const body = detail.body as { days: Array<{ allowedActions: string[] }> };
+    const noActions = { ...body, days: body.days.map((day) => ({ ...day, allowedActions: [] })) };
+
+    const { markup, gateway } = await renderBody(Roles.timesheetsEmployee, {
+      [SHEET_ROUTE]: { status: 200, body: noActions },
+    });
+
+    expect(fragmentModel(markup).buttons).toEqual([]);
+    expect(gateway.calls.some(({ service, path }) => service === 'identity' && path === '/v1/csrf/tokens')).toBe(false);
+  });
+
+  it('renders a not-found alert without calling timesheets when no sheet id is given', async () => {
+    const gateway = fakeGatewayClient(timesheetsAnswersByRole.employee);
+    const req = opt2RoleRequest(Roles.timesheetsEmployee, { rc: { siteid: SITE, asOf: TIMESHEETS_AS_OF } });
+    const ctx = makeScreenContext({ req, gateway });
+
+    const page = await renderScreenPage(sheetScreen(), ctx);
+
+    if (page.kind !== 'document') throw new Error(`redirected to ${page.location}`);
+    expect(page.html).toContain('<div class="alert alert-error"><span>Timesheet not found.</span></div>');
+    expect(fragmentModel(toString(sheetBody(ctx, await loadSheet(ctx))))).toEqual({
+      title: '',
+      headings: ['Timesheet'],
+      labels: [],
+      controls: [],
+      buttons: [],
+      links: [{ href: LIST_URL, text: 'Timesheets' }],
+      tables: [],
+      alerts: [{ text: 'Timesheet not found.', className: 'alert alert-error' }],
+    });
+    expect(gateway.calls.filter(({ service }) => service === 'timesheets')).toEqual([]);
+  });
+
+  it.each(['..', '../x', '../../x', 'abc'])(
+    'answers the malformed sheet id %j with the invalid-parameters alert without calling timesheets',
+    async (timesheetid) => {
+      const gateway = fakeGatewayClient(timesheetsAnswersByRole.employee);
+      const req = opt2RoleRequest(Roles.timesheetsEmployee, { rc: { siteid: SITE, asOf: TIMESHEETS_AS_OF, timesheetid } });
+      const ctx = makeScreenContext({ req, gateway });
+
+      const model = fragmentModel(toString(sheetBody(ctx, await loadSheet(ctx))));
+
+      expect(model.headings).toEqual(['Timesheet']);
+      expect(model.alerts).toEqual([{ text: 'Invalid parameters', className: 'alert alert-error' }]);
+      expect(gateway.calls.filter(({ service }) => service === 'timesheets')).toEqual([]);
+    },
+  );
+
+  it('places a supplied alert between the header and the sheet tables', async () => {
+    const gateway = fakeGatewayClient(timesheetsAnswersByRole.employee);
+    const ctx = makeScreenContext({ req: sheetRequest(Roles.timesheetsEmployee), gateway });
+
+    const markup = toString(sheetBody(ctx, await loadSheet(ctx), alertBox('blackout')));
+
+    const alertAt = markup.indexOf('<div class="alert alert-error"><span>blackout</span></div>');
+    expect(alertAt).toBeGreaterThan(markup.indexOf('</h1>'));
+    expect(alertAt).toBeLessThan(markup.indexOf('<table'));
+  });
+
+  it('renders inside the shell with the OPT-2 timesheets entry active', async () => {
+    const gateway = fakeGatewayClient(timesheetsAnswersByRole.employee);
+
+    const ctx = makeScreenContext({ req: sheetRequest(Roles.timesheetsEmployee), gateway });
+
+    const page = await renderScreenPage(sheetScreen(), ctx);
+
+    if (page.kind !== 'document') throw new Error(`redirected to ${page.location}`);
+    expect(page.html).toContain('<div class="mura-header"><h1>Timesheet</h1>');
+    expect(page.html).toMatch(/<a class="active" href="\/opt2\/admin\/timesheets\/sheets\?siteid=tenant-a">/);
+  });
+
+  it.each([
+    { who: 'a user without a timesheets role', req: () => makeAdminRequest({}, 'systemUser') },
+    { who: 'an S2 admin without a timesheets role', req: () => makeAdminRequest({}, 'admin') },
+  ])('sends $who to cMessage.noaccess without calling timesheets', async ({ req }) => {
+    const gateway = fakeGatewayClient(timesheetsAnswersByRole.employee);
+
+    const page = await renderScreenPage(sheetScreen(), makeScreenContext({ req: req(), gateway }));
+
+    expect(page).toEqual({ kind: 'redirect', location: '/admin/?muraAction=cMessage.noaccess' });
+    expect(gateway.calls.filter(({ service }) => service === 'timesheets')).toEqual([]);
+  });
+
+  it('answers a timesheets 403 with cMessage.noaccess', async () => {
+    const denied = fakeGatewayClient({ [SHEET_ROUTE]: { status: 403, body: { error: { code: 'authorization' } } } });
+
+    const page = await renderScreenPage(
+      sheetScreen(),
+      makeScreenContext({ req: sheetRequest(Roles.timesheetsEmployee), gateway: denied }),
+    );
+
+    expect(page).toEqual({ kind: 'redirect', location: '/admin/?muraAction=cMessage.noaccess' });
+  });
+
+  it.each([
+    { what: 'a stale sheet id', asOf: TIMESHEETS_AS_OF, status: 404, message: 'Not Found' },
+    { what: 'a malformed asOf', asOf: '2026-13-45', status: 400, message: 'Invalid parameters' },
+  ])('renders the timesheets $status message for $what in place of the sheet', async ({ asOf, status, message }) => {
+    const refusal = { apiversion: 'v1', method: 'timesheets.sheets', error: { code: 'invalid_request', message } };
+    const gateway = fakeGatewayClient({ [SHEET_ROUTE]: { status, body: refusal } });
+    const req = opt2RoleRequest(Roles.timesheetsEmployee, {
+      rc: { siteid: SITE, timesheetid: TIMESHEET_IDS.sheetReturned, asOf },
+    });
+
+    const page = await renderScreenPage(sheetScreen(), makeScreenContext({ req, gateway }));
+
+    if (page.kind !== 'document') throw new Error(`redirected to ${page.location}`);
+    const content = cheerio.load(page.html)('#mura-content').html() ?? '';
+    expect(fragmentModel(content)).toEqual({
+      title: '',
+      headings: ['Timesheet'],
+      labels: [],
+      controls: [],
+      buttons: [],
+      links: [{ href: `/opt2/admin/timesheets/sheets?siteid=${SITE}&asOf=${asOf}`, text: 'Timesheets' }],
+      tables: [],
+      alerts: [{ text: message, className: 'alert alert-error' }],
+    });
+    expect(page.html).toContain(`</a></div></div><div class="alert alert-error"><span>${message}</span></div>`);
+    expect(page.html).toMatch(/<a class="active" href="\/opt2\/admin\/timesheets\/sheets\?siteid=tenant-a">/);
+    expect(gateway.calls.filter(({ service }) => service === 'timesheets').map(({ query }) => query)).toEqual([
+      { asOf },
+    ]);
+    expect(gateway.calls.some(({ service, path }) => service === 'identity' && path === '/v1/csrf/tokens')).toBe(false);
+  });
+
+  it.each([
+    { status: 503, error: GatewayUnavailableError },
+    { status: 500, error: Error },
+  ])('throws $error.name on a timesheets $status', async ({ status, error }) => {
+    const gateway = fakeGatewayClient({ [SHEET_ROUTE]: { status, body: { error: { code: 'x' } } } });
+
+    const failure: unknown = await renderScreenPage(
+      sheetScreen(),
+      makeScreenContext({ req: sheetRequest(Roles.timesheetsEmployee), gateway }),
+    ).catch((thrown: unknown) => thrown);
+
+    expect(failure).toBeInstanceOf(error);
+    expect((failure as Error).name).toBe(error.name);
+  });
+});

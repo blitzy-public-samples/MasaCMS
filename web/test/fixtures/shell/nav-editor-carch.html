@@ -1,0 +1,86 @@
+<nav id="sidebar">
+    <!-- Sidebar Scroll Container -->
+    <div id="sidebar-scroll">
+        <!-- Sidebar Content -->
+        <!-- Adding .sidebar-mini-hide to an element will hide it when the sidebar is in mini mode -->
+        <div class="sidebar-content">
+            <!-- Side Header -->
+            <div class="side-header side-content">
+                <!-- Layout API, functionality initialized in App() -> uiLayoutApi() -->
+                <button id="sidebar-mobile-close" class="btn btn-link text-gray pull-right hidden-md hidden-lg" type="button" data-toggle="layout" data-action="sidebar_close">
+                    <i class="mi-close"></i>
+                </button>
+                <!-- Themes functionality initialized in App() -> uiHandleTheme() -->
+                <div class="btn-group">
+                    <span id="brand-logo-lg" class="brand" target="_blank">
+                        <img src="/admin/assets/images/masa-logo-admin@2x.png" class="mura-logo">
+                    </span>
+                    <span id="brand-logo-min" class="brand" target="_blank">
+                        <img src="/admin/assets/images/masa-icon@2x.png" class="mura-logo">
+                        <span class="sidebar-mini-hide">
+                            <img src="/admin/assets/images/masa-logo-text@2x.png" class="mura-logo-text">
+                        </span>
+                    </span>
+                </div>
+            </div>
+            <!-- END Side Header -->
+            <div class="side-content">
+                <ul class="nav-main">
+                    <li>
+                      <a id="navContentAdmin"  class="active" href="/admin/?muraAction=cArch.list&amp;siteid=default"><i class="mi-edit"></i><span class="sidebar-mini-hide">Content</span></a>
+                    </li>
+                        <li>
+                            <a href="/admin/?muraAction=cFilemanager.default&amp;siteid=default"><i class="mi-folder-open"></i><span class="sidebar-mini-hide">File Browser</span></a>
+                        </li>
+                    <li id="admin-nav-help">
+                        <a class="nav-submenu" data-toggle="nav-submenu" href="/admin/"><i class="mi-question-circle"></i><span class="sidebar-mini-hide">Help</span></a>
+                        <ul>
+                            <li>
+                                <a id="navCSS-API" href="https://www.masacms.com/documentation" target="_blank"><i class="mi-bookmark"></i><span class="sidebar-mini-hide">Documentation</span></a>
+                            </li>
+                            <li>
+                                <a id="navFckEditorDocs" href="http://docs.cksource.com/" target="_blank"><i class="mi-bookmark"></i><span class="sidebar-mini-hide">Editor/File Manager</span></a>
+                            </li>
+                            <li>
+                                <a id="navHelpDocs" href="https://www.wearenorth.eu/" target="_blank"><i class="mi-group"></i><span class="sidebar-mini-hide">Professional Support</span></a>
+                            </li>
+                            <li>
+                                <a id="navHelpForums" href="https://www.masacms.com/" target="_blank"><i class="mi-bullhorn"></i><span class="sidebar-mini-hide">Community Support</span></a>
+                            </li>
+                        </ul>
+                    </li>
+                    <li>
+                        <a class="nav-submenu" data-toggle="nav-submenu" href="/admin/"><i class="mi-info-circle"></i><span class="sidebar-mini-hide">About</span></a>
+                        <ul class="version">
+                            <li class="divider"></li>
+                            <li>
+                                <a class="no-link" href="#">
+                                 <span><strong>Core Version</strong> 7.6.1</span>
+                                 </a>
+                             </li>
+                            <li class="divider"></li>
+                            <li>
+                                <a class="no-link" href="#"> <span><strong>App Server</strong> ColdFusion (2023,0,26,331018)</span></a>
+                            </li>
+                            <li>
+                                <a class="no-link" href="#"> <span><strong>DB Server</strong> Microsoft SQL Server (Microsoft SQL Server 2022 - 16.0.4305.5)</span></a>
+                            </li>
+                                <li>
+                                    <a class="no-link" href="#"> <span><strong>OS Version</strong> UNIX (6.12.105+)</span></a>
+                                </li>
+                             <li>
+                                <a href="https://github.com/blueriver/MuraCMS/blob/develop/license.txt" target="_blank"><span><strong>Mura CMS</strong> &copy; 2026 blueriver <em>Licensed under GNU General Public License Version 2.0 with exceptions</em></span></a>
+                            </li>
+                             <li>
+                                <a href="https://github.com/MasaCMS/MasaCMS/blob/main/license.txt" target="_blank"><span><strong>Masa CMS</strong> &copy; 2026 We Are North Groep BV <em>Licensed under GNU General Public License Version 2.0 with exceptions</em></span></a>
+                            </li>
+                        </ul>
+                    </li>
+                </ul>
+            </div>
+            <!-- END Side Content -->
+        </div>
+        <!-- Sidebar Content -->
+    </div>
+    <!-- END Sidebar Scroll Container -->
+</nav>
