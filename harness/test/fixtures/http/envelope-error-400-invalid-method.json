@@ -1,8 +1,1 @@
-{
-  "apiversion": "v1",
-  "method": "getSerializer",
-  "error": {
-    "code": "invalid_request",
-    "message": "Invalid method call"
-  }
-}
+{"apiversion":"v1","method":"getSerializer","error":{"code":"invalid_request","message":"Invalid method call"}}

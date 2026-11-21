@@ -293,7 +293,7 @@ describe('reportFilePath', () => {
 });
 
 describe('writeJsonReport', () => {
-  it('writes the head keys first, then the body keys in order, as pretty JSON with a trailing newline', async () => {
+  it('writes the head keys first, then the body keys in order, as compact JSON with a trailing newline', async () => {
     const target = await makeTarget();
     const result = await writeJsonReport(
       target,
@@ -313,7 +313,7 @@ describe('writeJsonReport', () => {
       tables: ['tusers', 'tcontent'],
       difference: 0,
     });
-    expect(await readFile(file, 'utf8')).toBe(`${JSON.stringify(result.report, null, 2)}\n`);
+    expect(await readFile(file, 'utf8')).toBe(`${JSON.stringify(result.report)}\n`);
     expect(await readdir(path.dirname(file))).toEqual(['after-backfill.json']);
   });
 
@@ -420,7 +420,7 @@ describe('writeJsonReport', () => {
 
     const text = await readFile(file, 'utf8');
     expect(body).toEqual(before);
-    expect(text).toBe(`${JSON.stringify(report, null, 2)}\n`);
+    expect(text).toBe(`${JSON.stringify(report)}\n`);
     expect(Object.keys(report)).toEqual(['sourceSha', 'generatedAt', 'status', 'reconciliation', 'abortReason', 'units']);
     expect(report).toMatchObject({
       sourceSha: PIN_SHA,

@@ -908,7 +908,7 @@ describe('route matrix', () => {
     expect(collectRouteMatrix(app)).toStrictEqual({ routes: EXPECTED_ROUTES });
   });
 
-  it('serializes deterministically as two-space JSON with one trailing newline, whatever the registration order', async () => {
+  it('serializes deterministically as compact JSON with one trailing newline, whatever the registration order', async () => {
     const reversed = trackedApp();
     registerAuth(reversed, { transports });
     declareAll(app, MATRIX_DECLARATIONS);
@@ -919,9 +919,9 @@ describe('route matrix', () => {
 
     expect(serializeRouteMatrix(collectRouteMatrix(app))).toBe(text);
     expect(serializeRouteMatrix(collectRouteMatrix(reversed))).toBe(text);
-    expect(text).toBe(`${JSON.stringify({ routes: EXPECTED_ROUTES }, null, 2)}\n`);
-    expect(text.split('\n').slice(0, 3)).toStrictEqual(['{', '  "routes": [', '    {']);
-    expect(text.endsWith('}\n')).toBe(true);
+    expect(text).toBe(`${JSON.stringify({ routes: EXPECTED_ROUTES })}\n`);
+    expect(text.startsWith('{"routes":[{')).toBe(true);
+    expect(text.indexOf('\n')).toBe(text.length - 1);
   });
 
   it('refuses an instance without registerAuth', () => {

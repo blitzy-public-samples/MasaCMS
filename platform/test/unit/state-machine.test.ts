@@ -701,10 +701,11 @@ describe('serializeTable', () => {
     );
   });
 
-  it('indents by two spaces and ends with a newline', () => {
+  it('writes one compact line and ends with a newline', () => {
     const text = serializeTable(TABLE);
-    expect(text.startsWith('[\n  {\n    "service": "approvals",\n')).toBe(true);
-    expect(text.endsWith('  }\n]\n')).toBe(true);
+    expect(text.startsWith('[{"service":"approvals",')).toBe(true);
+    expect(text.endsWith('}]\n')).toBe(true);
+    expect(text.indexOf('\n')).toBe(text.length - 1);
     expect(serializeTable([])).toBe('[]\n');
   });
 

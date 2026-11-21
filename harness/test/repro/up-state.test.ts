@@ -328,7 +328,7 @@ describe('writeUpState', () => {
     expect(read.harnessNote).toBe('kept as written');
   });
 
-  it('writes key-sorted, two-space JSON ending in one newline, byte-identical whatever the key order', async () => {
+  it('writes key-sorted, compact JSON ending in one newline, byte-identical whatever the key order', async () => {
     writeUpState(sampleState(), { env });
     const first = await fs.readFile(file, 'utf8');
     writeUpState(sampleState(), { env });
@@ -338,7 +338,7 @@ describe('writeUpState', () => {
 
     expect(rewritten).toBe(first);
     expect(await fs.readFile(other, 'utf8')).toBe(first);
-    expect(first).toBe(`${JSON.stringify(JSON.parse(first), null, 2)}\n`);
+    expect(first).toBe(`${JSON.stringify(JSON.parse(first))}\n`);
     expectKeysSortedDeep(JSON.parse(first));
   });
 

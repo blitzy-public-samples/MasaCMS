@@ -730,17 +730,19 @@ describe('main', () => {
     const { code, stdout, stderr } = await run(['--fixtures', 'auto'], { OPT2_STATE_DIR: state });
     expect(code).toBe(1);
     expect(stdout).toContain(`build-versions: ${file('v0001')} is up to date`);
-    expect(stdout.some((line) => line.includes('"route": "opt2:/v1/finance/**"'))).toBe(true);
+    expect(stdout.some((line) => line.includes('"route":"opt2:/v1/finance/**"'))).toBe(true);
     expect(stderr).toEqual(['v0002', 'v0003'].map((id) => `build-versions: ${file(id)} differs from the build; run with --write`));
   });
 
   it('prints a line diff when a version differs', async () => {
     const current = await readFile(file('v0002'), 'utf8');
-    await writeFile(file('v0002'), current.replace(`"createdAt": "${VERSION_CREATED_AT.v0002}"`, '"createdAt": "2020-01-01T00:00:00.000Z"'));
+    const edited = current.replace(`"createdAt":"${VERSION_CREATED_AT.v0002}"`, '"createdAt":"2020-01-01T00:00:00.000Z"');
+    expect(edited).not.toBe(current);
+    await writeFile(file('v0002'), edited);
     const { code, stdout } = await run([]);
     expect(code).toBe(1);
-    expect(stdout).toContain('-  "createdAt": "2020-01-01T00:00:00.000Z",');
-    expect(stdout).toContain(`+  "createdAt": "${VERSION_CREATED_AT.v0002}",`);
+    expect(stdout).toContain(`-${edited.trimEnd()}`);
+    expect(stdout).toContain(`+${current.trimEnd()}`);
     await writeFile(file('v0002'), current);
   });
 

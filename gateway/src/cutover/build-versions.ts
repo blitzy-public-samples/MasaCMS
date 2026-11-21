@@ -518,7 +518,7 @@ export function buildVersions(ctx: ValidationContext, fixtures: Pick<FixtureStat
 
 /** The committed serialisation of a version file. */
 export function serialiseVersion(table: CutoverTable): string {
-  return `${JSON.stringify(table, null, 2)}\n`;
+  return `${JSON.stringify(table)}\n`;
 }
 
 /** Whether a version serves a synthetic service's own `/v1/` routes, which only a fixtures-unavailable build does. */

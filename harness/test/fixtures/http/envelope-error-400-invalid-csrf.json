@@ -1,8 +1,1 @@
-{
-  "apiversion": "v1",
-  "method": "delete",
-  "error": {
-    "code": "invalid_request",
-    "message": "Invalid CSRF tokens"
-  }
-}
+{"apiversion":"v1","method":"delete","error":{"code":"invalid_request","message":"Invalid CSRF tokens"}}

@@ -1,8 +1,1 @@
-{
-  "apiversion": "v1",
-  "method": "save",
-  "error": {
-    "code": "invalid_request",
-    "message": "Insufficient Account Permissions"
-  }
-}
+{"apiversion":"v1","method":"save","error":{"code":"invalid_request","message":"Insufficient Account Permissions"}}

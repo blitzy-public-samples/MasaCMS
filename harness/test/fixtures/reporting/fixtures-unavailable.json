@@ -1,5 +1,1 @@
-{
-  "available": false,
-  "reason": "CREATE SCHEMA permission denied in the legacy database",
-  "checkedAt": "2026-06-30T00:00:00Z"
-}
+{"available":false,"reason":"CREATE SCHEMA permission denied in the legacy database","checkedAt":"2026-06-30T00:00:00Z"}

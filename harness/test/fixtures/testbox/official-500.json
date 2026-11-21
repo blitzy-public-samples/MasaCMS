@@ -1,11 +1,1 @@
-{
-  "runner": "official",
-  "url": "http://127.0.0.1:8500/core/tests/runner.cfm?reporter=json",
-  "httpStatus": 500,
-  "contentType": "text/html;charset=UTF-8",
-  "startedAt": "2026-06-30T00:00:00.000Z",
-  "durationMs": 412,
-  "bodyKind": "text",
-  "specs": 0,
-  "body": "Parameter validation error for the DIRECTORYCREATE function.\nThe function takes 1 parameter.\nThe error occurred in core/tests/specs/mura/core/bundleValidatorSecurity.cfc: line 36\n34 : \t\t\tvar dir = getDirectoryFromPath(full);\n35 : \t\t\tif (!directoryExists(dir)) {\n36 : \t\t\t\tdirectoryCreate(dir, true);\n"
-}
+{"runner":"official","url":"http://127.0.0.1:8500/core/tests/runner.cfm?reporter=json","httpStatus":500,"contentType":"text/html;charset=UTF-8","startedAt":"2026-06-30T00:00:00.000Z","durationMs":412,"bodyKind":"text","specs":0,"body":"Parameter validation error for the DIRECTORYCREATE function.\nThe function takes 1 parameter.\nThe error occurred in core/tests/specs/mura/core/bundleValidatorSecurity.cfc: line 36\n34 : \t\t\tvar dir = getDirectoryFromPath(full);\n35 : \t\t\tif (!directoryExists(dir)) {\n36 : \t\t\t\tdirectoryCreate(dir, true);\n"}

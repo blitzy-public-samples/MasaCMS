@@ -1,8 +1,1 @@
-{
-  "apiversion": "v1",
-  "method": "findMany",
-  "error": {
-    "code": "server_error",
-    "message": "Unhandled Exception"
-  }
-}
+{"apiversion":"v1","method":"findMany","error":{"code":"server_error","message":"Unhandled Exception"}}

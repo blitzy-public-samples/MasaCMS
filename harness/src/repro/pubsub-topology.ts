@@ -361,7 +361,7 @@ export function toTfvars(topology: Topology): TopologyTfvars {
   return { topics, subscriptions, queues, service_calls };
 }
 
-/** Byte-stable JSON text of `topology.auto.tfvars.json`: sorted keys, sorted arrays, two-space indent, one trailing newline. */
+/** Byte-stable JSON text of `topology.auto.tfvars.json`: sorted keys, sorted arrays, compact, one trailing newline. */
 export function renderTfvars(topology: Topology): string {
   return stableStringify(toTfvars(topology));
 }

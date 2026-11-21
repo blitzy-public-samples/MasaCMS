@@ -109,7 +109,7 @@ export async function writeJsonReport(
     .filter(([, value]) => value !== undefined);
   // fromEntries defines own properties, so a `__proto__` data key in `body` stays data.
   const report = Object.fromEntries([...head, ...fields]);
-  const text = `${JSON.stringify(report, null, 2)}\n`;
+  const text = `${JSON.stringify(report)}\n`;
   await writeFileAtomic(filePath, text);
   return { path: filePath, report };
 }

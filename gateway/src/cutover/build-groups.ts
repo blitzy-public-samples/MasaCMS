@@ -307,7 +307,7 @@ export async function loadBuildGroupsInput(
 
 /** The committed serialisation of groups.json. */
 export function serialiseGroups(groups: GroupsFile): string {
-  return `${JSON.stringify(groups, null, 2)}\n`;
+  return `${JSON.stringify(groups)}\n`;
 }
 
 /** Line diff from `committed` to `generated`: `@@ -<line> +<line> @@` hunk headers, `-` committed lines, `+` generated lines. */

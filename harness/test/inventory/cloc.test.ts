@@ -435,7 +435,7 @@ describe('generateCloc', () => {
     ['is absent', undefined],
     ['is not JSON', () => '{'],
     ['is JSON null', () => 'null'],
-    ['records other figures', (text) => text.replace('"code": 105', '"code": 106')],
+    ['records other figures', (text) => text.replace('"code":105', '"code":106')],
     ['has a measuredAt that is not a time', (text) => text.replaceAll(FIRST_AT, 'yesterday')],
     ['has a non-canonical measuredAt', (text) => text.replaceAll(FIRST_AT, '2026-06-30T12:00:00Z')],
   ])('stamps the clock time when the reference %s', async (_case, edit) => {

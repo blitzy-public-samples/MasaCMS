@@ -129,7 +129,7 @@ try {
     plan,
   };
 
-  writeFileSync(tmpFile, `${JSON.stringify(report, null, 2)}\n`);
+  writeFileSync(tmpFile, `${JSON.stringify(report)}\n`);
   renameSync(tmpFile, reportFile);
   console.log(`plan.sh: wrote ${reportFile} (${Object.keys(minInstanceCounts).length} Cloud Run services)`);
 } catch (err) {

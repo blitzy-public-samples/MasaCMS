@@ -72,9 +72,9 @@ export function compareTableRows(a: TransitionTableRow, b: TransitionTableRow): 
   );
 }
 
-/** Sorted, two-space-indented JSON of `rows` with a trailing newline; `rows` is not mutated. */
+/** Sorted, compact JSON of `rows` with a trailing newline; `rows` is not mutated. */
 export function serializeTable(rows: readonly TransitionTableRow[]): string {
-  return JSON.stringify([...rows].sort(compareTableRows), null, 2) + '\n';
+  return JSON.stringify([...rows].sort(compareTableRows)) + '\n';
 }
 
 /** Writes `serializeTable(rows)` to `path`, creating missing parent directories. */

@@ -1387,7 +1387,7 @@ describe('main', () => {
 
     // One changed byte in the inventory fails the check.
     const json = await readFile(path.join(out, INVENTORY_JSON), 'utf8');
-    await writeFile(path.join(out, INVENTORY_JSON), json.replace('"liveStatus": "live"', '"liveStatus": "livE"'), 'utf8');
+    await writeFile(path.join(out, INVENTORY_JSON), json.replace('"liveStatus":"live"', '"liveStatus":"livE"'), 'utf8');
     expect(await check()).toMatchObject({ code: 1, summary: { check: { json: { match: false }, markdown: { match: true } } } });
     await writeFile(path.join(out, INVENTORY_JSON), json, 'utf8');
 

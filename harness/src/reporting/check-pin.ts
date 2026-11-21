@@ -88,6 +88,11 @@ export const DELIVERABLE_PATTERNS: readonly { readonly glob: string; readonly re
  */
 export const FORBIDDEN_TRACKED_PREFIXES: readonly string[] = ['themes/default/', 'blitzy/'];
 
+/** Exact paths under a forbidden prefix that may be tracked: the run's project guide, which ships with the pull request. */
+export const TRACKED_FORBIDDEN_EXCEPTIONS: readonly string[] = [
+  'blitzy/documentation/Project Guide - 48d51ddc-539f-48aa-8086-5041e07a1be6.md',
+];
+
 /** The `sites/<siteid>/` folder a path lies under. */
 const SITE_FOLDER = /^sites\/[^/]+\//;
 
@@ -105,8 +110,9 @@ Options:
 
 Deliverables: the files not tracked at the pin that match ${DELIVERABLE_PATTERNS.map(({ glob }) => glob).join(', ')}.
 Each must carry the SHA recorded in <root>/${PIN_RELATIVE_PATH}.
-Runtime folders are not deliverables: nothing under ${FORBIDDEN_TRACKED_PREFIXES.join(' or ')} may be tracked, and untracked
-files under a sites/<siteid>/ folder absent at the pin (a site Masa creates at runtime) are skipped.
+Runtime folders are not deliverables: nothing under ${FORBIDDEN_TRACKED_PREFIXES.join(' or ')} may be tracked except
+${TRACKED_FORBIDDEN_EXCEPTIONS.join(', ')}, and untracked files under a sites/<siteid>/ folder absent at the pin (a site
+Masa creates at runtime) are skipped.
 
 Requires: git on PATH, and a checkout at <root> that holds the pinned commit and ${PIN_RELATIVE_PATH}.
 
@@ -280,7 +286,7 @@ export async function checkDeliverables(deps: PinDeps = {}): Promise<Deliverable
   ]);
 
   const findings: PinFinding[] = [...new Set(tracked)]
-    .filter(isForbidden)
+    .filter((relPath) => isForbidden(relPath) && !TRACKED_FORBIDDEN_EXCEPTIONS.includes(relPath))
     .map((forbidden): PinFinding => ({ kind: 'forbidden-tracked', path: forbidden }));
 
   const pinned = new Set(atPin);

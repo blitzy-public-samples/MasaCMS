@@ -1,11 +1,1 @@
-{
-  "durationMs": 1500000,
-  "evidence": [
-    "harness/golden/sets/"
-  ],
-  "finishedAt": "2026-06-30T03:28:47.000Z",
-  "name": "Capture",
-  "result": "pass",
-  "stage": 5,
-  "startedAt": "2026-06-30T03:03:47.000Z"
-}
+{"durationMs":1500000,"evidence":["harness/golden/sets/"],"finishedAt":"2026-06-30T03:28:47.000Z","name":"Capture","result":"pass","stage":5,"startedAt":"2026-06-30T03:03:47.000Z"}

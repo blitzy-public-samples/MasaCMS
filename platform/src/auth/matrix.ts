@@ -42,9 +42,9 @@ export function collectRouteMatrix(app: FastifyInstance): RouteMatrix {
   return { routes };
 }
 
-/** Matrix as two-space-indented JSON with a trailing newline; byte-stable for the same routes. */
+/** Matrix as compact JSON with a trailing newline; byte-stable for the same routes. */
 export function serializeRouteMatrix(matrix: RouteMatrix): string {
-  return `${JSON.stringify(matrix, null, 2)}\n`;
+  return `${JSON.stringify(matrix)}\n`;
 }
 
 function toEntry({ method, url, config }: RecordedRoute): RouteMatrixEntry {

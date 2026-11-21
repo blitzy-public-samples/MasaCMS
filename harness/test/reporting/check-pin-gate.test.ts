@@ -10,6 +10,7 @@ import { PIN_PATH, PinError, pinnedSha, readPin } from '../../src/lib/pin.js';
 import {
   DELIVERABLE_PATTERNS,
   FORBIDDEN_TRACKED_PREFIXES,
+  TRACKED_FORBIDDEN_EXCEPTIONS,
   checkDeliverables,
   confirmPin,
   extractSha,
@@ -211,6 +212,9 @@ describe('deliverable selection', () => {
 
   it('FORBIDDEN_TRACKED_PREFIXES are the downloaded theme and the screenshot folder', () => {
     expect(FORBIDDEN_TRACKED_PREFIXES).toEqual(['themes/default/', 'blitzy/']);
+    expect(TRACKED_FORBIDDEN_EXCEPTIONS).toEqual([
+      'blitzy/documentation/Project Guide - 48d51ddc-539f-48aa-8086-5041e07a1be6.md',
+    ]);
   });
 
   it.each<[string, boolean]>([
@@ -591,12 +595,14 @@ describe('checkDeliverables', () => {
     ]);
   });
 
-  it('reports each tracked path under themes/default/ or blitzy/ once, and never reads those folders', async () => {
+  it('reports each tracked path under themes/default/ or blitzy/ once, except the project guide, and never reads those folders', async () => {
+    const guide = 'blitzy/documentation/Project Guide - 48d51ddc-539f-48aa-8086-5041e07a1be6.md';
     await writeTree({
       'themes/default/index.cfm': '<cfoutput>theme</cfoutput>\n',
       'themes/default/README.md': '# Theme\n',
       'blitzy/notes.md': '# Notes\n',
       'blitzy/run/summary.md': '# Untracked summary\n',
+      [guide]: '# Project Guide\n',
       'themes/other/README.md': `Source SHA: ${SHA}\n`,
     });
     const tracked = [
@@ -605,6 +611,7 @@ describe('checkDeliverables', () => {
       'blitzy/notes.md',
       'blitzy/notes.md',
       'blitzy/screens/login.png',
+      guide,
       'themes/other/README.md',
     ];
     const { run } = fakeRunner(listingReplies({ listed: [...tracked, 'blitzy/run/summary.md'], tracked }));

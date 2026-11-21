@@ -88,25 +88,9 @@ afterAll(async () => {
 });
 
 describe('stableStringify', () => {
-  it('sorts keys at every depth, keeps array order and indents by two spaces with one trailing newline', () => {
+  it('sorts keys at every depth, keeps array order and writes compact JSON with one trailing newline', () => {
     expect(stableStringify({ b: 1, a: { d: [3, { z: true, y: null }, 1], c: 'x' } })).toBe(
-      [
-        '{',
-        '  "a": {',
-        '    "c": "x",',
-        '    "d": [',
-        '      3,',
-        '      {',
-        '        "y": null,',
-        '        "z": true',
-        '      },',
-        '      1',
-        '    ]',
-        '  },',
-        '  "b": 1',
-        '}',
-        '',
-      ].join('\n'),
+      '{"a":{"c":"x","d":[3,{"y":null,"z":true},1]},"b":1}\n',
     );
   });
 
@@ -122,13 +106,13 @@ describe('stableStringify', () => {
 
   it('renders Dates as ISO strings, drops undefined properties and keeps undefined array items as null', () => {
     expect(stableStringify({ kept: [undefined], gone: undefined, at: new Date(FIXED_AT) })).toBe(
-      `{\n  "at": "${FIXED_AT}",\n  "kept": [\n    null\n  ]\n}\n`,
+      `{"at":"${FIXED_AT}","kept":[null]}\n`,
     );
   });
 
   it('orders names by code unit after the integer-like keys JavaScript enumerates first', () => {
     expect(stableStringify({ b: 0, 10: 0, a: 0, 2: 0, B: 0 })).toBe(
-      '{\n  "2": 0,\n  "10": 0,\n  "B": 0,\n  "a": 0,\n  "b": 0\n}\n',
+      '{"2":0,"10":0,"B":0,"a":0,"b":0}\n',
     );
   });
 
@@ -137,7 +121,7 @@ describe('stableStringify', () => {
     const sorted = sortKeysDeep(input) as Record<string, unknown>;
     expect(Object.getPrototypeOf(sorted)).toBe(Object.prototype);
     expect(Object.keys(sorted)).toEqual(['__proto__', 'z']);
-    expect(stableStringify(input)).toBe('{\n  "__proto__": {\n    "polluted": true\n  },\n  "z": 1\n}\n');
+    expect(stableStringify(input)).toBe('{"__proto__":{"polluted":true},"z":1}\n');
   });
 
   it('is unchanged by a JSON round trip for any JSON value', () => {

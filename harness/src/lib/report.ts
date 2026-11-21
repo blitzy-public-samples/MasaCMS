@@ -41,9 +41,9 @@ export function sortKeysDeep(value: unknown): unknown {
   return Object.fromEntries(entries);
 }
 
-/** Deterministic JSON text: sorted keys, two-space indent, LF line ends and one trailing newline. */
+/** Deterministic JSON text: sorted keys, compact, one trailing newline. */
 export function stableStringify(value: unknown): string {
-  return `${JSON.stringify(sortKeysDeep(value), null, 2)}\n`;
+  return `${JSON.stringify(sortKeysDeep(value))}\n`;
 }
 
 function pinnedShaOf(pin: (() => Pin) | undefined): string {

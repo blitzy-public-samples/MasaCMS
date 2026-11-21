@@ -240,7 +240,7 @@ async function main(argv: readonly string[]): Promise<number> {
       return 0;
     }
     await mkdir(dirname(EXPORT_PATH), { recursive: true });
-    await writeFile(EXPORT_PATH, `${JSON.stringify(exportDoc, null, 2)}\n`, 'utf8');
+    await writeFile(EXPORT_PATH, `${JSON.stringify(exportDoc)}\n`, 'utf8');
     process.stdout.write(`${displayPath(EXPORT_PATH)}: ${exportDoc.rows.length} rows\n`);
     return 0;
   }

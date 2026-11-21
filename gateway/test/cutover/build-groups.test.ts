@@ -476,7 +476,7 @@ describe('main', () => {
     const { code, stdout, stderr } = await run([]);
     expect(code).toBe(1);
     expect(stdout[0]).toBe('@@ -1 +1 @@');
-    expect(stdout[1]).toBe('+{');
+    expect(stdout[1]).toBe(`+${serialiseGroups(buildGroups(await loadBuildGroupsInput(paths))).trimEnd()}`);
     expect(stderr).toEqual([`build-groups: ${paths.groupsFile} does not exist; run with --write`]);
   });
 
@@ -488,10 +488,12 @@ describe('main', () => {
 
   it('prints a line diff and exits 1 when groups.json differs', async () => {
     const current = await readFile(paths.groupsFile, 'utf8');
-    await writeFile(paths.groupsFile, current.replace('"generatedBy": "gateway/src/cutover/build-groups.ts"', '"generatedBy": "hand"'));
+    const edited = current.replace(`"generatedBy":"${GENERATED_BY}"`, '"generatedBy":"hand"');
+    expect(edited).not.toBe(current);
+    await writeFile(paths.groupsFile, edited);
     const { code, stdout, stderr } = await run([]);
     expect(code).toBe(1);
-    expect(stdout).toEqual(['@@ -3 +3 @@', '-  "generatedBy": "hand",', `+  "generatedBy": "${GENERATED_BY}",`]);
+    expect(stdout).toEqual(['@@ -1 +1 @@', `-${edited.trimEnd()}`, `+${current.trimEnd()}`]);
     expect(stderr).toEqual([`build-groups: ${paths.groupsFile} differs from the build; run with --write`]);
   });
 

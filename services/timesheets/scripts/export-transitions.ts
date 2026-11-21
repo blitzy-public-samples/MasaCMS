@@ -159,7 +159,7 @@ function committedMeta(text: string | null): ReportMeta {
   };
 }
 
-/** Renders the report as two-space JSON with a trailing newline. */
+/** Renders the report as compact JSON with a trailing newline. */
 function renderReport(sourceSha: string, generated: Generated, meta: ReportMeta): string {
   const report: TimesheetsReport = {
     sourceSha,
@@ -175,7 +175,7 @@ function renderReport(sourceSha: string, generated: Generated, meta: ReportMeta)
     blackout: { appliesTo: meta.appliesTo, ...generated.blackout },
     rows: generated.rows,
   };
-  return `${JSON.stringify(report, null, 2)}\n`;
+  return `${JSON.stringify(report)}\n`;
 }
 
 /** Writes or checks the test table and the fixture-oracle report; returns the process exit code. */

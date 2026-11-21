@@ -558,7 +558,7 @@ describe('compareNormalised steps', () => {
 
   it('reports a changed body field at its envelope path', async () => {
     const scenario = comparing(['status', 'envelope']);
-    const renamed = replaced(SUCCESS, '"title": "About Us"', '"title": "About Them"');
+    const renamed = replaced(SUCCESS, '"title":"About Us"', '"title":"About Them"');
     const golden = await normaliseOne(stepRecord({ contentType: JSON_TYPE, text: SUCCESS }), scenario);
     const replay = await normaliseOne(stepRecord({ contentType: JSON_TYPE, text: renamed }), scenario);
     expect(compareNormalised(run([golden]), run([replay]), { rules, scenario })).toStrictEqual([

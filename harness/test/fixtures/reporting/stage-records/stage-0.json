@@ -1,11 +1,1 @@
-{
-  "durationMs": 42000,
-  "evidence": [
-    "opt2/source-pin.json"
-  ],
-  "finishedAt": "2026-06-30T01:00:42.000Z",
-  "name": "Pin and synthetic-label checks",
-  "result": "pass",
-  "stage": 0,
-  "startedAt": "2026-06-30T01:00:00.000Z"
-}
+{"durationMs":42000,"evidence":["opt2/source-pin.json"],"finishedAt":"2026-06-30T01:00:42.000Z","name":"Pin and synthetic-label checks","result":"pass","stage":0,"startedAt":"2026-06-30T01:00:00.000Z"}

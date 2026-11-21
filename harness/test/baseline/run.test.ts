@@ -476,7 +476,7 @@ describe('runDiagnostic', () => {
   it('saves a re-run to diagnostic-rerun.json and leaves diagnostic.json byte-for-byte unchanged', async () => {
     await runDiagnostic({}, { env, fetch: routedFetch().fetch, now: tickingClock('2026-06-30T00:00:00.000Z', 1878) });
     const first = await fs.readFile(path.join(tmp, 'baseline', 'diagnostic.json'));
-    const rerunText = DIAGNOSTIC_TEXT.replace('"totalDuration": 1878', '"totalDuration": 1999');
+    const rerunText = DIAGNOSTIC_TEXT.replace('"totalDuration":1878', '"totalDuration":1999');
     const { fetch } = recordingFetch(() => diagnosticResponse(rerunText));
 
     const rerun = await runDiagnostic({ rerun: true }, { env, fetch, now: tickingClock('2026-06-30T01:00:00.000Z', 1999) });

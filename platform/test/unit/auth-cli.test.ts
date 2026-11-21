@@ -250,7 +250,7 @@ describe('main', () => {
     expect(await main(argv)).toBe(0);
     expect(builder).toHaveBeenCalledExactlyOnceWith('buildApp', options);
     expect(stdout).toBe(serializeRouteMatrix(collectRouteMatrix(app)));
-    expect(stdout).toBe(`${JSON.stringify(DECLARED_MATRIX, null, 2)}\n`);
+    expect(stdout).toBe(`${JSON.stringify(DECLARED_MATRIX)}\n`);
     expect(stderr).toBe('');
     expect(close).toHaveBeenCalledOnce();
     expect(app.server.listening).toBe(false);

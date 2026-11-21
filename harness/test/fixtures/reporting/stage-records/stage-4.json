@@ -1,11 +1,1 @@
-{
-  "durationMs": 2280000,
-  "evidence": [
-    "opt2/reports/reconciliation/summary.md"
-  ],
-  "finishedAt": "2026-06-30T03:03:46.000Z",
-  "name": "Migration",
-  "result": "pass",
-  "stage": 4,
-  "startedAt": "2026-06-30T02:25:46.000Z"
-}
+{"durationMs":2280000,"evidence":["opt2/reports/reconciliation/summary.md"],"finishedAt":"2026-06-30T03:03:46.000Z","name":"Migration","result":"pass","stage":4,"startedAt":"2026-06-30T02:25:46.000Z"}
