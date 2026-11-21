@@ -131,6 +131,7 @@ Contract: [`contracts/openapi.yaml`](contracts/openapi.yaml). Every operation ex
 |---|---|
 | `LEGACY_ORIGIN` | Masa origin; locally `http://127.0.0.1:${PORT}` of ColdFusion |
 | `OPT2_CUTOVER_DIR` | Relocates the cut-over directory; default `gateway/cutover` |
+| `OPT2_REPORTS_DIR` | Reports directory whose `reconciliation/` holds the rollback reports activation reads, as migration writes them; relative to the repository root; default `opt2/reports` |
 | `OPT2_BRIDGE_HMAC_KEY` | Bridge assertion key; locally generated into `${OPT2_STATE_DIR}/secrets/`, in the cloud the Secret Manager secret `legacy-bridge-hmac` |
 | `MURA_APPRELOADKEY` | Masa's reload parameter name for the route key; default `appreload` |
 | `MURA_SESSIONTIMEOUT` | Masa's `sessionTimeout` in minutes, the idle limit of a jar and of the legacy-primary cookies known to attach a legacy session without a describe; 180 when unset, blank, an expression or below 1 |

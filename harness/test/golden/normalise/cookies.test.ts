@@ -412,6 +412,39 @@ describe('normaliseAuth', () => {
     ]);
   });
 
+  it.each<{ label: string; attributes: string; expected: CookiePersistence }>([
+    {
+      label: 'Expires one second before Date',
+      attributes: 'expires=Tue, 30-Jun-2026 11:59:59 GMT',
+      expected: 'expired',
+    },
+    { label: 'Expires equal to Date', attributes: 'expires=Tue, 30-Jun-2026 12:00:00 GMT', expected: 'expired' },
+    {
+      label: 'Expires one second after Date',
+      attributes: 'expires=Tue, 30-Jun-2026 12:00:01 GMT',
+      expected: 'persistent',
+    },
+    {
+      label: 'Max-Age=0 beside an Expires after Date',
+      attributes: 'expires=Tue, 30-Jun-2026 12:00:01 GMT;Max-Age=0',
+      expected: 'expired',
+    },
+  ])('classifies a clearing cookie with $label as $expected', ({ attributes, expected }) => {
+    const line = `userHash=;${attributes};path=/;HttpOnly;`;
+    const response: RecordedResponse = {
+      status: 302,
+      headers: { date: REFERENCE_DATE_HEADER, 'set-cookie': [line] },
+      contentType: HTML,
+      sha256: EMPTY_BODY_SHA256,
+      hops: [],
+      text: '',
+    };
+    const state: AuthNormaliseState = { ids: createIdOrdinals(), sessionCookies: createSessionCookieTracker() };
+    expect(normaliseAuth(response, state, rules).cookies).toStrictEqual([
+      { name: 'userHash', value: '', path: '/', httpOnly: true, secure: false, persistence: expected, hop: 0 },
+    ]);
+  });
+
   it.each<{ status: number; redirects: boolean }>([
     { status: 301, redirects: true },
     { status: 302, redirects: true },

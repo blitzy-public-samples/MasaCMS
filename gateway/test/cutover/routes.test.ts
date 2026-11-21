@@ -1,5 +1,7 @@
-// Internal cut-over routes: registration as the contract declares it, operator and migration access, JSON-only bodies, findings, both status versions and orphan clearing.
-import { readFile } from 'node:fs/promises';
+// Internal cut-over routes: registration as the contract declares it, operator and migration access, JSON-only bodies, findings, both status versions, orphan clearing and the rollback evidence activation reads.
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { INVOCATION_HEADER, Roles, recordedRoutes, rolesForService } from '@opt2/platform/auth';
 import { createLogger } from '@opt2/platform/logging';
 import { createService, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
@@ -9,7 +11,8 @@ import { parse } from 'yaml';
 import type { InflightClearInput, InflightStore } from '../../src/cutover/inflight.js';
 import { registerCutoverRoutes } from '../../src/cutover/routes.js';
 import { ActivationRejected, CutoverConflict, type CutoverState, type CutoverStatus, type CutoverStatusV2 } from '../../src/cutover/state.js';
-import { pagesOf } from '../helpers/versions.js';
+import { buildTestGateway, type TestGateway } from '../helpers/app.js';
+import { committedTable, pagesOf } from '../helpers/versions.js';
 
 const ROUTE = 'admin:cusers.update{type=1}';
 const AT = '2026-06-30T12:00:00.000+00:00';
@@ -389,5 +392,39 @@ describe('registerCutoverRoutes', () => {
       expect(res.status).toBe(migrationAllowed ? 200 : 403);
       expect(calls).toHaveLength(migrationAllowed ? 1 : 0);
     });
+  });
+});
+
+/** The groups committed v0003 returns to legacy on its rollback evidence. */
+const ROLLBACK_GROUPS = (await committedTable('v0003')).rollbackRefs.flatMap((ref) => ref.groups);
+
+describe('activation of v0003 over the whole gateway', () => {
+  let gateway: TestGateway | undefined;
+  let reports: string | undefined;
+
+  afterEach(async () => {
+    await gateway?.close();
+    gateway = undefined;
+    if (reports !== undefined) await rm(reports, { recursive: true, force: true });
+    reports = undefined;
+  });
+
+  it.each<[string, number, unknown]>([
+    ['zero-difference', 200, { tableVersion: 'v0003', epoch: expect.any(Number) }],
+    [
+      'difference',
+      400,
+      { findings: ROLLBACK_GROUPS.map((group) => ({ rule: 'rollback-evidence', group, message: 'rollback-before.json has result difference' })) },
+    ],
+  ])('reads rollback-before.json with result %s from OPT2_REPORTS_DIR, not the committed report', async (result, status, body) => {
+    reports = await mkdtemp(join(tmpdir(), 'opt2-reports-'));
+    await mkdir(join(reports, 'reconciliation'));
+    await writeFile(join(reports, 'reconciliation', 'rollback-before.json'), JSON.stringify({ result }));
+    gateway = await buildTestGateway({ version: 'v0002', env: { OPT2_REPORTS_DIR: reports } });
+    expect(gateway.env.OPT2_REPORTS_DIR).toBe(reports);
+
+    const res = await call(gateway.app, { ...PROBES.cutoverActivate!, payload: { tableVersion: 'v0003' } });
+
+    expect(res).toEqual({ status, body });
   });
 });

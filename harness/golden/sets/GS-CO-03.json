@@ -1,10 +1,10 @@
 {
-  "capturedAt": "2026-11-20T03:01:09.916Z",
+  "capturedAt": "2026-11-21T04:43:02.365Z",
   "fixtures": {
     "available": true,
     "reason": "fixtures loaded"
   },
-  "generatedAt": "2026-11-20T03:01:15.754Z",
+  "generatedAt": "2026-11-21T04:43:06.972Z",
   "generatedBy": "harness/src/golden/capture.ts",
   "origin": "legacy",
   "scenarioId": "GS-CO-03",
@@ -13,7 +13,7 @@
     "mail": [],
     "rows": {
       "content.content": {
-        "checksum": "d9e197b54cb167c853d23048f53141ef52f0cf377e05c90c967ddcb600d439f2",
+        "checksum": "7193eb287167c11f9541165138a79c9fba5061ff801fc832579352ee0810845b",
         "columns": [
           {
             "name": "tcontent_ID",
@@ -315,7 +315,7 @@
         "entries": [
           {
             "count": 1,
-            "encoding": "i5:11045s8:tenant-as35:00000000000000000000000000000000000s35:00000000000000000000000000000000001s7:<id:47>s7:<id:50>NNNNNNNNs4:Pages7:Defaulti1:1i1:0s23:GS-CO-03 Published Pages23:GS-CO-03 Published PageNs19:gs-co-03-draft-pageNNs30:<p>GS-CO-03 Published Page</p>s14:<ts:iso-local>s10:Admin Users7:<id:51>NNi1:1i1:1i1:1i1:0Ns5:_selfNi1:0NNNNi1:0Ns7:Inheriti1:0Ni1:0i2:10s7:ordernos3:ascNNi1:0NNi1:0s43:00000000000000000000000000000000001,<id:47>Ni1:1s19:gs-co-03-draft-pages19:GS-CO-03 Draft Pages14:<ts:iso-local>i1:0Ns5:smalls4:AUTOs4:AUTONi1:0i1:0Ns5:Dailys2:{}"
+            "encoding": "i5:11073s8:tenant-as35:00000000000000000000000000000000000s35:00000000000000000000000000000000001s7:<id:47>s7:<id:50>NNNNNNNNs4:Pages7:Defaulti1:1i1:0s23:GS-CO-03 Published Pages23:GS-CO-03 Published PageNs19:gs-co-03-draft-pageNNs30:<p>GS-CO-03 Published Page</p>s14:<ts:iso-local>s10:Admin Users7:<id:51>NNi1:1i1:1i1:1i1:0Ns5:_selfNi1:0NNNNi1:0Ns7:Inheriti1:0Ni1:0i2:10s7:ordernos3:ascNNi1:0NNi1:0s43:00000000000000000000000000000000001,<id:47>Ni1:1s19:gs-co-03-draft-pages19:GS-CO-03 Draft Pages14:<ts:iso-local>i1:0Ns5:smalls4:AUTOs4:AUTONi1:0i1:0Ns5:Dailys2:{}"
           }
         ],
         "legacyTable": "tcontent",
@@ -2659,7 +2659,7 @@
               "form": 1,
               "name": "displayIntervalTZ",
               "type": "hidden",
-              "value": "Etc/UTC"
+              "value": "UTC"
             },
             {
               "disabled": false,
@@ -8323,7 +8323,7 @@
               "form": 1,
               "name": "displayIntervalTZ",
               "type": "hidden",
-              "value": "Etc/UTC"
+              "value": "UTC"
             },
             {
               "disabled": false,
@@ -11654,7 +11654,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "3a6d93c41b275d58d9027b43dd098c5862f827977bd0f93c6a1c11453cc4c8d9",
+        "rawSha256": "5e90fbfd74f366b3b7965a7153ff3e774f4dbdb3d84eba9bc0cd65747c2d488e",
         "status": 200
       },
       "routeKey": "admin:carch.edit"
@@ -12294,8 +12294,8 @@
             "action": "add",
             "approved": "0",
             "body": "<p>GS-CO-03 Draft Page</p>",
-            "contenthistid": "A502201E-D0E6-5449-B6B59EBCBBCCBAEE",
-            "contentid": "A5021E32-B56C-9942-405370219DB30619",
+            "contenthistid": "DC2662E7-D4F5-48F0-B02358E7EDC70D79",
+            "contentid": "DC266116-C352-2AC4-86AC27A7F631EBB9",
             "csrf_token": "<token>",
             "csrf_token_expires": "<token>",
             "display": "1",
@@ -12929,7 +12929,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "1da66f86901b9bd038f5861157a410bacf3e3b29416fa69e90134c4e22cfc399",
+        "rawSha256": "d90155bba8a09425ffee533f89517c3da4cb100882c3d56baab01cd23523ce3e",
         "status": 200
       },
       "routeKey": "admin:carch.update"
@@ -13594,7 +13594,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "67cd36cfa088363a4defbd0e5716faccc1178380056c1b9a87f7493dc4543522",
+        "rawSha256": "0a12522be6a65bbbb5ef62621f43eda38674004cae734c5c36832a60fbcd97c3",
         "status": 200
       },
       "routeKey": "admin:carch.draft"
@@ -13671,7 +13671,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/_api/json/v1/tenant-a/content/A5021E32-B56C-9942-405370219DB30619"
+        "url": "/_api/json/v1/tenant-a/content/DC266116-C352-2AC4-86AC27A7F631EBB9"
       },
       "response": {
         "body": {
@@ -13731,7 +13731,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "1f88f2a1eedee0e79ed0db07b9e79166d41430b34cf052bf1a5e4bb4327b2e5c",
+        "rawSha256": "2cd6057d6620b7fb0fe69554566d6d72e5ed863cbb3ad8bddb0df11810e69f18",
         "status": 200
       },
       "routeKey": "api:content.findone"
@@ -16070,7 +16070,7 @@
               "form": 1,
               "name": "displayIntervalTZ",
               "type": "hidden",
-              "value": "Etc/UTC"
+              "value": "UTC"
             },
             {
               "disabled": false,
@@ -19450,7 +19450,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/?muraAction=cArch.edit&siteid=tenant-a&moduleid=00000000000000000000000000000000000&topid=00000000000000000000000000000000001&contentid=A5021E32-B56C-9942-405370219DB30619&contenthistid=A5025EA5-EC89-BB54-9DDC1A7764468B68&parentid=00000000000000000000000000000000001&type=Page"
+        "url": "/admin/?muraAction=cArch.edit&siteid=tenant-a&moduleid=00000000000000000000000000000000000&topid=00000000000000000000000000000000001&contentid=DC266116-C352-2AC4-86AC27A7F631EBB9&contenthistid=DC269990-E9DA-ADEE-6849A01620091182&parentid=00000000000000000000000000000000001&type=Page"
       },
       "response": {
         "domModel": {
@@ -21778,7 +21778,7 @@
               "form": 1,
               "name": "displayIntervalTZ",
               "type": "hidden",
-              "value": "Etc/UTC"
+              "value": "UTC"
             },
             {
               "disabled": false,
@@ -25152,7 +25152,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "fb31cd48d1522616c7120e98d0ca21101015a1cade740de8c9d7cbccda8cab13",
+        "rawSha256": "279ce610e9801ad3b1019ecd5fabac04e57eb4ca73d283db7c9e78a6dccc1607",
         "status": 200
       },
       "routeKey": "admin:carch.edit"
@@ -25792,8 +25792,8 @@
             "action": "add",
             "approved": "1",
             "body": "<p>GS-CO-03 Published Page</p>",
-            "contenthistid": "A5025EA5-EC89-BB54-9DDC1A7764468B68",
-            "contentid": "A5021E32-B56C-9942-405370219DB30619",
+            "contenthistid": "DC269990-E9DA-ADEE-6849A01620091182",
+            "contentid": "DC266116-C352-2AC4-86AC27A7F631EBB9",
             "csrf_token": "<token>",
             "csrf_token_expires": "<token>",
             "display": "1",
@@ -26427,7 +26427,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "b62f9f7e4519fea97b782f4a890cce8e38b124bc4b38eece26a2028544694221",
+        "rawSha256": "85278af30363109eb390cf40adfd44d7b5a7e58826c287afd08261c59674bea0",
         "status": 200
       },
       "routeKey": "admin:carch.update{approved=1}"
@@ -27092,7 +27092,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "13176b1f32ca724ffe9f383b8f2d382549b1a4e81b9ea7804d8db6879948993c",
+        "rawSha256": "4fde7bf64b1875fce9996b015728fa332ddafd85107d7fb9d7d73dd41b70e8c0",
         "status": 200
       },
       "routeKey": "admin:carch.draft"

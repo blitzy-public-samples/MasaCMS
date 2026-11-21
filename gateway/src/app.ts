@@ -89,7 +89,7 @@ function literalSetting(value: unknown): unknown {
 }
 
 /**
- * Base variables plus LEGACY_ORIGIN, OPT2_CUTOVER_DIR, OPT2_BRIDGE_HMAC_KEY, Masa's reload key, `appreload` when blank
+ * Base variables plus LEGACY_ORIGIN, OPT2_CUTOVER_DIR, OPT2_REPORTS_DIR, OPT2_BRIDGE_HMAC_KEY, Masa's reload key, `appreload` when blank
  * or unset, Masa's session timeout in minutes, read as identity reads it: unset or an expression as unset, Masa's
  * request timeout in seconds, 1000 when blank or unset, and Masa's `secureCookies` and `cookieDomain`, read as web
  * reads them: a CFML boolean, else false, and the domain, `''` when unset or an expression.
@@ -97,6 +97,7 @@ function literalSetting(value: unknown): unknown {
 const gatewayVariables = baseEnvSchema.extend({
   LEGACY_ORIGIN: envUrl(),
   OPT2_CUTOVER_DIR: optionalEnvString(),
+  OPT2_REPORTS_DIR: optionalEnvString(),
   OPT2_BRIDGE_HMAC_KEY: requiredEnvString(),
   MURA_APPRELOADKEY: requiredEnvString(z.string().default('appreload')),
   MURA_SESSIONTIMEOUT: z

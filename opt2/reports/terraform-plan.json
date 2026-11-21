@@ -1,7 +1,7 @@
 {
   "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
   "generatedBy": "infra/terraform/plan.sh",
-  "generatedAt": "2026-11-19T03:58:09.043Z",
+  "generatedAt": "2026-11-21T05:27:25.192Z",
   "status": "generated",
   "terraformVersion": "1.17.1",
   "providerVersion": "hashicorp/google 8.9.0",
@@ -47690,196 +47690,8 @@
     },
     "relevant_attributes": [
       {
-        "resource": "module.pubsub[\"identity.group.changed.v1\"].google_pubsub_topic.this",
-        "attribute": [
-          "name"
-        ]
-      },
-      {
-        "resource": "module.cloud_run[\"people\"].google_cloud_run_v2_service.this",
-        "attribute": [
-          "name"
-        ]
-      },
-      {
-        "resource": "module.pubsub[\"people.person.archived.v1\"].google_pubsub_subscription.push",
+        "resource": "module.pubsub[\"surveys.survey.scheduled.v1\"].google_pubsub_subscription.push",
         "attribute": []
-      },
-      {
-        "resource": "module.cloud_run[\"migration\"].google_cloud_run_v2_service.this",
-        "attribute": [
-          "id"
-        ]
-      },
-      {
-        "resource": "module.cloud_run[\"programs-sites\"].google_cloud_run_v2_service.this",
-        "attribute": [
-          "location"
-        ]
-      },
-      {
-        "resource": "module.pubsub[\"people.person.changed.v1\"].google_pubsub_topic.this",
-        "attribute": [
-          "name"
-        ]
-      },
-      {
-        "resource": "module.network.google_compute_global_address.private_services",
-        "attribute": [
-          "name"
-        ]
-      },
-      {
-        "resource": "module.cloud_run[\"gateway\"].google_cloud_run_v2_service.this",
-        "attribute": [
-          "name"
-        ]
-      },
-      {
-        "resource": "module.cloud_run[\"programs-sites\"].google_cloud_run_v2_service.this",
-        "attribute": [
-          "name"
-        ]
-      },
-      {
-        "resource": "module.queues[\"surveys-outbox-sweep\"].google_cloud_tasks_queue.this",
-        "attribute": [
-          "name"
-        ]
-      },
-      {
-        "resource": "module.secrets[\"otel-collector-config\"].google_secret_manager_secret.this",
-        "attribute": [
-          "secret_id"
-        ]
-      },
-      {
-        "resource": "module.queues[\"content-scheduled-publish\"].google_cloud_tasks_queue.this",
-        "attribute": [
-          "id"
-        ]
-      },
-      {
-        "resource": "module.secrets[\"cloudsql-admin-password\"].google_secret_manager_secret.this",
-        "attribute": [
-          "id"
-        ]
-      },
-      {
-        "resource": "module.cloud_run[\"reporting\"].google_cloud_run_v2_service.this",
-        "attribute": [
-          "location"
-        ]
-      },
-      {
-        "resource": "module.cloud_run[\"strategies-content\"].google_cloud_run_v2_service.this",
-        "attribute": [
-          "id"
-        ]
-      },
-      {
-        "resource": "module.pubsub[\"surveys.survey.scheduled.v1\"].google_pubsub_topic.this",
-        "attribute": [
-          "id"
-        ]
-      },
-      {
-        "resource": "module.pubsub[\"identity.permission.changed.v1\"].google_pubsub_topic.this",
-        "attribute": [
-          "name"
-        ]
-      },
-      {
-        "resource": "module.queues[\"surveys-launch\"].google_cloud_tasks_queue.this",
-        "attribute": [
-          "name"
-        ]
-      },
-      {
-        "resource": "module.cloud_run[\"communications\"].google_cloud_run_v2_service.this",
-        "attribute": [
-          "location"
-        ]
-      },
-      {
-        "resource": "module.service_accounts[\"migration\"].google_service_account.this",
-        "attribute": [
-          "id"
-        ]
-      },
-      {
-        "resource": "module.queues[\"communications-reminders\"].google_cloud_tasks_queue.this",
-        "attribute": [
-          "id"
-        ]
-      },
-      {
-        "resource": "module.cloud_run[\"gateway\"].google_cloud_run_v2_service.this",
-        "attribute": [
-          "id"
-        ]
-      },
-      {
-        "resource": "module.identity_platform.google_identity_platform_tenant.this",
-        "attribute": []
-      },
-      {
-        "resource": "module.buckets[\"finance-attachments\"].google_storage_bucket.this",
-        "attribute": [
-          "name"
-        ]
-      },
-      {
-        "resource": "module.pubsub[\"identity.login-mail.requested.v1\"].google_pubsub_topic.dlq",
-        "attribute": []
-      },
-      {
-        "resource": "module.service_accounts[\"people\"].google_service_account.this",
-        "attribute": [
-          "email"
-        ]
-      },
-      {
-        "resource": "module.cloud_run[\"surveys\"].google_cloud_run_v2_service.this",
-        "attribute": [
-          "name"
-        ]
-      },
-      {
-        "resource": "module.pubsub[\"identity.group.changed.v1\"].google_pubsub_topic.this",
-        "attribute": [
-          "id"
-        ]
-      },
-      {
-        "resource": "module.service_accounts[\"e-signature\"].google_service_account.this",
-        "attribute": [
-          "email"
-        ]
-      },
-      {
-        "resource": "module.queues[\"programs-sites-sitemonitor\"].google_cloud_tasks_queue.this",
-        "attribute": [
-          "name"
-        ]
-      },
-      {
-        "resource": "module.service_accounts[\"identity\"].google_service_account.this",
-        "attribute": [
-          "email"
-        ]
-      },
-      {
-        "resource": "module.pubsub[\"programs-sites.site.changed.v1\"].google_pubsub_topic.this",
-        "attribute": [
-          "name"
-        ]
-      },
-      {
-        "resource": "module.service_accounts[\"finance\"].google_service_account.this",
-        "attribute": [
-          "email"
-        ]
       },
       {
         "resource": "module.cloud_sql.google_sql_database.this",
@@ -47888,105 +47700,19 @@
         ]
       },
       {
-        "resource": "module.cloud_run[\"migration\"].google_cloud_run_v2_service.this",
-        "attribute": [
-          "location"
-        ]
-      },
-      {
-        "resource": "module.cloud_run[\"reporting\"].google_cloud_run_v2_service.this",
+        "resource": "module.queues[\"communications-outbox-sweep\"].google_cloud_tasks_queue.this",
         "attribute": [
           "id"
         ]
       },
       {
-        "resource": "module.pubsub[\"identity.group.changed.v1\"].google_pubsub_subscription.push",
-        "attribute": []
-      },
-      {
-        "resource": "module.pubsub[\"communications.message.delivery-status-changed.v1\"].google_pubsub_topic.dlq",
-        "attribute": []
-      },
-      {
-        "resource": "module.cloud_run[\"timesheets\"].google_cloud_run_v2_service.this",
+        "resource": "module.cloud_run[\"communications\"].google_cloud_run_v2_service.this",
         "attribute": [
           "name"
         ]
       },
       {
-        "resource": "module.cloud_run[\"web\"].google_cloud_run_v2_service.this",
-        "attribute": [
-          "location"
-        ]
-      },
-      {
-        "resource": "module.queues[\"reporting-export-run\"].google_cloud_tasks_queue.this",
-        "attribute": [
-          "name"
-        ]
-      },
-      {
-        "resource": "module.buckets[\"content-files\"].google_storage_bucket.this",
-        "attribute": [
-          "name"
-        ]
-      },
-      {
-        "resource": "module.pubsub[\"people.person.changed.v1\"].google_pubsub_topic.dlq",
-        "attribute": []
-      },
-      {
-        "resource": "module.cloud_run[\"web\"].google_cloud_run_v2_service.this",
-        "attribute": [
-          "id"
-        ]
-      },
-      {
-        "resource": "module.secrets[\"legacy-bridge-hmac\"].google_secret_manager_secret.this",
-        "attribute": [
-          "secret_id"
-        ]
-      },
-      {
-        "resource": "module.service_accounts[\"communications\"].google_service_account.this",
-        "attribute": [
-          "id"
-        ]
-      },
-      {
-        "resource": "module.service_accounts[\"gateway\"].google_service_account.this",
-        "attribute": [
-          "id"
-        ]
-      },
-      {
-        "resource": "module.service_accounts[\"timesheets\"].google_service_account.this",
-        "attribute": [
-          "email"
-        ]
-      },
-      {
-        "resource": "module.cloud_sql.google_sql_database_instance.this",
-        "attribute": [
-          "connection_name"
-        ]
-      },
-      {
-        "resource": "module.pubsub[\"people.person.changed.v1\"].google_pubsub_subscription.dlq_replay",
-        "attribute": []
-      },
-      {
-        "resource": "module.pubsub[\"communications.message.delivery-status-changed.v1\"].google_pubsub_subscription.push",
-        "attribute": []
-      },
-      {
-        "resource": "module.service_accounts[\"identity\"].google_service_account.this",
-        "attribute": [
-          "name"
-        ]
-      },
-      {
-        "resource": "module.cloud_run[\"finance\"].google_cloud_run_v2_service.this",
+        "resource": "module.cloud_run[\"identity\"].google_cloud_run_v2_service.this",
         "attribute": [
           "name"
         ]
@@ -47996,43 +47722,9 @@
         "attribute": []
       },
       {
-        "resource": "module.pubsub[\"identity.login-mail.requested.v1\"].google_pubsub_subscription.dlq_replay",
-        "attribute": []
-      },
-      {
-        "resource": "module.cloud_run[\"migration\"].google_cloud_run_v2_service.this",
-        "attribute": [
-          "name"
-        ]
-      },
-      {
-        "resource": "module.queues[\"programs-sites-outbox-sweep\"].google_cloud_tasks_queue.this",
+        "resource": "module.cloud_run[\"identity\"].google_cloud_run_v2_service.this",
         "attribute": [
           "id"
-        ]
-      },
-      {
-        "resource": "module.secrets[\"legacy-bridge-hmac\"].google_secret_manager_secret.this",
-        "attribute": [
-          "id"
-        ]
-      },
-      {
-        "resource": "module.pubsub[\"programs-sites.site.changed.v1\"].google_pubsub_topic.this",
-        "attribute": [
-          "id"
-        ]
-      },
-      {
-        "resource": "module.service_accounts[\"finance\"].google_service_account.this",
-        "attribute": [
-          "id"
-        ]
-      },
-      {
-        "resource": "module.cloud_run[\"reporting\"].google_cloud_run_v2_service.this",
-        "attribute": [
-          "name"
         ]
       },
       {
@@ -48042,7 +47734,49 @@
         ]
       },
       {
-        "resource": "module.secrets[\"communications-smtp\"].google_secret_manager_secret.this",
+        "resource": "module.service_accounts[\"timesheets\"].google_service_account.this",
+        "attribute": [
+          "id"
+        ]
+      },
+      {
+        "resource": "module.cloud_run[\"timesheets\"].google_cloud_run_v2_service.this",
+        "attribute": [
+          "name"
+        ]
+      },
+      {
+        "resource": "module.cloud_run[\"e-signature\"].google_cloud_run_v2_service.this",
+        "attribute": [
+          "name"
+        ]
+      },
+      {
+        "resource": "module.cloud_run[\"gateway\"].google_cloud_run_v2_service.this",
+        "attribute": [
+          "id"
+        ]
+      },
+      {
+        "resource": "module.cloud_run[\"finance\"].google_cloud_run_v2_service.this",
+        "attribute": [
+          "location"
+        ]
+      },
+      {
+        "resource": "module.pubsub[\"identity.group.changed.v1\"].google_pubsub_topic.this",
+        "attribute": [
+          "id"
+        ]
+      },
+      {
+        "resource": "module.secrets[\"otel-collector-config\"].google_secret_manager_secret.this",
+        "attribute": [
+          "secret_id"
+        ]
+      },
+      {
+        "resource": "module.cloud_run[\"communications\"].google_cloud_run_v2_service.this",
         "attribute": [
           "id"
         ]
@@ -48054,61 +47788,13 @@
         ]
       },
       {
-        "resource": "module.pubsub[\"people.person.archived.v1\"].google_pubsub_topic.this",
-        "attribute": [
-          "name"
-        ]
-      },
-      {
-        "resource": "module.buckets[\"reporting-exports\"].google_storage_bucket.this",
-        "attribute": [
-          "name"
-        ]
-      },
-      {
-        "resource": "module.pubsub[\"identity.permission.changed.v1\"].google_pubsub_subscription.push",
-        "attribute": []
-      },
-      {
-        "resource": "module.cloud_sql.google_sql_user.iam",
-        "attribute": []
-      },
-      {
-        "resource": "module.service_accounts[\"surveys\"].google_service_account.this",
+        "resource": "module.cloud_run[\"surveys\"].google_cloud_run_v2_service.this",
         "attribute": [
           "id"
         ]
       },
       {
-        "resource": "module.network.google_compute_network.this",
-        "attribute": [
-          "id"
-        ]
-      },
-      {
-        "resource": "module.pubsub[\"programs-sites.site.changed.v1\"].google_pubsub_subscription.dlq_replay",
-        "attribute": []
-      },
-      {
-        "resource": "module.service_accounts[\"finance\"].google_service_account.this",
-        "attribute": [
-          "name"
-        ]
-      },
-      {
-        "resource": "module.queues[\"reporting-export-run\"].google_cloud_tasks_queue.this",
-        "attribute": [
-          "id"
-        ]
-      },
-      {
-        "resource": "module.network.google_compute_network.this",
-        "attribute": [
-          "name"
-        ]
-      },
-      {
-        "resource": "module.queues[\"people-outbox-sweep\"].google_cloud_tasks_queue.this",
+        "resource": "module.queues[\"surveys-launch\"].google_cloud_tasks_queue.this",
         "attribute": [
           "id"
         ]
@@ -48120,39 +47806,153 @@
         ]
       },
       {
+        "resource": "module.cloud_run[\"identity\"].google_cloud_run_v2_service.this",
+        "attribute": [
+          "location"
+        ]
+      },
+      {
+        "resource": "module.queues[\"reporting-export-run\"].google_cloud_tasks_queue.this",
+        "attribute": [
+          "id"
+        ]
+      },
+      {
+        "resource": "module.service_accounts[\"strategies-content\"].google_service_account.this",
+        "attribute": [
+          "id"
+        ]
+      },
+      {
+        "resource": "module.queues[\"reporting-export-run\"].google_cloud_tasks_queue.this",
+        "attribute": [
+          "name"
+        ]
+      },
+      {
+        "resource": "module.service_accounts[\"db-bootstrap\"].google_service_account.this",
+        "attribute": [
+          "email"
+        ]
+      },
+      {
         "resource": "module.network.google_compute_subnetwork.this",
         "attribute": [
           "name"
         ]
       },
       {
-        "resource": "module.service_accounts[\"tasks-invoker\"].google_service_account.this",
-        "attribute": [
-          "id"
-        ]
-      },
-      {
-        "resource": "module.service_accounts[\"timesheets\"].google_service_account.this",
-        "attribute": [
-          "id"
-        ]
-      },
-      {
-        "resource": "module.cloud_run[\"people\"].google_cloud_run_v2_service.this",
-        "attribute": [
-          "id"
-        ]
-      },
-      {
-        "resource": "module.pubsub[\"identity.permission.changed.v1\"].google_pubsub_topic.dlq",
+        "resource": "module.pubsub[\"identity.membership.changed.v1\"].google_pubsub_subscription.dlq_replay",
         "attribute": []
       },
       {
-        "resource": "module.pubsub[\"programs-sites.site.changed.v1\"].google_pubsub_subscription.push",
+        "resource": "module.secrets[\"legacy-bridge-hmac\"].google_secret_manager_secret.this",
+        "attribute": [
+          "secret_id"
+        ]
+      },
+      {
+        "resource": "module.service_accounts[\"identity\"].google_service_account.this",
+        "attribute": [
+          "email"
+        ]
+      },
+      {
+        "resource": "module.cloud_run[\"timesheets\"].google_cloud_run_v2_service.this",
+        "attribute": [
+          "location"
+        ]
+      },
+      {
+        "resource": "module.cloud_run[\"finance\"].google_cloud_run_v2_service.this",
+        "attribute": [
+          "name"
+        ]
+      },
+      {
+        "resource": "module.pubsub[\"people.person.archived.v1\"].google_pubsub_topic.this",
+        "attribute": [
+          "id"
+        ]
+      },
+      {
+        "resource": "module.queues[\"surveys-outbox-sweep\"].google_cloud_tasks_queue.this",
+        "attribute": [
+          "name"
+        ]
+      },
+      {
+        "resource": "module.cloud_run[\"reporting\"].google_cloud_run_v2_service.this",
+        "attribute": [
+          "name"
+        ]
+      },
+      {
+        "resource": "module.pubsub[\"identity.permission.changed.v1\"].google_pubsub_topic.this",
+        "attribute": [
+          "name"
+        ]
+      },
+      {
+        "resource": "module.queues[\"identity-outbox-sweep\"].google_cloud_tasks_queue.this",
+        "attribute": [
+          "id"
+        ]
+      },
+      {
+        "resource": "module.network.google_compute_network.this",
+        "attribute": [
+          "id"
+        ]
+      },
+      {
+        "resource": "module.queues[\"programs-sites-outbox-sweep\"].google_cloud_tasks_queue.this",
+        "attribute": [
+          "id"
+        ]
+      },
+      {
+        "resource": "module.cloud_run[\"programs-sites\"].google_cloud_run_v2_service.this",
+        "attribute": [
+          "location"
+        ]
+      },
+      {
+        "resource": "module.cloud_run[\"strategies-content\"].google_cloud_run_v2_service.this",
+        "attribute": [
+          "location"
+        ]
+      },
+      {
+        "resource": "module.pubsub[\"identity.permission.changed.v1\"].google_pubsub_subscription.push",
         "attribute": []
       },
       {
-        "resource": "module.pubsub[\"identity.membership.changed.v1\"].google_pubsub_topic.this",
+        "resource": "module.pubsub[\"identity.login-mail.requested.v1\"].google_pubsub_topic.this",
+        "attribute": [
+          "id"
+        ]
+      },
+      {
+        "resource": "module.service_accounts.google_service_account.this",
+        "attribute": [
+          "email"
+        ]
+      },
+      {
+        "resource": "module.queues[\"surveys-launch\"].google_cloud_tasks_queue.this",
+        "attribute": [
+          "name"
+        ]
+      },
+      {
+        "resource": "module.service_accounts[\"finance\"].google_service_account.this",
+        "attribute": [
+          "email"
+        ]
+      },
+      {
+        "resource": "module.queues[\"communications-reminders\"].google_cloud_tasks_queue.this",
         "attribute": [
           "name"
         ]
@@ -48164,9 +47964,9 @@
         ]
       },
       {
-        "resource": "module.pubsub[\"identity.login-mail.requested.v1\"].google_pubsub_topic.this",
+        "resource": "module.service_accounts[\"reporting\"].google_service_account.this",
         "attribute": [
-          "id"
+          "name"
         ]
       },
       {
@@ -48174,113 +47974,7 @@
         "attribute": []
       },
       {
-        "resource": "module.cloud_run[\"identity\"].google_cloud_run_v2_service.this",
-        "attribute": [
-          "name"
-        ]
-      },
-      {
-        "resource": "module.cloud_run[\"communications\"].google_cloud_run_v2_service.this",
-        "attribute": [
-          "id"
-        ]
-      },
-      {
-        "resource": "module.service_accounts[\"programs-sites\"].google_service_account.this",
-        "attribute": [
-          "email"
-        ]
-      },
-      {
-        "resource": "module.cloud_run[\"e-signature\"].google_cloud_run_v2_service.this",
-        "attribute": [
-          "id"
-        ]
-      },
-      {
-        "resource": "module.pubsub[\"programs-sites.site.changed.v1\"].google_pubsub_topic.dlq",
-        "attribute": []
-      },
-      {
-        "resource": "module.pubsub[\"people.person.archived.v1\"].google_pubsub_subscription.dlq_replay",
-        "attribute": []
-      },
-      {
-        "resource": "module.cloud_run[\"surveys\"].google_cloud_run_v2_service.this",
-        "attribute": [
-          "id"
-        ]
-      },
-      {
-        "resource": "module.service_accounts[\"tasks-invoker\"].google_service_account.this",
-        "attribute": [
-          "email"
-        ]
-      },
-      {
-        "resource": "module.network.google_service_networking_connection.this",
-        "attribute": [
-          "network"
-        ]
-      },
-      {
-        "resource": "module.service_accounts[\"programs-sites\"].google_service_account.this",
-        "attribute": [
-          "id"
-        ]
-      },
-      {
-        "resource": "module.pubsub[\"identity.membership.changed.v1\"].google_pubsub_subscription.dlq_replay",
-        "attribute": []
-      },
-      {
-        "resource": "module.pubsub[\"surveys.survey.scheduled.v1\"].google_pubsub_subscription.dlq_replay",
-        "attribute": []
-      },
-      {
-        "resource": "module.queues[\"content-feed-import\"].google_cloud_tasks_queue.this",
-        "attribute": [
-          "name"
-        ]
-      },
-      {
-        "resource": "module.service_accounts[\"web\"].google_service_account.this",
-        "attribute": [
-          "email"
-        ]
-      },
-      {
-        "resource": "module.buckets[\"esignature-documents\"].google_storage_bucket.this",
-        "attribute": [
-          "name"
-        ]
-      },
-      {
-        "resource": "module.secrets[\"cloudsql-admin-password\"].google_secret_manager_secret.this",
-        "attribute": [
-          "secret_id"
-        ]
-      },
-      {
-        "resource": "module.service_accounts[\"reporting\"].google_service_account.this",
-        "attribute": [
-          "email"
-        ]
-      },
-      {
-        "resource": "module.service_accounts[\"strategies-content\"].google_service_account.this",
-        "attribute": [
-          "name"
-        ]
-      },
-      {
-        "resource": "module.service_accounts.google_service_account.this",
-        "attribute": [
-          "email"
-        ]
-      },
-      {
-        "resource": "module.pubsub[\"identity.login-mail.requested.v1\"].google_pubsub_topic.this",
+        "resource": "module.cloud_run[\"people\"].google_cloud_run_v2_service.this",
         "attribute": [
           "name"
         ]
@@ -48290,17 +47984,203 @@
         "attribute": []
       },
       {
-        "resource": "module.pubsub[\"surveys.survey.scheduled.v1\"].google_pubsub_topic.dlq",
+        "resource": "module.pubsub[\"people.person.archived.v1\"].google_pubsub_subscription.dlq_replay",
         "attribute": []
       },
       {
-        "resource": "module.network.google_compute_router.this",
+        "resource": "module.network.google_compute_global_address.private_services",
         "attribute": [
           "name"
         ]
       },
       {
-        "resource": "module.pubsub[\"communications.message.delivery-status-changed.v1\"].google_pubsub_topic.this",
+        "resource": "module.network.google_compute_network.this",
+        "attribute": [
+          "name"
+        ]
+      },
+      {
+        "resource": "module.service_accounts[\"e-signature\"].google_service_account.this",
+        "attribute": [
+          "name"
+        ]
+      },
+      {
+        "resource": "module.cloud_run[\"e-signature\"].google_cloud_run_v2_service.this",
+        "attribute": [
+          "id"
+        ]
+      },
+      {
+        "resource": "module.queues[\"content-scheduled-publish\"].google_cloud_tasks_queue.this",
+        "attribute": [
+          "id"
+        ]
+      },
+      {
+        "resource": "module.service_accounts[\"finance\"].google_service_account.this",
+        "attribute": [
+          "id"
+        ]
+      },
+      {
+        "resource": "module.cloud_run[\"web\"].google_cloud_run_v2_service.this",
+        "attribute": [
+          "id"
+        ]
+      },
+      {
+        "resource": "module.db_bootstrap.google_cloud_run_v2_job.this",
+        "attribute": [
+          "id"
+        ]
+      },
+      {
+        "resource": "module.pubsub[\"identity.membership.changed.v1\"].google_pubsub_topic.dlq",
+        "attribute": []
+      },
+      {
+        "resource": "module.pubsub[\"people.person.changed.v1\"].google_pubsub_topic.dlq",
+        "attribute": []
+      },
+      {
+        "resource": "module.cloud_run[\"communications\"].google_cloud_run_v2_service.this",
+        "attribute": [
+          "location"
+        ]
+      },
+      {
+        "resource": "module.secrets[\"communications-smtp\"].google_secret_manager_secret.this",
+        "attribute": [
+          "id"
+        ]
+      },
+      {
+        "resource": "module.service_accounts[\"migration\"].google_service_account.this",
+        "attribute": [
+          "id"
+        ]
+      },
+      {
+        "resource": "module.service_accounts[\"gateway\"].google_service_account.this",
+        "attribute": [
+          "id"
+        ]
+      },
+      {
+        "resource": "module.cloud_run[\"e-signature\"].google_cloud_run_v2_service.this",
+        "attribute": [
+          "location"
+        ]
+      },
+      {
+        "resource": "module.pubsub[\"identity.group.changed.v1\"].google_pubsub_topic.this",
+        "attribute": [
+          "name"
+        ]
+      },
+      {
+        "resource": "module.service_accounts[\"pubsub-invoker\"].google_service_account.this",
+        "attribute": [
+          "name"
+        ]
+      },
+      {
+        "resource": "module.pubsub[\"programs-sites.site.changed.v1\"].google_pubsub_topic.dlq",
+        "attribute": []
+      },
+      {
+        "resource": "module.pubsub[\"programs-sites.site.changed.v1\"].google_pubsub_subscription.dlq_replay",
+        "attribute": []
+      },
+      {
+        "resource": "module.queues[\"content-feed-import\"].google_cloud_tasks_queue.this",
+        "attribute": [
+          "name"
+        ]
+      },
+      {
+        "resource": "module.queues[\"programs-sites-sitemonitor\"].google_cloud_tasks_queue.this",
+        "attribute": [
+          "name"
+        ]
+      },
+      {
+        "resource": "module.secrets[\"otel-collector-config\"].google_secret_manager_secret_version.this",
+        "attribute": []
+      },
+      {
+        "resource": "module.pubsub[\"people.person.changed.v1\"].google_pubsub_topic.this",
+        "attribute": [
+          "name"
+        ]
+      },
+      {
+        "resource": "module.cloud_run[\"migration\"].google_cloud_run_v2_service.this",
+        "attribute": [
+          "name"
+        ]
+      },
+      {
+        "resource": "module.pubsub[\"surveys.survey.scheduled.v1\"].google_pubsub_topic.dlq",
+        "attribute": []
+      },
+      {
+        "resource": "module.cloud_run[\"reporting\"].google_cloud_run_v2_service.this",
+        "attribute": [
+          "id"
+        ]
+      },
+      {
+        "resource": "module.queues[\"content-feed-import\"].google_cloud_tasks_queue.this",
+        "attribute": [
+          "id"
+        ]
+      },
+      {
+        "resource": "module.pubsub[\"programs-sites.site.changed.v1\"].google_pubsub_topic.this",
+        "attribute": [
+          "id"
+        ]
+      },
+      {
+        "resource": "module.service_accounts[\"identity\"].google_service_account.this",
+        "attribute": [
+          "name"
+        ]
+      },
+      {
+        "resource": "module.service_accounts[\"surveys\"].google_service_account.this",
+        "attribute": [
+          "email"
+        ]
+      },
+      {
+        "resource": "module.buckets[\"content-files\"].google_storage_bucket.this",
+        "attribute": [
+          "name"
+        ]
+      },
+      {
+        "resource": "module.cloud_run[\"people\"].google_cloud_run_v2_service.this",
+        "attribute": [
+          "location"
+        ]
+      },
+      {
+        "resource": "module.buckets[\"reporting-exports\"].google_storage_bucket.this",
+        "attribute": [
+          "name"
+        ]
+      },
+      {
+        "resource": "module.service_accounts.google_service_account.this",
+        "attribute": [
+          "id"
+        ]
+      },
+      {
+        "resource": "module.service_accounts[\"surveys\"].google_service_account.this",
         "attribute": [
           "id"
         ]
@@ -48312,277 +48192,41 @@
         ]
       },
       {
-        "resource": "module.buckets[\"esignature-documents\"].google_storage_bucket.this",
-        "attribute": [
-          "url"
-        ]
-      },
-      {
-        "resource": "module.pubsub[\"identity.membership.changed.v1\"].google_pubsub_topic.this",
-        "attribute": [
-          "id"
-        ]
-      },
-      {
-        "resource": "module.secrets[\"otel-collector-config\"].google_secret_manager_secret_version.this",
-        "attribute": []
-      },
-      {
-        "resource": "module.service_accounts[\"tasks-invoker\"].google_service_account.this",
-        "attribute": [
-          "name"
-        ]
-      },
-      {
-        "resource": "module.cloud_sql.google_sql_database_instance.this",
-        "attribute": [
-          "name"
-        ]
-      },
-      {
-        "resource": "module.cloud_run[\"surveys\"].google_cloud_run_v2_service.this",
-        "attribute": [
-          "location"
-        ]
-      },
-      {
-        "resource": "module.secrets[\"communications-smtp\"].google_secret_manager_secret.this",
-        "attribute": [
-          "secret_id"
-        ]
-      },
-      {
-        "resource": "module.cloud_run[\"e-signature\"].google_cloud_run_v2_service.this",
-        "attribute": [
-          "location"
-        ]
-      },
-      {
-        "resource": "module.queues[\"content-feed-import\"].google_cloud_tasks_queue.this",
-        "attribute": [
-          "id"
-        ]
-      },
-      {
-        "resource": "module.pubsub[\"identity.membership.changed.v1\"].google_pubsub_subscription.push",
-        "attribute": []
-      },
-      {
-        "resource": "module.pubsub[\"identity.membership.changed.v1\"].google_pubsub_topic.dlq",
-        "attribute": []
-      },
-      {
-        "resource": "module.buckets[\"content-files\"].google_storage_bucket.this",
-        "attribute": [
-          "url"
-        ]
-      },
-      {
-        "resource": "module.service_accounts[\"db-bootstrap\"].google_service_account.this",
-        "attribute": [
-          "id"
-        ]
-      },
-      {
-        "resource": "module.service_accounts[\"people\"].google_service_account.this",
-        "attribute": [
-          "id"
-        ]
-      },
-      {
-        "resource": "module.pubsub[\"identity.permission.changed.v1\"].google_pubsub_subscription.dlq_replay",
-        "attribute": []
-      },
-      {
-        "resource": "module.queues[\"programs-sites-sitemonitor\"].google_cloud_tasks_queue.this",
-        "attribute": [
-          "id"
-        ]
-      },
-      {
-        "resource": "module.pubsub[\"people.person.archived.v1\"].google_pubsub_topic.dlq",
-        "attribute": []
-      },
-      {
-        "resource": "module.service_accounts[\"pubsub-invoker\"].google_service_account.this",
-        "attribute": [
-          "id"
-        ]
-      },
-      {
-        "resource": "module.service_accounts[\"reporting\"].google_service_account.this",
-        "attribute": [
-          "name"
-        ]
-      },
-      {
-        "resource": "module.cloud_run[\"finance\"].google_cloud_run_v2_service.this",
-        "attribute": [
-          "id"
-        ]
-      },
-      {
-        "resource": "module.cloud_run[\"timesheets\"].google_cloud_run_v2_service.this",
-        "attribute": [
-          "location"
-        ]
-      },
-      {
-        "resource": "module.db_bootstrap.google_cloud_run_v2_job.this",
-        "attribute": [
-          "id"
-        ]
-      },
-      {
-        "resource": "module.service_accounts[\"reporting\"].google_service_account.this",
-        "attribute": [
-          "id"
-        ]
-      },
-      {
-        "resource": "module.cloud_run[\"e-signature\"].google_cloud_run_v2_service.this",
-        "attribute": [
-          "name"
-        ]
-      },
-      {
-        "resource": "module.pubsub[\"people.person.changed.v1\"].google_pubsub_topic.this",
-        "attribute": [
-          "id"
-        ]
-      },
-      {
         "resource": "module.buckets[\"finance-attachments\"].google_storage_bucket.this",
         "attribute": [
           "url"
         ]
       },
       {
-        "resource": "module.service_accounts[\"strategies-content\"].google_service_account.this",
+        "resource": "module.secrets[\"legacy-bridge-hmac\"].google_secret_manager_secret.this",
         "attribute": [
           "id"
         ]
       },
       {
-        "resource": "module.queues[\"communications-reminders\"].google_cloud_tasks_queue.this",
+        "resource": "module.cloud_sql.google_sql_database_instance.this",
+        "attribute": [
+          "connection_name"
+        ]
+      },
+      {
+        "resource": "module.cloud_run[\"gateway\"].google_cloud_run_v2_service.this",
         "attribute": [
           "name"
         ]
       },
       {
-        "resource": "module.queues[\"people-outbox-sweep\"].google_cloud_tasks_queue.this",
-        "attribute": [
-          "name"
-        ]
+        "resource": "module.pubsub[\"surveys.survey.scheduled.v1\"].google_pubsub_subscription.dlq_replay",
+        "attribute": []
       },
       {
-        "resource": "module.cloud_run[\"communications\"].google_cloud_run_v2_service.this",
+        "resource": "module.secrets[\"cloudsql-admin-password\"].google_secret_manager_secret.this",
         "attribute": [
-          "name"
-        ]
-      },
-      {
-        "resource": "module.pubsub[\"people.person.archived.v1\"].google_pubsub_topic.this",
-        "attribute": [
-          "id"
-        ]
-      },
-      {
-        "resource": "module.service_accounts[\"gateway\"].google_service_account.this",
-        "attribute": [
-          "email"
-        ]
-      },
-      {
-        "resource": "module.cloud_run[\"identity\"].google_cloud_run_v2_service.this",
-        "attribute": [
-          "location"
-        ]
-      },
-      {
-        "resource": "module.queues[\"identity-outbox-sweep\"].google_cloud_tasks_queue.this",
-        "attribute": [
-          "id"
-        ]
-      },
-      {
-        "resource": "module.service_accounts[\"web\"].google_service_account.this",
-        "attribute": [
-          "id"
-        ]
-      },
-      {
-        "resource": "module.cloud_run[\"identity\"].google_cloud_run_v2_service.this",
-        "attribute": [
-          "id"
+          "secret_id"
         ]
       },
       {
         "resource": "module.cloud_run[\"strategies-content\"].google_cloud_run_v2_service.this",
-        "attribute": [
-          "location"
-        ]
-      },
-      {
-        "resource": "module.pubsub[\"people.person.changed.v1\"].google_pubsub_subscription.push",
-        "attribute": []
-      },
-      {
-        "resource": "module.service_accounts[\"db-bootstrap\"].google_service_account.this",
-        "attribute": [
-          "email"
-        ]
-      },
-      {
-        "resource": "module.pubsub[\"surveys.survey.scheduled.v1\"].google_pubsub_topic.this",
-        "attribute": [
-          "name"
-        ]
-      },
-      {
-        "resource": "module.pubsub[\"identity.permission.changed.v1\"].google_pubsub_topic.this",
-        "attribute": [
-          "id"
-        ]
-      },
-      {
-        "resource": "module.queues[\"identity-outbox-sweep\"].google_cloud_tasks_queue.this",
-        "attribute": [
-          "name"
-        ]
-      },
-      {
-        "resource": "module.cloud_run[\"finance\"].google_cloud_run_v2_service.this",
-        "attribute": [
-          "location"
-        ]
-      },
-      {
-        "resource": "module.service_accounts[\"surveys\"].google_service_account.this",
-        "attribute": [
-          "email"
-        ]
-      },
-      {
-        "resource": "module.cloud_run[\"people\"].google_cloud_run_v2_service.this",
-        "attribute": [
-          "location"
-        ]
-      },
-      {
-        "resource": "module.service_accounts[\"pubsub-invoker\"].google_service_account.this",
-        "attribute": [
-          "email"
-        ]
-      },
-      {
-        "resource": "module.cloud_run[\"programs-sites\"].google_cloud_run_v2_service.this",
-        "attribute": [
-          "id"
-        ]
-      },
-      {
-        "resource": "module.cloud_run[\"timesheets\"].google_cloud_run_v2_service.this",
         "attribute": [
           "id"
         ]
@@ -48594,29 +48238,31 @@
         ]
       },
       {
-        "resource": "module.service_accounts[\"communications\"].google_service_account.this",
+        "resource": "module.cloud_run[\"web\"].google_cloud_run_v2_service.this",
+        "attribute": [
+          "location"
+        ]
+      },
+      {
+        "resource": "module.queues[\"people-outbox-sweep\"].google_cloud_tasks_queue.this",
+        "attribute": [
+          "id"
+        ]
+      },
+      {
+        "resource": "module.service_accounts[\"people\"].google_service_account.this",
         "attribute": [
           "email"
         ]
       },
       {
-        "resource": "module.service_accounts[\"migration\"].google_service_account.this",
-        "attribute": [
-          "email"
-        ]
-      },
-      {
-        "resource": "module.cloud_run[\"strategies-content\"].google_cloud_run_v2_service.this",
+        "resource": "module.network.google_compute_router.this",
         "attribute": [
           "name"
         ]
       },
       {
-        "resource": "module.pubsub[\"surveys.survey.scheduled.v1\"].google_pubsub_subscription.push",
-        "attribute": []
-      },
-      {
-        "resource": "module.network.google_compute_subnetwork.this",
+        "resource": "module.service_accounts[\"e-signature\"].google_service_account.this",
         "attribute": [
           "id"
         ]
@@ -48624,11 +48270,11 @@
       {
         "resource": "module.service_accounts[\"e-signature\"].google_service_account.this",
         "attribute": [
-          "name"
+          "email"
         ]
       },
       {
-        "resource": "module.service_accounts[\"pubsub-invoker\"].google_service_account.this",
+        "resource": "module.cloud_sql.google_sql_database_instance.this",
         "attribute": [
           "name"
         ]
@@ -48640,37 +48286,63 @@
         ]
       },
       {
-        "resource": "module.queues[\"content-scheduled-publish\"].google_cloud_tasks_queue.this",
+        "resource": "module.service_accounts[\"tasks-invoker\"].google_service_account.this",
         "attribute": [
           "name"
         ]
       },
       {
-        "resource": "module.queues[\"surveys-launch\"].google_cloud_tasks_queue.this",
+        "resource": "module.queues[\"surveys-outbox-sweep\"].google_cloud_tasks_queue.this",
         "attribute": [
           "id"
         ]
       },
       {
-        "resource": "module.secrets[\"otel-collector-config\"].google_secret_manager_secret.this",
+        "resource": "module.buckets[\"esignature-documents\"].google_storage_bucket.this",
         "attribute": [
-          "id"
+          "name"
         ]
       },
       {
-        "resource": "module.service_accounts.google_service_account.this",
+        "resource": "module.cloud_run[\"surveys\"].google_cloud_run_v2_service.this",
         "attribute": [
-          "id"
+          "name"
+        ]
+      },
+      {
+        "resource": "module.pubsub[\"people.person.archived.v1\"].google_pubsub_topic.this",
+        "attribute": [
+          "name"
+        ]
+      },
+      {
+        "resource": "module.pubsub[\"communications.message.delivery-status-changed.v1\"].google_pubsub_topic.dlq",
+        "attribute": []
+      },
+      {
+        "resource": "module.secrets[\"communications-smtp\"].google_secret_manager_secret.this",
+        "attribute": [
+          "secret_id"
         ]
       },
       {
         "resource": "module.service_accounts[\"strategies-content\"].google_service_account.this",
         "attribute": [
-          "email"
+          "name"
         ]
       },
       {
-        "resource": "module.service_accounts[\"e-signature\"].google_service_account.this",
+        "resource": "module.pubsub[\"identity.membership.changed.v1\"].google_pubsub_topic.this",
+        "attribute": [
+          "name"
+        ]
+      },
+      {
+        "resource": "module.pubsub[\"identity.permission.changed.v1\"].google_pubsub_subscription.dlq_replay",
+        "attribute": []
+      },
+      {
+        "resource": "module.cloud_run[\"finance\"].google_cloud_run_v2_service.this",
         "attribute": [
           "id"
         ]
@@ -48682,13 +48354,341 @@
         ]
       },
       {
-        "resource": "module.queues[\"communications-outbox-sweep\"].google_cloud_tasks_queue.this",
+        "resource": "module.cloud_run[\"migration\"].google_cloud_run_v2_service.this",
         "attribute": [
           "id"
         ]
       },
       {
-        "resource": "module.queues[\"surveys-outbox-sweep\"].google_cloud_tasks_queue.this",
+        "resource": "module.network.google_service_networking_connection.this",
+        "attribute": [
+          "network"
+        ]
+      },
+      {
+        "resource": "module.service_accounts[\"web\"].google_service_account.this",
+        "attribute": [
+          "email"
+        ]
+      },
+      {
+        "resource": "module.service_accounts[\"gateway\"].google_service_account.this",
+        "attribute": [
+          "email"
+        ]
+      },
+      {
+        "resource": "module.service_accounts[\"migration\"].google_service_account.this",
+        "attribute": [
+          "email"
+        ]
+      },
+      {
+        "resource": "module.pubsub[\"identity.permission.changed.v1\"].google_pubsub_topic.this",
+        "attribute": [
+          "id"
+        ]
+      },
+      {
+        "resource": "module.service_accounts[\"pubsub-invoker\"].google_service_account.this",
+        "attribute": [
+          "email"
+        ]
+      },
+      {
+        "resource": "module.cloud_run[\"migration\"].google_cloud_run_v2_service.this",
+        "attribute": [
+          "location"
+        ]
+      },
+      {
+        "resource": "module.service_accounts[\"db-bootstrap\"].google_service_account.this",
+        "attribute": [
+          "id"
+        ]
+      },
+      {
+        "resource": "module.service_accounts[\"reporting\"].google_service_account.this",
+        "attribute": [
+          "id"
+        ]
+      },
+      {
+        "resource": "module.pubsub[\"identity.group.changed.v1\"].google_pubsub_subscription.push",
+        "attribute": []
+      },
+      {
+        "resource": "module.secrets[\"otel-collector-config\"].google_secret_manager_secret.this",
+        "attribute": [
+          "id"
+        ]
+      },
+      {
+        "resource": "module.pubsub[\"people.person.archived.v1\"].google_pubsub_subscription.push",
+        "attribute": []
+      },
+      {
+        "resource": "module.cloud_run[\"surveys\"].google_cloud_run_v2_service.this",
+        "attribute": [
+          "location"
+        ]
+      },
+      {
+        "resource": "module.pubsub[\"people.person.changed.v1\"].google_pubsub_subscription.push",
+        "attribute": []
+      },
+      {
+        "resource": "module.buckets[\"esignature-documents\"].google_storage_bucket.this",
+        "attribute": [
+          "url"
+        ]
+      },
+      {
+        "resource": "module.identity_platform.google_identity_platform_tenant.this",
+        "attribute": []
+      },
+      {
+        "resource": "module.pubsub[\"identity.login-mail.requested.v1\"].google_pubsub_subscription.dlq_replay",
+        "attribute": []
+      },
+      {
+        "resource": "module.pubsub[\"people.person.changed.v1\"].google_pubsub_subscription.dlq_replay",
+        "attribute": []
+      },
+      {
+        "resource": "module.pubsub[\"surveys.survey.scheduled.v1\"].google_pubsub_topic.this",
+        "attribute": [
+          "id"
+        ]
+      },
+      {
+        "resource": "module.queues[\"people-outbox-sweep\"].google_cloud_tasks_queue.this",
+        "attribute": [
+          "name"
+        ]
+      },
+      {
+        "resource": "module.service_accounts[\"communications\"].google_service_account.this",
+        "attribute": [
+          "email"
+        ]
+      },
+      {
+        "resource": "module.service_accounts[\"strategies-content\"].google_service_account.this",
+        "attribute": [
+          "email"
+        ]
+      },
+      {
+        "resource": "module.pubsub[\"identity.permission.changed.v1\"].google_pubsub_topic.dlq",
+        "attribute": []
+      },
+      {
+        "resource": "module.pubsub[\"programs-sites.site.changed.v1\"].google_pubsub_topic.this",
+        "attribute": [
+          "name"
+        ]
+      },
+      {
+        "resource": "module.service_accounts[\"finance\"].google_service_account.this",
+        "attribute": [
+          "name"
+        ]
+      },
+      {
+        "resource": "module.service_accounts[\"reporting\"].google_service_account.this",
+        "attribute": [
+          "email"
+        ]
+      },
+      {
+        "resource": "module.cloud_run[\"timesheets\"].google_cloud_run_v2_service.this",
+        "attribute": [
+          "id"
+        ]
+      },
+      {
+        "resource": "module.service_accounts[\"web\"].google_service_account.this",
+        "attribute": [
+          "id"
+        ]
+      },
+      {
+        "resource": "module.buckets[\"finance-attachments\"].google_storage_bucket.this",
+        "attribute": [
+          "name"
+        ]
+      },
+      {
+        "resource": "module.service_accounts[\"communications\"].google_service_account.this",
+        "attribute": [
+          "id"
+        ]
+      },
+      {
+        "resource": "module.service_accounts[\"tasks-invoker\"].google_service_account.this",
+        "attribute": [
+          "id"
+        ]
+      },
+      {
+        "resource": "module.pubsub[\"communications.message.delivery-status-changed.v1\"].google_pubsub_topic.this",
+        "attribute": [
+          "id"
+        ]
+      },
+      {
+        "resource": "module.pubsub[\"surveys.survey.scheduled.v1\"].google_pubsub_topic.this",
+        "attribute": [
+          "name"
+        ]
+      },
+      {
+        "resource": "module.queues[\"identity-outbox-sweep\"].google_cloud_tasks_queue.this",
+        "attribute": [
+          "name"
+        ]
+      },
+      {
+        "resource": "module.cloud_run[\"strategies-content\"].google_cloud_run_v2_service.this",
+        "attribute": [
+          "name"
+        ]
+      },
+      {
+        "resource": "module.queues[\"content-scheduled-publish\"].google_cloud_tasks_queue.this",
+        "attribute": [
+          "name"
+        ]
+      },
+      {
+        "resource": "module.buckets[\"content-files\"].google_storage_bucket.this",
+        "attribute": [
+          "url"
+        ]
+      },
+      {
+        "resource": "module.service_accounts[\"tasks-invoker\"].google_service_account.this",
+        "attribute": [
+          "email"
+        ]
+      },
+      {
+        "resource": "module.cloud_run[\"programs-sites\"].google_cloud_run_v2_service.this",
+        "attribute": [
+          "id"
+        ]
+      },
+      {
+        "resource": "module.cloud_run[\"reporting\"].google_cloud_run_v2_service.this",
+        "attribute": [
+          "location"
+        ]
+      },
+      {
+        "resource": "module.service_accounts[\"people\"].google_service_account.this",
+        "attribute": [
+          "id"
+        ]
+      },
+      {
+        "resource": "module.cloud_sql.google_sql_user.iam",
+        "attribute": []
+      },
+      {
+        "resource": "module.service_accounts[\"programs-sites\"].google_service_account.this",
+        "attribute": [
+          "email"
+        ]
+      },
+      {
+        "resource": "module.cloud_run[\"programs-sites\"].google_cloud_run_v2_service.this",
+        "attribute": [
+          "name"
+        ]
+      },
+      {
+        "resource": "module.pubsub[\"identity.membership.changed.v1\"].google_pubsub_topic.this",
+        "attribute": [
+          "id"
+        ]
+      },
+      {
+        "resource": "module.service_accounts[\"timesheets\"].google_service_account.this",
+        "attribute": [
+          "email"
+        ]
+      },
+      {
+        "resource": "module.pubsub[\"people.person.changed.v1\"].google_pubsub_topic.this",
+        "attribute": [
+          "id"
+        ]
+      },
+      {
+        "resource": "module.pubsub[\"programs-sites.site.changed.v1\"].google_pubsub_subscription.push",
+        "attribute": []
+      },
+      {
+        "resource": "module.network.google_compute_subnetwork.this",
+        "attribute": [
+          "id"
+        ]
+      },
+      {
+        "resource": "module.cloud_run[\"people\"].google_cloud_run_v2_service.this",
+        "attribute": [
+          "id"
+        ]
+      },
+      {
+        "resource": "module.pubsub[\"identity.login-mail.requested.v1\"].google_pubsub_topic.dlq",
+        "attribute": []
+      },
+      {
+        "resource": "module.pubsub[\"identity.login-mail.requested.v1\"].google_pubsub_topic.this",
+        "attribute": [
+          "name"
+        ]
+      },
+      {
+        "resource": "module.secrets[\"cloudsql-admin-password\"].google_secret_manager_secret.this",
+        "attribute": [
+          "id"
+        ]
+      },
+      {
+        "resource": "module.pubsub[\"identity.membership.changed.v1\"].google_pubsub_subscription.push",
+        "attribute": []
+      },
+      {
+        "resource": "module.pubsub[\"people.person.archived.v1\"].google_pubsub_topic.dlq",
+        "attribute": []
+      },
+      {
+        "resource": "module.pubsub[\"communications.message.delivery-status-changed.v1\"].google_pubsub_subscription.push",
+        "attribute": []
+      },
+      {
+        "resource": "module.queues[\"communications-reminders\"].google_cloud_tasks_queue.this",
+        "attribute": [
+          "id"
+        ]
+      },
+      {
+        "resource": "module.queues[\"programs-sites-sitemonitor\"].google_cloud_tasks_queue.this",
+        "attribute": [
+          "id"
+        ]
+      },
+      {
+        "resource": "module.service_accounts[\"programs-sites\"].google_service_account.this",
+        "attribute": [
+          "id"
+        ]
+      },
+      {
+        "resource": "module.service_accounts[\"pubsub-invoker\"].google_service_account.this",
         "attribute": [
           "id"
         ]
@@ -49490,7 +49490,7 @@
         ]
       }
     ],
-    "timestamp": "2026-11-19T03:58:07Z",
+    "timestamp": "2026-11-21T05:27:23Z",
     "applyable": true,
     "complete": true,
     "errored": false

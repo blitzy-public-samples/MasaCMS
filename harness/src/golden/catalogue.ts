@@ -31,6 +31,15 @@ export function isRehearsalCrossing(scenario: Pick<Scenario, 'id' | 'acrossTrans
   return scenario.acrossTransition !== undefined && scenario.browser === undefined && !isRehearsalScenario(scenario.id);
 }
 
+/**
+ * `scenarios` in replay order: those declaring `acrossTransition` first, as test-all replays them around the cut-over
+ * transition, then the rest, each part in its given order.
+ */
+export function inReplayOrder<T extends Pick<Scenario, 'acrossTransition'>>(scenarios: readonly T[]): T[] {
+  const crossing = scenarios.filter((scenario) => scenario.acrossTransition !== undefined);
+  return [...crossing, ...scenarios.filter((scenario) => scenario.acrossTransition === undefined)];
+}
+
 /** What a scenario compares between capture and replay. */
 export const COMPARE_KINDS = [
   'status',

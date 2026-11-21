@@ -1,10 +1,10 @@
 {
-  "capturedAt": "2026-11-20T03:01:42.293Z",
+  "capturedAt": "2026-11-21T04:43:31.606Z",
   "fixtures": {
     "available": true,
     "reason": "fixtures loaded"
   },
-  "generatedAt": "2026-11-20T03:01:49.005Z",
+  "generatedAt": "2026-11-21T04:43:37.762Z",
   "generatedBy": "harness/src/golden/capture.ts",
   "origin": "legacy",
   "scenarioId": "GS-CO-08",
@@ -1587,7 +1587,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "ae51f43c613c3b6a8db3ba537e6aa450967582f162e86907ccde760a71e8cadd",
+        "rawSha256": "ae3c802644044a41763a30628a99d6a6adc4eb018b55154baa7554552e74d84f",
         "status": 200
       },
       "routeKey": "admin:carch.list"
@@ -3273,7 +3273,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "e046d1ba5f061d1e0050eaae15950d2c228bf1d13a65327385788224e0b70f7c",
+        "rawSha256": "2f5582cebff4849f79daad83a1d019634b52c9d7d767f580e582e32e2264ade8",
         "status": 200
       },
       "routeKey": "admin:carch.loadsitemanager"
@@ -4530,7 +4530,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "0e3d71056dab50491fc212368ed1cd9eaa39f78b4e331730f8aca48ad4b46852",
+        "rawSha256": "cd7ad1c5f1a2c990bfb05c5bb584d3034443a290ee899325781e1972db4f62d0",
         "status": 200
       },
       "routeKey": "admin:carch.list"
@@ -5781,7 +5781,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "b0cd90d1d513b1c6fb274a0c41e5f5c6f3ece216f973bf54bf0fad95a9dc7b03",
+        "rawSha256": "5bcaa60626c95a4598bfbaf7b14fb7e1f30bb3c4245b7be84098496e667f671e",
         "status": 200
       },
       "routeKey": "admin:carch.list{sharedid}"
@@ -6965,7 +6965,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "8eed6c3476c1aef38efb5f8d127e7013c4633aad6cbbb9286b3d490615caa0fb",
+        "rawSha256": "d4416829be07902c491b1f19e95d5e621e89f48f06e7b58fd3cb3cd91f6481fa",
         "status": 200
       },
       "routeKey": "admin:carch.scaffold"
@@ -7011,7 +7011,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "cb586db3d39f56dbac15356a25babb5a938eae7f600362cdec5e31d2957f546e",
+        "rawSha256": "63d65fb9651b47fb36b3b8258cb7fa0776d7cb91604ade89acfeb031f3743df9",
         "status": 200
       },
       "routeKey": "api:generatecsrftokens"
@@ -7293,7 +7293,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "74951b073b6b3f205481994e19e3c73af77eb2379059184f09e9c3e22bcb1399",
+        "rawSha256": "76e0a2c58da484d60b46ff2f01857f87654ec54033c3f8e737a0ee287b751fb3",
         "status": 404
       },
       "routeKey": "admin:carch.lockfile"
@@ -7339,7 +7339,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "e4d6b8dc787b7666d5ebdb50a9aab04707a4eaafac086d3a8e944559a1a2252e",
+        "rawSha256": "0cdebadf59e9721ff62ee75c599a537794b3202b2f44d858fc22b75673790e14",
         "status": 200
       },
       "routeKey": "api:generatecsrftokens"
@@ -7447,7 +7447,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "882f0fec7e02e8a2583cf16cf60e7a1f689d5bdb6318d5584663c32a76c07fd2",
+        "rawSha256": "f37a744f13dd70dd0f76d0b57bcfa1ce7fa3374265121711ac326a78b7c563b0",
         "status": 200
       },
       "routeKey": "api:generatecsrftokens"

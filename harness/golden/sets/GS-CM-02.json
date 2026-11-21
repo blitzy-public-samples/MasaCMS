@@ -1,10 +1,10 @@
 {
-  "capturedAt": "2026-11-20T03:04:34.744Z",
+  "capturedAt": "2026-11-21T04:46:19.802Z",
   "fixtures": {
     "available": true,
     "reason": "fixtures loaded"
   },
-  "generatedAt": "2026-11-20T03:04:51.060Z",
+  "generatedAt": "2026-11-21T04:46:36.079Z",
   "generatedBy": "harness/src/golden/capture.ts",
   "origin": "legacy",
   "scenarioId": "GS-CM-02",
@@ -149,7 +149,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "8b7958a52fcee8789ef6f78e2ae1dde4216dda923e6259597b0c1842de867518",
+        "rawSha256": "cbf367175180f6336ea89cf8f519803d2dd65f65369ac513966443b6829b8221",
         "status": 200
       },
       "routeKey": "fixture:communications/messages@post"
@@ -213,7 +213,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/legacy-fixtures/cfml/api.cfm/communications/messages/A5216153-F619-9A99-58DA8445F44AD9DA?siteid=tenant-a"
+        "url": "/legacy-fixtures/cfml/api.cfm/communications/messages/DC44873B-96B0-6794-02CA6D8E06148322?siteid=tenant-a"
       },
       "response": {
         "body": {
@@ -265,7 +265,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "8b7958a52fcee8789ef6f78e2ae1dde4216dda923e6259597b0c1842de867518",
+        "rawSha256": "cbf367175180f6336ea89cf8f519803d2dd65f65369ac513966443b6829b8221",
         "status": 200
       },
       "routeKey": "fixture:communications/messages/{id}@get"

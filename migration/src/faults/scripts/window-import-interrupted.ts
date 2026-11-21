@@ -1,20 +1,20 @@
-// Scripted fault window-import-interrupted: one legacy write inside a write window whose import the running service fails until resume.
+// Scripted fault window-import-interrupted: one legacy write inside a write window whose import the running service fails until
+// resume, which then writes the old value back inside a second window.
 import sql from 'mssql';
-import { z } from '@opt2/platform/service-kit';
+import type { ConnectionPool } from 'mssql';
+import { ServiceUnavailableError, z, type ServiceResponse } from '@opt2/platform/service-kit';
 
 import { runFeed } from '../../apply/index.js';
 import type { MigrationContext } from '../../context.js';
-import { currentAuthority, loadVersion, type CurrentAuthority } from '../../cutover/index.js';
+import { currentAuthority, type CurrentAuthority } from '../../cutover/index.js';
 import type { paths } from '../../generated/openapi.js';
 import { completeWindowViaService, openWindowViaService } from '../../windows/index.js';
-import { WindowCallError, type WindowOpenResponse, type WriteWindow } from '../../windows/via-service.js';
+import { WindowCallError, type WindowOpenResponse, type WindowScope, type WriteWindow } from '../../windows/via-service.js';
 import { fail, pass, skipped, type FaultAssertion, type FaultEnv, type FaultResumeOutput, type FaultRunOutput, type FaultScript } from './types.js';
 
 const FAULT = 'window-import-interrupted';
 const ROUTE_KEY = `fault:${FAULT}`;
 const LEGACY_TABLE = 'tcontent';
-/** Route key of the gateway's anonymous JSON API read `GET /_api/json/v1/<site>/content/<id>`. */
-const CONTENT_READ_ROUTE = 'api:content.findone';
 const MIGRATION_SERVICE = 'migration';
 const WINDOW_PATH = '/internal/v1/windows/{windowId}' satisfies keyof paths;
 const POLL_MS = 1000;
@@ -27,6 +27,10 @@ const READ_NOT_SUPERSEDED = 'read-not-superseded';
 const RETRY_CLOSED = 'retry-closed';
 const FEED_PROPAGATED = 'feed-propagated';
 const TARGET_READ_CURRENT = 'target-read-current';
+const ROW_RESTORED = 'row-restored';
+
+/** Query of every owner read: the JSON API's default content fields leave out `credits`, a selected field is answered. */
+const CONTENT_READ_QUERY = { fields: 'credits' };
 
 // Restricted pages are left out because the read check reads anonymously.
 const PICK_SQL = `SELECT TOP 1 [ContentHistID], [ContentID], [Credits] FROM [dbo].[tcontent]
@@ -46,13 +50,15 @@ const paramsSchema = z
 /** Parameters of {@link windowImportInterrupted}; `units` defaults to the units of `tcontent`. */
 export type WindowImportParams = z.output<typeof paramsSchema>;
 
-/** What `run` hands `resume`: the opened window and whether legacy committed the write inside it. */
+/** What `run` hands `resume`: the opened window, whether legacy committed the write inside it, and the row's value before it. */
 const stateSchema = z.object({
   windowId: z.string().min(1),
   completed: z.boolean(),
   written: z.boolean(),
   siteId: z.string(),
   contentId: z.string(),
+  contentHistId: z.string().min(1),
+  oldCredits: z.string().nullable(),
   newCredits: z.string(),
   units: z.array(z.string()),
 });
@@ -65,7 +71,7 @@ interface ContentRow {
   Credits: string | null;
 }
 
-/** A gateway read of one content node: its status and `data.credits`, or `waited` when it outlasted the timeout. */
+/** An owner read of one content node: its status and `data.credits`, or `waited` when it outlasted the timeout. */
 type ContentRead = { kind: 'status'; status: number; credits?: string | null } | { kind: 'waited' };
 
 function messageOf(error: unknown): string {
@@ -82,16 +88,25 @@ function windowUnits(ctx: MigrationContext, params: WindowImportParams): string[
   return [...new Set(units)];
 }
 
-/** Whether the active version routes the content read to the target; no version or no entry for it means legacy. @throws when the version file cannot be read */
-function readReachesTarget(ctx: MigrationContext, authority: CurrentAuthority): boolean {
-  if (authority.tableVersion === null) return false;
-  const { entries } = loadVersion(ctx.config.paths.cutoverDir, authority.tableVersion);
-  return entries.some((entry) => entry.route === CONTENT_READ_ROUTE && entry.state === 'target');
+/** Owner of the first target-authoritative `tcontent` unit among `units`, which serves the content read; undefined when none. */
+function contentOwner(ctx: MigrationContext, authority: CurrentAuthority, units: readonly string[]): string | undefined {
+  return ctx.catalog.unitsForLegacyTable(LEGACY_TABLE).find((target) => units.includes(target.unit) && authority.isTargetAuthoritative(target.unit))?.owner;
 }
 
-/** Skip reason of a read check whose content read routes to legacy. */
-function legacyReadReason(authority: CurrentAuthority): string {
-  return `the content read (${CONTENT_READ_ROUTE}) routes to legacy under ${versionOf(authority)}`;
+/** Skip reason of a read check whose window holds no target-authoritative `tcontent` unit. */
+function noContentUnitReason(authority: CurrentAuthority): string {
+  return `no target-authoritative unit of the window holds ${LEGACY_TABLE} under ${versionOf(authority)}`;
+}
+
+/** Scope of both windows: the row's site and content. */
+function windowScope(siteId: string, contentId: string): WindowScope {
+  return { keys: { siteid: siteId, contentid: contentId } };
+}
+
+/** Sets `Credits` of content version `contentHistId` in the live legacy database; returns the rows changed. */
+async function writeCredits(pool: ConnectionPool, contentHistId: string, credits: string | null): Promise<number> {
+  const update = await pool.request().input('credits', sql.NVarChar(255), credits).input('contentHistId', sql.Char(35), contentHistId).query(UPDATE_SQL);
+  return update.rowsAffected[0] ?? 0;
 }
 
 /** Reads window `windowId` from the running migration service (`windowGet`). @throws WindowCallError on a non-200 answer */
@@ -106,46 +121,48 @@ async function getWindow(ctx: Pick<MigrationContext, 'clientAs'>, windowId: stri
   return response.body;
 }
 
+/** Whether the service client gave up on a call that outlasted its timeout, as opposed to a refused or dropped connection. */
 function isTimeout(error: unknown): boolean {
-  const { name } = (error ?? {}) as { name?: unknown };
-  return name === 'TimeoutError' || name === 'AbortError';
+  if (!(error instanceof ServiceUnavailableError)) return false;
+  const { name } = (error.cause ?? {}) as { name?: unknown };
+  return name === 'TimeoutError' || name === 'HeadersTimeoutError' || name === 'BodyTimeoutError';
 }
 
-/** Anonymous JSON API read of content `contentId` through the gateway, bounded by `timeoutMs`. */
-async function readContent(ctx: Pick<MigrationContext, 'env'>, siteId: string, contentId: string, timeoutMs: number): Promise<ContentRead> {
-  const gatewayUrl = ctx.env.OPT2_GATEWAY_URL;
-  if (gatewayUrl === undefined) throw new Error('OPT2_GATEWAY_URL is not set');
-  const url = new URL(`/_api/json/v1/${encodeURIComponent(siteId)}/content/${encodeURIComponent(contentId)}`, gatewayUrl);
-  let status: number;
-  let text: string;
+/**
+ * Anonymous JSON API read of content `contentId` at its owner, bounded by `timeoutMs`; the owner gates it whatever the gateway routes.
+ * @throws the service client's error for anything but a timeout, such as a refused connection
+ */
+async function readContent(ctx: Pick<MigrationContext, 'clientAs'>, owner: string, siteId: string, contentId: string, timeoutMs: number): Promise<ContentRead> {
+  let response: ServiceResponse;
   try {
-    const response = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
-    status = response.status;
-    text = await response.text();
+    response = await ctx.clientAs('operator').request({
+      service: owner,
+      method: 'GET',
+      path: `/_api/json/v1/${encodeURIComponent(siteId)}/content/${encodeURIComponent(contentId)}`,
+      query: CONTENT_READ_QUERY,
+      userToken: null,
+      timeoutMs,
+    });
   } catch (error) {
     if (isTimeout(error)) return { kind: 'waited' };
     throw error;
   }
+  const { status, body } = response;
   if (status !== HTTP_OK) return { kind: 'status', status };
-  let credits: unknown;
-  try {
-    credits = (JSON.parse(text) as { data?: { credits?: unknown } } | null)?.data?.credits;
-  } catch {
-    return { kind: 'status', status };
-  }
+  const credits = (body as { data?: { credits?: unknown } } | null | undefined)?.data?.credits;
   return typeof credits === 'string' || credits === null ? { kind: 'status', status, credits } : { kind: 'status', status };
 }
 
 /**
- * Verdict on a read while the import is pending. Only the value legacy committed passes on a 200: the old value, or its
- * null/empty serialisation, is the superseded one, and no other writer touches the row inside the window.
+ * Verdict on a read while the import is pending: only a wait or a 503 passes. A 200 fails, as superseded when it serves the
+ * old value or its null/empty serialisation.
  */
 function readVerdict(read: ContentRead, newCredits: string, oldCredits: string | null, timeoutMs: number): FaultAssertion {
   if (read.kind === 'waited') return pass(READ_NOT_SUPERSEDED, { read: 'waited', timeoutMs });
   if (read.status === HTTP_UNAVAILABLE) return pass(READ_NOT_SUPERSEDED, { status: read.status });
   const detail = { status: read.status, credits: read.credits ?? null, oldCredits, newCredits };
-  if (read.status !== HTTP_OK) return fail(READ_NOT_SUPERSEDED, detail, `the gateway answered HTTP ${String(read.status)}`);
-  if (read.credits === newCredits) return pass(READ_NOT_SUPERSEDED, detail);
+  if (read.status !== HTTP_OK) return fail(READ_NOT_SUPERSEDED, detail, `the content owner answered HTTP ${String(read.status)}`);
+  if (read.credits === newCredits) return fail(READ_NOT_SUPERSEDED, detail, 'the content owner answered the read instead of waiting or answering 503');
   const superseded = (read.credits ?? '') === (oldCredits ?? '');
   return fail(READ_NOT_SUPERSEDED, detail, superseded ? 'the superseded value was served' : 'a value legacy never committed was served');
 }
@@ -166,31 +183,24 @@ async function run(env: FaultEnv, params: WindowImportParams): Promise<FaultRunO
 
   let opened: WindowOpenResponse;
   try {
-    opened = await openWindowViaService(ctx, { routeKey: ROUTE_KEY, units, scope: { keys: { siteid: siteId, contentid: contentId } } });
+    opened = await openWindowViaService(ctx, { routeKey: ROUTE_KEY, units, scope: windowScope(siteId, contentId) });
   } catch (error) {
     return { assertions: [fail(IMPORT_PENDING, { ...base, error: messageOf(error) }, 'the migration service refused the write window')], details: base };
   }
 
   const { windowId } = opened;
   const newCredits = `opt2-fault-${windowId}`;
-  const state: WindowState = { windowId, completed: false, written: false, siteId, contentId, newCredits, units };
+  const state: WindowState = { windowId, completed: false, written: false, siteId, contentId, contentHistId, oldCredits, newCredits, units };
   const details: Record<string, unknown> = { ...base, windowId, newCredits };
   const done = (assertions: FaultAssertion[]): FaultRunOutput => ({ assertions, details, state });
 
   // From here every failure is an assertion, so `resume` always receives the window to complete.
   let authority: CurrentAuthority;
-  let readsTarget: boolean;
   try {
     // The window leases its units, so no transition can change their authority until it closes.
     authority = await currentAuthority({ gateway: ctx.gateway, config: ctx.config.paths });
-    readsTarget = readReachesTarget(ctx, authority);
     await env.remote.set(FAULT, { windowId });
-    const update = await pool
-      .request()
-      .input('credits', sql.NVarChar(255), newCredits)
-      .input('contentHistId', sql.Char(35), contentHistId)
-      .query(UPDATE_SQL);
-    const rowsAffected = update.rowsAffected[0] ?? 0;
+    const rowsAffected = await writeCredits(pool, contentHistId, newCredits);
     state.written = rowsAffected > 0;
     if (rowsAffected !== 1) return done([fail(IMPORT_PENDING, { ...details, rowsAffected }, 'the in-window legacy UPDATE did not change exactly one row')]);
   } catch (error) {
@@ -229,17 +239,19 @@ async function run(env: FaultEnv, params: WindowImportParams): Promise<FaultRunO
   } catch (error) {
     assertions.push(fail(IMPORT_PENDING, { windowId, error: messageOf(error) }, 'the window could not be read'));
   }
-  if (!readsTarget) return done([...assertions, skipped(READ_NOT_SUPERSEDED, legacyReadReason(authority))]);
+  const owner = contentOwner(ctx, authority, targetUnits);
+  if (owner === undefined) return done([...assertions, skipped(READ_NOT_SUPERSEDED, noContentUnitReason(authority))]);
+  details.readOwner = owner;
   try {
-    assertions.push(readVerdict(await readContent(ctx, siteId, contentId, readTimeoutMs), newCredits, oldCredits, readTimeoutMs));
+    assertions.push(readVerdict(await readContent(ctx, owner, siteId, contentId, readTimeoutMs), newCredits, oldCredits, readTimeoutMs));
   } catch (error) {
-    assertions.push(fail(READ_NOT_SUPERSEDED, { siteId, contentId, error: messageOf(error) }, 'the gateway read failed'));
+    assertions.push(fail(READ_NOT_SUPERSEDED, { siteId, contentId, owner, error: messageOf(error) }, `the content read at ${owner} failed`));
   }
   return done(assertions);
 }
 
-/** Polls the window every second until it is closed, aborted or `timeoutMs` has elapsed. */
-async function awaitClosed(env: FaultEnv, windowId: string, timeoutMs: number): Promise<FaultAssertion> {
+/** Polls the window every second until it is closed, aborted or `timeoutMs` has elapsed; the verdict is assertion `name`. */
+async function awaitClosed(env: FaultEnv, windowId: string, timeoutMs: number, name = RETRY_CLOSED): Promise<FaultAssertion> {
   const startedAt = env.clock.now().getTime();
   let window: WriteWindow | undefined;
   let error: string | undefined;
@@ -251,22 +263,23 @@ async function awaitClosed(env: FaultEnv, windowId: string, timeoutMs: number): 
       error = messageOf(caught);
     }
     const elapsedMs = env.clock.now().getTime() - startedAt;
-    if (window?.state === 'closed') return pass(RETRY_CLOSED, { elapsedMs, window });
+    if (window?.state === 'closed') return pass(name, { elapsedMs, window });
     if (window?.state === 'aborted' || elapsedMs >= timeoutMs) {
-      return fail(RETRY_CLOSED, { elapsedMs, window: window ?? null, ...(error === undefined ? {} : { error }) }, `window ${windowId} did not close within ${String(timeoutMs)} ms`);
+      return fail(name, { elapsedMs, window: window ?? null, ...(error === undefined ? {} : { error }) }, `window ${windowId} did not close within ${String(timeoutMs)} ms`);
     }
     await env.sleep(POLL_MS);
   }
 }
 
-/** Forward-feeds the legacy-authoritative units and re-reads the target-authoritative ones where the content read reaches the target, after the window closed. */
-async function propagation(env: FaultEnv, state: WindowState, timeoutMs: number): Promise<{ steps: string[]; assertions: FaultAssertion[] }> {
+/**
+ * Forward-feeds the legacy-authoritative units and re-reads the content at the owner of its target-authoritative unit, after
+ * a window closed, expecting `credits`; a null column matches its empty serialisation.
+ */
+async function propagation(env: FaultEnv, state: WindowState, credits: string | null, timeoutMs: number): Promise<{ steps: string[]; assertions: FaultAssertion[] }> {
   const { ctx } = env;
   let authority: CurrentAuthority;
-  let readsTarget: boolean;
   try {
     authority = await currentAuthority({ gateway: ctx.gateway, config: ctx.config.paths });
-    readsTarget = readReachesTarget(ctx, authority);
   } catch (error) {
     return { steps: [], assertions: [fail(FEED_PROPAGATED, { error: messageOf(error) }, 'the active cut-over version could not be read')] };
   }
@@ -282,27 +295,75 @@ async function propagation(env: FaultEnv, state: WindowState, timeoutMs: number)
     }
     steps.push('rerun-feed');
   }
-  const anyTarget = state.units.some((unit) => authority.isTargetAuthoritative(unit));
-  if (anyTarget && !readsTarget) {
-    assertions.push(skipped(TARGET_READ_CURRENT, legacyReadReason(authority)));
-  } else if (anyTarget) {
-    try {
-      const read = await readContent(ctx, state.siteId, state.contentId, timeoutMs);
-      const detail = read.kind === 'waited' ? { read: 'waited', timeoutMs } : { status: read.status, credits: read.credits ?? null, newCredits: state.newCredits };
-      assertions.push(
-        read.kind === 'status' && read.status === HTTP_OK && read.credits === state.newCredits
-          ? pass(TARGET_READ_CURRENT, detail)
-          : fail(TARGET_READ_CURRENT, detail, 'the target does not serve the value legacy committed inside the window'),
-      );
-    } catch (error) {
-      assertions.push(fail(TARGET_READ_CURRENT, { error: messageOf(error) }, 'the gateway read failed'));
-    }
-    steps.push('reread-target');
+  if (!state.units.some((unit) => authority.isTargetAuthoritative(unit))) return { steps, assertions };
+  const owner = contentOwner(ctx, authority, state.units);
+  if (owner === undefined) {
+    assertions.push(skipped(TARGET_READ_CURRENT, noContentUnitReason(authority)));
+    return { steps, assertions };
   }
+  try {
+    const read = await readContent(ctx, owner, state.siteId, state.contentId, timeoutMs);
+    const detail = read.kind === 'waited' ? { owner, read: 'waited', timeoutMs } : { owner, status: read.status, credits: read.credits ?? null, expected: credits };
+    assertions.push(
+      read.kind === 'status' && read.status === HTTP_OK && read.credits !== undefined && (read.credits ?? '') === (credits ?? '')
+        ? pass(TARGET_READ_CURRENT, detail)
+        : fail(TARGET_READ_CURRENT, detail, 'the target does not serve the value legacy committed inside the window'),
+    );
+  } catch (error) {
+    assertions.push(fail(TARGET_READ_CURRENT, { owner, error: messageOf(error) }, `the content read at ${owner} failed`));
+  }
+  steps.push('reread-target');
   return { steps, assertions };
 }
 
-/** Disarms the fault, completes a window `run` left open, awaits the service's retry closing it and checks the write propagated. */
+/**
+ * Writes the row's old `Credits` back inside a second window over the same units and scope, with no fault armed, and checks it
+ * propagated as the first write did, so the reconciliation that follows compares the state from before the fault.
+ */
+async function restoreRow(env: FaultEnv, state: WindowState, params: WindowImportParams): Promise<{ steps: string[]; assertion: FaultAssertion }> {
+  const { ctx } = env;
+  const steps = ['restore-row'];
+  const detail: Record<string, unknown> = { contentHistId: state.contentHistId, credits: state.oldCredits };
+  const failed = (reason: string): { steps: string[]; assertion: FaultAssertion } => ({ steps, assertion: fail(ROW_RESTORED, detail, reason) });
+
+  let windowId: string;
+  try {
+    ({ windowId } = await openWindowViaService(ctx, { routeKey: ROUTE_KEY, units: state.units, scope: windowScope(state.siteId, state.contentId) }));
+  } catch (error) {
+    detail.error = messageOf(error);
+    return failed('the migration service refused the restoring write window');
+  }
+  detail.windowId = windowId;
+  let rowsAffected = 0;
+  try {
+    rowsAffected = await writeCredits(await ctx.legacy.live(), state.contentHistId, state.oldCredits);
+  } catch (error) {
+    detail.updateError = messageOf(error);
+  }
+  detail.rowsAffected = rowsAffected;
+  // Completed and awaited whatever the UPDATE did, so the window reopens its gates and releases its leases.
+  try {
+    detail.completion = await completeWindowViaService(ctx, windowId, { forwarded: rowsAffected > 0 });
+  } catch (error) {
+    detail.completeError = messageOf(error);
+  }
+  const closed = await awaitClosed(env, windowId, params.closeTimeoutMs, ROW_RESTORED);
+  detail.closed = closed.detail;
+  if (detail.updateError !== undefined) return failed('the restoring legacy UPDATE failed');
+  if (rowsAffected !== 1) return failed('the restoring legacy UPDATE did not change exactly one row');
+  if (closed.status !== 'pass') return failed(closed.reason ?? `window ${windowId} did not close`);
+
+  const propagated = await propagation(env, state, state.oldCredits, params.readTimeoutMs);
+  steps.push(...propagated.steps);
+  detail.checks = propagated.assertions;
+  const failedCheck = propagated.assertions.find((check) => check.status === 'fail');
+  if (failedCheck !== undefined) return failed(`the restored value did not propagate: ${failedCheck.reason ?? failedCheck.name}`);
+  const skippedCheck = propagated.assertions.find((check) => check.status === 'skipped');
+  if (skippedCheck !== undefined) return { steps, assertion: skipped(ROW_RESTORED, `the restored value's propagation was not checked: ${skippedCheck.reason ?? skippedCheck.name}`) };
+  return { steps, assertion: pass(ROW_RESTORED, detail) };
+}
+
+/** Disarms the fault, completes a window `run` left open, awaits the service's retry closing it, checks the write propagated, then restores the row. */
 async function resume(env: FaultEnv, params: WindowImportParams, output?: FaultRunOutput): Promise<FaultResumeOutput> {
   const { ctx } = env;
   const steps: string[] = [];
@@ -335,14 +396,17 @@ async function resume(env: FaultEnv, params: WindowImportParams, output?: FaultR
   steps.push('await-closed');
 
   if (state.written) {
-    const propagated = await propagation(env, state, params.readTimeoutMs);
+    const propagated = await propagation(env, state, state.newCredits, params.readTimeoutMs);
     steps.push(...propagated.steps);
     assertions.push(...propagated.assertions);
+    const restored = await restoreRow(env, state, params);
+    steps.push(...restored.steps);
+    assertions.push(restored.assertion);
   }
   return result();
 }
 
-/** Interrupts a write window's import after legacy committed its write, checks the pending window and its reads, then lets the service's retry close it. */
+/** Interrupts a write window's import after legacy committed its write, checks the pending window and its reads, lets the service's retry close it, then restores the row. */
 export const windowImportInterrupted: FaultScript<WindowImportParams> = {
   name: FAULT,
   reconciles: true,

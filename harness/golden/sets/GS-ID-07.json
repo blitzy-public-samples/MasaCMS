@@ -1,10 +1,10 @@
 {
-  "capturedAt": "2026-11-20T02:59:30.421Z",
+  "capturedAt": "2026-11-21T04:41:54.371Z",
   "fixtures": {
     "available": true,
     "reason": "fixtures loaded"
   },
-  "generatedAt": "2026-11-20T02:59:34.913Z",
+  "generatedAt": "2026-11-21T04:41:58.704Z",
   "generatedBy": "harness/src/golden/capture.ts",
   "origin": "legacy",
   "scenarioId": "GS-ID-07",
@@ -5661,7 +5661,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "6b1f4e7e4e60a2bb4d0cdcd42a518a92366327bc608aac48a942cb9ffed546c0",
+        "rawSha256": "0f6cf78c12596c6037a5ea9fc30a01f76afd780c013a3fefda7376a29824a1c7",
         "status": 200
       },
       "routeKey": "admin:cperm.main"
@@ -6928,7 +6928,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "b724fb1e8cd0a1bace986d330f8afa661e1ba2910d3493dfcd0363fa6c914dcb",
+        "rawSha256": "7a4b773b6d404970080b8c7bb6e8e87f87a2fdf64a4f189ea3d2e586d9b6fad3",
         "status": 200
       },
       "routeKey": "admin:cperm.update"
@@ -12553,7 +12553,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "d45a9d6749662ffc98bee2a3cdb513614d81385f6e39f68d4e5d406f037948f6",
+        "rawSha256": "b380ae3bd84a922a76db2e794ca6845fe301d7b7d59299f9ca284a594bde2bef",
         "status": 200
       },
       "routeKey": "admin:cperm.main"
@@ -13820,7 +13820,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "b0adc2619e7f62350a4412123351245e2ede3116ef86f264612106a06b4e2ca4",
+        "rawSha256": "bcd379f2228de7d0778c8f01e94e561ddab82c0441df5c06ad3d49669be5f98c",
         "status": 200
       },
       "routeKey": "admin:cperm.update"
@@ -15799,7 +15799,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "1aca9fff4f6a4751dd2e82f3bd26e86d60cf879b6943da6fe955bdb1fa55f676",
+        "rawSha256": "ceac01debcf6104c78dfacf0dca4f40cda6d616f9dbe7a09867e1982016ab012",
         "status": 200
       },
       "routeKey": "admin:cperm.module"
@@ -16590,7 +16590,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "e53231df73baa60fdb939fa6f717c933d9ab559dc55de86ad4b5e601fb572123",
+        "rawSha256": "fdac453b4d7d33e389649fa9efbca2f7bacc8de045ecf1284098887a72c0ce04",
         "status": 200
       },
       "routeKey": "admin:cperm.updatemodule"
@@ -18569,7 +18569,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "767431dc4748b51702e15f6eb9e1373e68a343f4e02c8bea6828d9b24ae4b29e",
+        "rawSha256": "385b6ff204f71629dcdb663b1e4e29600b2ce02a6956c35dcc4eeea374f2eb8f",
         "status": 200
       },
       "routeKey": "admin:cperm.module"
@@ -19360,7 +19360,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "9d80ee4d0ace971cc4988d1a173bd1585b53cb2031bbf64997fbf7d80b790906",
+        "rawSha256": "161327943a159e49f84fd376e9cdcd4f11d464c96662dc84822f7464732e3e5e",
         "status": 200
       },
       "routeKey": "admin:cperm.updatemodule"

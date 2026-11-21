@@ -44,7 +44,7 @@ type RunInfo = Record<string, unknown> & { cluster: Record<string, unknown>; sta
 const FIXTURE = new URL('../fixtures/testbox/run-info.json', import.meta.url);
 const RUN_INFO_TEXT = await fs.readFile(FIXTURE, 'utf8');
 const RUN_INFO = JSON.parse(RUN_INFO_TEXT) as RunInfo;
-/** `opt2/reports/environment.md` as committed at HEAD, since `up.sh` rewrites the working-tree copy. */
+/** `opt2/reports/environment.md` as committed at HEAD, placeholder or generated, since `up.sh` rewrites the working-tree copy. */
 const COMMITTED_REPORT_TEXT = execFileSync('git', ['show', 'HEAD:opt2/reports/environment.md'], { cwd: REPO_ROOT, encoding: 'utf8' });
 const PIN_SHA = (JSON.parse(await fs.readFile(path.join(REPO_ROOT, 'opt2', 'source-pin.json'), 'utf8')) as { sha: string }).sha;
 
@@ -349,6 +349,15 @@ function cells(line: string): string[] {
     .split(/(?<!\\)\|/)
     .slice(1, -1)
     .map((cell) => cell.trim());
+}
+
+/** `lines` as laid out by `template`, without the Status and Generated at values or the cells `template` leaves `pending-run`. */
+function layoutOf(lines: readonly string[], template: readonly string[]): (string | string[])[] {
+  return lines.map((line, i) => {
+    const want = template[i] ?? '';
+    if (/^(Status|Generated at): /.test(want)) return line.replace(/: .*$/, ':');
+    return want.startsWith('|') ? cells(line).filter((_, j) => cells(want)[j] !== 'pending-run') : line;
+  });
 }
 
 /** Last cell of the row labelled `label` in the section opened by `heading`. */
@@ -1092,14 +1101,29 @@ describe('mergeRecord', () => {
 
 describe('renderEnvironmentMarkdown and recordedSections', () => {
   const empty: EnvironmentRecord = { local: null, services: null, settings: null };
+  const committed = COMMITTED_REPORT_TEXT.split('\n');
+  const committedPending = committed[3] === 'Status: pending-run';
 
-  it('renders the committed placeholder, below its title and Source SHA lines, when nothing is recorded', () => {
-    const committed = COMMITTED_REPORT_TEXT.split('\n');
+  it('renders the pending-run layout of the committed report, placeholder or generated, when nothing is recorded', () => {
+    const header = committedPending
+      ? ['# Environment record', '', `Source SHA: ${PIN_SHA}`]
+      : ['# Environment record', `Source SHA: ${PIN_SHA}`, ''];
 
     const rendered = renderEnvironmentMarkdown(empty);
+    const template = [...rendered, ''];
 
-    expect(committed.slice(0, 3)).toEqual(['# Environment record', '', `Source SHA: ${PIN_SHA}`]);
-    expect([...committed.slice(0, 3), ...rendered, '']).toEqual(committed);
+    expect([rendered[0], rendered[2]]).toEqual(['Status: pending-run', 'Generated at: pending-run']);
+    expect(committed.slice(0, 3)).toEqual(header);
+    expect(layoutOf(committed.slice(3), template)).toEqual(layoutOf(template, template));
+    if (committedPending) {
+      expect([...header, ...template]).toEqual(committed);
+    } else {
+      expect(committed.slice(3, 6)).toEqual([
+        expect.stringMatching(/^Status: (partial|recorded|deviation)$/),
+        rendered[1],
+        expect.stringMatching(/^Generated at: \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/),
+      ]);
+    }
     for (const key of ['local', 'services', 'settings'] as const) {
       expect(tableRows(rendered, HEADINGS[key]).length).toBeGreaterThan(0);
       expect(tableRows(rendered, HEADINGS[key]).every((line) => cells(line).at(-1) === 'pending-run')).toBe(true);
@@ -1109,8 +1133,15 @@ describe('renderEnvironmentMarkdown and recordedSections', () => {
     );
   });
 
-  it('finds no recorded section in the committed placeholder', () => {
-    expect(recordedSections(COMMITTED_REPORT_TEXT)).toEqual({});
+  it('finds no recorded section when nothing is recorded, and the sections the committed report records, placeholder or generated', () => {
+    const rendered = ['# Environment record', `Source SHA: ${PIN_SHA}`, '', ...renderEnvironmentMarkdown(empty), ''];
+
+    expect(recordedSections(rendered.join('\n'))).toEqual({});
+    expect(recordedSections(COMMITTED_REPORT_TEXT)).toEqual(
+      committedPending
+        ? {}
+        : Object.fromEntries((['local', 'services', 'settings'] as const).map((key) => [key, section(committed, HEADINGS[key]).slice(0, -1)])),
+    );
   });
 
   it.each([

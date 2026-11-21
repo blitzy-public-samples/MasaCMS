@@ -479,8 +479,14 @@ rm -f -- "$TASKS_BEFORE"
 log_step g "start $LEGACY_SERVER_NAME on port $LEGACY_PORT"
 start_server
 
-log_step h "wait for legacy start-up"
+log_step h "wait for legacy start-up, then settle it"
 wait_started "$(legacy_origin)"
+# Requests that reach Masa during its start-up can abort it half done, so one reload of its own runs a complete start-up;
+# the content units are still held for this start-up (window or holder), so the reload needs no window of its own.
+# The key is the one ColdFusion started with.
+harness_key="$(secret harness-diagnostic-key)" || exit 1
+OPT2_HARNESS_KEY="$harness_key" node "$LIB_DIR/legacy-settle.mjs" --origin "$(legacy_origin)" --timeout-s "$START_TIMEOUT_S" >&2 ||
+  die "legacy start-up did not settle (legacy-settle.mjs)"
 
 log_step i "verify ping and paused tasks"
 describe="$(bridge_scheduler describe)" || die "scheduler.cfm describe failed"

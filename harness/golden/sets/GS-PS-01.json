@@ -1,10 +1,10 @@
 {
-  "capturedAt": "2026-11-20T03:00:26.279Z",
+  "capturedAt": "2026-11-21T04:42:20.067Z",
   "fixtures": {
     "available": true,
     "reason": "fixtures loaded"
   },
-  "generatedAt": "2026-11-20T03:00:30.280Z",
+  "generatedAt": "2026-11-21T04:42:23.953Z",
   "generatedBy": "harness/src/golden/capture.ts",
   "origin": "legacy",
   "scenarioId": "GS-PS-01",
@@ -1068,7 +1068,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "342a514879a3dbee1d96f6616c6b649e0a474ab9f407159454df312850efbdd3",
+        "rawSha256": "0dbf55db854c40a4fa32285fc49ba684e8b09c6f62a6f25800e5204397d01d13",
         "status": 200
       },
       "routeKey": "admin:csettings.list"
@@ -16167,7 +16167,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "aec6f31d785b92d5822d4c614b036ccea5f713eb755d3b2197ab1f4131dfcce6",
+        "rawSha256": "e0d3813d3d6be00d74ee85de515ac5b1b2a2bd7d2b20e3890a94edea48953eae",
         "status": 200
       },
       "routeKey": "admin:csettings.editsite"
@@ -16555,7 +16555,7 @@
               "text": "Masa CMS © 2026 We Are North Groep BV Licensed under GNU General Public License Version 2.0 with exceptions"
             },
             {
-              "href": "http://gs-ps-01.seed.opt2.test:8100/",
+              "href": "http://gs-ps-01.seed.opt2.test:22000/",
               "text": "GS-PS-01 Site"
             },
             {
@@ -17117,7 +17117,7 @@
               "text": "Masa CMS © 2026 We Are North Groep BV Licensed under GNU General Public License Version 2.0 with exceptions"
             },
             {
-              "href": "http://gs-ps-01.seed.opt2.test:8100/",
+              "href": "http://gs-ps-01.seed.opt2.test:22000/",
               "text": "GS-PS-01 Site"
             },
             {
@@ -17292,7 +17292,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "4538fc2396a437cd8c67efdba817b5daa15ba10855483a1d819962ad5fe16702",
+        "rawSha256": "65b05f754972f0a3daed373679319d8a6a5dc3e699478fceb6d77c180b9d801f",
         "status": 200
       },
       "routeKey": "admin:csettings.updatesite{action=add}"
@@ -24740,7 +24740,7 @@
               "text": "Masa CMS © 2026 We Are North Groep BV Licensed under GNU General Public License Version 2.0 with exceptions"
             },
             {
-              "href": "http://gs-ps-01.seed.opt2.test:8100/",
+              "href": "http://gs-ps-01.seed.opt2.test:22000/",
               "text": "GS-PS-01 Site"
             },
             {
@@ -32295,7 +32295,7 @@
               "text": "Masa CMS © 2026 We Are North Groep BV Licensed under GNU General Public License Version 2.0 with exceptions"
             },
             {
-              "href": "http://gs-ps-01.seed.opt2.test:8100/",
+              "href": "http://gs-ps-01.seed.opt2.test:22000/",
               "text": "GS-PS-01 Site"
             },
             {
@@ -32407,7 +32407,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "3450774d091f7a87bb456ff7cd3b5f26fda402af96750faf333940bd46869878",
+        "rawSha256": "298a3135ced98c81a0b4e5f6e1a9103edee7581a144a6df15f4a2a74c30ec713",
         "status": 200
       },
       "routeKey": "admin:csettings.editsite"
@@ -33471,7 +33471,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "f6a7c540eecf3858f92abd42d350fafbaafe1c23cac205587afa654f159b3d57",
+        "rawSha256": "4c86fdc482184359373c1edff70b25f2eea5d4fc2440492b49c409fb2c90a5e2",
         "status": 200
       },
       "routeKey": "admin:csettings.updatesite{action=delete}"

@@ -1,5 +1,5 @@
 // Unit tests for reconciliation points, the point report body and the regenerated summary.md.
-import { copyFile, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -28,7 +28,7 @@ import {
 } from '../../src/reconcile/report.js';
 
 const PIN_SHA = '696383140578f8dea3ece26f80cd7bfb370ddf0f';
-const PLACEHOLDER_DIR = fileURLToPath(new URL('../../../opt2/reports/reconciliation/', import.meta.url));
+const COMMITTED_DIR = fileURLToPath(new URL('../../../opt2/reports/reconciliation/', import.meta.url));
 const FIXED_AT = '2026-06-30T12:00:00.000Z';
 const STARTED_AT = '2026-06-30T11:59:00.000Z';
 const SHA_A = 'a'.repeat(64);
@@ -40,6 +40,36 @@ const CHANGED: Difference = { kind: 'changed', key: 's4:u001', column: 'Fname', 
 
 const config = loadConfig();
 const FAULTS = config.faults.map((fault) => fault.name);
+/** Points whose report is committed at every revision, as a pending-run placeholder or a run's report. */
+const COMMITTED_POINTS = [
+  'after-backfill',
+  'after-feed-1',
+  ...FAULTS.filter((fault) => !['projector-delay', 'forced-reinit'].includes(fault)).map((fault) => `after-fault-${fault}`),
+  'post-cutover',
+  'rollback-before',
+  'rollback-after',
+];
+
+/** Pending-run placeholder of `name`, shaped as the committed placeholders. */
+function placeholderFor(name: string): Record<string, unknown> {
+  const point = resolvePoint(config, name);
+  return {
+    sourceSha: PIN_SHA,
+    generatedBy: GENERATED_BY,
+    generatedAt: null,
+    status: 'pending-run',
+    point: name,
+    expectedTableVersion: point.expectedTableVersion,
+    tableVersion: null,
+    snapshotSeq: null,
+    legacySource: point.legacySource,
+    tolerance: 0,
+    measures: [...MEASURES],
+    units: [],
+    summary: { units: null, unitsWithDifferences: null, orphans: null },
+    result: 'pending-run',
+  };
+}
 
 function rows(over: Partial<RowComparison> = {}): RowComparison {
   return { legacyCount: 2, targetCount: 2, legacySha256: SHA_A, targetSha256: SHA_A, differences: [], differenceCount: 0, ...over };
@@ -80,17 +110,27 @@ describe('resolvePoint', () => {
     expect(resolvePoint(config, 'after-fault-duplicate-batch').fault).toBe('duplicate-batch');
   });
 
-  it('matches the committed placeholder of every point it accepts', async () => {
-    const files = (await readdir(PLACEHOLDER_DIR)).filter((name) => name.endsWith('.json'));
-    expect(files).toHaveLength(11);
+  it('matches the committed report of every point it accepts, placeholder or generated', async () => {
+    const files = (await readdir(COMMITTED_DIR)).filter((name) => name.endsWith('.json'));
+    expect(files).toEqual(expect.arrayContaining(COMMITTED_POINTS.map((name) => `${name}.json`)));
     for (const file of files) {
-      const placeholder = JSON.parse(await readFile(path.join(PLACEHOLDER_DIR, file), 'utf8')) as Record<string, unknown>;
+      const report = JSON.parse(await readFile(path.join(COMMITTED_DIR, file), 'utf8')) as Record<string, unknown>;
       const point = resolvePoint(config, path.basename(file, '.json'));
-      expect([point.name, point.expectedTableVersion, point.legacySource]).toEqual([
-        placeholder.point,
-        placeholder.expectedTableVersion,
-        placeholder.legacySource,
-      ]);
+      const pending = report.status === 'pending-run';
+      // A feed or fault run expects the version active when it began.
+      const expectsActive = !pending && (point.kind === 'after-feed' || point.kind === 'after-fault');
+      expect(Object.keys(report).slice(0, 4)).toEqual(['sourceSha', 'generatedBy', 'generatedAt', 'status']);
+      expect(report).toMatchObject({
+        sourceSha: PIN_SHA,
+        generatedBy: GENERATED_BY,
+        status: pending ? 'pending-run' : 'generated',
+        point: point.name,
+        expectedTableVersion: expectsActive ? expect.stringMatching(/^v\d{4}$/) : point.expectedTableVersion,
+        legacySource: point.legacySource,
+        tolerance: 0,
+        measures: [...MEASURES],
+        result: pending ? 'pending-run' : expect.stringMatching(/^(zero-difference|difference)$/),
+      });
     }
   });
 
@@ -308,7 +348,7 @@ describe('writing reports', () => {
   it('lists every JSON file of the directory in point order, placeholders as pending-run', async () => {
     const dir = path.join(reportsDir, RECONCILIATION_DIR);
     await mkdir(dir, { recursive: true });
-    for (const file of await readdir(PLACEHOLDER_DIR)) await copyFile(path.join(PLACEHOLDER_DIR, file), path.join(dir, file));
+    for (const name of COMMITTED_POINTS) await writeFile(path.join(dir, `${name}.json`), `${JSON.stringify(placeholderFor(name), null, 2)}\n`);
     await writeFile(path.join(dir, 'adhoc-check.json'), '{"note":"manual"}\n');
     await writeFile(path.join(dir, '.after-feed-3.json.1.tmp'), '{');
 

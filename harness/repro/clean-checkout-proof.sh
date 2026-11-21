@@ -30,8 +30,8 @@ Environment, passed on to the clone's commands:
                         MURA_ADMIN_PASSWORD, PG_HOST, PG_PORT, PG_USER, PG_PASSWORD, PG_DATABASE and
                         CFCONFIG_ADMINPASSWORD (up.sh); MASA_TEST_EDITOR_PASSWORD (test-all.sh)
   MURA_ADMIN_USERNAME   admin login (default admin)
-  OPT2_CLONE_PARENT     where the clone is made (default $HOME/.opt2): absolute, outside this checkout, and with no
-                        directory named mura
+  OPT2_CLONE_PARENT     where the clone is made (default $HOME/.opt2): absolute, outside this checkout, with no
+                        directory named mura, and an existing directory or a path creatable below one
   OPT2_STATE_DIR        this checkout's state, which step 1's down.sh stops (default $HOME/.opt2/state); the clone
                         gets <clone>.state instead
   OPT2_PRISTINE_DIR     pristine legacy baseline, shared with the clone (default $HOME/.opt2/pristine)
@@ -203,6 +203,12 @@ CLONE="$(realpath -m -- "$OPT2_CLONE_PARENT")/opt2-clean-$(date -u +%Y%m%dT%H%M%
 CLONE_STATE="$CLONE.state"
 [[ ! -e $CLONE && ! -e $CLONE_STATE ]] ||
   die "$CLONE or $CLONE_STATE already exists in OPT2_CLONE_PARENT ($OPT2_CLONE_PARENT)"
+# The deepest existing component of the parent must be a writable directory, so the clone can be created below it.
+parent="$(realpath -m -- "$OPT2_CLONE_PARENT")"
+while [[ ! -e $parent ]]; do parent="$(dirname -- "$parent")"; done
+[[ -d $parent && -w $parent ]] ||
+  die "OPT2_CLONE_PARENT ($OPT2_CLONE_PARENT) is not a directory or a path creatable under one: $parent is not a" \
+    "writable directory"
 
 # --- Step 1: teardown of the working checkout ------------------------------------------------------------------
 

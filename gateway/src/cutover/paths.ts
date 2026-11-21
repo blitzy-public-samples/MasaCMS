@@ -19,13 +19,17 @@ export interface GatewayPaths {
   reconciliationDir: string;
 }
 
-/** Resolves every gateway path; `OPT2_CUTOVER_DIR` relocates only the cut-over directory. */
-export function resolveGatewayPaths(env: { OPT2_CUTOVER_DIR?: string } = process.env): GatewayPaths {
+/**
+ * Resolves every gateway path; `OPT2_CUTOVER_DIR` relocates only the cut-over directory, and `OPT2_REPORTS_DIR`,
+ * relative to the repository root, only the reconciliation reports.
+ */
+export function resolveGatewayPaths(env: { OPT2_CUTOVER_DIR?: string; OPT2_REPORTS_DIR?: string } = process.env): GatewayPaths {
   // src/cutover/ and dist/cutover/ sit at the same depth, so this resolves to gateway/ from source and build alike.
   const packageRoot = resolve(fileURLToPath(new URL('../../', import.meta.url)));
   const repoRoot = resolve(packageRoot, '..');
   const cutoverDir = env.OPT2_CUTOVER_DIR ? resolve(env.OPT2_CUTOVER_DIR) : join(packageRoot, 'cutover');
   const opt2Dir = join(repoRoot, 'opt2');
+  const reportsDir = env.OPT2_REPORTS_DIR ? resolve(repoRoot, env.OPT2_REPORTS_DIR) : join(opt2Dir, 'reports');
   return {
     packageRoot,
     repoRoot,
@@ -39,6 +43,6 @@ export function resolveGatewayPaths(env: { OPT2_CUTOVER_DIR?: string } = process
     decisionListFile: join(opt2Dir, 'decision-list.json'),
     exceptionsListFile: join(opt2Dir, 'exceptions-list.json'),
     sourcePinFile: join(opt2Dir, 'source-pin.json'),
-    reconciliationDir: join(opt2Dir, 'reports', 'reconciliation'),
+    reconciliationDir: join(reportsDir, 'reconciliation'),
   };
 }

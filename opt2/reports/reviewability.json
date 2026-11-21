@@ -1,331 +1,381 @@
 {
-  "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
+  "generatedAt": "2026-11-21T06:36:04.925Z",
   "generatedBy": "harness/src/reporting/check-reviewability.ts",
-  "generatedAt": null,
-  "status": "pending-run",
   "inventory": "opt2/inventory/legacy-inventory.json",
   "passCondition": "README.md, TRACEABILITY.md and contracts present with the pinned SHA; every inventory item the service carries or owns has a traceability row; every cited test name is a test title of its cited file",
+  "result": "pass",
   "services": [
     {
-      "service": "identity",
-      "readme": {
-        "path": "services/identity/README.md",
-        "present": null,
-        "sha": null
-      },
-      "traceability": {
-        "path": "services/identity/TRACEABILITY.md",
-        "present": null,
-        "sha": null,
-        "rows": null
+      "citations": {
+        "names": 294,
+        "unresolved": []
       },
       "contracts": {
+        "events": [
+          {
+            "path": "services/identity/contracts/events/identity.group.changed.v1.json",
+            "present": true,
+            "sha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+          },
+          {
+            "path": "services/identity/contracts/events/identity.login-mail.requested.v1.json",
+            "present": true,
+            "sha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+          },
+          {
+            "path": "services/identity/contracts/events/identity.membership.changed.v1.json",
+            "present": true,
+            "sha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+          },
+          {
+            "path": "services/identity/contracts/events/identity.permission.changed.v1.json",
+            "present": true,
+            "sha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+          }
+        ],
         "openapi": {
           "path": "services/identity/contracts/openapi.yaml",
-          "present": null,
-          "sha": null
-        },
-        "events": []
+          "present": true,
+          "sha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+        }
       },
       "inventoryItems": {
-        "carriedOrOwned": null,
-        "covered": null,
+        "carriedOrOwned": 93,
+        "covered": 93,
         "missing": []
       },
-      "citations": {
-        "names": null,
-        "unresolved": []
+      "readme": {
+        "path": "services/identity/README.md",
+        "present": true,
+        "sha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
       },
-      "result": "pending-run"
+      "result": "pass",
+      "service": "identity",
+      "traceability": {
+        "path": "services/identity/TRACEABILITY.md",
+        "present": true,
+        "rows": 93,
+        "sha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+      }
     },
     {
-      "service": "people",
-      "readme": {
-        "path": "services/people/README.md",
-        "present": null,
-        "sha": null
-      },
-      "traceability": {
-        "path": "services/people/TRACEABILITY.md",
-        "present": null,
-        "sha": null,
-        "rows": null
+      "citations": {
+        "names": 381,
+        "unresolved": []
       },
       "contracts": {
+        "events": [
+          {
+            "path": "services/people/contracts/events/people.person.archived.v1.json",
+            "present": true,
+            "sha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+          },
+          {
+            "path": "services/people/contracts/events/people.person.changed.v1.json",
+            "present": true,
+            "sha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+          }
+        ],
         "openapi": {
           "path": "services/people/contracts/openapi.yaml",
-          "present": null,
-          "sha": null
-        },
-        "events": []
+          "present": true,
+          "sha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+        }
       },
       "inventoryItems": {
-        "carriedOrOwned": null,
-        "covered": null,
+        "carriedOrOwned": 71,
+        "covered": 71,
         "missing": []
       },
-      "citations": {
-        "names": null,
-        "unresolved": []
+      "readme": {
+        "path": "services/people/README.md",
+        "present": true,
+        "sha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
       },
-      "result": "pending-run"
+      "result": "pass",
+      "service": "people",
+      "traceability": {
+        "path": "services/people/TRACEABILITY.md",
+        "present": true,
+        "rows": 122,
+        "sha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+      }
     },
     {
-      "service": "programs-sites",
-      "readme": {
-        "path": "services/programs-sites/README.md",
-        "present": null,
-        "sha": null
-      },
-      "traceability": {
-        "path": "services/programs-sites/TRACEABILITY.md",
-        "present": null,
-        "sha": null,
-        "rows": null
+      "citations": {
+        "names": 201,
+        "unresolved": []
       },
       "contracts": {
+        "events": [
+          {
+            "path": "services/programs-sites/contracts/events/programs-sites.site.changed.v1.json",
+            "present": true,
+            "sha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+          }
+        ],
         "openapi": {
           "path": "services/programs-sites/contracts/openapi.yaml",
-          "present": null,
-          "sha": null
-        },
-        "events": []
+          "present": true,
+          "sha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+        }
       },
       "inventoryItems": {
-        "carriedOrOwned": null,
-        "covered": null,
+        "carriedOrOwned": 54,
+        "covered": 54,
         "missing": []
       },
-      "citations": {
-        "names": null,
-        "unresolved": []
+      "readme": {
+        "path": "services/programs-sites/README.md",
+        "present": true,
+        "sha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
       },
-      "result": "pending-run"
+      "result": "pass",
+      "service": "programs-sites",
+      "traceability": {
+        "path": "services/programs-sites/TRACEABILITY.md",
+        "present": true,
+        "rows": 60,
+        "sha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+      }
     },
     {
-      "service": "strategies-content",
-      "readme": {
-        "path": "services/strategies-content/README.md",
-        "present": null,
-        "sha": null
-      },
-      "traceability": {
-        "path": "services/strategies-content/TRACEABILITY.md",
-        "present": null,
-        "sha": null,
-        "rows": null
+      "citations": {
+        "names": 892,
+        "unresolved": []
       },
       "contracts": {
+        "events": [],
         "openapi": {
           "path": "services/strategies-content/contracts/openapi.yaml",
-          "present": null,
-          "sha": null
-        },
-        "events": []
+          "present": true,
+          "sha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+        }
       },
       "inventoryItems": {
-        "carriedOrOwned": null,
-        "covered": null,
+        "carriedOrOwned": 593,
+        "covered": 593,
         "missing": []
       },
-      "citations": {
-        "names": null,
-        "unresolved": []
+      "readme": {
+        "path": "services/strategies-content/README.md",
+        "present": true,
+        "sha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
       },
-      "result": "pending-run"
+      "result": "pass",
+      "service": "strategies-content",
+      "traceability": {
+        "path": "services/strategies-content/TRACEABILITY.md",
+        "present": true,
+        "rows": 269,
+        "sha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+      }
     },
     {
-      "service": "communications",
-      "readme": {
-        "path": "services/communications/README.md",
-        "present": null,
-        "sha": null
-      },
-      "traceability": {
-        "path": "services/communications/TRACEABILITY.md",
-        "present": null,
-        "sha": null,
-        "rows": null
+      "citations": {
+        "names": 404,
+        "unresolved": []
       },
       "contracts": {
+        "events": [
+          {
+            "path": "services/communications/contracts/events/communications.message.delivery-status-changed.v1.json",
+            "present": true,
+            "sha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+          }
+        ],
         "openapi": {
           "path": "services/communications/contracts/openapi.yaml",
-          "present": null,
-          "sha": null
-        },
-        "events": []
+          "present": true,
+          "sha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+        }
       },
       "inventoryItems": {
-        "carriedOrOwned": null,
-        "covered": null,
+        "carriedOrOwned": 58,
+        "covered": 58,
         "missing": []
       },
-      "citations": {
-        "names": null,
-        "unresolved": []
+      "readme": {
+        "path": "services/communications/README.md",
+        "present": true,
+        "sha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
       },
-      "result": "pending-run"
+      "result": "pass",
+      "service": "communications",
+      "traceability": {
+        "path": "services/communications/TRACEABILITY.md",
+        "present": true,
+        "rows": 59,
+        "sha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+      }
     },
     {
-      "service": "reporting",
-      "readme": {
-        "path": "services/reporting/README.md",
-        "present": null,
-        "sha": null
-      },
-      "traceability": {
-        "path": "services/reporting/TRACEABILITY.md",
-        "present": null,
-        "sha": null,
-        "rows": null
+      "citations": {
+        "names": 235,
+        "unresolved": []
       },
       "contracts": {
+        "events": [],
         "openapi": {
           "path": "services/reporting/contracts/openapi.yaml",
-          "present": null,
-          "sha": null
-        },
-        "events": []
+          "present": true,
+          "sha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+        }
       },
       "inventoryItems": {
-        "carriedOrOwned": null,
-        "covered": null,
+        "carriedOrOwned": 30,
+        "covered": 30,
         "missing": []
       },
-      "citations": {
-        "names": null,
-        "unresolved": []
+      "readme": {
+        "path": "services/reporting/README.md",
+        "present": true,
+        "sha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
       },
-      "result": "pending-run"
+      "result": "pass",
+      "service": "reporting",
+      "traceability": {
+        "path": "services/reporting/TRACEABILITY.md",
+        "present": true,
+        "rows": 35,
+        "sha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+      }
     },
     {
-      "service": "surveys",
-      "readme": {
-        "path": "services/surveys/README.md",
-        "present": null,
-        "sha": null
-      },
-      "traceability": {
-        "path": "services/surveys/TRACEABILITY.md",
-        "present": null,
-        "sha": null,
-        "rows": null
+      "citations": {
+        "names": 249,
+        "unresolved": []
       },
       "contracts": {
+        "events": [
+          {
+            "path": "services/surveys/contracts/events/surveys.survey.scheduled.v1.json",
+            "present": true,
+            "sha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+          }
+        ],
         "openapi": {
           "path": "services/surveys/contracts/openapi.yaml",
-          "present": null,
-          "sha": null
-        },
-        "events": []
+          "present": true,
+          "sha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+        }
       },
       "inventoryItems": {
-        "carriedOrOwned": null,
-        "covered": null,
+        "carriedOrOwned": 23,
+        "covered": 23,
         "missing": []
       },
-      "citations": {
-        "names": null,
-        "unresolved": []
+      "readme": {
+        "path": "services/surveys/README.md",
+        "present": true,
+        "sha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
       },
-      "result": "pending-run"
+      "result": "pass",
+      "service": "surveys",
+      "traceability": {
+        "path": "services/surveys/TRACEABILITY.md",
+        "present": true,
+        "rows": 36,
+        "sha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+      }
     },
     {
-      "service": "timesheets",
-      "readme": {
-        "path": "services/timesheets/README.md",
-        "present": null,
-        "sha": null
-      },
-      "traceability": {
-        "path": "services/timesheets/TRACEABILITY.md",
-        "present": null,
-        "sha": null,
-        "rows": null
+      "citations": {
+        "names": 177,
+        "unresolved": []
       },
       "contracts": {
+        "events": [],
         "openapi": {
           "path": "services/timesheets/contracts/openapi.yaml",
-          "present": null,
-          "sha": null
-        },
-        "events": []
+          "present": true,
+          "sha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+        }
       },
       "inventoryItems": {
-        "carriedOrOwned": null,
-        "covered": null,
+        "carriedOrOwned": 20,
+        "covered": 20,
         "missing": []
       },
-      "citations": {
-        "names": null,
-        "unresolved": []
+      "readme": {
+        "path": "services/timesheets/README.md",
+        "present": true,
+        "sha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
       },
-      "result": "pending-run"
+      "result": "pass",
+      "service": "timesheets",
+      "traceability": {
+        "path": "services/timesheets/TRACEABILITY.md",
+        "present": true,
+        "rows": 38,
+        "sha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+      }
     },
     {
-      "service": "finance",
-      "readme": {
-        "path": "services/finance/README.md",
-        "present": null,
-        "sha": null
-      },
-      "traceability": {
-        "path": "services/finance/TRACEABILITY.md",
-        "present": null,
-        "sha": null,
-        "rows": null
+      "citations": {
+        "names": 136,
+        "unresolved": []
       },
       "contracts": {
+        "events": [],
         "openapi": {
           "path": "services/finance/contracts/openapi.yaml",
-          "present": null,
-          "sha": null
-        },
-        "events": []
+          "present": true,
+          "sha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+        }
       },
       "inventoryItems": {
-        "carriedOrOwned": null,
-        "covered": null,
+        "carriedOrOwned": 24,
+        "covered": 24,
         "missing": []
       },
-      "citations": {
-        "names": null,
-        "unresolved": []
+      "readme": {
+        "path": "services/finance/README.md",
+        "present": true,
+        "sha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
       },
-      "result": "pending-run"
+      "result": "pass",
+      "service": "finance",
+      "traceability": {
+        "path": "services/finance/TRACEABILITY.md",
+        "present": true,
+        "rows": 31,
+        "sha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+      }
     },
     {
-      "service": "e-signature",
-      "readme": {
-        "path": "services/e-signature/README.md",
-        "present": null,
-        "sha": null
-      },
-      "traceability": {
-        "path": "services/e-signature/TRACEABILITY.md",
-        "present": null,
-        "sha": null,
-        "rows": null
-      },
-      "contracts": {
-        "openapi": {
-          "path": "services/e-signature/contracts/openapi.yaml",
-          "present": null,
-          "sha": null
-        },
-        "events": []
-      },
-      "inventoryItems": {
-        "carriedOrOwned": null,
-        "covered": null,
-        "missing": []
-      },
       "citations": {
-        "names": null,
+        "names": 186,
         "unresolved": []
       },
-      "result": "pending-run"
+      "contracts": {
+        "events": [],
+        "openapi": {
+          "path": "services/e-signature/contracts/openapi.yaml",
+          "present": true,
+          "sha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+        }
+      },
+      "inventoryItems": {
+        "carriedOrOwned": 15,
+        "covered": 15,
+        "missing": []
+      },
+      "readme": {
+        "path": "services/e-signature/README.md",
+        "present": true,
+        "sha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+      },
+      "result": "pass",
+      "service": "e-signature",
+      "traceability": {
+        "path": "services/e-signature/TRACEABILITY.md",
+        "present": true,
+        "rows": 34,
+        "sha": "696383140578f8dea3ece26f80cd7bfb370ddf0f"
+      }
     }
   ],
-  "result": "pending-run"
+  "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
+  "status": "generated"
 }

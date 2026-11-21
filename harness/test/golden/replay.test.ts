@@ -842,6 +842,20 @@ describe('main flags', () => {
     expect(crossing).toMatchObject({ tableVersion: 'v0003', steps: [], error: { message: expect.stringContaining(hint) } });
   });
 
+  it('replays an acrossTransition scenario before the others without --phase, in capture order', async () => {
+    await crossGsId09([], 'pre-transition', 'v0001');
+    const stack = fakeStack();
+    const argv = ['--only', 'GS-CO-05,GS-ID-09', '--catalogue', catalogueFile];
+
+    const outcome = await main(argv, env, mainDeps(stack, await operatorInvoker()));
+
+    expect(outcome).toEqual({ code: 0, summary: summaryOf({ replayed: 2 }) });
+    expect(stack.steps().map((s) => `${s.url.pathname}${s.url.search}`)).toEqual([
+      '/admin/?muraAction=cUsers.list',
+      CONTENT_PATH,
+    ]);
+  });
+
   it('masks a configured reload key in the admin reload link of the saved sessions and the replay output', async () => {
     const invoker = await operatorInvoker();
     const key = ['FIXTURE', 'reload', 'key'].join('-');

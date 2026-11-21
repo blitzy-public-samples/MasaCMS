@@ -60,8 +60,18 @@ describe('resolveGatewayPaths', () => {
     expect(outsideCutover(paths)).toEqual(outsideCutover(defaults));
   });
 
-  it('treats an empty OPT2_CUTOVER_DIR as unset', () => {
-    expect(resolveGatewayPaths({ OPT2_CUTOVER_DIR: '' })).toEqual(resolveGatewayPaths({}));
+  it.each([
+    ['an absolute directory', '/tmp/r', '/tmp/r'],
+    ['a relative directory against the repository root', 'out/reports', join(resolveGatewayPaths({}).repoRoot, 'out', 'reports')],
+  ])('relocates only the reconciliation reports for OPT2_REPORTS_DIR as %s', (_label, dir, expected) => {
+    expect(resolveGatewayPaths({ OPT2_REPORTS_DIR: dir })).toEqual({
+      ...resolveGatewayPaths({}),
+      reconciliationDir: join(expected, 'reconciliation'),
+    });
+  });
+
+  it.each(['OPT2_CUTOVER_DIR', 'OPT2_REPORTS_DIR'])('treats an empty %s as unset', (name) => {
+    expect(resolveGatewayPaths({ [name]: '' })).toEqual(resolveGatewayPaths({}));
   });
 
   it('reads OPT2_CUTOVER_DIR from process.env by default', () => {

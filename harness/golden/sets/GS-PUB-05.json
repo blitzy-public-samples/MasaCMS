@@ -1,10 +1,10 @@
 {
-  "capturedAt": "2026-11-20T03:03:42.042Z",
+  "capturedAt": "2026-11-21T04:45:24.589Z",
   "fixtures": {
     "available": true,
     "reason": "fixtures loaded"
   },
-  "generatedAt": "2026-11-20T03:03:50.177Z",
+  "generatedAt": "2026-11-21T04:45:32.743Z",
   "generatedBy": "harness/src/golden/capture.ts",
   "origin": "legacy",
   "scenarioId": "GS-PUB-05",
@@ -7584,7 +7584,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "2099943e106f78c525b2a8102be7026947995996f85048ff56a75cb9d438fe4c",
+        "rawSha256": "0273bac70f1cc31f6122d584a4e28f4e583fa7fe07e51d27c18b4e774d264dcd",
         "status": 200
       },
       "routeKey": "page:render"
@@ -7630,7 +7630,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "3eb86c0a40aa83823635c3bfe4668079b37f279dddf09d3531d5a97152f75101",
+        "rawSha256": "5ad87fc83868b2d82558e4c294dfebb30d5ee7018bd40727d7409b19d9ad9585",
         "status": 200
       },
       "routeKey": "api:generatecsrftokens"
@@ -14930,7 +14930,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "311894268138f9a45732f102428aaf929575e803f9db7a420c08a40eaa3f6f63",
+        "rawSha256": "dbfc813498635ba5094b6cf172194e5dfa3226702df82e7ec5389e14d3477ff6",
         "status": 200
       },
       "routeKey": "page:saveform"
@@ -15035,7 +15035,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "3baa86f26969a2ca1789064d4f8a636c71d57669fb91fac0ddccb6700026803a",
+        "rawSha256": "d6c0f9d5201e3b96596e9c01ea6a04515e493451c2d84859b5e52b9f628822de",
         "status": 200
       },
       "routeKey": "api:processasyncobject{saveform}"
@@ -15220,7 +15220,7 @@
         "headers": {
           "content-type": "text/html;charset=UTF-8"
         },
-        "rawSha256": "afc9ad73b19270b8db2b5121e14dacb16b0518030f512deb22edf317fd4ae3db",
+        "rawSha256": "6a7cbe534d8af6b0abc4b766717b993475f733c485c4101a06365b55d5cf0644",
         "status": 500
       },
       "routeKey": "rest:processasyncobject{saveform}"
@@ -15316,7 +15316,7 @@
         "headers": {
           "content-type": "text/html;charset=UTF-8"
         },
-        "rawSha256": "afc9ad73b19270b8db2b5121e14dacb16b0518030f512deb22edf317fd4ae3db",
+        "rawSha256": "6a7cbe534d8af6b0abc4b766717b993475f733c485c4101a06365b55d5cf0644",
         "status": 500
       },
       "routeKey": "rest:processasyncobject"

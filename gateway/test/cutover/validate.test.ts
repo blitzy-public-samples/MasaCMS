@@ -761,8 +761,10 @@ describe('validateVersion', () => {
     const activation = (reconciliationDir: string): ValidationContext =>
       context({ mode: 'activation', prior: V2, reconciliationDir });
 
-    it('fails while the rollback report is pending', () => {
-      const findings = validateVersion(V3, activation(committed.reconciliationDir));
+    it('fails while the rollback report is pending', async () => {
+      const dir = await tempDir();
+      await writeFile(join(dir, 'rollback-before.json'), JSON.stringify({ status: 'pending-run', result: 'pending-run' }));
+      const findings = validateVersion(V3, activation(dir));
       expect(findings).toHaveLength(1);
       expect(findings[0]).toMatchObject({ rule: 'rollback-evidence', group: G_PERSON });
       expect(findings[0]?.message).toBe('rollback-before.json has result pending-run');

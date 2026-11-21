@@ -81,6 +81,8 @@ SERVICE_PACKAGES=(services/identity services/people services/programs-sites serv
   web migration harness)
 E2E_SUITES=(isolation/tenant-isolation events/seams events/dlq-replay events/trace events/roster-protocol
   security/authz-matrix synthetic/v1-writes)
+# Reconciling faults that need a target-authoritative unit: stage 6 runs them under v0002, after reconcile post-cutover.
+POST_CUTOVER_FAULTS=(window-import-interrupted)
 # Settings of the migration process up.sh recorded, so every command here addresses the same stack it started.
 STACK_ENV_KEYS=(TZ GOOGLE_CLOUD_PROJECT PUBSUB_EMULATOR_HOST OPT2_SERVICE_URLS OPT2_GATEWAY_URL OPT2_MIGRATION_URL
   LEGACY_ORIGIN OPT2_LEGACY_PORT MURA_DBHOST MURA_DBPORT MURA_DATABASE MURA_DBUSERNAME MURA_DBPASSWORD PG_HOST PG_PORT
@@ -455,15 +457,25 @@ run_e2e() {
   return "$status"
 }
 
-# Prints, in FAULT_NAMES order, the faults of the built migration package that reconcile afterwards.
+# reconciling_faults <backfill params> [post-cutover fault…]: prints `<name> <mode>`, in FAULT_NAMES order, for each
+# fault of the built migration package that reconciles afterwards; mode is `post-cutover` for a named post-cutover
+# fault, `backfill` when its schema accepts the params, else `default`. Fails when a named fault does not reconcile.
 reconciling_faults() {
   # shellcheck disable=SC2016 # JavaScript source
   node --input-type=module -e '
 const { FAULT_NAMES, FAULT_SCRIPTS } = await import(process.argv[1]);
+const backfill = JSON.parse(process.argv[2]);
+const postCutover = process.argv.slice(3);
 const names = FAULT_NAMES.filter((name) => FAULT_SCRIPTS[name]?.reconciles === true);
 if (names.length === 0) throw new Error("no reconciling fault in FAULT_NAMES");
-process.stdout.write(`${names.join("\n")}\n`);
-' -- "$REPO/migration/dist/faults/index.js"
+const stray = postCutover.filter((name) => !names.includes(name));
+if (stray.length > 0) throw new Error(`POST_CUTOVER_FAULTS names no reconciling fault of FAULT_NAMES: ${stray.join(", ")}`);
+const mode = (name) => {
+  if (postCutover.includes(name)) return "post-cutover";
+  return FAULT_SCRIPTS[name].paramsSchema.safeParse(backfill).success ? "backfill" : "default";
+};
+process.stdout.write(names.map((name) => `${name} ${mode(name)}\n`).join(""));
+' -- "$REPO/migration/dist/faults/index.js" "$@"
 }
 
 # Empties Mailpit and dies unless it then holds no message.
@@ -517,20 +529,32 @@ stage_services() {
 }
 
 stage_migration() {
-  local fault seq manifest store
-  local -a faults=()
+  local fault mode seq manifest store
+  local backfill_params='{"command":"backfill"}'
+  local -a backfill_faults=() default_faults=()
   run_step "reconcile after-backfill" "$MIGRATE" reconcile --point after-backfill || return 1
   note_evidence "$RECON_DIR/after-backfill.json"
+
+  # projector-delay is a toggle without a reconciliation point; the read-after-write replay scenario sets it itself.
+  run_step "reconciling faults of FAULT_NAMES and their mode" reconciling_faults "$backfill_params" \
+    "${POST_CUTOVER_FAULTS[@]}" || return 1
+  while read -r fault mode; do
+    case $mode in
+      backfill) backfill_faults+=("$fault") ;;
+      default) default_faults+=("$fault") ;;
+    esac
+  done <"$STEP_STDOUT"
+  # Backfill mode re-sends S0's batches, which a backfill refuses once the first feed has moved the watermarks.
+  for fault in "${backfill_faults[@]}"; do
+    run_step "fault $fault (backfill mode)" "$MIGRATE" fault "$fault" --params "$backfill_params" || return 1
+    note_evidence "$RECON_DIR/after-fault-$fault.json"
+  done
   run_step "golden:workload through the gateway (v0001)" harness_run golden:workload || return 1
   run_step "feed" "$MIGRATE" feed || return 1
   run_step "reconcile after-feed-1" "$MIGRATE" reconcile --point after-feed-1 || return 1
   note_evidence "$RECON_DIR/after-feed-1.json"
-
-  # projector-delay is a toggle without a reconciliation point; the read-after-write replay scenario sets it itself.
-  run_step "reconciling faults of FAULT_NAMES" reconciling_faults || return 1
-  mapfile -t faults <"$STEP_STDOUT"
-  for fault in "${faults[@]}"; do
-    run_step "fault $fault" "$MIGRATE" fault "$fault" || return 1
+  for fault in "${default_faults[@]}"; do
+    run_step "fault $fault (default parameters)" "$MIGRATE" fault "$fault" || return 1
     note_evidence "$RECON_DIR/after-fault-$fault.json"
   done
   # Faults restart processes and rewrite their pids in up.json.
@@ -585,7 +609,7 @@ stage_capture() {
 }
 
 stage_cutover() {
-  local failures=0 report
+  local failures=0 report fault
   # GS-ID-09 opens its session under v0001 and resumes it after the transition, proving session adoption across it.
   run_step "GS-ID-09 before the transition" harness_run golden:replay -- --only GS-ID-09 --phase pre-transition ||
     failures=1
@@ -597,6 +621,11 @@ stage_cutover() {
   if report="$(json_get "$STEP_STDOUT" reconciliation.reportPath 2>/dev/null)"; then note_evidence "$report"; fi
   run_step "reconcile post-cutover" "$MIGRATE" reconcile --point post-cutover || failures=1
   note_evidence "$RECON_DIR/post-cutover.json"
+  # At the point post-cutover reconciled; each fault restores the legacy row it wrote before it reconciles.
+  for fault in "${POST_CUTOVER_FAULTS[@]}"; do
+    run_step "fault $fault (default parameters, v0002)" "$MIGRATE" fault "$fault" || failures=1
+    note_evidence "$RECON_DIR/after-fault-$fault.json"
+  done
   return "$failures"
 }
 

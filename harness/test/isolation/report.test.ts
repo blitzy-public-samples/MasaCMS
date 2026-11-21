@@ -206,7 +206,7 @@ function consumerOf(report: IsolationReport, subscription: string): ConsumerIsol
   return row;
 }
 
-/** Asserts `report` has the key set of the committed placeholder at every level the placeholder fills. */
+/** Asserts `report` has the key set of the committed report, placeholder or generated, at every level it fills. */
 function expectCommittedShape(report: IsolationReport): void {
   const committedRow = COMMITTED.services[0];
   expect(keysOf(report)).toEqual(keysOf(COMMITTED));
@@ -303,7 +303,6 @@ describe('buildIsolationReport over the samples', () => {
     expect(built.findings).toEqual([]);
     expect(built.servicesFailing).toEqual([]);
     expect(report).toMatchObject({ sourceSha: PIN_SHA, status: 'generated', result: 'pass' });
-    expect(report.status).not.toBe(COMMITTED.status);
     expect(report.passCondition.length).toBeGreaterThan(0);
     for (const row of report.services) {
       expect(row).toMatchObject({

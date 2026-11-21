@@ -1,10 +1,10 @@
 {
-  "capturedAt": "2026-11-20T03:00:09.747Z",
+  "capturedAt": "2026-11-21T04:42:04.361Z",
   "fixtures": {
     "available": true,
     "reason": "fixtures loaded"
   },
-  "generatedAt": "2026-11-20T03:00:11.600Z",
+  "generatedAt": "2026-11-21T04:42:07.079Z",
   "generatedBy": "harness/src/golden/capture.ts",
   "origin": "legacy",
   "scenarioId": "GS-PE-01",
@@ -3094,7 +3094,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "0338365dedb4146c2c29399e2f86ecf96344d0d1ba64affb70025be73b5707e1",
+        "rawSha256": "a065b32fc52468abca24a590d94ca7ec669ec9857521ed863fa44944618d0584",
         "status": 200
       },
       "routeKey": "admin:cusers.edituser"
@@ -4483,7 +4483,7 @@
           "content-type": "application/x-www-form-urlencoded"
         },
         "method": "POST",
-        "url": "/admin/?muraAction=cUsers.update&userid=A4F8F5C0-D261-961B-D73A1E7EA15675D7&routeid="
+        "url": "/admin/?muraAction=cUsers.update&userid=DC1D90A3-9685-B9C2-AEEEF1223369228D&routeid="
       },
       "response": {
         "domModel": {
@@ -5793,7 +5793,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "62a9d060a0b2be0f73a0a41f980130065e87555d7995c242086d80cf538d4883",
+        "rawSha256": "16e07742d5e594e35bf266ec32a207b320da7f3369b64738abff492ab9041633",
         "status": 200
       },
       "routeKey": "admin:cusers.update{type=2,action=add}"

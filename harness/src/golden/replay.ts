@@ -29,6 +29,7 @@ import {
   CATALOGUE_PATH,
   FIXTURES_UNAVAILABLE,
   SCENARIO_ID_PATTERN,
+  inReplayOrder,
   isRehearsalScenario,
   loadCatalogue,
   readFixtureStatus,
@@ -1042,7 +1043,7 @@ const USAGE =
 const HELP = [
   `Usage: ${USAGE}`,
   '',
-  'Replays the captured scenarios through the gateway in catalogue order and writes',
+  'Replays the captured scenarios through the gateway in capture order (acrossTransition ones first) and writes',
   '${OPT2_STATE_DIR}/golden/replay/<id>.json for golden:compare. The gateway must have v0002 active, or v0003 with',
   '--rehearsal, which without --only replays only the rollback-rehearsal scenarios. With --rehearsal, another',
   'acrossTransition scenario replays as its rehearsal crossing, under golden/replay/rehearsal/ and',
@@ -1070,8 +1071,9 @@ interface Selection {
 }
 
 /**
- * Scenarios to replay in catalogue order: `--only` ones, else the rehearsal or the other scenarios. Without a phase
- * each must replay under the required version unless it crosses a transition; with one, each must cross a transition.
+ * Scenarios to replay in capture order ({@link inReplayOrder}): `--only` ones, else the rehearsal or the other
+ * scenarios. Without a phase each must replay under the required version unless it crosses a transition; with one,
+ * each must cross a transition.
  */
 function selectScenarios(catalogue: Catalogue, sel: Selection): Scenario[] {
   let selected: Scenario[];
@@ -1103,7 +1105,7 @@ function selectScenarios(catalogue: Catalogue, sel: Selection): Scenario[] {
     const names = mismatched.map((scenario) => `${scenario.id} (${scenario.tableVersion})`).join(', ');
     throw new UsageError(`${names} do not replay under ${sel.required}; --rehearsal selects v0003`, USAGE);
   }
-  return selected;
+  return inReplayOrder(selected);
 }
 
 function parsePhase(value: string | undefined): ReplayPhase | undefined {
@@ -1113,7 +1115,7 @@ function parsePhase(value: string | undefined): ReplayPhase | undefined {
 }
 
 /**
- * Replays the selected scenarios in catalogue order once the gateway has the required version active (any version
+ * Replays the selected scenarios in capture order once the gateway has the required version active (any version
  * for `--phase pre-transition`), continuing past a failed scenario. Exit 1 when the version is wrong (nothing is
  * replayed) or any scenario produced an `error` output; differences are compare.ts's to report.
  * Summary: `{replayed, skipped, paused, halted, errors, tableVersion}`.

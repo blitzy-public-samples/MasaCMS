@@ -6,9 +6,9 @@ Outputs captured from legacy Masa that parity replay compares against. This READ
 
 ## Writer and readers
 
-- `harness/src/golden/capture.ts` (`npm run golden:capture` in `harness/`) writes the sets during `harness/repro/test-all.sh` stage 5. It captures against legacy directly (`LEGACY_ORIGIN`, else `http://127.0.0.1:${PORT}`), after `opt2-ops drain-and-suspend` has suspended background work: first every scenario but the GS-PE-RH ones, then, after the browser captures, `golden:capture -- --rehearsal`.
+- `harness/src/golden/capture.ts` (`npm run golden:capture` in `harness/`) writes the sets during `harness/repro/test-all.sh` stage 5. It captures against legacy directly (`LEGACY_ORIGIN`, else `http://127.0.0.1:${PORT}`), after `opt2-ops drain-and-suspend` has suspended background work: first every scenario but the GS-PE-RH ones, those declaring `acrossTransition` (GS-ID-09) ahead of the rest, then, after the browser captures, `golden:capture -- --rehearsal`.
 - Sets are committed after a capture run and never hand-edited. To change one, re-run the capture (`npm run golden:capture -- --only <scenario-id>`, with `--rehearsal` for a rehearsal crossing's set).
-- `harness/src/golden/replay.ts` replays the same step scripts through the gateway (`OPT2_GATEWAY_URL`, else `http://127.0.0.1:8100`) in capture order: the other scenarios in catalogue order with `v0002` in stage 7, then in stage 8 (`--rehearsal`) GS-ID-09's rehearsal crossing across the `v0003` activation and the GS-PE-RH sets in catalogue order with `v0003`.
+- `harness/src/golden/replay.ts` replays the same step scripts through the gateway (`OPT2_GATEWAY_URL`, else `http://127.0.0.1:8100`) in capture order: GS-ID-09 across the `v0002` activation in stage 6, the other scenarios in catalogue order with `v0002` in stage 7, then in stage 8 (`--rehearsal`) GS-ID-09's rehearsal crossing across the `v0003` activation and the GS-PE-RH sets in catalogue order with `v0003`.
 - `harness/src/golden/compare.ts` compares each set with its replay output and writes `opt2/reports/parity.{json,md}`; a rehearsal crossing is compared with its own set under `rehearsal/` and fails on any unlisted difference.
 - `harness/src/reporting/check-pin.ts` checks `sourceSha` in every file under this folder, and the `Source SHA:` line above.
 

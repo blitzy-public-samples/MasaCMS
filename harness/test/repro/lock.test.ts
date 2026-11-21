@@ -16,6 +16,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { repoPath } from '../../src/lib/paths.js';
+import { SANDBOX_DATABASE_ENV } from './database-sandbox.js';
 
 const REPRO_DIR = repoPath('harness/repro');
 const DOWN_SH = repoPath('harness/repro/down.sh');
@@ -468,6 +469,7 @@ describe('down.sh with nothing to tear down', () => {
     const env = commandEnv('/x/none', {
       OPT2_STATE_DIR: path.join(home, 'empty-state'),
       OPT2_PRISTINE_DIR: path.join(home, 'pristine'),
+      ...SANDBOX_DATABASE_ENV,
     });
     const down = await launch(DOWN_SH, [], env, 'ignore').done;
     expect(down.status).toBe(0);

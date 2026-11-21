@@ -1,10 +1,10 @@
 {
-  "capturedAt": "2026-11-20T03:04:24.603Z",
+  "capturedAt": "2026-11-21T04:46:09.764Z",
   "fixtures": {
     "available": true,
     "reason": "fixtures loaded"
   },
-  "generatedAt": "2026-11-20T03:04:26.195Z",
+  "generatedAt": "2026-11-21T04:46:11.280Z",
   "generatedBy": "harness/src/golden/capture.ts",
   "origin": "legacy",
   "scenarioId": "GS-SU-04",
@@ -121,7 +121,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "3377f5448f0564a193b09a32f951ea12e606d09a5317b9fe8d0f1fcb12e601f4",
+        "rawSha256": "6db19cf0534b2d009015baeff4aa09c24ab8dc438de07fd4e5c3d8b595857e12",
         "status": 200
       },
       "routeKey": "fixture:surveys/surveys@post"
@@ -157,7 +157,7 @@
           "x-csrf_token_expires": "<token>"
         },
         "method": "POST",
-        "url": "/legacy-fixtures/cfml/api.cfm/surveys/surveys/A51FD95B-96C4-1255-D77BB54498B025E4/responses?siteid=tenant-b"
+        "url": "/legacy-fixtures/cfml/api.cfm/surveys/surveys/DC4300C5-BF3F-F1E1-DDC00DC5CBC4ADBE/responses?siteid=tenant-b"
       },
       "response": {
         "body": {
@@ -208,7 +208,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/legacy-fixtures/cfml/api.cfm/surveys/surveys/A51FD95B-96C4-1255-D77BB54498B025E4/responses?siteid=tenant-a"
+        "url": "/legacy-fixtures/cfml/api.cfm/surveys/surveys/DC4300C5-BF3F-F1E1-DDC00DC5CBC4ADBE/responses?siteid=tenant-a"
       },
       "response": {
         "body": {

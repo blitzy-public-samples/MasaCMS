@@ -7,6 +7,7 @@ import {
   FIXTURES_UNAVAILABLE,
   SCENARIO_ID_PATTERN,
   STEP_EXPECTATIONS,
+  inReplayOrder,
   isRehearsalCrossing,
   isRehearsalScenario,
   loadCatalogue,
@@ -772,10 +773,12 @@ const HELP = [
   '',
   'Captures catalogue scenarios against legacy directly in replay order and writes',
   `${GOLDEN_SETS_DIR}/<id>.json, plus the raw exchanges under \${OPT2_STATE_DIR}/golden/raw/.`,
-  'Without --rehearsal: every scenario but the rollback-rehearsal (GS-PE-RH) ones, in catalogue order.',
+  'Without --rehearsal: every scenario but the rollback-rehearsal (GS-PE-RH) ones, in catalogue order except that',
+  'acrossTransition scenarios come first, as stage 6 replays them before stage 7 replays the rest.',
   'With --rehearsal, run after the browser captures: each acrossTransition HTTP scenario again as its rehearsal',
   `crossing (${GOLDEN_SETS_DIR}/rehearsal/<id>.json, raw under golden/raw/rehearsal/), then the GS-PE-RH scenarios.`,
-  '--only captures the named scenarios, the GS-PE-RH ones last; with --rehearsal a non-rehearsal one as its crossing.',
+  '--only captures the named scenarios in the same order, the GS-PE-RH ones last; with --rehearsal a non-rehearsal one',
+  'as its crossing.',
 ].join('\n');
 
 /** Collaborators of {@link main} beyond the environment. */
@@ -788,9 +791,9 @@ interface PlannedCapture {
 }
 
 /**
- * Captures in replay order. Without `rehearsal`: the non-rehearsal scenarios, plus any rehearsal one `only` names, last.
- * With it: each rehearsal crossing, then the rehearsal scenarios. Every `only` id must exist, and under `rehearsal`
- * each non-rehearsal one must have a crossing.
+ * Captures in replay order. Without `rehearsal`: the non-rehearsal scenarios ({@link inReplayOrder}), plus any
+ * rehearsal one `only` names, last. With it: each rehearsal crossing, then the rehearsal scenarios. Every `only` id
+ * must exist, and under `rehearsal` each non-rehearsal one must have a crossing.
  */
 function plannedCaptures(catalogue: Catalogue, only: string | undefined, rehearsal: boolean): PlannedCapture[] {
   let scenarios = catalogue.scenarios;
@@ -803,7 +806,7 @@ function plannedCaptures(catalogue: Catalogue, only: string | undefined, rehears
     const wanted = new Set(ids.map((id) => scenarioById(catalogue, id).id));
     scenarios = scenarios.filter((scenario) => wanted.has(scenario.id));
   }
-  const others = scenarios.filter((scenario) => !isRehearsalScenario(scenario.id));
+  const others = inReplayOrder(scenarios.filter((scenario) => !isRehearsalScenario(scenario.id)));
   const rehearsals = scenarios.filter((scenario) => isRehearsalScenario(scenario.id));
   const plain = (scenario: Scenario): PlannedCapture => ({ scenario, crossing: false });
   if (!rehearsal) return [...others, ...(only === undefined ? [] : rehearsals)].map(plain);

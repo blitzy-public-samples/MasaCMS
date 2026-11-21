@@ -1,10 +1,10 @@
 {
-  "capturedAt": "2026-11-20T03:10:57.259Z",
+  "capturedAt": "2026-11-21T04:52:44.949Z",
   "fixtures": {
     "available": true,
     "reason": "fixtures loaded"
   },
-  "generatedAt": "2026-11-20T03:11:25.969Z",
+  "generatedAt": "2026-11-21T04:53:13.081Z",
   "generatedBy": "harness/src/golden/capture.ts",
   "origin": "legacy",
   "scenarioId": "GS-ID-09",
@@ -585,7 +585,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "26f616a4ed9e1dd60dbee07bdefcbee888f6c596c3ef260351dcca9f671d0c31",
+        "rawSha256": "43ae7085f962010b58683b0d9fbab2a8d8a6996ca58ba3bf881205204c46aa88",
         "status": 200
       },
       "routeKey": "admin:clogin.main"
@@ -1853,7 +1853,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "517e1bb9371272d96c03acdfda3b70590f0f892ea7d67657f587491455a59f94",
+        "rawSha256": "350fdeee40a71b0ff9bf849c063e96dd62788a235e28a0477ad0e4547a0a8aab",
         "status": 200
       },
       "routeKey": "admin:clogin.login"
@@ -3100,7 +3100,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "a0f29a6b3ee2bf2bd8205ebd299d012cdf2ac55254179479ce4039db6b7b5c4b",
+        "rawSha256": "f6fac6807f01528a9e3a513698aafb2f1b4e8ec18e2958ff91fbf19e5a23b981",
         "status": 200
       },
       "routeKey": "admin:carch.list"
@@ -5888,7 +5888,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "5f3568f5e4ba2b1290d0cbc9d1a3e44592cbd7e2c07db03b40e9188fad1d4a2f",
+        "rawSha256": "d4d4a61f60e6e272d12f0d052d6b5f0a0aaccd6631c7daf9476404e48fdc4df6",
         "status": 200
       },
       "routeKey": "admin:cusers.listusers"
@@ -8633,7 +8633,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "3675d668f36e6f133a523785d40c6f6784311f11cbc3f29c2a7a3b989d533837",
+        "rawSha256": "ae074e1d2d5c7db977b6b394c5641a34792666c1ba13b5822be4897f292eaf59",
         "status": 200
       },
       "routeKey": "admin:cusers.edituser"
@@ -10082,7 +10082,7 @@
           "content-type": "application/x-www-form-urlencoded"
         },
         "method": "POST",
-        "url": "/admin/?muraAction=cUsers.update&userid=A55BE1CF-D77B-3E74-E76A17B84CD23F6A&routeid="
+        "url": "/admin/?muraAction=cUsers.update&userid=DC7F70AD-D3E0-61E4-6E120EEEE01B11C0&routeid="
       },
       "response": {
         "domModel": {
@@ -11460,7 +11460,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "1bcc0af1b11f89281a8e83f08f978accaafe9c217593eccb36f8f040db98f171",
+        "rawSha256": "10aa31336560c449f3ad6f4dc6a87c261e4df0151333db46b50928585ffaff28",
         "status": 200
       },
       "routeKey": "admin:cusers.update{type=2,action=add}"
@@ -12764,7 +12764,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/?muraAction=cUsers.editUser&siteid=tenant-a&userid=A55BE1CF-D77B-3E74-E76A17B84CD23F6A"
+        "url": "/admin/?muraAction=cUsers.editUser&siteid=tenant-a&userid=DC7F70AD-D3E0-61E4-6E120EEEE01B11C0"
       },
       "response": {
         "domModel": {
@@ -14051,7 +14051,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "4546656564e002d9eba6bfac50e8bc631930b45054d933bc75869a83352b87a4",
+        "rawSha256": "82f8008d7ada6bbc28c6a2d7d80aea6ea6afd70fd3b0990ba7e1151f99587ca2",
         "status": 200
       },
       "routeKey": "admin:cusers.edituser"
@@ -15487,7 +15487,7 @@
           "content-type": "application/x-www-form-urlencoded"
         },
         "method": "POST",
-        "url": "/admin/?muraAction=cUsers.update&userid=A55BE1CF-D77B-3E74-E76A17B84CD23F6A&routeid="
+        "url": "/admin/?muraAction=cUsers.update&userid=DC7F70AD-D3E0-61E4-6E120EEEE01B11C0&routeid="
       },
       "response": {
         "domModel": {
@@ -16865,7 +16865,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "2c25629f6decf19f5e06e1785351405bc30080570190beed4946caa6d8542c6b",
+        "rawSha256": "1f5913833e51501d7e376b9303388322c25bd5f648ebcc47f018e16c29298769",
         "status": 200
       },
       "routeKey": "admin:cusers.update{type=2,action=delete}"
@@ -16932,7 +16932,7 @@
           "content-type": "application/x-www-form-urlencoded"
         },
         "method": "POST",
-        "url": "/admin/?muraAction=cUsers.update&userid=A55BE1CF-D77B-3E74-E76A17B84CD23F6A&routeid="
+        "url": "/admin/?muraAction=cUsers.update&userid=DC7F70AD-D3E0-61E4-6E120EEEE01B11C0&routeid="
       },
       "response": {
         "domModel": {
@@ -16966,7 +16966,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "590747d1bb9a9964573f70037073bbc316b4a23aab1e8c4912d3bf1c2eb2d2d7",
+        "rawSha256": "b5a6c44cde7179c9a13cda62c8c1f7c6644340859286a261929140f9e0b3cdaf",
         "status": 500
       },
       "routeKey": "admin:cusers.update{type=2,action=update}"
@@ -24570,7 +24570,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "536948e3e46d398f1f386f6ef8c424465df934c71356e516d043114ebe7fed82",
+        "rawSha256": "58e87ed7198a8763ec1fc5cf5136bfdfddc3c9ea1f89250e7201b2c6ce834ac6",
         "status": 200
       },
       "routeKey": "page:render"
@@ -24953,7 +24953,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "d31ecdd3c54e4965d448ee54393e3f24f21dd586ce878d9d6099e2b1a572309c",
+        "rawSha256": "f5aaca57870ef08346ccc233e80dfdd1c76f5fe5699ea838d3636fe33a055f15",
         "status": 200
       },
       "routeKey": "admin:clogin.login"
@@ -25004,7 +25004,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "acc182d4a7a739a5e801386956632e18f2efde292ea5d11c932044a50ad07e18",
+        "rawSha256": "b0be0014ae13d2b93495f136b6aaab416839d106dd384a15d1a3c4bdbc4b7cd9",
         "status": 200
       },
       "routeKey": "api:generatecsrftokens"
@@ -27818,7 +27818,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "542ee646145df6034962ee1d9f6087beb942db2ae8862e687b9484bf39e35c0c",
+        "rawSha256": "9e92313929c98afa3e4970df04807c38cf616dbc082bbd8c9a1aba79871928f0",
         "status": 200
       },
       "routeKey": "admin:cusers.addtogroup"
@@ -35123,7 +35123,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "38aadb4299948150fa7da31348945a06a1add5d27496ad8eec0907e8696ca0ff",
+        "rawSha256": "ad525f4238bd256a50b12003f1813327c027791db8a6496ffc02c2d82cadd8b6",
         "status": 200
       },
       "routeKey": "page:render"
@@ -35461,7 +35461,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "d31ecdd3c54e4965d448ee54393e3f24f21dd586ce878d9d6099e2b1a572309c",
+        "rawSha256": "f5aaca57870ef08346ccc233e80dfdd1c76f5fe5699ea838d3636fe33a055f15",
         "status": 200
       },
       "routeKey": "admin:cusers.listusers"
@@ -42773,7 +42773,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "10c74026a3e4964098f5e582f85dbcf9cbea30cea9425d18eeeee7d5961a1247",
+        "rawSha256": "fe681cc142802b2b4bd5a36df0669ef0f93318f55f3e9befe76658e025d8970b",
         "status": 200
       },
       "routeKey": "page:login"
@@ -45636,7 +45636,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "110cbe31924718bb4f92cca4f8ca5ca054eaf0f082f2924bf80afccf5f8966c7",
+        "rawSha256": "8a11af2e70846b58de9bc7e65c43cbab49807825d671c1bfc01f504e599d70d3",
         "status": 200
       },
       "routeKey": "admin:cusers.removefromgroup"
@@ -46751,7 +46751,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "4a5767d01ca1c2801e56ce61949e459c7be179e08f3bd2a44e3a7a745fa2ac11",
+        "rawSha256": "6f58964cc768b7b6ba4fb1b1aeaf393a036f4341fc44f0593d16b20aa1a72c96",
         "status": 200
       },
       "routeKey": "admin:ceditprofile.edit"
@@ -48223,7 +48223,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "24264c5ae454a25d1c6e17935284e69235b170dd8da8a6fbf416b006d4c6eed8",
+        "rawSha256": "3d101213fa421c7ef1c9a4afb89c98495515783c7775a741e8b327dec531c893",
         "status": 200
       },
       "routeKey": "admin:cemail.update"
@@ -49492,7 +49492,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "ee878df2f709fa54c12d8e83617f3ab3fe428ef174650863a8205b26dd3b2659",
+        "rawSha256": "7fdd30ad78073126524ec7688cb6e8ce1a9a4eecca3cd2e13e2e016750568398",
         "status": 200
       },
       "routeKey": "admin:ceditprofile.update"
@@ -50607,7 +50607,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "8c6a923b53313f3d8635375074592335fa8fdb6b311be67070320200ba3b2763",
+        "rawSha256": "700a56d3a40fbcc3339f26aef00a060703ea26327c277d8761a5e0761c090dc1",
         "status": 200
       },
       "routeKey": "admin:ceditprofile.edit"
@@ -51929,7 +51929,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "8c8788d1039b5c5d71cee5837a54c770935e61649222ac6517048d2392e8e4d8",
+        "rawSha256": "fe18aa51854a9e148011955226bbfb656567ec2502dadfd37de6ff981f862273",
         "status": 200
       },
       "routeKey": "admin:ceditprofile.update"
@@ -52030,7 +52030,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "27e8f2875dd8382ebb2a2a5c3bff833e141c9fbbc76717bc4b3edadcec0a54c0",
+        "rawSha256": "c5baa42433a56064fa93ab74c76dc2b3f023139f8ca29f2584b568b0f76d23d0",
         "status": 500
       },
       "routeKey": "admin:ceditprofile.update{extdata}"
@@ -52046,7 +52046,7 @@
               "httpOnly": true,
               "name": "userHash",
               "path": "/",
-              "persistence": "persistent",
+              "persistence": "expired",
               "secure": false,
               "value": ""
             },
@@ -52055,7 +52055,7 @@
               "httpOnly": true,
               "name": "userid",
               "path": "/",
-              "persistence": "persistent",
+              "persistence": "expired",
               "secure": false,
               "value": ""
             }
@@ -52565,7 +52565,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "b1f4fa4355cb34ae926e307ae862453d32623f9c251ce7262e4c4b24bb6849cb",
+        "rawSha256": "1d36c9003c34024025206faeda408624b840d6940bcc9671d7d76de248540d4d",
         "status": 200
       },
       "routeKey": "admin:clogin.logout"
@@ -59870,7 +59870,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "c6cade153e5c3059f1199d67d8bc6ca158a7d9a669752246d6212a8b17f38068",
+        "rawSha256": "53e0969ea6bae9c91eb04536c8944faf40a106af4202ab89f0c56e761fb974e1",
         "status": 200
       },
       "routeKey": "page:render"
@@ -59886,7 +59886,7 @@
               "httpOnly": true,
               "name": "userHash",
               "path": "/",
-              "persistence": "persistent",
+              "persistence": "expired",
               "secure": false,
               "value": ""
             },
@@ -59895,7 +59895,7 @@
               "httpOnly": true,
               "name": "userid",
               "path": "/",
-              "persistence": "persistent",
+              "persistence": "expired",
               "secure": false,
               "value": ""
             }
@@ -67202,7 +67202,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "318196be055b384615ca336f8a101a81465c8009c7b729fa87e299ac098a641f",
+        "rawSha256": "62240c5aaa9df75d1e11fd687ba2bc64259081201f726c5fc7715fcb9a45c181",
         "status": 200
       },
       "routeKey": "page:logout"
@@ -67714,7 +67714,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "c1c39d2b62d74572edbc03cd3042e0b8a259bc4a5c5328cb49429caa6b5aed9b",
+        "rawSha256": "3f2d7f4016ac8a5a621b9c3f028feb32dc9357c16adbf51218c9f222cf4fc859",
         "status": 200
       },
       "routeKey": "admin:carch.list"

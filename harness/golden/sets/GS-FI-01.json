@@ -1,10 +1,10 @@
 {
-  "capturedAt": "2026-11-20T03:04:09.107Z",
+  "capturedAt": "2026-11-21T04:45:54.056Z",
   "fixtures": {
     "available": true,
     "reason": "fixtures loaded"
   },
-  "generatedAt": "2026-11-20T03:04:12.687Z",
+  "generatedAt": "2026-11-21T04:45:57.823Z",
   "generatedBy": "harness/src/golden/capture.ts",
   "origin": "legacy",
   "scenarioId": "GS-FI-01",
@@ -243,7 +243,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "6f064ec26087fefd637a77e69c4e5363e2e5dbae55336f24d69425c0b01b1f7b",
+        "rawSha256": "7230fbd6543d2dcea27495ca44c62168cdaf5e87a860af0dc20befccdfe02ea5",
         "status": 200
       },
       "routeKey": "fixture:finance/records@post"
@@ -284,7 +284,7 @@
           "x-csrf_token_expires": "<token>"
         },
         "method": "POST",
-        "url": "/legacy-fixtures/cfml/api.cfm/finance/records/A51D7510-EFE3-017D-C56D12D262EB483C/submit?siteid=tenant-a"
+        "url": "/legacy-fixtures/cfml/api.cfm/finance/records/DC4094D9-0780-A8A8-CBB767A2A41DC7FB/submit?siteid=tenant-a"
       },
       "response": {
         "body": {
@@ -310,7 +310,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "73a91c4bdbafb19e69611b9505592d61ca4b82861cb11d0c862c7bfe5a9e4f3e",
+        "rawSha256": "a48a2e0ee370f685bfb219fa377a263a7859c014110b40547aca02bc8cfc55a3",
         "status": 200
       },
       "routeKey": "fixture:finance/records/{id}/submit@post"
@@ -351,7 +351,7 @@
           "x-csrf_token_expires": "<token>"
         },
         "method": "POST",
-        "url": "/legacy-fixtures/cfml/api.cfm/finance/records/A51D7510-EFE3-017D-C56D12D262EB483C/approve?siteid=tenant-a"
+        "url": "/legacy-fixtures/cfml/api.cfm/finance/records/DC4094D9-0780-A8A8-CBB767A2A41DC7FB/approve?siteid=tenant-a"
       },
       "response": {
         "body": {
@@ -377,7 +377,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "c3f1d9e58fa8b351ea14a07303e666289bb6f90c0278fdf77df39cd4c0165f63",
+        "rawSha256": "7e1a414871367f848c6171f83f09be70ec5940677d1582cb374e4317e67c88ad",
         "status": 200
       },
       "routeKey": "fixture:finance/records/{id}/approve@post"
@@ -450,7 +450,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "bddab12b415feb867f9cf817ae347d3cfac0e4cf0df8c790bd5b34be2ce163b5",
+        "rawSha256": "aa1f8893e88e2e82b6337475b2c59e5d185078c5cb0d3875b4b2ab023c11e962",
         "status": 200
       },
       "routeKey": "fixture:finance/records@post"
@@ -491,7 +491,7 @@
           "x-csrf_token_expires": "<token>"
         },
         "method": "POST",
-        "url": "/legacy-fixtures/cfml/api.cfm/finance/records/A51D7D8E-C8DA-6E70-9422FE847C90C18C/submit?siteid=tenant-a"
+        "url": "/legacy-fixtures/cfml/api.cfm/finance/records/DC40ABDD-CF90-0CED-D1BF87EBA74DA132/submit?siteid=tenant-a"
       },
       "response": {
         "body": {
@@ -517,7 +517,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "f52753036debdb1555978484c777d37f25d9eaa3067a36115812743bc04390b4",
+        "rawSha256": "8ff720d04069e2d702941d4fa63910f5d54f9f77b008091b4fac814793e72e19",
         "status": 200
       },
       "routeKey": "fixture:finance/records/{id}/submit@post"
@@ -558,7 +558,7 @@
           "x-csrf_token_expires": "<token>"
         },
         "method": "POST",
-        "url": "/legacy-fixtures/cfml/api.cfm/finance/records/A51D7D8E-C8DA-6E70-9422FE847C90C18C/reject?siteid=tenant-a"
+        "url": "/legacy-fixtures/cfml/api.cfm/finance/records/DC40ABDD-CF90-0CED-D1BF87EBA74DA132/reject?siteid=tenant-a"
       },
       "response": {
         "body": {
@@ -584,7 +584,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "949efa1005dfe072bddbda99dd8cd6fd88400a94c5d8eed2cb3fc6b35062f116",
+        "rawSha256": "c7bac05b5dfd88b66d55f0da8285c2eb0e0dfeaffa86993bcd3aa3469a2ac79f",
         "status": 200
       },
       "routeKey": "fixture:finance/records/{id}/reject@post"
@@ -625,7 +625,7 @@
           "x-csrf_token_expires": "<token>"
         },
         "method": "POST",
-        "url": "/legacy-fixtures/cfml/api.cfm/finance/records/A51D7D8E-C8DA-6E70-9422FE847C90C18C/resubmit?siteid=tenant-a"
+        "url": "/legacy-fixtures/cfml/api.cfm/finance/records/DC40ABDD-CF90-0CED-D1BF87EBA74DA132/resubmit?siteid=tenant-a"
       },
       "response": {
         "body": {
@@ -651,7 +651,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "1f8bca03c7362ebd7775d2f865d9bcc24dfa7afc7af15fe1a13f1171d03ff280",
+        "rawSha256": "6f9ce9a6c0a690ef8933f1a44a2756f4baee5fc8d314e8aaa1ec4581a9400125",
         "status": 200
       },
       "routeKey": "fixture:finance/records/{id}/resubmit@post"
@@ -692,7 +692,7 @@
           "x-csrf_token_expires": "<token>"
         },
         "method": "POST",
-        "url": "/legacy-fixtures/cfml/api.cfm/finance/records/A51D7D8E-C8DA-6E70-9422FE847C90C18C/approve?siteid=tenant-a"
+        "url": "/legacy-fixtures/cfml/api.cfm/finance/records/DC40ABDD-CF90-0CED-D1BF87EBA74DA132/approve?siteid=tenant-a"
       },
       "response": {
         "body": {
@@ -718,7 +718,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "a73ae64a12611ee7b7e75b91084bc948834229b89c3e559b8b18c0751d1e53c1",
+        "rawSha256": "9a01c341b99e96e84d4ae110667b78065e9052c98ea745649954018bb86e0f3a",
         "status": 200
       },
       "routeKey": "fixture:finance/records/{id}/approve@post"
@@ -791,7 +791,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "6830af6add735480ae403735aded8d6902a530185a2299c170405c81ad7d5430",
+        "rawSha256": "2118f83e9aebcd9bce31d22ba938a698cb6bcb82a1e68dded9cb1cc921cba742",
         "status": 200
       },
       "routeKey": "fixture:finance/records@post"
@@ -832,7 +832,7 @@
           "x-csrf_token_expires": "<token>"
         },
         "method": "POST",
-        "url": "/legacy-fixtures/cfml/api.cfm/finance/records/A51D95F6-EF1F-3FDA-D89C0667494705CB/submit?siteid=tenant-a"
+        "url": "/legacy-fixtures/cfml/api.cfm/finance/records/DC40C44B-9D3F-7418-CA8C7C6204F45AC5/submit?siteid=tenant-a"
       },
       "response": {
         "body": {
@@ -858,7 +858,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "bb8741847b4c43586748b01a1c6916870df0133cf1a1d715ba3dbd6ba0f5c244",
+        "rawSha256": "500604a84c6ab75e66cc55f676a749c2bde33935595f959c028d9b3b0e3fba7c",
         "status": 200
       },
       "routeKey": "fixture:finance/records/{id}/submit@post"
@@ -899,7 +899,7 @@
           "x-csrf_token_expires": "<token>"
         },
         "method": "POST",
-        "url": "/legacy-fixtures/cfml/api.cfm/finance/records/A51D95F6-EF1F-3FDA-D89C0667494705CB/reject?siteid=tenant-a"
+        "url": "/legacy-fixtures/cfml/api.cfm/finance/records/DC40C44B-9D3F-7418-CA8C7C6204F45AC5/reject?siteid=tenant-a"
       },
       "response": {
         "body": {
@@ -925,7 +925,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "76ee1e39c8fe7c3787e939f8536621d640b33e2f313f3abfc50f0dbe77ca360a",
+        "rawSha256": "f19001fe19d4cc96011d92cded7fa966dc14ec1af4320e778786efff4cfe68f5",
         "status": 200
       },
       "routeKey": "fixture:finance/records/{id}/reject@post"
@@ -966,7 +966,7 @@
           "x-csrf_token_expires": "<token>"
         },
         "method": "POST",
-        "url": "/legacy-fixtures/cfml/api.cfm/finance/records/A51D95F6-EF1F-3FDA-D89C0667494705CB/resubmit?siteid=tenant-a"
+        "url": "/legacy-fixtures/cfml/api.cfm/finance/records/DC40C44B-9D3F-7418-CA8C7C6204F45AC5/resubmit?siteid=tenant-a"
       },
       "response": {
         "body": {
@@ -992,7 +992,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "1bd35e7f7988db27586921909abe02f34254f8527e5b1a854af0dec0381ba482",
+        "rawSha256": "4131a4f2934373a674d94f0747e9129e28a16fb2ef16340132f6bc7cf2e9849d",
         "status": 200
       },
       "routeKey": "fixture:finance/records/{id}/resubmit@post"
@@ -1033,7 +1033,7 @@
           "x-csrf_token_expires": "<token>"
         },
         "method": "POST",
-        "url": "/legacy-fixtures/cfml/api.cfm/finance/records/A51D95F6-EF1F-3FDA-D89C0667494705CB/reject?siteid=tenant-a"
+        "url": "/legacy-fixtures/cfml/api.cfm/finance/records/DC40C44B-9D3F-7418-CA8C7C6204F45AC5/reject?siteid=tenant-a"
       },
       "response": {
         "body": {
@@ -1059,7 +1059,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "e5a16a3d130c9116033ae675c43762a07dba222cdf08efa64984fa0e5f336928",
+        "rawSha256": "e81646876a4068bd317bfb2b51f3102bf0a32e9dcc71b7233b97f72a4cd30204",
         "status": 200
       },
       "routeKey": "fixture:finance/records/{id}/reject@post"
@@ -1097,7 +1097,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/legacy-fixtures/cfml/api.cfm/finance/records/A51D7D8E-C8DA-6E70-9422FE847C90C18C?siteid=tenant-a"
+        "url": "/legacy-fixtures/cfml/api.cfm/finance/records/DC40ABDD-CF90-0CED-D1BF87EBA74DA132?siteid=tenant-a"
       },
       "response": {
         "body": {
@@ -1123,7 +1123,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "26653fc926915229f7163310c0bd67d1a6248367c3f795987177e535f11f5d69",
+        "rawSha256": "799d15063854be1d626a0bd9de78edaa5a055beaf7ac34240e5abbd467a7a678",
         "status": 200
       },
       "routeKey": "fixture:finance/records/{id}@get"
@@ -1275,7 +1275,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "9eb5944844ce1eb62375631df180781b2c816ee2c8953988a78f011280097eb3",
+        "rawSha256": "b10033ec3a79273ca286219a5b75c41f20596a89f75a8e41c5f222caa0ff4075",
         "status": 404
       },
       "routeKey": "opt2:/opt2/admin/finance/records"
@@ -1427,7 +1427,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "2222b1886dcb411dd4c1e9aca1bd2209bcd30c9c0b75b4a1ab27dbb883e1e33a",
+        "rawSha256": "9461183de598a6ad3a9752270d72ecb96408e4b4e431eb46ae24b5e0a149df80",
         "status": 404
       },
       "routeKey": "opt2:/opt2/admin-actions/finance/transition"

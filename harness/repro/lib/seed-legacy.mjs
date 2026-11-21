@@ -9,11 +9,13 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { parseArgs } from 'node:util';
 import { load } from 'cheerio';
 import { CookieJar } from 'tough-cookie';
+import { readHarnessKey, settleLegacyStartup } from './legacy-settle.mjs';
 
 const USAGE = `Usage: node seed-legacy.mjs --origin <url> --fixtures true|false [--seed-dir <dir>] [--timeout-s <n>]
 
 Logs in to the legacy admin, then posts every part of <seed-dir>/manifest.json, in manifest order,
-to /legacy-fixtures/cfml/seed.cfm, each with a fresh opt2-seed CSRF token pair.
+to /legacy-fixtures/cfml/seed.cfm, each with a fresh opt2-seed CSRF token pair. After each sites part
+it settles legacy start-up (legacy-settle.mjs) before the next part.
 
   --origin <url>          legacy origin, straight to ColdFusion (e.g. http://127.0.0.1:8080)
   --fixtures true|false   whether the fixture schemas are loaded; false skips every fixtures.* part
@@ -21,7 +23,8 @@ to /legacy-fixtures/cfml/seed.cfm, each with a fresh opt2-seed CSRF token pair.
   --timeout-s <n>         per-request timeout in seconds (default 1800)
   --help                  print this help
 
-Environment: MURA_ADMIN_USERNAME (default admin), MURA_ADMIN_PASSWORD (required).
+Environment: MURA_ADMIN_USERNAME (default admin), MURA_ADMIN_PASSWORD (required); for a manifest with a sites part,
+OPT2_HARNESS_KEY, else \${OPT2_STATE_DIR:-$HOME/.opt2/state}/secrets/harness-diagnostic-key.
 Exit status: 0 done, 1 failure, 2 usage.
 `;
 
@@ -281,6 +284,11 @@ async function postPart(session, url, body, label) {
   return { inserted: data.inserted };
 }
 
+/** The seed.cfm part name of a manifest array: masa.<name> loses its prefix, fixtures.* keeps it. */
+function partName(array) {
+  return array.startsWith('masa.') ? array.slice('masa.'.length) : array;
+}
+
 /** Runs the seed; resolves the exit status. */
 async function main(argv, env) {
   const started = Date.now();
@@ -297,6 +305,8 @@ async function main(argv, env) {
   if (credentials?.digest !== manifest.digest) {
     throw new SeedError('credentials.json belongs to another dataset than manifest.json; generate the seed again');
   }
+  // Read before any part is posted, so a missing key stops the seed before it changes legacy.
+  const harnessKey = manifest.parts.some((entry) => partName(entry.array) === 'sites') ? readHarnessKey(env) : undefined;
 
   const session = new Session(opts.timeoutMs);
   await login(session, opts);
@@ -311,7 +321,7 @@ async function main(argv, env) {
       log(`${range} skipped: fixtures unavailable`);
       continue;
     }
-    const name = entry.array.startsWith('masa.') ? entry.array.slice('masa.'.length) : entry.array;
+    const name = partName(entry.array);
     const text = await readFile(join(opts.seedDir, entry.file), 'utf8');
     const part = parseJson(text, entry.file);
     if (part?.digest !== manifest.digest) throw new SeedError(`${entry.file} belongs to another dataset than manifest.json`);
@@ -340,6 +350,13 @@ async function main(argv, env) {
     inserted[entry.array] = (inserted[entry.array] ?? 0) + outcome.inserted;
     parts++;
     log(`${range} inserted ${outcome.inserted}`);
+    if (name === 'sites') {
+      // Masa's site saves make the next request re-initialise it, concurrently with later requests, which can abort that
+      // start-up half done; a reload of its own completes one first. With v0001 active no unit is target-authoritative,
+      // so the reload needs no write window.
+      const settled = await settleLegacyStartup({ origin: opts.origin, key: harnessKey, timeoutMs: opts.timeoutMs, log });
+      log(`${range} legacy start-up settled in ${settled.attempts} attempt(s)`);
+    }
   }
 
   const durationS = Math.round((Date.now() - started) / 100) / 10;

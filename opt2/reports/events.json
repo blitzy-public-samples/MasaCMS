@@ -1,151 +1,608 @@
 {
-  "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
-  "generatedBy": "harness/src/events/",
-  "generatedAt": null,
-  "status": "pending-run",
-  "outboxReplay": {
-    "command": "opt2-outbox replay --since <ts>",
-    "before": {
-      "inboxCounts": null,
-      "aggregateChecksums": null
-    },
-    "after": {
-      "inboxCounts": null,
-      "aggregateChecksums": null
-    },
-    "unchanged": null
-  },
   "checks": {
-    "duplicateDelivery": null,
-    "outOfOrderState": null,
-    "outOfOrderProcess": null,
-    "droppedDeliveryRecovered": null,
-    "unpublishedRowSwept": null,
-    "sweepChainRecreated": null,
-    "fanoutRedelivery": null,
-    "dlqReplayOnce": null
-  },
-  "seams": {
-    "archiveToBlackout": {
-      "topic": "people.person.archived.v1",
-      "result": null,
-      "source": "harness/e2e/events/"
+    "dlqReplayOnce": {
+      "result": "pass",
+      "sources": [
+        {
+          "file": "harness/e2e/events/dlq-replay.e2e.test.ts",
+          "origin": "e2e",
+          "status": "pass"
+        }
+      ]
     },
-    "surveyToCloudTasks": {
-      "topic": "surveys.survey.scheduled.v1",
-      "result": null,
-      "source": "harness/e2e/events/"
+    "droppedDeliveryRecovered": {
+      "result": "pass",
+      "sources": [
+        {
+          "file": "harness/e2e/events/dlq-replay.e2e.test.ts",
+          "origin": "e2e",
+          "status": "pass"
+        }
+      ]
+    },
+    "duplicateDelivery": {
+      "result": "pass",
+      "sources": [
+        {
+          "file": "harness/e2e/events/dlq-replay.e2e.test.ts",
+          "origin": "e2e",
+          "status": "pass"
+        }
+      ]
+    },
+    "fanoutRedelivery": {
+      "result": "pass",
+      "sources": [
+        {
+          "file": "harness/e2e/events/seams.e2e.test.ts",
+          "origin": "e2e",
+          "status": "pass"
+        }
+      ]
+    },
+    "outOfOrderProcess": {
+      "result": "pass",
+      "sources": [
+        {
+          "file": "harness/e2e/events/dlq-replay.e2e.test.ts",
+          "origin": "e2e",
+          "status": "pass"
+        }
+      ]
+    },
+    "outOfOrderState": {
+      "result": "pass",
+      "sources": [
+        {
+          "file": "harness/e2e/events/dlq-replay.e2e.test.ts",
+          "origin": "e2e",
+          "status": "pass"
+        }
+      ]
+    },
+    "sweepChainRecreated": {
+      "result": "pass",
+      "sources": [
+        {
+          "file": "platform/test/events/sweep-chain.test.ts",
+          "origin": "package",
+          "package": "platform",
+          "status": "passed",
+          "test": "outbox sweep chain on the local task adapter re-creates the current slot task of a chain whose last task is lost, then leaves it alone while live [events:sweepChainRecreated]"
+        }
+      ]
+    },
+    "unpublishedRowSwept": {
+      "result": "pass",
+      "sources": [
+        {
+          "file": "harness/e2e/events/dlq-replay.e2e.test.ts",
+          "origin": "e2e",
+          "status": "pass"
+        }
+      ]
     }
   },
+  "generatedAt": "2026-11-21T06:34:11.441Z",
+  "generatedBy": "harness/src/events/report.ts",
+  "outboxReplay": {
+    "after": {
+      "aggregateChecksums": {
+        "communications/communications.message/13ab03ed-8b4b-5174-b787-d32a11dd8793": {
+          "checksum": "8a03620ffa30ab047e095c0248a4b771b96005655d5996da8d59451bcf0eebd6",
+          "rows": 20
+        },
+        "communications/communications.message/455225fe-8c2a-5c61-b33e-f9a8f2cac49a": {
+          "checksum": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "rows": 0
+        },
+        "communications/communications.message/e6b84010-a5ea-5ceb-9c81-3a2cf616ff46": {
+          "checksum": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "rows": 0
+        },
+        "communications/communications.message/edec963e-3516-5bb6-845d-d01a710e32a7": {
+          "checksum": "3587677315ffc6b595f43ac273bbaf2364db82ab99e86c35e3e30fe2c195aa01",
+          "rows": 201
+        },
+        "communications/communications.scheduled_task/13ab03ed-8b4b-5174-b787-d32a11dd8793": {
+          "checksum": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "rows": 0
+        },
+        "communications/communications.scheduled_task/455225fe-8c2a-5c61-b33e-f9a8f2cac49a": {
+          "checksum": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "rows": 0
+        },
+        "communications/communications.scheduled_task/e6b84010-a5ea-5ceb-9c81-3a2cf616ff46": {
+          "checksum": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "rows": 0
+        },
+        "communications/communications.scheduled_task/edec963e-3516-5bb6-845d-d01a710e32a7": {
+          "checksum": "1a0406ee4a05657830e6aeedc274a162e1925810c3ef5b163729618b9a80eeff",
+          "rows": 6
+        },
+        "stub/stub.note_projection/13ab03ed-8b4b-5174-b787-d32a11dd8793": {
+          "checksum": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "rows": 0
+        },
+        "stub/stub.note_projection/455225fe-8c2a-5c61-b33e-f9a8f2cac49a": {
+          "checksum": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "rows": 0
+        },
+        "stub/stub.note_projection/e6b84010-a5ea-5ceb-9c81-3a2cf616ff46": {
+          "checksum": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "rows": 0
+        },
+        "stub/stub.note_projection/edec963e-3516-5bb6-845d-d01a710e32a7": {
+          "checksum": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "rows": 0
+        },
+        "timesheets/timesheets.blackout/13ab03ed-8b4b-5174-b787-d32a11dd8793": {
+          "checksum": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "rows": 0
+        },
+        "timesheets/timesheets.blackout/455225fe-8c2a-5c61-b33e-f9a8f2cac49a": {
+          "checksum": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "rows": 0
+        },
+        "timesheets/timesheets.blackout/e6b84010-a5ea-5ceb-9c81-3a2cf616ff46": {
+          "checksum": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "rows": 0
+        },
+        "timesheets/timesheets.blackout/edec963e-3516-5bb6-845d-d01a710e32a7": {
+          "checksum": "45c341b4330d872845a5896ca658e0a1ca825b00331cdbb77e24e11630fec80d",
+          "rows": 147
+        }
+      },
+      "inboxCounts": {
+        "communications/communications.programs-sites.site.changed.v1": 11,
+        "communications/communications.surveys.survey.scheduled.v1": 2,
+        "e-signature/e-signature.programs-sites.site.changed.v1": 11,
+        "finance/finance.programs-sites.site.changed.v1": 11,
+        "identity/identity.people.person.changed.v1": 3226,
+        "identity/identity.programs-sites.site.changed.v1": 11,
+        "people/people.identity.group.changed.v1": 79,
+        "people/people.programs-sites.site.changed.v1": 11,
+        "programs-sites/programs-sites.programs-sites.site.changed.v1": 11,
+        "reporting/reporting.programs-sites.site.changed.v1": 11,
+        "strategies-content/strategies-content.identity.group.changed.v1": 79,
+        "strategies-content/strategies-content.identity.membership.changed.v1": 2164,
+        "strategies-content/strategies-content.identity.permission.changed.v1": 14,
+        "strategies-content/strategies-content.programs-sites.site.changed.v1": 11,
+        "stub/stub.programs-sites.site.changed.v1": 11,
+        "stub/stub.stub.note.created.v1": 13,
+        "surveys/surveys.programs-sites.site.changed.v1": 11,
+        "timesheets/timesheets.people.person.archived.v1": 8,
+        "timesheets/timesheets.programs-sites.site.changed.v1": 11
+      }
+    },
+    "before": {
+      "aggregateChecksums": {
+        "communications/communications.message/13ab03ed-8b4b-5174-b787-d32a11dd8793": {
+          "checksum": "8a03620ffa30ab047e095c0248a4b771b96005655d5996da8d59451bcf0eebd6",
+          "rows": 20
+        },
+        "communications/communications.message/455225fe-8c2a-5c61-b33e-f9a8f2cac49a": {
+          "checksum": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "rows": 0
+        },
+        "communications/communications.message/e6b84010-a5ea-5ceb-9c81-3a2cf616ff46": {
+          "checksum": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "rows": 0
+        },
+        "communications/communications.message/edec963e-3516-5bb6-845d-d01a710e32a7": {
+          "checksum": "3587677315ffc6b595f43ac273bbaf2364db82ab99e86c35e3e30fe2c195aa01",
+          "rows": 201
+        },
+        "communications/communications.scheduled_task/13ab03ed-8b4b-5174-b787-d32a11dd8793": {
+          "checksum": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "rows": 0
+        },
+        "communications/communications.scheduled_task/455225fe-8c2a-5c61-b33e-f9a8f2cac49a": {
+          "checksum": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "rows": 0
+        },
+        "communications/communications.scheduled_task/e6b84010-a5ea-5ceb-9c81-3a2cf616ff46": {
+          "checksum": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "rows": 0
+        },
+        "communications/communications.scheduled_task/edec963e-3516-5bb6-845d-d01a710e32a7": {
+          "checksum": "1a0406ee4a05657830e6aeedc274a162e1925810c3ef5b163729618b9a80eeff",
+          "rows": 6
+        },
+        "stub/stub.note_projection/13ab03ed-8b4b-5174-b787-d32a11dd8793": {
+          "checksum": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "rows": 0
+        },
+        "stub/stub.note_projection/455225fe-8c2a-5c61-b33e-f9a8f2cac49a": {
+          "checksum": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "rows": 0
+        },
+        "stub/stub.note_projection/e6b84010-a5ea-5ceb-9c81-3a2cf616ff46": {
+          "checksum": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "rows": 0
+        },
+        "stub/stub.note_projection/edec963e-3516-5bb6-845d-d01a710e32a7": {
+          "checksum": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "rows": 0
+        },
+        "timesheets/timesheets.blackout/13ab03ed-8b4b-5174-b787-d32a11dd8793": {
+          "checksum": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "rows": 0
+        },
+        "timesheets/timesheets.blackout/455225fe-8c2a-5c61-b33e-f9a8f2cac49a": {
+          "checksum": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "rows": 0
+        },
+        "timesheets/timesheets.blackout/e6b84010-a5ea-5ceb-9c81-3a2cf616ff46": {
+          "checksum": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "rows": 0
+        },
+        "timesheets/timesheets.blackout/edec963e-3516-5bb6-845d-d01a710e32a7": {
+          "checksum": "45c341b4330d872845a5896ca658e0a1ca825b00331cdbb77e24e11630fec80d",
+          "rows": 147
+        }
+      },
+      "inboxCounts": {
+        "communications/communications.programs-sites.site.changed.v1": 11,
+        "communications/communications.surveys.survey.scheduled.v1": 2,
+        "e-signature/e-signature.programs-sites.site.changed.v1": 11,
+        "finance/finance.programs-sites.site.changed.v1": 11,
+        "identity/identity.people.person.changed.v1": 3226,
+        "identity/identity.programs-sites.site.changed.v1": 11,
+        "people/people.identity.group.changed.v1": 79,
+        "people/people.programs-sites.site.changed.v1": 11,
+        "programs-sites/programs-sites.programs-sites.site.changed.v1": 11,
+        "reporting/reporting.programs-sites.site.changed.v1": 11,
+        "strategies-content/strategies-content.identity.group.changed.v1": 79,
+        "strategies-content/strategies-content.identity.membership.changed.v1": 2164,
+        "strategies-content/strategies-content.identity.permission.changed.v1": 14,
+        "strategies-content/strategies-content.programs-sites.site.changed.v1": 11,
+        "stub/stub.programs-sites.site.changed.v1": 11,
+        "stub/stub.stub.note.created.v1": 13,
+        "surveys/surveys.programs-sites.site.changed.v1": 11,
+        "timesheets/timesheets.people.person.archived.v1": 8,
+        "timesheets/timesheets.programs-sites.site.changed.v1": 11
+      }
+    },
+    "command": "opt2-outbox replay --since <ts>",
+    "unchanged": true
+  },
+  "result": "pass",
+  "seams": {
+    "archiveToBlackout": {
+      "evidence": {
+        "archive": {
+          "body": {
+            "apiversion": "v1",
+            "data": {
+              "archivedat": "2026-11-21T05:14:41",
+              "archiveid": "DD47FE28-668B-4ECF-7751CEFF001896FB",
+              "effectivefrom": "2026-06-30T00:00:00",
+              "personid": "50DD0EB5-1000-EDCF-DFBBCA1C8E220A99",
+              "siteid": "tenant-a"
+            },
+            "method": "people.persons.archive"
+          },
+          "status": 200
+        },
+        "destinations": [
+          {
+            "blackoutDayIds": [
+              "11D47A8C-4A79-8D53-64222291CFEB0FA2",
+              "1B65AF08-41AD-45D5-20A345AD1FB602DC",
+              "1C3A966A-68E7-0B6A-2E950F801DD0F5B4",
+              "1EF35883-EB83-5CB4-06E7C0003293021A",
+              "2B790FCC-0D9D-903A-78234093C7F45E30",
+              "43D7F61F-A336-BC50-E3C32917DD919B1A",
+              "5A38EAEC-E236-E695-C48FC1B3C7A0383D",
+              "7052AA5D-1BC5-354D-A3BD0999B98DF293",
+              "8134E9EE-8EB3-F2B5-D3B5C291C4BD282A",
+              "8607304F-26B9-2228-AC13F1868E34DE11",
+              "8D74B74C-D8F5-158B-9C1188D819C59B90",
+              "9529F0D5-AC2A-9479-ABAAF1F57CDB889E",
+              "9A3CE0FA-382D-3923-A1CFAA82AEDF09DD",
+              "9DF38BD4-78A2-31D3-7C477974EAA7BA86",
+              "A4BBAAC5-E062-022D-9268DB39CD5F7D92",
+              "BCB794BC-63FA-7897-22E731B2E0257214",
+              "DF202307-5D27-0BF8-81E551583791DB7D",
+              "EC3E828F-534A-8BE9-2C7267C171D5439F",
+              "F1805A95-CA94-E133-F6D1D0903E35D9C8"
+            ],
+            "expectedDayIds": [
+              "11D47A8C-4A79-8D53-64222291CFEB0FA2",
+              "1B65AF08-41AD-45D5-20A345AD1FB602DC",
+              "1C3A966A-68E7-0B6A-2E950F801DD0F5B4",
+              "1EF35883-EB83-5CB4-06E7C0003293021A",
+              "2B790FCC-0D9D-903A-78234093C7F45E30",
+              "43D7F61F-A336-BC50-E3C32917DD919B1A",
+              "5A38EAEC-E236-E695-C48FC1B3C7A0383D",
+              "7052AA5D-1BC5-354D-A3BD0999B98DF293",
+              "8134E9EE-8EB3-F2B5-D3B5C291C4BD282A",
+              "8607304F-26B9-2228-AC13F1868E34DE11",
+              "8D74B74C-D8F5-158B-9C1188D819C59B90",
+              "9529F0D5-AC2A-9479-ABAAF1F57CDB889E",
+              "9A3CE0FA-382D-3923-A1CFAA82AEDF09DD",
+              "9DF38BD4-78A2-31D3-7C477974EAA7BA86",
+              "A4BBAAC5-E062-022D-9268DB39CD5F7D92",
+              "BCB794BC-63FA-7897-22E731B2E0257214",
+              "DF202307-5D27-0BF8-81E551583791DB7D",
+              "EC3E828F-534A-8BE9-2C7267C171D5439F",
+              "F1805A95-CA94-E133-F6D1D0903E35D9C8"
+            ],
+            "preexistingDayIds": [],
+            "reason": "person-tenant",
+            "siteId": "tenant-a",
+            "tenantId": "edec963e-3516-5bb6-845d-d01a710e32a7"
+          }
+        ],
+        "effectiveFrom": "2026-06-30",
+        "elapsedMs": 1015,
+        "otherTenants": [
+          {
+            "blackoutRows": 0,
+            "siteId": "default",
+            "tenantId": "e6b84010-a5ea-5ceb-9c81-3a2cf616ff46"
+          },
+          {
+            "blackoutRows": 0,
+            "siteId": "umbrella",
+            "tenantId": "455225fe-8c2a-5c61-b33e-f9a8f2cac49a"
+          },
+          {
+            "blackoutRows": 0,
+            "siteId": "tenant-b",
+            "tenantId": "13ab03ed-8b4b-5174-b787-d32a11dd8793"
+          }
+        ],
+        "personId": "50DD0EB5-1000-EDCF-DFBBCA1C8E220A99",
+        "polls": 2,
+        "siteId": "tenant-a",
+        "timedOut": false,
+        "traceId": "c7ea52001bd317e874029c9e213af6d7"
+      },
+      "result": "pass",
+      "source": "harness/e2e/events/seams.e2e.test.ts",
+      "topic": "people.person.archived.v1"
+    },
+    "surveyToCloudTasks": {
+      "evidence": {
+        "elapsedMs": 1012,
+        "launchAt": "2026-11-22T05:14:42",
+        "mismatches": [],
+        "polls": 2,
+        "queueCounts": {
+          "communications-reminders": 2,
+          "surveys-launch": 1
+        },
+        "rows": [
+          {
+            "kind": "survey-launch",
+            "name": "opt2-survey-A50B4CDE-DBAD-D257-3D69458E6D946DA9-launch",
+            "offsetS": 0,
+            "queue": "surveys-launch",
+            "status": "scheduled"
+          },
+          {
+            "kind": "survey-reminder",
+            "name": "opt2-survey-A50B4CDE-DBAD-D257-3D69458E6D946DA9-reminder-1",
+            "offsetS": 86400,
+            "queue": "communications-reminders",
+            "status": "scheduled"
+          },
+          {
+            "kind": "survey-reminder",
+            "name": "opt2-survey-A50B4CDE-DBAD-D257-3D69458E6D946DA9-reminder-2",
+            "offsetS": 172800,
+            "queue": "communications-reminders",
+            "status": "scheduled"
+          }
+        ],
+        "schedule": {
+          "body": {
+            "apiversion": "v1",
+            "data": {
+              "created": "2026-03-02T11:15:00",
+              "createdbyid": "419DA314-3EC1-C8C0-EBE162DE98820022",
+              "lastupdate": "",
+              "lastupdatebyid": "",
+              "launched_at": "",
+              "reminders": [
+                {
+                  "offset_minutes": 1440,
+                  "remind_at": "2026-11-23T05:14:42",
+                  "reminder_id": "DD4849C1-9517-C071-34A55F4D7549DB32",
+                  "sent_at": "",
+                  "survey_id": "A50B4CDE-DBAD-D257-3D69458E6D946DA9",
+                  "task_name": "opt2-survey-A50B4CDE-DBAD-D257-3D69458E6D946DA9-reminder-1"
+                },
+                {
+                  "offset_minutes": 2880,
+                  "remind_at": "2026-11-24T05:14:42",
+                  "reminder_id": "DD4849C7-BE91-6B24-587DA6155C9E54DE",
+                  "sent_at": "",
+                  "survey_id": "A50B4CDE-DBAD-D257-3D69458E6D946DA9",
+                  "task_name": "opt2-survey-A50B4CDE-DBAD-D257-3D69458E6D946DA9-reminder-2"
+                }
+              ],
+              "schedule": {
+                "created": "2026-11-21T05:14:43",
+                "launch_at": "2026-11-22T05:14:42",
+                "schedule_id": "DD4849B4-1331-74D1-AC4FA7F11A2FD53A",
+                "schedule_version": 1,
+                "survey_id": "A50B4CDE-DBAD-D257-3D69458E6D946DA9",
+                "task_name": "opt2-survey-A50B4CDE-DBAD-D257-3D69458E6D946DA9-launch"
+              },
+              "siteid": "tenant-a",
+              "status": "SCHEDULED",
+              "survey_id": "A50B4CDE-DBAD-D257-3D69458E6D946DA9",
+              "targets": [
+                {
+                  "created": "2026-04-26T15:38:00",
+                  "group_name": "Beauty Team 3",
+                  "siteid": "tenant-a",
+                  "survey_id": "A50B4CDE-DBAD-D257-3D69458E6D946DA9",
+                  "target_id": "A4542362-5AEA-D6E9-B136DB6EAA39205A"
+                },
+                {
+                  "created": "2026-06-01T10:41:00",
+                  "group_name": "Jewelry Team 3",
+                  "siteid": "tenant-a",
+                  "survey_id": "A50B4CDE-DBAD-D257-3D69458E6D946DA9",
+                  "target_id": "8DF6DB1F-33B7-E2B8-D407B2721F26B83D"
+                },
+                {
+                  "created": "2026-03-13T08:04:00",
+                  "group_name": "timesheets.secondary-approver",
+                  "siteid": "tenant-a",
+                  "survey_id": "A50B4CDE-DBAD-D257-3D69458E6D946DA9",
+                  "target_id": "70ADBAB2-29A9-915E-D9C8E6E8FD26C2ED"
+                }
+              ],
+              "title": "Horizontal actuating access survey"
+            },
+            "method": "surveys.surveys.schedule"
+          },
+          "status": 200
+        },
+        "scheduleVersion": 1,
+        "siteId": "tenant-a",
+        "surveyId": "A50B4CDE-DBAD-D257-3D69458E6D946DA9",
+        "taskList": [
+          {
+            "name": "opt2-survey-A50B4CDE-DBAD-D257-3D69458E6D946DA9-launch",
+            "queue": "surveys-launch",
+            "status": "listed"
+          },
+          {
+            "name": "opt2-survey-A50B4CDE-DBAD-D257-3D69458E6D946DA9-reminder-1",
+            "queue": "communications-reminders",
+            "status": "listed"
+          },
+          {
+            "name": "opt2-survey-A50B4CDE-DBAD-D257-3D69458E6D946DA9-reminder-2",
+            "queue": "communications-reminders",
+            "status": "listed"
+          }
+        ],
+        "tenantId": "edec963e-3516-5bb6-845d-d01a710e32a7",
+        "timedOut": false
+      },
+      "result": "pass",
+      "source": "harness/e2e/events/seams.e2e.test.ts",
+      "topic": "surveys.survey.scheduled.v1"
+    }
+  },
+  "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
+  "status": "generated",
   "topics": [
     {
-      "topic": "programs-sites.site.changed.v1",
-      "producer": "programs-sites",
       "consumers": [
+        "communications",
+        "e-signature",
+        "finance",
         "identity",
         "people",
-        "strategies-content",
-        "communications",
+        "programs-sites",
         "reporting",
+        "strategies-content",
+        "stub",
         "surveys",
-        "timesheets",
-        "finance",
-        "e-signature",
-        "stub"
+        "timesheets"
       ],
+      "fanout": null,
       "kind": "state",
-      "tenantFanout": null,
-      "provenance": "planning"
+      "producer": "programs-sites",
+      "schema": "services/programs-sites/contracts/events/programs-sites.site.changed.v1.json",
+      "topic": "programs-sites.site.changed.v1"
     },
     {
-      "topic": "identity.group.changed.v1",
-      "producer": "identity",
       "consumers": [
         "people",
         "strategies-content"
       ],
+      "fanout": null,
       "kind": "state",
-      "tenantFanout": null,
-      "provenance": "planning"
+      "producer": "identity",
+      "schema": "services/identity/contracts/events/identity.group.changed.v1.json",
+      "topic": "identity.group.changed.v1"
     },
     {
-      "topic": "identity.permission.changed.v1",
-      "producer": "identity",
       "consumers": [
         "strategies-content"
       ],
+      "fanout": null,
       "kind": "state",
-      "tenantFanout": null,
-      "provenance": "planning"
+      "producer": "identity",
+      "schema": "services/identity/contracts/events/identity.permission.changed.v1.json",
+      "topic": "identity.permission.changed.v1"
     },
     {
-      "topic": "identity.membership.changed.v1",
-      "producer": "identity",
       "consumers": [
         "strategies-content"
       ],
+      "fanout": null,
       "kind": "state",
-      "tenantFanout": null,
-      "provenance": "planning"
+      "producer": "identity",
+      "schema": "services/identity/contracts/events/identity.membership.changed.v1.json",
+      "topic": "identity.membership.changed.v1"
     },
     {
-      "topic": "identity.login-mail.requested.v1",
-      "producer": "identity",
       "consumers": [
         "communications"
       ],
+      "fanout": null,
       "kind": "process",
-      "tenantFanout": null,
-      "provenance": "planning"
+      "producer": "identity",
+      "schema": "services/identity/contracts/events/identity.login-mail.requested.v1.json",
+      "topic": "identity.login-mail.requested.v1"
     },
     {
-      "topic": "people.person.changed.v1",
-      "producer": "people",
       "consumers": [
         "identity"
       ],
+      "fanout": null,
       "kind": "state",
-      "tenantFanout": null,
-      "provenance": "planning"
+      "producer": "people",
+      "schema": "services/people/contracts/events/people.person.changed.v1.json",
+      "topic": "people.person.changed.v1"
     },
     {
-      "topic": "people.person.archived.v1",
-      "producer": "people",
       "consumers": [
         "timesheets"
       ],
+      "fanout": "userPool",
       "kind": "process",
-      "tenantFanout": "userPool",
-      "provenance": "planning"
+      "producer": "people",
+      "schema": "services/people/contracts/events/people.person.archived.v1.json",
+      "topic": "people.person.archived.v1"
     },
     {
-      "topic": "surveys.survey.scheduled.v1",
-      "producer": "surveys",
       "consumers": [
         "communications"
       ],
+      "fanout": null,
       "kind": "process",
-      "tenantFanout": null,
-      "provenance": "planning"
+      "producer": "surveys",
+      "schema": "services/surveys/contracts/events/surveys.survey.scheduled.v1.json",
+      "topic": "surveys.survey.scheduled.v1"
     },
     {
-      "topic": "communications.message.delivery-status-changed.v1",
-      "producer": "communications",
       "consumers": [],
-      "kind": null,
-      "tenantFanout": null,
-      "provenance": "planning"
+      "fanout": null,
+      "kind": "state",
+      "producer": "communications",
+      "schema": "services/communications/contracts/events/communications.message.delivery-status-changed.v1.json",
+      "topic": "communications.message.delivery-status-changed.v1"
     },
     {
-      "topic": "stub.note.created.v1",
-      "producer": "stub",
       "consumers": [
         "stub"
       ],
-      "kind": null,
-      "tenantFanout": null,
-      "provenance": "planning"
+      "fanout": null,
+      "kind": "state",
+      "producer": "stub",
+      "schema": "services/stub/contracts/events/stub.note.created.v1.json",
+      "topic": "stub.note.created.v1"
     }
-  ],
-  "result": "pending-run"
+  ]
 }

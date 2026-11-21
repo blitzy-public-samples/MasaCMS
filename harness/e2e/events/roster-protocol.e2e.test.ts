@@ -1,4 +1,5 @@
-// Roster write protocol under process loss: people or identity killed at each step boundary of a cusers.update save.
+// Roster write protocol under process loss: people or identity killed at each step boundary of a cusers.update roster create.
+// Edits are not driven: `cusers.update{type=2,action=update}` is a legacy-write entry in every cut-over version (EX-ROSTER-POOLMOVE).
 import { randomBytes } from 'node:crypto';
 import {
   createServer,
@@ -91,19 +92,18 @@ const FAULT_PREFIX = 'roster:';
 const ACCOUNT_STEP_PATH = /^\/internal\/v1\/accounts\/([^/]+)\/operations\/([^/]+?):(prepare|commit|abort|finish|revert)$/;
 
 type Participant = (typeof PARTICIPANTS)[number];
-type CaseKind = 'create' | 'edit';
-type FinalState = 'old' | 'new';
+/** The user a case ends with: none, or the created one on both sides. */
+type FinalState = 'absent' | 'new';
 type ExpectedResponse = '503' | 'success-or-503';
 /** A roster step boundary as people's fault hook names it. */
 type RosterStep = 'after-start' | 'after-prepare' | 'after-people-commit' | 'after-identity-commit' | 'after-done';
 type IdentityFault = 'before-prepare' | 'after-prepare-withheld' | 'after-commit-lost' | 'before-finish';
 type AccountStep = 'prepare' | 'commit' | 'finish';
 /** What one read of the user showed. */
-type Observed = 'old' | 'new' | 'absent' | 'wait' | 'mixed';
+type Observed = FinalState | 'wait' | 'mixed';
 
 /** Expected outcome of one case and the `resolveOperation` row that recovery takes. */
 interface Expectation {
-  kind: CaseKind;
   response: ExpectedResponse;
   final: FinalState;
   recovery: string;
@@ -114,18 +114,17 @@ type RosterCase = Expectation &
   ({ killed: 'people'; step: RosterStep; slug: string } | { killed: 'identity'; fault: IdentityFault; slug: string });
 
 const PEOPLE_CASES: Record<RosterStep, Expectation> = {
-  'after-start': { kind: 'create', response: '503', final: 'old', recovery: ':abort with nothing prepared, rolled-back' },
-  'after-prepare': { kind: 'edit', response: '503', final: 'old', recovery: ':abort prepared' },
-  'after-people-commit': { kind: 'edit', response: '503', final: 'old', recovery: 'restore before-image, :abort' },
-  // Old, not rolled forward: resolveOperation rolls forward only from `done` or an identity `finished`, so a
+  'after-start': { response: '503', final: 'absent', recovery: ':abort with nothing prepared, rolled-back' },
+  'after-prepare': { response: '503', final: 'absent', recovery: ':abort prepared' },
+  'after-people-commit': { response: '503', final: 'absent', recovery: 'restore before-image, :abort' },
+  // Absent, not rolled forward: resolveOperation rolls forward only from `done` or an identity `finished`, so a
   // committed identity under a `people-committed` operation is reverted, which keeps a 503 a total rejection.
   'after-identity-commit': {
-    kind: 'create',
     response: '503',
-    final: 'old',
+    final: 'absent',
     recovery: 'identity committed but people not done: :revert and restore before-image',
   },
-  'after-done': { kind: 'edit', response: '503', final: 'new', recovery: 'repeat lost :finish' },
+  'after-done': { response: '503', final: 'new', recovery: 'repeat lost :finish' },
 };
 
 /** Every roster step boundary, in protocol order. */
@@ -134,15 +133,14 @@ const ROSTER_STEPS: readonly RosterStep[] = ['after-start', 'after-prepare', 'af
 const IDENTITY_FAULTS: readonly IdentityFault[] = ['before-prepare', 'after-prepare-withheld', 'after-commit-lost', 'before-finish'];
 
 const IDENTITY_CASES: Record<IdentityFault, Expectation> = {
-  'before-prepare': { kind: 'create', response: '503', final: 'old', recovery: ':abort' },
-  'after-prepare-withheld': { kind: 'edit', response: '503', final: 'old', recovery: 'restore before-image, :abort' },
+  'before-prepare': { response: '503', final: 'absent', recovery: ':abort' },
+  'after-prepare-withheld': { response: '503', final: 'absent', recovery: ':abort prepared' },
   'after-commit-lost': {
-    kind: 'edit',
     response: '503',
-    final: 'old',
+    final: 'absent',
     recovery: 'identity unreachable within the 10 s budget, :revert both sides',
   },
-  'before-finish': { kind: 'create', response: 'success-or-503', final: 'new', recovery: 'repeat lost :finish' },
+  'before-finish': { response: 'success-or-503', final: 'new', recovery: 'repeat lost :finish' },
 };
 
 /** The account step whose request triggers each identity fault. */
@@ -158,19 +156,13 @@ const CASES: readonly RosterCase[] = [
   ...IDENTITY_FAULTS.map((fault): RosterCase => ({ killed: 'identity', fault, slug: `i-${fault}`, ...IDENTITY_CASES[fault] })),
 ];
 
-/** One version of the user as the form posts it. */
+/** The user as the create form posts it. */
 interface Version {
   fname: string;
   lname: string;
   email: string;
   username: string;
   inactive: number;
-}
-
-/** The values a case starts from (`null` for a create) and posts. */
-interface CaseValues {
-  old: Version | null;
-  new: Version;
 }
 
 type PersonPart = Record<'fname' | 'lname' | 'email', string>;
@@ -233,8 +225,6 @@ interface ProjectorHold {
 
 /** What the two holds of a 'new' case's joint batch showed in legacy. */
 interface HoldEvidence {
-  /** The user's row as the failing hold's open transaction had it. */
-  failingHeld: Observed;
   /** Whether the commit re-arm landed while the failing hold still ran. */
   rearmedDuringHold: boolean;
   /** A committed read issued during the failing hold, returned once it rolled back. */
@@ -253,6 +243,10 @@ interface RecoveryState {
 }
 
 const ABSENT: Observation = Object.freeze({ person: null, account: null });
+/** A user's `tusers.Type`, as SQL Server and the owner exports carry it. */
+const USER_TYPE = '2';
+/** The same type as the JSON API renders it (core/mura/client/api/json/v1/jsonApiUtility.cfc:2218). */
+const JSON_API_USER_TYPE = 'user';
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
@@ -284,46 +278,28 @@ function personOf(record: Record<string, unknown>): PersonPart | null {
   return { fname: fname ?? '', lname: lname ?? '', email: email ?? '' };
 }
 
-/** Identity's account columns of `record`; null unless it carries a username, InActive and Type 2. */
-function accountOf(record: Record<string, unknown>): AccountPart | null {
+/** Identity's account columns of `record`; null unless it carries a username, InActive and the user type `userType`. */
+function accountOf(record: Record<string, unknown>, userType: string): AccountPart | null {
   const username = textOf(field(record, 'username'));
   const inactive = textOf(field(record, 'inactive'));
-  if (username === null || username === '' || inactive === null || textOf(field(record, 'type')) !== '2') return null;
+  if (username === null || username === '' || inactive === null || textOf(field(record, 'type')) !== userType) return null;
   return { username, inactive };
 }
 
-function observationOf(record: Record<string, unknown>): Observation {
-  return { person: personOf(record), account: accountOf(record) };
+function observationOf(record: Record<string, unknown>, userType: string): Observation {
+  return { person: personOf(record), account: accountOf(record, userType) };
 }
 
 function matches<K extends keyof Version>(part: Record<K, string>, version: Version, keys: readonly K[]): boolean {
   return keys.every((key) => part[key] === String(version[key]));
 }
 
-/** The version whose `keys` columns `part` holds, if any. */
-function versionOf<K extends keyof Version>(part: Record<K, string>, keys: readonly K[], values: CaseValues): FinalState | undefined {
-  if (matches(part, values.new, keys)) return 'new';
-  return values.old !== null && matches(part, values.old, keys) ? 'old' : undefined;
-}
-
-/** `old` or `new` when both participants' columns show that version, `absent` when neither has the user, else `mixed`. */
-function classify(observation: Observation, values: CaseValues): Observed {
+/** `new` when both participants' columns show the posted values, `absent` when neither has the user, else `mixed`. */
+function classify(observation: Observation, values: Version): Observed {
   const { person, account } = observation;
   if (person === null && account === null) return 'absent';
   if (person === null || account === null) return 'mixed';
-  const personVersion = versionOf(person, ['fname', 'lname', 'email'], values);
-  const accountVersion = versionOf(account, ['username', 'inactive'], values);
-  return personVersion !== undefined && personVersion === accountVersion ? personVersion : 'mixed';
-}
-
-/** The class of a case's user before its save: its old values, which a create does not have. */
-function beforeClass(c: RosterCase): Observed {
-  return c.kind === 'create' ? 'absent' : 'old';
-}
-
-/** The class a case's user ends in: its new values, or its old ones. */
-function expectedClass(c: RosterCase): Observed {
-  return c.final === 'new' ? 'new' : beforeClass(c);
+  return matches(person, values, ['fname', 'lname', 'email']) && matches(account, values, ['username', 'inactive']) ? 'new' : 'mixed';
 }
 
 function headerText(result: HttpResult, name: string): string {
@@ -355,14 +331,11 @@ function describeResponse(result: HttpResult): string {
   return `HTTP ${result.status}${location === '' ? '' : ` to ${location}`}`;
 }
 
-/** Fresh old and new values of one case; an edit changes person and account columns at once. */
-function caseValues(c: RosterCase): CaseValues {
+/** Fresh values of one case's create. */
+function caseValues(c: RosterCase): Version {
   const tag = `${c.slug}-${randomBytes(3).toString('hex')}`;
-  const version = (suffix: string, inactive: number): Version => {
-    const username = `e2e-roster-${tag}${suffix}`;
-    return { fname: `Fn-${tag}${suffix}`, lname: `Ln-${tag}${suffix}`, email: `${username}@e2e.opt2.test`, username, inactive };
-  };
-  return c.kind === 'create' ? { old: null, new: version('', 0) } : { old: version('', 0), new: version('-ed', 1) };
+  const username = `e2e-roster-${tag}`;
+  return { fname: `Fn-${tag}`, lname: `Ln-${tag}`, email: `${username}@e2e.opt2.test`, username, inactive: 0 };
 }
 
 function randomPassword(): string {
@@ -372,13 +345,8 @@ function randomPassword(): string {
 function titleOf(c: RosterCase): string {
   const point = c.killed === 'people' ? `people killed ${c.step}` : `identity killed ${c.fault}`;
   const answer = c.response === '503' ? 'answers 503' : 'answers success or 503';
-  const outcome =
-    c.final === 'new'
-      ? 'both sides hold the new values'
-      : c.kind === 'create'
-        ? 'neither side holds the user'
-        : 'both sides keep the old values';
-  return `${point}: ${c.kind} ${answer} and ${outcome} (recovery: ${c.recovery})`;
+  const outcome = c.final === 'new' ? 'both sides hold the new values' : 'neither side holds the user';
+  return `${point}: create ${answer} and ${outcome} (recovery: ${c.recovery})`;
 }
 
 /** Fresh gateway session logged in through the admin login form as `ref`. */
@@ -388,32 +356,30 @@ async function adminSession(ref: string): Promise<HttpSession> {
   return session;
 }
 
-/** The user editor's `form1` for `userId`, or for a new user; its action URL carries the id the save uses. */
-async function openUserForm(writer: HttpSession, userId?: string): Promise<UserForm> {
-  const query = new URLSearchParams({ muraAction: 'cUsers.edituser', siteid: SITE, type: '2', userid: userId ?? '' });
+/** The user editor's `form1` for a new user; its action URL carries the id the save uses. */
+async function openUserForm(writer: HttpSession): Promise<UserForm> {
+  const query = new URLSearchParams({ muraAction: 'cUsers.edituser', siteid: SITE, type: '2', userid: '' });
   const tokens = await fetchFormTokens(writer, `/admin/?${query.toString()}`, 'form[name=form1]');
   const formUserId = queryParam(new URL(tokens.action, writer.baseUrl), 'userid');
   if (formUserId === undefined || formUserId === '') {
     throw new Error(`the user editor form posts to ${tokens.action} without a userid`);
   }
-  if (userId !== undefined && idKey(formUserId) !== idKey(userId)) {
-    throw new Error(`the user editor form for ${userId} posts for user ${formUserId}`);
-  }
   return { userId: formUserId, tokens };
 }
 
-/** The browser's multipart `cUsers.update` post of `version`, without a photo, redirects left unfollowed. */
-function submitUser(writer: HttpSession, form: UserForm, version: Version, kind: CaseKind): Promise<HttpResult> {
+/** The browser's multipart `cUsers.update` create post of `version`, without a photo, redirects left unfollowed. */
+function submitUser(writer: HttpSession, form: UserForm, version: Version): Promise<HttpResult> {
   const password = randomPassword();
   const fields: Record<string, string> = {
     siteid: SITE,
     type: '2',
-    action: kind === 'create' ? 'Add' : 'Update',
+    action: 'Add',
     fname: version.fname,
     lname: version.lname,
     email: version.email,
     usernameNoCache: version.username,
-    ...(kind === 'create' ? { passwordNoCache: password, password2: password } : {}),
+    passwordNoCache: password,
+    password2: password,
     isPublic: '0',
     InActive: String(version.inactive),
     subtype: 'Default',
@@ -431,11 +397,11 @@ async function legacyObservation(sql: ReadOnlyMssql, userId: string): Promise<Ob
   const rows = await sql.readOnlyQuery<Record<string, unknown>>(LEGACY_USER_SQL, { userId });
   if (rows.length > 1) throw new Error(`tusers holds ${rows.length} rows for UserID ${userId}`);
   const [row] = rows;
-  return row === undefined ? ABSENT : observationOf(row);
+  return row === undefined ? ABSENT : observationOf(row, USER_TYPE);
 }
 
 /** Polls legacy until the user's row classifies as `expected`; returns the last class read. */
-async function awaitLegacy(sql: ReadOnlyMssql, userId: string, values: CaseValues, expected: Observed): Promise<Observed> {
+async function awaitLegacy(sql: ReadOnlyMssql, userId: string, values: Version, expected: Observed): Promise<Observed> {
   const outcome = await pollUntil(
     async () => classify(await legacyObservation(sql, userId), values),
     (observed) => observed === expected,
@@ -448,16 +414,15 @@ async function awaitLegacy(sql: ReadOnlyMssql, userId: string, values: CaseValue
 async function heldObservation(sql: ReadOnlyMssql, userId: string): Promise<{ observation: Observation; visible: number }> {
   const [row] = await sql.readOnlyQuery<Record<string, unknown>>(HELD_USER_SQL, { userId });
   if (row === undefined) throw new Error(`the held-image read of UserID ${userId} returned no row`);
-  return { observation: observationOf(row), visible: Number(field(row, 'visible')) };
+  return { observation: observationOf(row, USER_TYPE), visible: Number(field(row, 'visible')) };
 }
 
-/** Polls until an open transaction holds the user's row locked with an image other than `before`; returns its class. */
-async function awaitHeldRow(sql: ReadOnlyMssql, userId: string, values: CaseValues, before: Observed, signal: AbortSignal): Promise<Observed> {
+/** Polls until an open transaction holds the user's row locked with an image of the user. */
+async function awaitHeldRow(sql: ReadOnlyMssql, userId: string, values: Version, signal: AbortSignal): Promise<void> {
   for (;;) {
     signal.throwIfAborted();
     const { observation, visible } = await heldObservation(sql, userId);
-    const observed = classify(observation, values);
-    if (observed !== before && visible === 0) return observed;
+    if (classify(observation, values) !== 'absent' && visible === 0) return;
     await delay(HOLD_POLL_MS, undefined, { signal });
   }
 }
@@ -514,11 +479,11 @@ async function entityObservation(reader: HttpSession, userId: string): Promise<O
   if (result.status === 404) return ABSENT;
   const data = result.status === 200 ? asRecord(asRecord(result.json())?.data) : undefined;
   if (data === undefined) throw new Error(`the JSON API user read answered HTTP ${result.status}: ${result.text.slice(0, 500)}`);
-  return textOf(field(data, 'isnew')) === '1' ? ABSENT : observationOf(data);
+  return textOf(field(data, 'isnew')) === '1' ? ABSENT : observationOf(data, JSON_API_USER_TYPE);
 }
 
 /** Starts the JSON API and legacy SQL readers of `userId`; `stop` ends both and returns every classified read. */
-function startReader(reader: HttpSession, sql: ReadOnlyMssql, userId: string, values: CaseValues): { stop(): Promise<ReaderRecord[]> } {
+function startReader(reader: HttpSession, sql: ReadOnlyMssql, userId: string, values: Version): { stop(): Promise<ReaderRecord[]> } {
   const records: ReaderRecord[] = [];
   let running = true;
   const loop = async (path: ReaderRecord['path'], read: () => Promise<Observation | 'wait'>): Promise<void> => {
@@ -549,18 +514,15 @@ function startReader(reader: HttpSession, sql: ReadOnlyMssql, userId: string, va
   };
 }
 
-/** Reads that break all-old-or-all-new: a mix, an edited user gone, or a version the case does not end in seen or left. */
+/** Reads that break absent-or-all-new: a mix, the new user gone once seen, or seen at all by a case that rejects it. */
 function readerViolations(records: readonly ReaderRecord[], c: RosterCase): ReaderRecord[] {
-  const final = expectedClass(c);
   const violations: ReaderRecord[] = [];
   for (const path of ['json-api', 'legacy-sql'] as const) {
     let sawNew = false;
     for (const record of records.filter((r) => r.path === path && r.observed !== 'wait')) {
       const regressed = sawNew && record.observed !== 'new';
-      const unfinished = record.observed === 'new' && final !== 'new';
-      if (record.observed === 'mixed' || (c.kind === 'edit' && record.observed === 'absent') || regressed || unfinished) {
-        violations.push(record);
-      }
+      const unfinished = record.observed === 'new' && c.final !== 'new';
+      if (record.observed === 'mixed' || regressed || unfinished) violations.push(record);
       sawNew ||= record.observed === 'new';
     }
   }
@@ -641,7 +603,7 @@ async function targetObservation(userId: string): Promise<Observation> {
   );
   const person = own(people.rows);
   const account = own(identity.rows);
-  return { person: person === undefined ? null : personOf(person), account: account === undefined ? null : accountOf(account) };
+  return { person: person === undefined ? null : personOf(person), account: account === undefined ? null : accountOf(account, USER_TYPE) };
 }
 
 function isOpen(statuses: ReadonlyMap<string, OperationStatus>): boolean {
@@ -649,7 +611,7 @@ function isOpen(statuses: ReadonlyMap<string, OperationStatus>): boolean {
 }
 
 /** One recovery poll: both participants' operation statuses for the user, then, once all are closed, the target state. */
-async function recoveryState(userId: string, since: Record<Participant, string>, values: CaseValues): Promise<RecoveryState> {
+async function recoveryState(userId: string, since: Record<Participant, string>, values: Version): Promise<RecoveryState> {
   const state: RecoveryState = { people: new Map(), identity: new Map(), target: 'unread' };
   try {
     state.people = await operationsOf('people', since.people, userId);
@@ -929,7 +891,7 @@ async function projectorHoldCall(method: 'PUT' | 'DELETE', params?: ProjectorHol
 
 /**
  * The projector hold a case runs under. A 'new' case's joint batch fails once between the participants, then commits;
- * an 'old' case refuses every batch that would write any operation change.
+ * an 'absent' case refuses every batch that would write any operation change.
  */
 function holdFor(c: RosterCase): ProjectorHold {
   return c.final === 'new'
@@ -941,8 +903,8 @@ function holdFor(c: RosterCase): ProjectorHold {
  * Watches the two holds of a 'new' case's joint batch. A hold keeps one participant's change uncommitted, so a
  * committed read issued during it returns only once the batch rolls back or commits both.
  */
-async function watchHolds(sql: ReadOnlyMssql, userId: string, values: CaseValues, before: Observed, signal: AbortSignal): Promise<HoldEvidence> {
-  const failingHeld = await awaitHeldRow(sql, userId, values, before, signal);
+async function watchHolds(sql: ReadOnlyMssql, userId: string, values: Version, signal: AbortSignal): Promise<HoldEvidence> {
+  await awaitHeldRow(sql, userId, values, signal);
   let readSettled = false;
   const blockedRead = legacyObservation(sql, userId).finally(() => {
     readSettled = true;
@@ -953,9 +915,9 @@ async function watchHolds(sql: ReadOnlyMssql, userId: string, values: CaseValues
   const rearmedDuringHold = !readSettled;
   const afterRollback = classify(await blockedRead, values);
   const checkpointsAfterRollback = await legacyCheckpoints(sql);
-  await awaitHeldRow(sql, userId, values, before, signal);
+  await awaitHeldRow(sql, userId, values, signal);
   const afterCommit = classify(await legacyObservation(sql, userId), values);
-  return { failingHeld, rearmedDuringHold, afterRollback, checkpointsAfterRollback, afterCommit };
+  return { rearmedDuringHold, afterRollback, checkpointsAfterRollback, afterCommit };
 }
 
 /** The case's operation key: the proxied operation, else the one operation people records for the user. */
@@ -966,9 +928,8 @@ function caseOperation(state: RecoveryState, userId: string, proxied: string | u
   return keys[0] ?? '';
 }
 
-/** Checks legacy's record of the operation: both participants rolled back then committed together ('new'), or none written ('old'). */
+/** Checks legacy's record of the operation: both participants rolled back then committed together ('new'), or none written ('absent'). */
 async function expectLegacyAtomic(
-  c: RosterCase,
   sql: ReadOnlyMssql,
   userId: string,
   operationKey: string,
@@ -990,9 +951,8 @@ async function expectLegacyAtomic(
   }
   for (const p of PARTICIPANTS) expect(rows[p].length, `${label}: ${p} changelog rows projecting to legacy`).toBeGreaterThan(0);
   const evidence = await within(watch, HOLD_WAIT_MS, `the two projector holds of ${label}`);
-  if (c.kind === 'edit') expect(evidence.failingHeld, `${label}: uncommitted tusers row while held between the participants`).toBe('mixed');
   expect(evidence.rearmedDuringHold, `${label}: the commit re-arm landed during the failing hold`).toBe(true);
-  expect(evidence.afterRollback, `${label}: committed tusers row read during the failing hold`).toBe(beforeClass(c));
+  expect(evidence.afterRollback, `${label}: committed tusers row read during the failing hold`).toBe('absent');
   for (const p of PARTICIPANTS) {
     const checkpoint = evidence.checkpointsAfterRollback[p];
     const [first] = rows[p];
@@ -1009,27 +969,17 @@ async function expectLegacyAtomic(
   ).toBe(true);
 }
 
-/** Creates the user an edit case changes, fault-free, and waits until legacy holds it. */
-async function createBaseUser(writer: HttpSession, sql: ReadOnlyMssql, base: Version, values: CaseValues): Promise<string> {
-  const form = await openUserForm(writer);
-  const result = await submitUser(writer, form, base, 'create');
-  if (!isLegacySuccess(result)) throw new Error(`the base roster create of ${form.userId} answered ${describeResponse(result)}`);
-  const legacy = await awaitLegacy(sql, form.userId, values, 'old');
-  if (legacy !== 'old') throw new Error(`legacy shows the base user ${form.userId} as ${legacy}`);
-  return form.userId;
-}
-
 /** Posts the save while the case's participant dies, then brings it back; returns the answer and the proxied operation. */
 async function sendUnderFault(
   c: RosterCase,
   proxy: IdentityProxy,
   writer: HttpSession,
   form: UserForm,
-  values: CaseValues,
+  values: Version,
   signal: AbortSignal,
 ): Promise<{ response: HttpResult; operationId?: string }> {
   if (c.killed === 'people') {
-    const response = await submitUser(writer, form, values.new, c.kind);
+    const response = await submitUser(writer, form, values);
     expect(await isServing('people'), `people killed itself at ${c.step}; the save answered ${describeResponse(response)}`).toBe(false);
     await startService('people');
     await waitHealthy('people');
@@ -1039,7 +989,7 @@ async function sendUnderFault(
   const sentAt = performance.now();
   let response: HttpResult;
   try {
-    response = await submitUser(writer, form, values.new, c.kind);
+    response = await submitUser(writer, form, values);
   } finally {
     proxy.disarm();
   }
@@ -1066,14 +1016,13 @@ async function runCase(c: RosterCase, proxy: IdentityProxy, sql: ReadOnlyMssql, 
 /** {@link runCase} under `signal`, the case's cancellation. */
 async function runCaseIn(c: RosterCase, proxy: IdentityProxy, sql: ReadOnlyMssql, signal: AbortSignal): Promise<void> {
   const values = caseValues(c);
-  const final = expectedClass(c);
+  const { final } = c;
   await withRestoredServices(PARTICIPANTS, async () => {
     if (c.killed === 'identity') await restartService('people', { extraEnv: { OPT2_SERVICE_URLS: serviceUrlsVia(proxy.url) } });
     const writer = await adminSession(SITE_ADMIN_REF);
-    const baseUserId = values.old === null ? undefined : await createBaseUser(writer, sql, values.old, values);
     if (c.killed === 'people') await restartService('people', { extraEnv: { [FAULT_ENV]: `${FAULT_PREFIX}${c.step}` } });
     const since: Record<Participant, string> = { people: await cursorAfterNow('people'), identity: await cursorAfterNow('identity') };
-    const form = await openUserForm(writer, baseUserId);
+    const form = await openUserForm(writer);
     const { userId } = form;
     const reader = startReader(await adminSession(S2_REF), sql, userId, values);
     // Stopped and settled before the fault is cleared, so the watcher cannot re-arm it after the case.
@@ -1085,7 +1034,7 @@ async function runCaseIn(c: RosterCase, proxy: IdentityProxy, sql: ReadOnlyMssql
     try {
       await projectorHoldCall('PUT', holdFor(c), signal);
       if (final === 'new') {
-        watch = watchHolds(sql, userId, values, beforeClass(c), AbortSignal.any([signal, watching.signal]));
+        watch = watchHolds(sql, userId, values, AbortSignal.any([signal, watching.signal]));
         // Awaited in expectLegacyAtomic; this only keeps an early rejection from going unhandled.
         watch.catch(() => undefined);
       }
@@ -1104,7 +1053,7 @@ async function runCaseIn(c: RosterCase, proxy: IdentityProxy, sql: ReadOnlyMssql
       }
       expect(state.target, `people and identity exports of ${userId}`).toBe(final);
       if (success) expect(state.target, 'a success answer leaves the new values').toBe('new');
-      await expectLegacyAtomic(c, sql, userId, caseOperation(state, userId, operationId), since, watch);
+      await expectLegacyAtomic(sql, userId, caseOperation(state, userId, operationId), since, watch);
       expect(await awaitLegacy(sql, userId, values, final), `legacy tusers row of ${userId} after reverse projection`).toBe(final);
     } finally {
       watching.abort(new Error(`roster case ${c.slug} ended`));
@@ -1123,7 +1072,7 @@ async function runCaseIn(c: RosterCase, proxy: IdentityProxy, sql: ReadOnlyMssql
     if (readerError !== undefined) throw readerError;
     if (clearError !== undefined) throw clearError;
     expect(new Set(records.map((record) => record.path)), 'both reader paths observed the user').toEqual(new Set(['json-api', 'legacy-sql']));
-    expect(readerViolations(records, c), 'reads that saw neither all-old nor all-new').toEqual([]);
+    expect(readerViolations(records, c), 'reads that saw neither no user nor all its new values').toEqual([]);
   });
 }
 

@@ -1,10 +1,10 @@
 {
-  "capturedAt": "2026-11-20T03:04:32.180Z",
+  "capturedAt": "2026-11-21T04:46:16.773Z",
   "fixtures": {
     "available": true,
     "reason": "fixtures loaded"
   },
-  "generatedAt": "2026-11-20T03:04:33.240Z",
+  "generatedAt": "2026-11-21T04:46:17.840Z",
   "generatedBy": "harness/src/golden/capture.ts",
   "origin": "legacy",
   "scenarioId": "GS-RE-02",
@@ -88,7 +88,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "d405b3815711a7cb9969561afc965015320c90dae41f5490f35367a143f4068d",
+        "rawSha256": "3ec4fbe95ebf05c8ce8376e5ced0d9cc79cff5221178e22f2ed6cf85d41ed936",
         "status": 200
       },
       "routeKey": "fixture:reporting/exports@post"
@@ -128,7 +128,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/legacy-fixtures/cfml/api.cfm/reporting/exports/A520FB05-F0AE-F434-94347CA6BCE166AB?siteid=tenant-a"
+        "url": "/legacy-fixtures/cfml/api.cfm/reporting/exports/DC441017-067A-F829-A18B36AFDEBBA0D3?siteid=tenant-a"
       },
       "response": {
         "body": {
@@ -156,7 +156,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "dab99fd2f7a2012fb91bf315ef15807ab6a7712609c0a849236ce8fe31bb064a",
+        "rawSha256": "adcb8aee50b4f2be4001536df94655f6f31ab5d09091876c418712baea7f9f8a",
         "status": 200
       },
       "routeKey": "fixture:reporting/exports/{id}@get"

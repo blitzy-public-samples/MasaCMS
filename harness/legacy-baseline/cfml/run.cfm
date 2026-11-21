@@ -56,8 +56,16 @@ function isoNow() {
 </cfif>
 <cfif application.mura.getBean('configBean').getValue(property='testbox',defaultValue=false) and directoryExists(Expandpath("/testbox"))>
     <cfset bundles = baselineBundles().map(function(n){ return 'muraWRM.core.tests.specs.mura.core.' & n; })>
-    <cfset r = new testbox.system.TestBox( bundles=bundles ) >
-    <cfoutput>#r.run(reporter=url.reporter)#</cfoutput>
+    <!--- The specs' own ORM test entities create their tables through schema management, which legacy-start.sh turns off; it is on for the run only. --->
+    <cfset priorApplyDbUpdates = configValue('applyDbUpdates', true)>
+    <cftry>
+        <cfset application.configBean.setValue('applyDbUpdates', true)>
+        <cfset r = new testbox.system.TestBox( bundles=bundles ) >
+        <cfoutput>#r.run(reporter=url.reporter)#</cfoutput>
+        <cffinally>
+            <cfset application.configBean.setValue('applyDbUpdates', priorApplyDbUpdates)>
+        </cffinally>
+    </cftry>
 <cfelse>
     <h1>Access Restricted.</h1>
     <cfoutput>

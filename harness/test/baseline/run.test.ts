@@ -198,6 +198,167 @@ describe('runner constants', () => {
   });
 });
 
+// legacy-start.sh turns schema management off; the specs' ORM test entities recurse to a StackOverflowError without it.
+describe('run.cfm applyDbUpdates handling', () => {
+  const RUN_CFM = path.join(REPO_ROOT, 'harness', 'legacy-baseline', 'cfml', 'run.cfm');
+  const TESTBOX_BRANCH = /<cfif\s+not\s+structKeyExists\s*\(\s*url\s*,\s*(["'])info\1\s*\)\s*>/i;
+  const INFO_BRANCH = /<cfelseif\s+url\.info\s+eq\s+(["'])1\1\s*>/i;
+  const READ = /<cfset\s+(\w+)\s*=[^>]*?\b(?:configValue|getValue)\s*\(\s*(?:property\s*=\s*)?(["'])applyDbUpdates\2/gi;
+  const WRITE =
+    /\.set(?:Value)?\s*\(\s*(?:property\s*=\s*)?(["'])applyDbUpdates\1\s*,\s*(?:propertyValue\s*=\s*)?([^)]*?)\s*\)|\.setApplyDbUpdates\s*\(\s*([^)]*?)\s*\)/gi;
+
+  interface Span {
+    open: number;
+    close: number;
+  }
+
+  function offsetOf(text: string, pattern: RegExp): number {
+    const offset = text.search(pattern);
+    expect(offset, `run.cfm lacks ${pattern}`).toBeGreaterThanOrEqual(0);
+    return offset;
+  }
+
+  function tagSpans(text: string, tag: string): Span[] {
+    const spans: Span[] = [];
+    const opens: number[] = [];
+    for (const m of text.matchAll(new RegExp(`<(/?)${tag}\\b[^>]*>`, 'gi'))) {
+      if (m[1] === '') {
+        opens.push(m.index);
+        continue;
+      }
+      const open = opens.pop();
+      if (open === undefined) throw new Error(`unmatched </${tag}> at offset ${m.index}`);
+      spans.push({ open, close: m.index + m[0].length });
+    }
+    if (opens.length > 0) throw new Error(`unclosed <${tag}> at offset ${opens.join(', ')}`);
+    return spans;
+  }
+
+  function writes(text: string): { offset: number; value: string }[] {
+    return [...text.matchAll(WRITE)].map((m) => ({
+      offset: m.index,
+      value: (m[2] ?? m[3] ?? '').replace(/^(["'])(.*)\1$/, '$2').toLowerCase(),
+    }));
+  }
+
+  async function testboxRun(): Promise<{ cfm: string; start: number; branch: string; run: number; cftry: Span; cffinally: Span }> {
+    const cfm = (await fs.readFile(RUN_CFM, 'utf8')).replace(/<!---[\s\S]*?--->/g, (comment) => ' '.repeat(comment.length));
+    const start = offsetOf(cfm, TESTBOX_BRANCH);
+    const branch = cfm.slice(start, offsetOf(cfm, INFO_BRANCH));
+    const run = offsetOf(branch, /\b\w+\.run\s*\(/i);
+    const tries = tagSpans(branch, 'cftry');
+    const [cftry] = tries.filter((span) => span.open < run && run < span.close).sort((a, b) => b.open - a.open);
+    if (cftry === undefined) throw new Error('r.run( is not inside a <cftry>');
+    const nested = tries.filter((span) => cftry.open < span.open && span.close < cftry.close);
+    const finallies = tagSpans(branch, 'cffinally').filter(
+      (span) =>
+        cftry.open < span.open &&
+        span.close < cftry.close &&
+        !nested.some((inner) => inner.open < span.open && span.close < inner.close),
+    );
+    const [cffinally] = finallies;
+    if (cffinally === undefined || finallies.length > 1) {
+      throw new Error(`the <cftry> around r.run( has ${finallies.length} <cffinally> of its own, not 1`);
+    }
+    return { cfm, start, branch, run, cftry, cffinally };
+  }
+
+  it("turns schema management on for the TestBox run and restores the value read before it in that cftry's cffinally", async () => {
+    const { branch, run, cftry, cffinally } = await testboxRun();
+    const prior = [...branch.slice(0, cftry.open).matchAll(READ)].at(-1)?.[1];
+    const place = (offset: number): string =>
+      offset < run ? 'before r.run(' : cffinally.open < offset && offset < cffinally.close ? 'cffinally' : 'after r.run(';
+
+    expect(prior, 'applyDbUpdates is saved before the <cftry>').toBeDefined();
+    expect(
+      writes(branch)
+        .filter(({ offset }) => cftry.open < offset && offset < cftry.close)
+        .map(({ offset, value }) => ({ place: place(offset), value })),
+    ).toEqual([
+      { place: 'before r.run(', value: 'true' },
+      { place: 'cffinally', value: prior?.toLowerCase() },
+    ]);
+  });
+
+  it('changes applyDbUpdates nowhere outside that cftry, so the info=1 probe reports it as configured', async () => {
+    const { cfm, start, cftry } = await testboxRun();
+
+    expect(writes(cfm).filter(({ offset }) => offset < start + cftry.open || start + cftry.close < offset)).toEqual([]);
+  });
+});
+
+// A start-up that requests interrupt stays flagged initialised; the settle stamps only a reload that ran to completion.
+describe('Application.cfc and startup.cfm start-up settling', () => {
+  const CFML_DIR = path.join(REPO_ROOT, 'harness', 'legacy-baseline', 'cfml');
+  const LOCK = (type: string): RegExp => new RegExp(`\\block\\s+name\\s*=\\s*"appInitBlock#application\\.instanceID#"\\s+type\\s*=\\s*"${type}"`, 'i');
+  const STAMP = /\bapplication\.opt2StartupSettledAt\s*=(?!=)/gi;
+
+  /** The file's text with CFML and script comments blanked, so offsets are kept. */
+  async function source(file: string): Promise<string> {
+    const text = await fs.readFile(path.join(CFML_DIR, file), 'utf8');
+    return text.replace(/<!---[\s\S]*?--->|\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, (comment) => ' '.repeat(comment.length));
+  }
+
+  /** The brace-delimited block after the first match of `head` in `text`, with the offset of its `{`. */
+  function block(text: string, head: RegExp): { open: number; body: string } {
+    const match = head.exec(text);
+    if (match === null) throw new Error(`no ${head}`);
+    const open = text.indexOf('{', match.index + match[0].length);
+    let depth = 0;
+    for (let i = open; i >= 0 && i < text.length; i++) {
+      if (text[i] === '{') depth++;
+      if (text[i] === '}' && --depth === 0) return { open, body: text.slice(open, i + 1) };
+    }
+    throw new Error(`no closed block after ${head}`);
+  }
+
+  /** Offset of `pattern` in `text`, failing the test when it is absent. */
+  function offsetIn(text: string, pattern: RegExp): number {
+    const offset = text.search(pattern);
+    expect(offset, `missing ${pattern}`).toBeGreaterThanOrEqual(0);
+    return offset;
+  }
+
+  it('reloads only for startup.cfm?op=reload; every other admitted request keeps reloads blocked', async () => {
+    const { body } = block(await source('Application.cfc'), /boolean\s+function\s+onRequestStart\s*\(/i);
+
+    expect(body).toMatch(/!listFindNoCase\s*\(\s*"run\.cfm,startup\.cfm"\s*,\s*page\s*\)/i);
+    const branch = offsetIn(
+      body,
+      /if\s*\(\s*compareNoCase\s*\(\s*page\s*,\s*"startup\.cfm"\s*\)\s*==\s*0\s*&&\s*structKeyExists\s*\(\s*url\s*,\s*"op"\s*\)\s*&&\s*url\.op\s*==\s*"reload"\s*\)\s*\{\s*return\s+reloadMasa\s*\(\s*\)\s*;/i,
+    );
+    expect(offsetIn(body, /request\.muraAppreloaded\s*=\s*true/i)).toBeGreaterThan(branch);
+  });
+
+  it('stamps a reload inside an exclusive appInitBlock lock, after super.onRequestStart() returns, and nowhere else', async () => {
+    const cfc = await source('Application.cfc');
+    const reload = block(cfc, /private\s+boolean\s+function\s+reloadMasa\s*\(/i);
+    const lock = block(reload.body, LOCK('exclusive'));
+    const cleared = offsetIn(lock.body, /structDelete\s*\(\s*application\s*,\s*"opt2StartupSettledAt"\s*\)/i);
+    const triggered = offsetIn(lock.body, /application\.appInitialized\s*=\s*false/i);
+    const started = offsetIn(lock.body, /super\.onRequestStart\s*\(\s*\)/i);
+    const stamped = offsetIn(lock.body, STAMP);
+
+    expect([cleared < triggered, triggered < started, started < stamped]).toEqual([true, true, true]);
+    expect(lock.body.slice(started, stamped)).toMatch(/if\s*\(\s*application\.appInitialized\s*&&\s*after\s*>\s*before\s*\)/i);
+    expect([...cfc.matchAll(STAMP)].map((m) => m.index)).toEqual([reload.open + lock.open + stamped]);
+    expect([...(await source('startup.cfm')).matchAll(STAMP)]).toEqual([]);
+  });
+
+  it('answers op=status from values read under a readonly appInitBlock lock, comparing epoch ms rather than dates', async () => {
+    const cfm = await source('startup.cfm');
+    const status = cfm.slice(offsetIn(cfm, /<cfelseif\s+url\.op\s+eq\s+"status"\s*>/i));
+    const lock = block(status, LOCK('readonly'));
+
+    expect(lock.body).toMatch(/\binitializedAt\s*=\s*initializedMs\s*\(\s*\)/i);
+    expect(lock.body).toMatch(/\bsettledAt\s*=\s*settledMs\s*\(\s*\)/i);
+    expect(block(cfm, /function\s+initializedMs\s*\(/i).body).toMatch(/\.getTime\s*\(\s*\)/);
+    expect(status).toMatch(/answer\["settled"\]\s*=\s*javaCast\(\s*"boolean"\s*,\s*initialized\s*&&\s*settledAt\s*>\s*0\s*&&\s*settledAt\s*==\s*initializedAt\s*\)/i);
+    expect(cfm).not.toMatch(/appInitializedTime\s*(?:==|!=|\beq\b|\bneq\b)/i);
+  });
+});
+
+
 describe('baselineStateDir and legacyOrigin', () => {
   it('places saved responses in <state>/baseline', () => {
     expect(baselineStateDir(env)).toBe(path.join(tmp, 'baseline'));

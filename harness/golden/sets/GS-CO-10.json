@@ -1,10 +1,10 @@
 {
-  "capturedAt": "2026-11-20T03:02:02.316Z",
+  "capturedAt": "2026-11-21T04:43:51.048Z",
   "fixtures": {
     "available": true,
     "reason": "fixtures loaded"
   },
-  "generatedAt": "2026-11-20T03:02:10.874Z",
+  "generatedAt": "2026-11-21T04:43:57.356Z",
   "generatedBy": "harness/src/golden/capture.ts",
   "origin": "legacy",
   "scenarioId": "GS-CO-10",
@@ -1514,7 +1514,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "68735e9ce1eb5c9d9e0916613eef24bba0471eaf9258d6437cba9b21450ec3ad",
+        "rawSha256": "4e33715dcac388b12a83ae625df8c3c39c525f8ad1f899994d6d598f652ee13b",
         "status": 200
       },
       "routeKey": "admin:cchangesets.list"
@@ -4705,7 +4705,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "b302fa9dfec7a760b072901ae3a86a5c33fe18e2dc7d09558807ecdd31ad7bee",
+        "rawSha256": "85cfffab0379d688dd154ec15f3ffc415f5012019c81a0a16bdaab2519a0904a",
         "status": 200
       },
       "routeKey": "admin:cchangesets.edit"
@@ -5517,7 +5517,7 @@
           "kind": "form",
           "value": {
             "action": "",
-            "changesetID": "A50A53C2-D53A-B8ED-4C562A0C4229DB1C",
+            "changesetID": "DC2E029B-EB81-B911-7EFB20FDDE607783",
             "closeDate": "",
             "csrf_token": "<token>",
             "csrf_token_expires": "<token>",
@@ -6321,7 +6321,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "f556dccc08fcc161466704edbc578a0400ebb4796636ada3f0772aa8fde5b3ff",
+        "rawSha256": "5980d93df493cf1ff1023c04ed16eef0b0bbce4f0a8c9db2efc56e60f6e7cabd",
         "status": 200
       },
       "routeKey": "admin:cchangesets.save"
@@ -8659,7 +8659,7 @@
               "form": 1,
               "name": "displayIntervalTZ",
               "type": "hidden",
-              "value": "Etc/UTC"
+              "value": "UTC"
             },
             {
               "disabled": false,
@@ -14323,7 +14323,7 @@
               "form": 1,
               "name": "displayIntervalTZ",
               "type": "hidden",
-              "value": "Etc/UTC"
+              "value": "UTC"
             },
             {
               "disabled": false,
@@ -17654,7 +17654,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "f48c0c69de7a4c19377e746090cefc6cc85a4d793f0580c52d607a042749db6c",
+        "rawSha256": "ce677843ad04f1c8e705d08cff15e61b22211c20eb61a21c59c533d94876627e",
         "status": 200
       },
       "routeKey": "admin:carch.edit"
@@ -18294,9 +18294,9 @@
             "action": "add",
             "approved": "0",
             "body": "<p>GS-CO-10 Change Set Page</p>",
-            "changesetID": "A50A53C2-D53A-B8ED-4C562A0C4229DB1C",
-            "contenthistid": "A50A631A-9974-D8E2-89AB1B4CDDA2BC5F",
-            "contentid": "A50A6188-E657-2D40-89628B418157960F",
+            "changesetID": "DC2E029B-EB81-B911-7EFB20FDDE607783",
+            "contenthistid": "DC2E12A8-AEB4-4473-EE98E5ACB0CC261A",
+            "contentid": "DC2E10F0-966E-50BE-9AFAF93F92084E9B",
             "csrf_token": "<token>",
             "csrf_token_expires": "<token>",
             "display": "1",
@@ -18930,7 +18930,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "1e03f557e02c8a948045e5834c217914133850a4bce0140cb4a9d8fd76046f22",
+        "rawSha256": "19fccb53bd13c07524f52a3f161934934554cc76ff510c47bcf01aa8c83f34b9",
         "status": 200
       },
       "routeKey": "admin:carch.update"
@@ -19400,7 +19400,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/?muraAction=cChangesets.assignments&siteid=tenant-a&changesetID=A50A53C2-D53A-B8ED-4C562A0C4229DB1C"
+        "url": "/admin/?muraAction=cChangesets.assignments&siteid=tenant-a&changesetID=DC2E029B-EB81-B911-7EFB20FDDE607783"
       },
       "response": {
         "domModel": {
@@ -19853,7 +19853,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "1607710251734bdb616508d3732896aba895f131ad62ac13d71dff4944f1b7eb",
+        "rawSha256": "b3edc19ff69166c8d8506779ac36c706035ff81df68da357c203ae94e78a41f0",
         "status": 200
       },
       "routeKey": "admin:cchangesets.assignments"
@@ -19946,7 +19946,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/_api/json/v1/tenant-a/generateCSRFTokens?context=A50A53C2-D53A-B8ED-4C562A0C4229DB1C"
+        "url": "/_api/json/v1/tenant-a/generateCSRFTokens?context=DC2E029B-EB81-B911-7EFB20FDDE607783"
       },
       "response": {
         "body": {
@@ -19963,7 +19963,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "e1cd22db10d5710c8a64b8eac4c178259928fad734a38f92a42d0ebdc5452d49",
+        "rawSha256": "8c36ed505df33eb65fd456f721d088ddf88b295036db8d71ac34f5ea25e6d3e0",
         "status": 200
       },
       "routeKey": "api:generatecsrftokens"
@@ -20408,7 +20408,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/?muraAction=cChangesets.removeitem&siteid=tenant-a&changesetID=A50A53C2-D53A-B8ED-4C562A0C4229DB1C&contenthistid=A50A6C95-CDE2-3D3C-3FDECC1B40F345AA&csrf_token=<token>&csrf_token_expires=<token>"
+        "url": "/admin/?muraAction=cChangesets.removeitem&siteid=tenant-a&changesetID=DC2E029B-EB81-B911-7EFB20FDDE607783&contenthistid=DC2E1C8C-99F5-A967-9033A627AC452395&csrf_token=<token>&csrf_token_expires=<token>"
       },
       "response": {
         "domModel": {
@@ -20831,7 +20831,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "ddfd07e0747a764e8e46d376850ce1bcd04e009b347f647d6fbc579fcb01c39e",
+        "rawSha256": "d3bbf5ecaeb9368b08ebeb8ff3665f0efdc0426db39fbaa4698577a42324c27a",
         "status": 200
       },
       "routeKey": "admin:cchangesets.removeitem"
@@ -21639,7 +21639,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/?muraAction=cChangesets.publish&siteid=tenant-a&changesetID=A50A53C2-D53A-B8ED-4C562A0C4229DB1C"
+        "url": "/admin/?muraAction=cChangesets.publish&siteid=tenant-a&changesetID=DC2E029B-EB81-B911-7EFB20FDDE607783"
       },
       "response": {
         "domModel": {
@@ -22423,7 +22423,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "bc119adeb22f37b9bf76df8f5e0816e3aede7ab27a6fa32494b68337d0ef4ce9",
+        "rawSha256": "884f2f29a3724b63cdd1e3a4bcc22774a56e7e9dcafeb37effbf115b86cc5041",
         "status": 200
       },
       "routeKey": "admin:cchangesets.publish"
@@ -22457,7 +22457,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/_api/json/v1/tenant-a/generateCSRFTokens?context=A50A53C2-D53A-B8ED-4C562A0C4229DB1C"
+        "url": "/_api/json/v1/tenant-a/generateCSRFTokens?context=DC2E029B-EB81-B911-7EFB20FDDE607783"
       },
       "response": {
         "body": {
@@ -22474,7 +22474,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "dfaa69dcf6564f100a5a7d4a2eaab3fedd0cce5de973e6fc9235044aca772fad",
+        "rawSha256": "dfb791450a74b01b772883b452651d820adbc0d213448d47f3f02494386c712e",
         "status": 200
       },
       "routeKey": "api:generatecsrftokens"
@@ -24097,7 +24097,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/?muraAction=cChangesets.rollback&siteid=tenant-a&changesetID=A50A53C2-D53A-B8ED-4C562A0C4229DB1C&csrf_token=<token>&csrf_token_expires=<token>"
+        "url": "/admin/?muraAction=cChangesets.rollback&siteid=tenant-a&changesetID=DC2E029B-EB81-B911-7EFB20FDDE607783&csrf_token=<token>&csrf_token_expires=<token>"
       },
       "response": {
         "domModel": {
@@ -25696,7 +25696,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "caf9431c1a587364e7f1c887cbdc570f4a15a6d5eb0bef8e6da3e4a12ee4f0e2",
+        "rawSha256": "da316c98d190ba51f2f9b3516d02a1fb95705d03750182ab0ca35c6c9acc5598",
         "status": 200
       },
       "routeKey": "admin:cchangesets.rollback"
@@ -25730,7 +25730,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/_api/json/v1/tenant-a/generateCSRFTokens?context=A50A53C2-D53A-B8ED-4C562A0C4229DB1C"
+        "url": "/_api/json/v1/tenant-a/generateCSRFTokens?context=DC2E029B-EB81-B911-7EFB20FDDE607783"
       },
       "response": {
         "body": {
@@ -25747,7 +25747,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "978c2cb673ed9ff2f8aa588500c068df0abd838b9c5c6fa1dca6dcafc57c4959",
+        "rawSha256": "dea1d3f8ca7e8970ee2f7a4398320ac75ff03bebf9e6c996099a62a7d877bc5c",
         "status": 200
       },
       "routeKey": "api:generatecsrftokens"
@@ -26512,7 +26512,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/?muraAction=cChangesets.delete&siteid=tenant-a&changesetID=A50A53C2-D53A-B8ED-4C562A0C4229DB1C&csrf_token=<token>&csrf_token_expires=<token>"
+        "url": "/admin/?muraAction=cChangesets.delete&siteid=tenant-a&changesetID=DC2E029B-EB81-B911-7EFB20FDDE607783&csrf_token=<token>&csrf_token_expires=<token>"
       },
       "response": {
         "domModel": {
@@ -27255,7 +27255,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "80122f519dc8af14f9cd6882e0a5dd284518a57f1083c0b1ad18e54709eb1b17",
+        "rawSha256": "2a543d7d2c9e9cf80ece523375ed390357b0f3505fd9ff3c93eb2bbb486b482d",
         "status": 200
       },
       "routeKey": "admin:cchangesets.delete"
@@ -27358,7 +27358,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "063388786f4690760463b294974a1cb241edde1c3215f6b6273d7f7fe4ab1964",
+        "rawSha256": "073bb60d3389e0acd3986be1fa77f1b4bca44b6e1034bccaea4bda95048bebcb",
         "status": 200
       },
       "routeKey": "api:changeset.findnew"
@@ -27418,10 +27418,10 @@
         "body": {
           "kind": "form",
           "value": {
-            "changesetid": "A50B0C2B-CCD0-2C85-BB3E08139F763EDF",
+            "changesetid": "DC2E7908-ECBB-A888-84CAFCF04B5C1C96",
             "description": "",
             "entityname": "changeset",
-            "id": "A50B0C2B-CCD0-2C85-BB3E08139F763EDF",
+            "id": "DC2E7908-ECBB-A888-84CAFCF04B5C1C96",
             "method": "save",
             "name": "GS-CO-10 JSON Change Set",
             "siteid": "tenant-a"
@@ -27478,7 +27478,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "084e4d51dd550e61222653635af65a5250117fa27940769ea236558ff73e35e3",
+        "rawSha256": "157b8bf04d3e5c53fb11e3fa405bc8988aae5cdeb82719e366836b53f448cc3c",
         "status": 200
       },
       "routeKey": "api:changeset.save"
@@ -27559,7 +27559,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "9c1fae2c6d4f6f8a5efc6fc30671b0a4cf259c736a327fd9c5d2cf588364a74e",
+        "rawSha256": "aaf49aa6e31d7f6df8667904b34f4a7bb73270dabbc2f9101bbe3dba6844e4d5",
         "status": 200
       },
       "routeKey": "api:changesetcategoryassignment.findnew"
@@ -27608,11 +27608,11 @@
         "body": {
           "kind": "form",
           "value": {
-            "assignmentid": "A50B0FD9-C333-4D5E-2C17CA3A913FF65F",
+            "assignmentid": "DC2E7C7E-C01A-52DC-58BA408214E9C24C",
             "categoryid": "7BC3EE7A-8584-44C3-B81D840C2F6FB12A",
-            "changesetid": "A50B0C2B-CCD0-2C85-BB3E08139F763EDF",
+            "changesetid": "DC2E7908-ECBB-A888-84CAFCF04B5C1C96",
             "entityname": "changesetCategoryAssignment",
-            "id": "A50B0FD9-C333-4D5E-2C17CA3A913FF65F",
+            "id": "DC2E7C7E-C01A-52DC-58BA408214E9C24C",
             "method": "save",
             "siteid": "tenant-a"
           }
@@ -27657,7 +27657,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "b400e7a37cd6b2add1b16c30ba083d12c1e20de506f7e5d08e34d8c8bd5d8498",
+        "rawSha256": "a639f9f68b66777a293f973ea31f1cf5d9285d9af7b79822e39cd1f64daa2929",
         "status": 200
       },
       "routeKey": "api:changesetcategoryassignment.save"
@@ -27757,7 +27757,7 @@
         "headers": {
           "content-type": "text/html;charset=UTF-8"
         },
-        "rawSha256": "afc9ad73b19270b8db2b5121e14dacb16b0518030f512deb22edf317fd4ae3db",
+        "rawSha256": "6a7cbe534d8af6b0abc4b766717b993475f733c485c4101a06365b55d5cf0644",
         "status": 500
       },
       "routeKey": "rest:changeset.save{siteid}"
@@ -27807,7 +27807,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "a986ea77e3cd40c685c2e3eaaba4f4bbb396b75e14f3fe9e9c6b42afe6de1f3d",
+        "rawSha256": "da251c63ed3176ba80a1044a2052388aa4afff7ed4c0b895a2a6091e92a96b24",
         "status": 500
       },
       "routeKey": "rest:changeset.save"
@@ -27863,7 +27863,7 @@
           "kind": "form",
           "value": {
             "categoryid": "7BC3EE7A-8584-44C3-B81D840C2F6FB12A",
-            "changesetid": "A50B0C2B-CCD0-2C85-BB3E08139F763EDF",
+            "changesetid": "DC2E7908-ECBB-A888-84CAFCF04B5C1C96",
             "siteid": "tenant-a"
           }
         },
@@ -27907,7 +27907,7 @@
         "headers": {
           "content-type": "text/html;charset=UTF-8"
         },
-        "rawSha256": "afc9ad73b19270b8db2b5121e14dacb16b0518030f512deb22edf317fd4ae3db",
+        "rawSha256": "6a7cbe534d8af6b0abc4b766717b993475f733c485c4101a06365b55d5cf0644",
         "status": 500
       },
       "routeKey": "rest:changesetcategoryassignment.save{siteid}"
@@ -27932,7 +27932,7 @@
           "kind": "form",
           "value": {
             "categoryid": "7BC3EE7A-8584-44C3-B81D840C2F6FB12A",
-            "changesetid": "A50B0C2B-CCD0-2C85-BB3E08139F763EDF"
+            "changesetid": "DC2E7908-ECBB-A888-84CAFCF04B5C1C96"
           }
         },
         "headers": {
@@ -27957,7 +27957,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "a986ea77e3cd40c685c2e3eaaba4f4bbb396b75e14f3fe9e9c6b42afe6de1f3d",
+        "rawSha256": "da251c63ed3176ba80a1044a2052388aa4afff7ed4c0b895a2a6091e92a96b24",
         "status": 500
       },
       "routeKey": "rest:changesetcategoryassignment.save"
@@ -27993,7 +27993,7 @@
           "authorization": "Basic <secret>"
         },
         "method": "DELETE",
-        "url": "/_api/rest/v1/tenant-a/changesetCategoryAssignment/A50B0FD9-C333-4D5E-2C17CA3A913FF65F"
+        "url": "/_api/rest/v1/tenant-a/changesetCategoryAssignment/DC2E7C7E-C01A-52DC-58BA408214E9C24C"
       },
       "response": {
         "body": {
@@ -28010,7 +28010,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "1cd15797dde7b677b6e7716ca57d91f6aef3bd6aeb690dd439a7907ba910756b",
+        "rawSha256": "01eda81fa4d543bc05da5a7b3511b57feea935e5f057d855c3b157c4cf2ae58c",
         "status": 500
       },
       "routeKey": "rest:changesetcategoryassignment.delete"
@@ -28046,7 +28046,7 @@
           "authorization": "Basic <secret>"
         },
         "method": "DELETE",
-        "url": "/_api/rest/v1/tenant-a/changeset/A50B0C2B-CCD0-2C85-BB3E08139F763EDF"
+        "url": "/_api/rest/v1/tenant-a/changeset/DC2E7908-ECBB-A888-84CAFCF04B5C1C96"
       },
       "response": {
         "body": {
@@ -28063,7 +28063,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "1cd15797dde7b677b6e7716ca57d91f6aef3bd6aeb690dd439a7907ba910756b",
+        "rawSha256": "01eda81fa4d543bc05da5a7b3511b57feea935e5f057d855c3b157c4cf2ae58c",
         "status": 500
       },
       "routeKey": "rest:changeset.delete"
@@ -28093,7 +28093,7 @@
           "kind": "form",
           "value": {
             "entityname": "changesetCategoryAssignment",
-            "id": "A50B0FD9-C333-4D5E-2C17CA3A913FF65F",
+            "id": "DC2E7C7E-C01A-52DC-58BA408214E9C24C",
             "method": "delete",
             "siteid": "tenant-a"
           }
@@ -28148,7 +28148,7 @@
           "kind": "form",
           "value": {
             "entityname": "changeset",
-            "id": "A50B0C2B-CCD0-2C85-BB3E08139F763EDF",
+            "id": "DC2E7908-ECBB-A888-84CAFCF04B5C1C96",
             "method": "delete",
             "siteid": "tenant-a"
           }

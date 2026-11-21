@@ -48,7 +48,8 @@ import {
   type ServiceName,
 } from '../helpers/stack.js';
 
-const HOOK_TIMEOUT_MS = 45 * 60_000;
+// 28,400 sequential requests (71 sets x 200 x 2 sides) at ~160 ms (~76 min), then 10 restarts of up to 4 x 60 s polls.
+const HOOK_TIMEOUT_MS = 3 * 60 * 60_000;
 const HEALTH_TIMEOUT_MS = 60_000;
 
 /** `performance.json` as `writeJsonReport` stamps it. */

@@ -1,10 +1,10 @@
 {
-  "capturedAt": "2026-11-20T03:01:06.119Z",
+  "capturedAt": "2026-11-21T04:42:58.598Z",
   "fixtures": {
     "available": true,
     "reason": "fixtures loaded"
   },
-  "generatedAt": "2026-11-20T03:01:09.910Z",
+  "generatedAt": "2026-11-21T04:43:02.359Z",
   "generatedBy": "harness/src/golden/capture.ts",
   "origin": "legacy",
   "scenarioId": "GS-CO-02",
@@ -13,7 +13,7 @@
     "mail": [],
     "rows": {
       "content.content": {
-        "checksum": "2ab8a8743f53a71e34898077cd2a80c624fe59cf63ce595bcf06fb6ef6bdc0f2",
+        "checksum": "edb28c8c2d68e70c00628f1f10d31fe12970ead843a673ba9d5a94a751e0bc80",
         "columns": [
           {
             "name": "tcontent_ID",
@@ -323,7 +323,7 @@
           },
           {
             "count": 1,
-            "encoding": "i5:11043s8:tenant-as35:00000000000000000000000000000000000s35:00000000000000000000000000000000001s6:<id:2>s7:<id:52>s6:<id:2>NNNNNNNs4:Pages7:Defaulti1:0i1:0s20:GS-CO-02 Edited Pages20:GS-CO-02 Edited Pages37:<p>Necessitatibus charisma aveho.</p>s41:sports-statua/corrupti-alias-claudeo-apudNNs27:<p>GS-CO-02 Edited Page</p>s14:<ts:iso-local>s10:Admin Users7:<id:51>NNi1:1i1:0i1:1i1:0Ns5:_selfNi1:0NNNNi1:0Ns7:Inheriti1:0Ni1:0i2:10s7:ordernos3:ascNNi1:0NNi1:0s42:00000000000000000000000000000000001,<id:2>Ni1:1s27:corrupti-alias-claudeo-apuds27:Corrupti alias claudeo apuds14:<ts:iso-local>i1:0Ns5:smalls4:AUTOs4:AUTONi1:0i1:0Ns5:Dailys2:{}"
+            "encoding": "i5:11071s8:tenant-as35:00000000000000000000000000000000000s35:00000000000000000000000000000000001s6:<id:2>s7:<id:52>s6:<id:2>NNNNNNNs4:Pages7:Defaulti1:0i1:0s20:GS-CO-02 Edited Pages20:GS-CO-02 Edited Pages37:<p>Necessitatibus charisma aveho.</p>s41:sports-statua/corrupti-alias-claudeo-apudNNs27:<p>GS-CO-02 Edited Page</p>s14:<ts:iso-local>s10:Admin Users7:<id:51>NNi1:1i1:0i1:1i1:0Ns5:_selfNi1:0NNNNi1:0Ns7:Inheriti1:0Ni1:0i2:10s7:ordernos3:ascNNi1:0NNi1:0s42:00000000000000000000000000000000001,<id:2>Ni1:1s27:corrupti-alias-claudeo-apuds27:Corrupti alias claudeo apuds14:<ts:iso-local>i1:0Ns5:smalls4:AUTOs4:AUTONi1:0i1:0Ns5:Dailys2:{}"
           }
         ],
         "legacyTable": "tcontent",
@@ -466,7 +466,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "cf2ac45eb7017be678db86a7889d8e6c2c548d6a2e7ced942e1e63c51cbdc51f",
+        "rawSha256": "25f6ab597153c939f57fe0c9c4181855842f87d51beaa336172e413eda59ea2a",
         "status": 200
       },
       "routeKey": "api:content.findone"
@@ -2807,7 +2807,7 @@
               "form": 1,
               "name": "displayIntervalTZ",
               "type": "hidden",
-              "value": "Etc/UTC"
+              "value": "UTC"
             },
             {
               "disabled": false,
@@ -6191,7 +6191,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/?muraAction=cArch.edit&siteid=tenant-a&moduleid=00000000000000000000000000000000000&topid=00000000000000000000000000000000001&contentid=AEAEFD1B-B638-0F03-01B3D64831264009&contenthistid=A459198B-A111-B6F1-786CF83DF07E0EDC&parentid=00000000000000000000000000000000001&type=Page"
+        "url": "/admin/?muraAction=cArch.edit&siteid=tenant-a&moduleid=00000000000000000000000000000000000&topid=00000000000000000000000000000000001&contentid=AEAEFD1B-B638-0F03-01B3D64831264009&contenthistid=DAA651A5-F994-802E-05566C4B113BC015&parentid=00000000000000000000000000000000001&type=Page"
       },
       "response": {
         "domModel": {
@@ -8519,7 +8519,7 @@
               "form": 1,
               "name": "displayIntervalTZ",
               "type": "hidden",
-              "value": "Etc/UTC"
+              "value": "UTC"
             },
             {
               "disabled": false,
@@ -11897,7 +11897,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "648c4fdd8688fca61118c53f592f8328d142a162efd80afb582f88c29dd803ad",
+        "rawSha256": "38fd07675a4abb7b2e0d945ad1b422b9146d2d256cda25ed2a65b1ac9d727d74",
         "status": 200
       },
       "routeKey": "admin:carch.edit"
@@ -12537,7 +12537,7 @@
             "action": "add",
             "approved": "0",
             "body": "<p>GS-CO-02 Edited Page</p>",
-            "contenthistid": "A459198B-A111-B6F1-786CF83DF07E0EDC",
+            "contenthistid": "DAA651A5-F994-802E-05566C4B113BC015",
             "contentid": "AEAEFD1B-B638-0F03-01B3D64831264009",
             "csrf_token": "<token>",
             "csrf_token_expires": "<token>",
@@ -13172,7 +13172,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "78879f82fe7261c18a104e06f69bbe5d142487b3dbd79e4293eaedf9d328f82a",
+        "rawSha256": "d7722cfb65e435427e43313589430d6d11f84a03d31f6818b48f5d9818bd1916",
         "status": 200
       },
       "routeKey": "admin:carch.update"
@@ -13292,7 +13292,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "be0ba523bc265c05b422514311913f491c78fc60820c6281e946c5cb5f7764b5",
+        "rawSha256": "2e9b23db359247a87bf24d00cfd7669776f7bc10f2161db0b5a30fb175f643c1",
         "status": 200
       },
       "routeKey": "api:generatecsrftokens"

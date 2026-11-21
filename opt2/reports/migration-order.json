@@ -1,8 +1,8 @@
 {
   "sourceSha": "696383140578f8dea3ece26f80cd7bfb370ddf0f",
   "generatedBy": "migration/src/order/dependency-order.ts",
-  "generatedAt": null,
-  "status": "pending-run",
+  "generatedAt": "2026-11-21T04:33:06.593Z",
+  "status": "generated",
   "basis": {
     "relations": "opt2/inventory/legacy-inventory.json relations[]",
     "kinds": [
@@ -31,6 +31,1054 @@
       "fixture modules"
     ]
   },
-  "order": [],
-  "brokenCycles": []
+  "order": [
+    {
+      "position": 1,
+      "table": "tsettings",
+      "schema": "dbo",
+      "owner": "programs-sites",
+      "parents": [],
+      "tenantFrom": "siteID"
+    },
+    {
+      "position": 2,
+      "table": "tchangesets",
+      "schema": "dbo",
+      "owner": "strategies-content",
+      "parents": [
+        "tsettings"
+      ],
+      "tenantFrom": "siteID"
+    },
+    {
+      "position": 3,
+      "table": "tcontent",
+      "schema": "dbo",
+      "owner": "strategies-content",
+      "parents": [
+        "tchangesets",
+        "tcontentstats",
+        "tfiles",
+        "tsettings"
+      ],
+      "tenantFrom": "siteID"
+    },
+    {
+      "position": 4,
+      "table": "tfiles",
+      "schema": "dbo",
+      "owner": "strategies-content",
+      "parents": [
+        "tcontent",
+        "tsettings"
+      ],
+      "tenantFrom": "siteID"
+    },
+    {
+      "position": 5,
+      "table": "tusers",
+      "schema": "dbo",
+      "owner": "split",
+      "parents": [
+        "tfiles",
+        "tsettings"
+      ],
+      "tenantFrom": "siteID"
+    },
+    {
+      "position": 6,
+      "table": "tcontentstats",
+      "schema": "dbo",
+      "owner": "strategies-content",
+      "parents": [
+        "tcontent",
+        "tsettings"
+      ],
+      "tenantFrom": "siteID"
+    },
+    {
+      "position": 7,
+      "table": "tusersmemb",
+      "schema": "dbo",
+      "owner": "identity",
+      "parents": [
+        "tusers"
+      ],
+      "tenantFrom": "parent"
+    },
+    {
+      "position": 8,
+      "table": "tdirectories",
+      "schema": "dbo",
+      "owner": "programs-sites",
+      "parents": [
+        "tsettings"
+      ],
+      "tenantFrom": "siteID"
+    },
+    {
+      "position": 9,
+      "table": "tpermissions",
+      "schema": "dbo",
+      "owner": "identity",
+      "parents": [
+        "tdirectories",
+        "tsettings",
+        "tusers"
+      ],
+      "tenantFrom": "siteID"
+    },
+    {
+      "position": 10,
+      "table": "toauthclients",
+      "schema": "dbo",
+      "owner": "identity",
+      "parents": [
+        "tsettings",
+        "tusers"
+      ],
+      "tenantFrom": "siteID"
+    },
+    {
+      "position": 11,
+      "table": "toauthtokens",
+      "schema": "dbo",
+      "owner": "identity",
+      "parents": [
+        "toauthclients",
+        "tusers"
+      ],
+      "tenantFrom": "parent"
+    },
+    {
+      "position": 12,
+      "table": "tredirects",
+      "schema": "dbo",
+      "owner": "identity",
+      "parents": [
+        "tsettings",
+        "tusers"
+      ],
+      "tenantFrom": "siteID"
+    },
+    {
+      "position": 13,
+      "table": "tuseraddresses",
+      "schema": "dbo",
+      "owner": "split",
+      "parents": [
+        "tsettings",
+        "tusers"
+      ],
+      "tenantFrom": "siteID"
+    },
+    {
+      "position": 14,
+      "table": "tuserdevice",
+      "schema": "dbo",
+      "owner": "identity",
+      "parents": [
+        "tsettings",
+        "tusers"
+      ],
+      "tenantFrom": "siteID"
+    },
+    {
+      "position": 15,
+      "table": "tuserremotesessions",
+      "schema": "dbo",
+      "owner": "identity",
+      "parents": [
+        "tusers"
+      ],
+      "tenantFrom": "parent"
+    },
+    {
+      "position": 16,
+      "table": "tusersfavorites",
+      "schema": "dbo",
+      "owner": "split",
+      "parents": [
+        "tcontent",
+        "tsettings",
+        "tusers"
+      ],
+      "tenantFrom": "siteID"
+    },
+    {
+      "position": 17,
+      "table": "tuserstags",
+      "schema": "dbo",
+      "owner": "split",
+      "parents": [
+        "tsettings",
+        "tusers"
+      ],
+      "tenantFrom": "siteID"
+    },
+    {
+      "position": 18,
+      "table": "tuserstrikes",
+      "schema": "dbo",
+      "owner": "identity",
+      "parents": [
+        "tusers"
+      ],
+      "tenantFrom": "parent"
+    },
+    {
+      "position": 19,
+      "table": "tclassextend",
+      "schema": "dbo",
+      "owner": "split",
+      "parents": [
+        "tsettings"
+      ],
+      "tenantFrom": "siteID"
+    },
+    {
+      "position": 20,
+      "table": "tclassextendsets",
+      "schema": "dbo",
+      "owner": "split",
+      "parents": [
+        "tclassextend",
+        "tsettings"
+      ],
+      "tenantFrom": "siteID"
+    },
+    {
+      "position": 21,
+      "table": "tclassextendattributes",
+      "schema": "dbo",
+      "owner": "split",
+      "parents": [
+        "tclassextendsets",
+        "tsettings"
+      ],
+      "tenantFrom": "siteID"
+    },
+    {
+      "position": 22,
+      "table": "tclassextenddatauseractivity",
+      "schema": "dbo",
+      "owner": "split",
+      "parents": [
+        "tclassextendattributes",
+        "tsettings",
+        "tusers"
+      ],
+      "tenantFrom": "siteID"
+    },
+    {
+      "position": 23,
+      "table": "tcontentcategories",
+      "schema": "dbo",
+      "owner": "strategies-content",
+      "parents": [
+        "tcontentcategoryassign",
+        "tsettings"
+      ],
+      "tenantFrom": "siteID"
+    },
+    {
+      "position": 24,
+      "table": "tusersinterests",
+      "schema": "dbo",
+      "owner": "split",
+      "parents": [
+        "tcontentcategories",
+        "tusers"
+      ],
+      "tenantFrom": "parent"
+    },
+    {
+      "position": 25,
+      "table": "tcontentcategoryassign",
+      "schema": "dbo",
+      "owner": "strategies-content",
+      "parents": [
+        "tcontent",
+        "tcontentcategories",
+        "tsettings"
+      ],
+      "tenantFrom": "siteID"
+    },
+    {
+      "position": 26,
+      "table": "tclassextenddata",
+      "schema": "dbo",
+      "owner": "split",
+      "parents": [
+        "tclassextendattributes",
+        "tcontent",
+        "tsettings"
+      ],
+      "tenantFrom": "siteID"
+    },
+    {
+      "position": 27,
+      "table": "tcontentassignments",
+      "schema": "dbo",
+      "owner": "strategies-content",
+      "parents": [
+        "tcontent",
+        "tsettings"
+      ],
+      "tenantFrom": "siteID"
+    },
+    {
+      "position": 28,
+      "table": "tcontentfilemetadata",
+      "schema": "dbo",
+      "owner": "strategies-content",
+      "parents": [
+        "tcontent",
+        "tfiles",
+        "tsettings"
+      ],
+      "tenantFrom": "siteID"
+    },
+    {
+      "position": 29,
+      "table": "tcontentobjects",
+      "schema": "dbo",
+      "owner": "strategies-content",
+      "parents": [
+        "tcontent",
+        "tsettings"
+      ],
+      "tenantFrom": "siteID"
+    },
+    {
+      "position": 30,
+      "table": "tcontentsourcemaps",
+      "schema": "dbo",
+      "owner": "strategies-content",
+      "parents": [
+        "tcontent",
+        "tsettings"
+      ],
+      "tenantFrom": "siteID"
+    },
+    {
+      "position": 31,
+      "table": "tcontenttags",
+      "schema": "dbo",
+      "owner": "strategies-content",
+      "parents": [
+        "tcontent",
+        "tsettings"
+      ],
+      "tenantFrom": "siteID"
+    },
+    {
+      "position": 32,
+      "table": "tapprovalchains",
+      "schema": "dbo",
+      "owner": "strategies-content",
+      "parents": [
+        "tsettings"
+      ],
+      "tenantFrom": "siteID"
+    },
+    {
+      "position": 33,
+      "table": "tapprovalrequests",
+      "schema": "dbo",
+      "owner": "strategies-content",
+      "parents": [
+        "tapprovalchains",
+        "tcontent",
+        "tsettings",
+        "tusers"
+      ],
+      "tenantFrom": "siteID"
+    },
+    {
+      "position": 34,
+      "table": "tclassextendrcsets",
+      "schema": "dbo",
+      "owner": "split",
+      "parents": [
+        "tclassextend",
+        "tsettings"
+      ],
+      "tenantFrom": "siteID"
+    },
+    {
+      "position": 35,
+      "table": "tcontentrelated",
+      "schema": "dbo",
+      "owner": "strategies-content",
+      "parents": [
+        "tclassextendrcsets",
+        "tcontent",
+        "tsettings"
+      ],
+      "tenantFrom": "siteID"
+    },
+    {
+      "position": 36,
+      "table": "tapprovalactions",
+      "schema": "dbo",
+      "owner": "strategies-content",
+      "parents": [
+        "tapprovalchains",
+        "tapprovalrequests",
+        "tsettings",
+        "tusers"
+      ],
+      "tenantFrom": "siteID"
+    },
+    {
+      "position": 37,
+      "table": "tapprovalassignments",
+      "schema": "dbo",
+      "owner": "strategies-content",
+      "parents": [
+        "tapprovalchains",
+        "tcontent",
+        "tsettings"
+      ],
+      "tenantFrom": "siteID"
+    },
+    {
+      "position": 38,
+      "table": "tapprovalmemberships",
+      "schema": "dbo",
+      "owner": "strategies-content",
+      "parents": [
+        "tapprovalchains",
+        "tsettings",
+        "tusers"
+      ],
+      "tenantFrom": "siteID"
+    },
+    {
+      "position": 39,
+      "table": "tchangesetcategoryassign",
+      "schema": "dbo",
+      "owner": "strategies-content",
+      "parents": [
+        "tchangesets",
+        "tcontentcategories",
+        "tsettings"
+      ],
+      "tenantFrom": "siteID"
+    },
+    {
+      "position": 40,
+      "table": "tchangesetrollback",
+      "schema": "dbo",
+      "owner": "strategies-content",
+      "parents": [
+        "tchangesets",
+        "tcontent",
+        "tsettings"
+      ],
+      "tenantFrom": "siteID"
+    },
+    {
+      "position": 41,
+      "table": "tchangesettagassign",
+      "schema": "dbo",
+      "owner": "strategies-content",
+      "parents": [
+        "tchangesets",
+        "tsettings"
+      ],
+      "tenantFrom": "siteID"
+    },
+    {
+      "position": 42,
+      "table": "tcontentcomments",
+      "schema": "dbo",
+      "owner": "strategies-content",
+      "parents": [
+        "tcontent",
+        "tsettings",
+        "tusers"
+      ],
+      "tenantFrom": "siteID"
+    },
+    {
+      "position": 43,
+      "table": "tcontentcommentcommenters",
+      "schema": "dbo",
+      "owner": "strategies-content",
+      "parents": [
+        "tcontentcomments"
+      ],
+      "tenantFrom": "parent"
+    },
+    {
+      "position": 44,
+      "table": "tcontentdisplaytitleapprovals",
+      "schema": "dbo",
+      "owner": "strategies-content",
+      "parents": [
+        "tsettings"
+      ],
+      "tenantFrom": "siteID"
+    },
+    {
+      "position": 45,
+      "table": "tcontentfeeds",
+      "schema": "dbo",
+      "owner": "strategies-content",
+      "parents": [
+        "tsettings"
+      ],
+      "tenantFrom": "siteID"
+    },
+    {
+      "position": 46,
+      "table": "tcontentfeedadvancedparams",
+      "schema": "dbo",
+      "owner": "strategies-content",
+      "parents": [
+        "tcontentfeeds"
+      ],
+      "tenantFrom": "parent"
+    },
+    {
+      "position": 47,
+      "table": "tcontentfeeditems",
+      "schema": "dbo",
+      "owner": "strategies-content",
+      "parents": [
+        "tcontentcategories",
+        "tcontentfeeds"
+      ],
+      "tenantFrom": "parent"
+    },
+    {
+      "position": 48,
+      "table": "tcontentfilenamearchive",
+      "schema": "dbo",
+      "owner": "strategies-content",
+      "parents": [
+        "tcontent",
+        "tsettings"
+      ],
+      "tenantFrom": "siteID"
+    },
+    {
+      "position": 49,
+      "table": "tcontentpublicsubmissionapprovals",
+      "schema": "dbo",
+      "owner": "strategies-content",
+      "parents": [
+        "tsettings"
+      ],
+      "tenantFrom": "siteID"
+    },
+    {
+      "position": 50,
+      "table": "tcontentratings",
+      "schema": "dbo",
+      "owner": "strategies-content",
+      "parents": [
+        "tcontent",
+        "tsettings",
+        "tuseraddresses"
+      ],
+      "tenantFrom": "siteID"
+    },
+    {
+      "position": 51,
+      "table": "tcontentremotepointer",
+      "schema": "dbo",
+      "owner": "strategies-content",
+      "parents": [
+        "tcontent",
+        "tsettings"
+      ],
+      "tenantFrom": "siteID"
+    },
+    {
+      "position": 52,
+      "table": "tcontentvariationtargeting",
+      "schema": "dbo",
+      "owner": "strategies-content",
+      "parents": [
+        "tcontent",
+        "tsettings"
+      ],
+      "tenantFrom": "siteID"
+    },
+    {
+      "position": 53,
+      "table": "temails",
+      "schema": "dbo",
+      "owner": "communications",
+      "parents": [
+        "tsettings"
+      ],
+      "tenantFrom": "siteID"
+    },
+    {
+      "position": 54,
+      "table": "temailreturnstats",
+      "schema": "dbo",
+      "owner": "communications",
+      "parents": [
+        "temails"
+      ],
+      "tenantFrom": "parent"
+    },
+    {
+      "position": 55,
+      "table": "temailstats",
+      "schema": "dbo",
+      "owner": "communications",
+      "parents": [
+        "temails"
+      ],
+      "tenantFrom": "parent"
+    },
+    {
+      "position": 56,
+      "table": "tformresponsepackets",
+      "schema": "dbo",
+      "owner": "strategies-content",
+      "parents": [
+        "tcontent",
+        "tsettings"
+      ],
+      "tenantFrom": "siteID"
+    },
+    {
+      "position": 57,
+      "table": "tformresponsequestions",
+      "schema": "dbo",
+      "owner": "strategies-content",
+      "parents": [
+        "tcontent",
+        "tformresponsepackets"
+      ],
+      "tenantFrom": "parent"
+    },
+    {
+      "position": 58,
+      "table": "timagesizes",
+      "schema": "dbo",
+      "owner": "programs-sites",
+      "parents": [
+        "tsettings"
+      ],
+      "tenantFrom": "siteID"
+    },
+    {
+      "position": 59,
+      "table": "tmailinglist",
+      "schema": "dbo",
+      "owner": "communications",
+      "parents": [
+        "tsettings"
+      ],
+      "tenantFrom": "siteID"
+    },
+    {
+      "position": 60,
+      "table": "tmailinglistmembers",
+      "schema": "dbo",
+      "owner": "communications",
+      "parents": [
+        "tsettings"
+      ],
+      "tenantFrom": "siteID"
+    },
+    {
+      "position": 61,
+      "table": "tsessiontracking",
+      "schema": "dbo",
+      "owner": "reporting",
+      "parents": [
+        "tcontent",
+        "tsettings",
+        "tusers"
+      ],
+      "tenantFrom": "siteID"
+    },
+    {
+      "position": 62,
+      "table": "tsystemobjects",
+      "schema": "dbo",
+      "owner": "programs-sites",
+      "parents": [
+        "tsettings"
+      ],
+      "tenantFrom": "siteID"
+    },
+    {
+      "position": 63,
+      "table": "ttrash",
+      "schema": "dbo",
+      "owner": "split",
+      "parents": [
+        "tsettings"
+      ],
+      "tenantFrom": "siteID"
+    },
+    {
+      "position": 64,
+      "table": "synthetic.program_site",
+      "schema": "synthetic",
+      "owner": "programs-sites",
+      "parents": [
+        "tsettings"
+      ],
+      "tenantFrom": "siteID"
+    },
+    {
+      "position": 65,
+      "table": "synthetic.message_template",
+      "schema": "synthetic",
+      "owner": "communications",
+      "parents": [
+        "tsettings"
+      ],
+      "tenantFrom": "siteID"
+    },
+    {
+      "position": 66,
+      "table": "synthetic.message",
+      "schema": "synthetic",
+      "owner": "communications",
+      "parents": [
+        "synthetic.message_template",
+        "tsettings"
+      ],
+      "tenantFrom": "siteID"
+    },
+    {
+      "position": 67,
+      "table": "synthetic.delivery_status",
+      "schema": "synthetic",
+      "owner": "communications",
+      "parents": [
+        "synthetic.message"
+      ],
+      "tenantFrom": "parent"
+    },
+    {
+      "position": 68,
+      "table": "synthetic.signature_request",
+      "schema": "synthetic",
+      "owner": "e-signature",
+      "parents": [
+        "tsettings"
+      ],
+      "tenantFrom": "siteID"
+    },
+    {
+      "position": 69,
+      "table": "synthetic.audit_entry",
+      "schema": "synthetic",
+      "owner": "e-signature",
+      "parents": [
+        "synthetic.signature_request"
+      ],
+      "tenantFrom": "parent"
+    },
+    {
+      "position": 70,
+      "table": "synthetic.signature",
+      "schema": "synthetic",
+      "owner": "e-signature",
+      "parents": [
+        "synthetic.signature_request"
+      ],
+      "tenantFrom": "parent"
+    },
+    {
+      "position": 71,
+      "table": "Program_1.finance_record",
+      "schema": "Program_1",
+      "owner": "finance",
+      "parents": [
+        "synthetic.program_site",
+        "tsettings"
+      ],
+      "tenantFrom": "parent"
+    },
+    {
+      "position": 72,
+      "table": "Program_1.finance_attachment",
+      "schema": "Program_1",
+      "owner": "finance",
+      "parents": [
+        "Program_1.finance_record",
+        "synthetic.program_site"
+      ],
+      "tenantFrom": "parent"
+    },
+    {
+      "position": 73,
+      "table": "Program_1.finance_record_version",
+      "schema": "Program_1",
+      "owner": "finance",
+      "parents": [
+        "Program_1.finance_record",
+        "synthetic.program_site"
+      ],
+      "tenantFrom": "parent"
+    },
+    {
+      "position": 74,
+      "table": "Program_1.finance_rollup",
+      "schema": "Program_1",
+      "owner": "finance",
+      "parents": [
+        "synthetic.program_site"
+      ],
+      "tenantFrom": "parent"
+    },
+    {
+      "position": 75,
+      "table": "Program_2.finance_record",
+      "schema": "Program_2",
+      "owner": "finance",
+      "parents": [
+        "synthetic.program_site",
+        "tsettings"
+      ],
+      "tenantFrom": "parent"
+    },
+    {
+      "position": 76,
+      "table": "Program_2.finance_attachment",
+      "schema": "Program_2",
+      "owner": "finance",
+      "parents": [
+        "Program_2.finance_record",
+        "synthetic.program_site"
+      ],
+      "tenantFrom": "parent"
+    },
+    {
+      "position": 77,
+      "table": "Program_2.finance_record_version",
+      "schema": "Program_2",
+      "owner": "finance",
+      "parents": [
+        "Program_2.finance_record",
+        "synthetic.program_site"
+      ],
+      "tenantFrom": "parent"
+    },
+    {
+      "position": 78,
+      "table": "Program_2.finance_rollup",
+      "schema": "Program_2",
+      "owner": "finance",
+      "parents": [
+        "synthetic.program_site"
+      ],
+      "tenantFrom": "parent"
+    },
+    {
+      "position": 79,
+      "table": "synthetic.person_archive",
+      "schema": "synthetic",
+      "owner": "people",
+      "parents": [
+        "tsettings"
+      ],
+      "tenantFrom": "siteID"
+    },
+    {
+      "position": 80,
+      "table": "synthetic.export_definition",
+      "schema": "synthetic",
+      "owner": "reporting",
+      "parents": [
+        "tsettings"
+      ],
+      "tenantFrom": "siteID"
+    },
+    {
+      "position": 81,
+      "table": "synthetic.export_job",
+      "schema": "synthetic",
+      "owner": "reporting",
+      "parents": [
+        "synthetic.export_definition",
+        "tsettings"
+      ],
+      "tenantFrom": "siteID"
+    },
+    {
+      "position": 82,
+      "table": "synthetic.survey",
+      "schema": "synthetic",
+      "owner": "surveys",
+      "parents": [
+        "tsettings"
+      ],
+      "tenantFrom": "siteID"
+    },
+    {
+      "position": 83,
+      "table": "synthetic.survey_reminder",
+      "schema": "synthetic",
+      "owner": "surveys",
+      "parents": [
+        "synthetic.survey"
+      ],
+      "tenantFrom": "parent"
+    },
+    {
+      "position": 84,
+      "table": "synthetic.survey_response",
+      "schema": "synthetic",
+      "owner": "surveys",
+      "parents": [
+        "synthetic.survey",
+        "tsettings"
+      ],
+      "tenantFrom": "siteID"
+    },
+    {
+      "position": 85,
+      "table": "synthetic.survey_schedule",
+      "schema": "synthetic",
+      "owner": "surveys",
+      "parents": [
+        "synthetic.survey"
+      ],
+      "tenantFrom": "parent"
+    },
+    {
+      "position": 86,
+      "table": "synthetic.survey_target",
+      "schema": "synthetic",
+      "owner": "surveys",
+      "parents": [
+        "synthetic.survey",
+        "tsettings"
+      ],
+      "tenantFrom": "siteID"
+    },
+    {
+      "position": 87,
+      "table": "Program_1.timesheet",
+      "schema": "Program_1",
+      "owner": "timesheets",
+      "parents": [
+        "synthetic.program_site",
+        "tsettings"
+      ],
+      "tenantFrom": "parent"
+    },
+    {
+      "position": 88,
+      "table": "Program_1.timesheet_day",
+      "schema": "Program_1",
+      "owner": "timesheets",
+      "parents": [
+        "Program_1.timesheet",
+        "synthetic.program_site"
+      ],
+      "tenantFrom": "parent"
+    },
+    {
+      "position": 89,
+      "table": "Program_1.approval_action",
+      "schema": "Program_1",
+      "owner": "timesheets",
+      "parents": [
+        "Program_1.timesheet_day",
+        "synthetic.program_site"
+      ],
+      "tenantFrom": "parent"
+    },
+    {
+      "position": 90,
+      "table": "Program_1.blackout",
+      "schema": "Program_1",
+      "owner": "timesheets",
+      "parents": [
+        "Program_1.timesheet_day",
+        "synthetic.person_archive",
+        "synthetic.program_site"
+      ],
+      "tenantFrom": "parent"
+    },
+    {
+      "position": 91,
+      "table": "Program_2.timesheet",
+      "schema": "Program_2",
+      "owner": "timesheets",
+      "parents": [
+        "synthetic.program_site",
+        "tsettings"
+      ],
+      "tenantFrom": "parent"
+    },
+    {
+      "position": 92,
+      "table": "Program_2.timesheet_day",
+      "schema": "Program_2",
+      "owner": "timesheets",
+      "parents": [
+        "Program_2.timesheet",
+        "synthetic.program_site"
+      ],
+      "tenantFrom": "parent"
+    },
+    {
+      "position": 93,
+      "table": "Program_2.approval_action",
+      "schema": "Program_2",
+      "owner": "timesheets",
+      "parents": [
+        "Program_2.timesheet_day",
+        "synthetic.program_site"
+      ],
+      "tenantFrom": "parent"
+    },
+    {
+      "position": 94,
+      "table": "Program_2.blackout",
+      "schema": "Program_2",
+      "owner": "timesheets",
+      "parents": [
+        "Program_2.timesheet_day",
+        "synthetic.person_archive",
+        "synthetic.program_site"
+      ],
+      "tenantFrom": "parent"
+    }
+  ],
+  "brokenCycles": [
+    {
+      "tables": [
+        "tcontent",
+        "tcontentstats",
+        "tfiles"
+      ],
+      "backReferenceColumn": "tcontent.FileID",
+      "patchedInSecondPass": true
+    },
+    {
+      "tables": [
+        "tcontentcategories",
+        "tcontentcategoryassign"
+      ],
+      "backReferenceColumn": "tcontentcategories.parentID",
+      "patchedInSecondPass": true
+    },
+    {
+      "tables": [
+        "tcontent",
+        "tcontentstats",
+        "tfiles"
+      ],
+      "backReferenceColumn": "tcontent.ContentID",
+      "patchedInSecondPass": false
+    }
+  ]
 }

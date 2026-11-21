@@ -4,7 +4,7 @@
     "reason": "fixtures loaded",
     "source": "${OPT2_STATE_DIR}/fixtures.json"
   },
-  "generatedAt": "2026-11-20T03:35:49.393Z",
+  "generatedAt": "2026-11-21T06:35:44.509Z",
   "generatedBy": "harness/src/golden/compare.ts",
   "planned": {
     "halted": [

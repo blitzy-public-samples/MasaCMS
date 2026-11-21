@@ -1,10 +1,10 @@
 {
-  "capturedAt": "2026-11-20T03:04:26.196Z",
+  "capturedAt": "2026-11-21T04:46:11.281Z",
   "fixtures": {
     "available": true,
     "reason": "fixtures loaded"
   },
-  "generatedAt": "2026-11-20T03:04:32.172Z",
+  "generatedAt": "2026-11-21T04:46:16.765Z",
   "generatedBy": "harness/src/golden/capture.ts",
   "origin": "legacy",
   "scenarioId": "GS-RE-01",
@@ -86,7 +86,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "b070654e6926175a25cd832d93ba181d15f8191bcc81308393c643c5584d7dfc",
+        "rawSha256": "38732065b9616c90b11f7b19c2c3a37edb027889671e9041fa84475fd38fd3a7",
         "status": 200
       },
       "routeKey": "fixture:reporting/exports@post"
@@ -125,7 +125,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/legacy-fixtures/cfml/api.cfm/reporting/exports/A52012FE-92DA-D9EE-CB40F8C02F36737A?siteid=tenant-a"
+        "url": "/legacy-fixtures/cfml/api.cfm/reporting/exports/DC433DD8-00CA-FE22-9172179CED4F3D4E?siteid=tenant-a"
       },
       "response": {
         "body": {
@@ -152,7 +152,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "0bae0db3528c27c56fae6f4f2196bd927a7f627de8c56a1fc52779fb93bd6ef5",
+        "rawSha256": "3b7fa866bad0dab0d40efa6aaff893b445f958f1cd53353b64f7a7ade538c865",
         "status": 200
       },
       "routeKey": "fixture:reporting/exports/{id}@get"
@@ -7190,7 +7190,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/legacy-fixtures/cfml/api.cfm/reporting/exports/A52012FE-92DA-D9EE-CB40F8C02F36737A/download?siteid=tenant-a"
+        "url": "/legacy-fixtures/cfml/api.cfm/reporting/exports/DC433DD8-00CA-FE22-9172179CED4F3D4E/download?siteid=tenant-a"
       },
       "response": {
         "export": {
@@ -14217,7 +14217,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "088570fa1cda667a366d630531e8e9d870559e99fc9c633c6d29508d7434e649",
+        "rawSha256": "4ce1d4c2ba973f8fec2270f7b82e4e77cd289e1687571f4dbf6a21a8e29df513",
         "status": 200
       },
       "routeKey": "fixture:reporting/exports/{id}/download@get"
@@ -14292,7 +14292,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "0f4a306a1b11a37a3763063efb349cf02adb1801803983fe695ec806d085110d",
+        "rawSha256": "c2582a48e95d0b8c397bd1691065d628ffff7bcc785a52f4704a4f08b1eb9f63",
         "status": 200
       },
       "routeKey": "fixture:reporting/exports@post"
@@ -14331,7 +14331,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/legacy-fixtures/cfml/api.cfm/reporting/exports/A5204500-00C0-D023-F1C7ECFFAE8178D3?siteid=tenant-a"
+        "url": "/legacy-fixtures/cfml/api.cfm/reporting/exports/DC4371E6-D8FE-B389-63FA95D9FCB47E75?siteid=tenant-a"
       },
       "response": {
         "body": {
@@ -14358,7 +14358,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "ce7cb513bc528da299297f5761402521bfaad743fa9437568f8a6c1c99183729",
+        "rawSha256": "9d336bdedea40d5f96a48d64c2b1494343a7f77c6162be1ed71ed29e09220e4d",
         "status": 200
       },
       "routeKey": "fixture:reporting/exports/{id}@get"
@@ -21391,7 +21391,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/legacy-fixtures/cfml/api.cfm/reporting/exports/A5204500-00C0-D023-F1C7ECFFAE8178D3/download?siteid=tenant-a"
+        "url": "/legacy-fixtures/cfml/api.cfm/reporting/exports/DC4371E6-D8FE-B389-63FA95D9FCB47E75/download?siteid=tenant-a"
       },
       "response": {
         "export": {
@@ -28488,7 +28488,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "773f2809af164a699eda9276181de7be4d218996317a1d41e61127754b16b7c7",
+        "rawSha256": "4092d02e181f07a0080eec5a1801f398111b703c7c918d2a0143d50d88377b13",
         "status": 200
       },
       "routeKey": "fixture:reporting/exports@post"
@@ -28527,7 +28527,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/legacy-fixtures/cfml/api.cfm/reporting/exports/A5206185-9556-CE0A-6BE2D3B72A36778C?siteid=tenant-a"
+        "url": "/legacy-fixtures/cfml/api.cfm/reporting/exports/DC43905B-B99B-F746-46D9F42922541655?siteid=tenant-a"
       },
       "response": {
         "body": {
@@ -28554,7 +28554,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "237f9bdf4218e9e41804908282f21a569c7dae2b2d01336457cfc69f37acc9d2",
+        "rawSha256": "3f5eaa160c7db963ff732ec8e71a034f764b1644f3f502971f4aeca10e8d7bd1",
         "status": 200
       },
       "routeKey": "fixture:reporting/exports/{id}@get"
@@ -28596,7 +28596,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/legacy-fixtures/cfml/api.cfm/reporting/exports/A5206185-9556-CE0A-6BE2D3B72A36778C/download?siteid=tenant-a"
+        "url": "/legacy-fixtures/cfml/api.cfm/reporting/exports/DC43905B-B99B-F746-46D9F42922541655/download?siteid=tenant-a"
       },
       "response": {
         "export": {
@@ -28627,7 +28627,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "bb7d3b2940b3b75ddba8d79c3a63fe73ec728104fb473383d223f50123f57342",
+        "rawSha256": "2b009977bde08e6e796f94b920cdc9677b930b8b54ce547974c5b9f1422412cf",
         "status": 200
       },
       "routeKey": "fixture:reporting/exports/{id}/download@get"
@@ -28977,7 +28977,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "48d13bd5d2f5409c3bc0939c6a4e8e8e05d57fddae73e7b79516ddfadb042380",
+        "rawSha256": "303c074df1efe448a25411e6904b8bb120f3d635cff1911a628f053618373b1c",
         "status": 404
       },
       "routeKey": "opt2:/opt2/admin/reporting/exports"
@@ -29129,7 +29129,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "f7804911a85c43e1697f00227f6aa1a367e74f02f5f838a7bf4fab080d6ee077",
+        "rawSha256": "1801515d3aa34c0c5547418e96fcdf7dd1faf5ab61ac3832058677cee7719962",
         "status": 404
       },
       "routeKey": "opt2:/opt2/admin-actions/reporting/create-export"
@@ -29281,7 +29281,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "8b057a7dd834d5345d869d66982dd2a75d81b6b89e2ae8ecbcabe11e95806b85",
+        "rawSha256": "01f1aa9dced7993dcd7c339c069783eca6e02be649299714b6885bfc18ce594a",
         "status": 404
       },
       "routeKey": "opt2:/opt2/files/reporting-exports/gs-unsigned"

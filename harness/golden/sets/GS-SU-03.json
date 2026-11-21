@@ -1,10 +1,10 @@
 {
-  "capturedAt": "2026-11-20T03:04:22.987Z",
+  "capturedAt": "2026-11-21T04:46:08.011Z",
   "fixtures": {
     "available": true,
     "reason": "fixtures loaded"
   },
-  "generatedAt": "2026-11-20T03:04:24.602Z",
+  "generatedAt": "2026-11-21T04:46:09.764Z",
   "generatedBy": "harness/src/golden/capture.ts",
   "origin": "legacy",
   "scenarioId": "GS-SU-03",
@@ -163,7 +163,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "0034141b1ffc8f273a66d4424a66879a72bf724cba43ea1cccd32bc5e43eb8be",
+        "rawSha256": "bf6345ae6620fd4807a2960159ad4885e9f7392e4edb8daa6c62bbb0b3059387",
         "status": 200
       },
       "routeKey": "fixture:surveys/surveys@post"
@@ -209,7 +209,7 @@
           "x-csrf_token_expires": "<token>"
         },
         "method": "POST",
-        "url": "/legacy-fixtures/cfml/api.cfm/surveys/surveys/A51F9792-083E-9376-CD8A6200E5A52A4A/targets/bulk?siteid=tenant-a"
+        "url": "/legacy-fixtures/cfml/api.cfm/surveys/surveys/DC42BF24-F52F-B598-13D01233DD549A1B/targets/bulk?siteid=tenant-a"
       },
       "response": {
         "body": {
@@ -267,7 +267,7 @@
           "x-csrf_token_expires": "<token>"
         },
         "method": "POST",
-        "url": "/legacy-fixtures/cfml/api.cfm/surveys/surveys/A51F9792-083E-9376-CD8A6200E5A52A4A/responses?siteid=tenant-b"
+        "url": "/legacy-fixtures/cfml/api.cfm/surveys/surveys/DC42BF24-F52F-B598-13D01233DD549A1B/responses?siteid=tenant-b"
       },
       "response": {
         "body": {
@@ -289,7 +289,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "e467bb90ec48f7133162cc7f82b886b0e3e7ddae0776dda123cfd3e8fffe9409",
+        "rawSha256": "65881da59c8a930900f20a93d7dc7c96651996e452a7c94e0591f6920ff2fe49",
         "status": 200
       },
       "routeKey": "fixture:surveys/surveys/{id}/responses@post"
@@ -333,7 +333,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/legacy-fixtures/cfml/api.cfm/surveys/surveys/A51F9792-083E-9376-CD8A6200E5A52A4A/responses?siteid=tenant-a"
+        "url": "/legacy-fixtures/cfml/api.cfm/surveys/surveys/DC42BF24-F52F-B598-13D01233DD549A1B/responses?siteid=tenant-a"
       },
       "response": {
         "body": {
@@ -365,7 +365,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "2f8eea2cbcf0f56b73db069cdb520a168d885d5466fa54991117c3028eb9ca46",
+        "rawSha256": "4da3dcbafe2e6001e7a464025aaa926fbdcb8598c4232e51c00bc6eef1d9f04c",
         "status": 200
       },
       "routeKey": "fixture:surveys/surveys/{id}/responses@get"
@@ -419,7 +419,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/legacy-fixtures/cfml/api.cfm/surveys/surveys/A51F9792-083E-9376-CD8A6200E5A52A4A?siteid=tenant-a"
+        "url": "/legacy-fixtures/cfml/api.cfm/surveys/surveys/DC42BF24-F52F-B598-13D01233DD549A1B?siteid=tenant-a"
       },
       "response": {
         "body": {
@@ -461,7 +461,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "32a18b29f4880e97923580660805c067ccaa13751eebd295a01dcfb65aa15766",
+        "rawSha256": "75ebde2f054a91d2dd96e2d307a4eac5420322d519a6fd219356cdf4c0814a5f",
         "status": 200
       },
       "routeKey": "fixture:surveys/surveys/{id}@get"

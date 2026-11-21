@@ -1,10 +1,10 @@
 {
-  "capturedAt": "2026-11-20T03:10:31.948Z",
+  "capturedAt": "2026-11-21T04:52:19.164Z",
   "fixtures": {
     "available": true,
     "reason": "fixtures loaded"
   },
-  "generatedAt": "2026-11-20T03:10:31.949Z",
+  "generatedAt": "2026-11-21T04:52:19.166Z",
   "generatedBy": "harness/e2e/ui/interactions.e2e.ts",
   "origin": "legacy",
   "scenarioId": "GS-UI-02",
@@ -985,7 +985,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/?muraAction=cArch.loadSiteManager&siteid=tenant-a&topid=8CD47134-D973-A94C-5AB9190D375C6A60&moduleid=00000000000000000000000000000000000&sortby=orderno&sortdirection=asc&ptype=Page&startrow=1&cacheid=0.059344592191627576"
+        "url": "/admin/?muraAction=cArch.loadSiteManager&siteid=tenant-a&topid=8CD47134-D973-A94C-5AB9190D375C6A60&moduleid=00000000000000000000000000000000000&sortby=orderno&sortdirection=asc&ptype=Page&startrow=1&cacheid=0.9673387755321609"
       },
       "response": {
         "body": {
@@ -1887,7 +1887,7 @@
         "headers": {
           "content-type": "application/json;charset=utf-8"
         },
-        "rawSha256": "ed2fcd7d2c8b0b78c0a3aea47dc0afce4dd5c15818faab2a5de9aa566488e131",
+        "rawSha256": "44be9d0ef6e5d0335e2fb7016b73fddcdd0374522e28f6afba6ef3ed8422eddb",
         "status": 200
       },
       "routeKey": "admin:carch.loadsitemanager"
@@ -1939,7 +1939,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/_api/json/v1/tenant-a/?&entityname=Entity&method=findNew&siteid=tenant-a&_cacheid=0.9322122028231468"
+        "url": "/_api/json/v1/tenant-a/?&entityname=Entity&method=findNew&siteid=tenant-a&_cacheid=0.5100755158204295"
       },
       "response": {
         "body": {
@@ -1973,7 +1973,7 @@
         "headers": {
           "content-type": "application/json;charset=utf-8"
         },
-        "rawSha256": "19a44367ac0daefb1c5d95eb56e8506cad0347b910bdac5dd69a4be80d1e9961",
+        "rawSha256": "be288342f53cd6ea9c2e9708b62dffa9bfd5a62f3ce7be48002977157a727049",
         "status": 200
       },
       "routeKey": "api:entity.findnew"
@@ -2245,7 +2245,7 @@
         "headers": {
           "content-type": "application/json;charset=utf-8"
         },
-        "rawSha256": "cf4a5c78879626c95c51f2754dc446f888279b3d6fb02a0e431c10e7b4608c31",
+        "rawSha256": "0e419ae0fc9d0ad4dcccac92872e6bf2da33e60438f69e5db20a5ad71594b15f",
         "status": 200
       },
       "routeKey": "api:entity.findproperties"
@@ -2289,7 +2289,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/_api/json/v1/tenant-a/entity/?_cacheid=0.4516992412515901&itemsPerPage=10&scaffold%5B0%5D=1&"
+        "url": "/_api/json/v1/tenant-a/entity/?_cacheid=0.2863738502942281&itemsPerPage=10&scaffold%5B0%5D=1&"
       },
       "response": {
         "body": {
@@ -2315,7 +2315,7 @@
         "headers": {
           "content-type": "application/json;charset=utf-8"
         },
-        "rawSha256": "6b02a3fae04eb21a10a756c403d5671c3e3c1e7e7896df01229500b0da47b28a",
+        "rawSha256": "c7b7488fef153c71d783df3633ce29bc71a40eae52dda1e40a4649538ad689ac",
         "status": 200
       },
       "routeKey": "api:entity.findquery"
@@ -2359,7 +2359,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/_api/json/v1/tenant-a/entity/?_cacheid=0.4516992412515901&itemsPerPage=10&scaffold%5B0%5D=1&"
+        "url": "/_api/json/v1/tenant-a/entity/?_cacheid=0.2863738502942281&itemsPerPage=10&scaffold%5B0%5D=1&"
       },
       "response": {
         "body": {
@@ -2385,7 +2385,7 @@
         "headers": {
           "content-type": "application/json;charset=utf-8"
         },
-        "rawSha256": "6b02a3fae04eb21a10a756c403d5671c3e3c1e7e7896df01229500b0da47b28a",
+        "rawSha256": "c7b7488fef153c71d783df3633ce29bc71a40eae52dda1e40a4649538ad689ac",
         "status": 200
       },
       "routeKey": "api:entity.findquery"
@@ -3270,7 +3270,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/?muraAction=cArch.loadSiteManager&siteid=tenant-a&topid=8CD47134-D973-A94C-5AB9190D375C6A60&moduleid=00000000000000000000000000000000000&sortby=&sortdirection=&ptype=Page&startrow=21&cacheid=0.345336115022828"
+        "url": "/admin/?muraAction=cArch.loadSiteManager&siteid=tenant-a&topid=8CD47134-D973-A94C-5AB9190D375C6A60&moduleid=00000000000000000000000000000000000&sortby=&sortdirection=&ptype=Page&startrow=21&cacheid=0.2561667667740112"
       },
       "response": {
         "body": {
@@ -4137,7 +4137,7 @@
         "headers": {
           "content-type": "application/json;charset=utf-8"
         },
-        "rawSha256": "13b4bd503ca396e682da24083179771df249841c463c92d582e4695f4d2bbcf0",
+        "rawSha256": "8a543db18cb4373feea877e1e0c7899b9ec273647d3fa0d810c671dabdc8ac96",
         "status": 200
       },
       "routeKey": "admin:carch.loadsitemanager"
@@ -4272,7 +4272,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/index.cfm?muraAction=carch.draftpromptdata&contentid=D7D23FC5-1202-1243-F7463F217E1A9CD2&siteid=tenant-a&targetversion=undefined&contenthistid=A4591BF5-D867-5268-7B55BD86E39785B4"
+        "url": "/admin/index.cfm?muraAction=carch.draftpromptdata&contentid=D7D23FC5-1202-1243-F7463F217E1A9CD2&siteid=tenant-a&targetversion=undefined&contenthistid=DAA653F1-EA19-0BD8-2ABBBDF191BAA2B0"
       },
       "response": {
         "body": {
@@ -4385,7 +4385,7 @@
         "headers": {
           "content-type": "application/json;charset=utf-8"
         },
-        "rawSha256": "64457e2c57e4333a58992100f2d05aba96fb3d34fe50cf0e2751d60b9aa98618",
+        "rawSha256": "9aa0d372de8659eede92b8dd619feaeabb60b11e2d7e0ccfd5a9db7daeed34a2",
         "status": 200
       },
       "routeKey": "admin:carch.draftpromptdata"
@@ -4440,7 +4440,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/?muraAction=cArch.loadSelectedRelatedContent&compactDisplay=true&contenthistid=A553FC51-CC12-C6AA-F56333E5916CA83D&type=Page&subtype=Default&siteid=tenant-a&relatedcontentsetid=&relateditems=%5B%5D&external=true&cacheid=0.6963114056995526"
+        "url": "/admin/?muraAction=cArch.loadSelectedRelatedContent&compactDisplay=true&contenthistid=DC777460-9761-E639-573826C095E766E0&type=Page&subtype=Default&siteid=tenant-a&relatedcontentsetid=&relateditems=%5B%5D&external=true&cacheid=0.4596738798528205"
       },
       "response": {
         "domModel": {
@@ -4539,7 +4539,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/?muraAction=cArch.loadExtendedAttributes&contentHistID=A553FC51-CC12-C6AA-F56333E5916CA83D&type=Page&subType=Default&siteID=tenant-a&tablist=tabbasic,tabsummary,tabassoc,tabpublishing,tabschedule,tablayoutobjects,tabcategorization,tabtags,tabrelatedcontent,tabremote&cacheid=0.1308828132853722"
+        "url": "/admin/?muraAction=cArch.loadExtendedAttributes&contentHistID=DC777460-9761-E639-573826C095E766E0&type=Page&subType=Default&siteID=tenant-a&tablist=tabbasic,tabsummary,tabassoc,tabpublishing,tabschedule,tablayoutobjects,tabcategorization,tabtags,tabrelatedcontent,tabremote&cacheid=0.9662668474802747"
       },
       "response": {
         "body": {
@@ -4644,7 +4644,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/?muraAction=cArch.siteParents&compactDisplay=true&siteid=tenant-a&contentid=D7D23FC5-1202-1243-F7463F217E1A9CD2&parentid=8CD47134-D973-A94C-5AB9190D375C6A60&keywords=&isNew=1&cacheid=0.18526395403730234"
+        "url": "/admin/?muraAction=cArch.siteParents&compactDisplay=true&siteid=tenant-a&contentid=D7D23FC5-1202-1243-F7463F217E1A9CD2&parentid=8CD47134-D973-A94C-5AB9190D375C6A60&keywords=&isNew=1&cacheid=0.30014551225113695"
       },
       "response": {
         "domModel": {
@@ -4750,7 +4750,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/?muraAction=cArch.loadExpireNotify&compactDisplay=true&siteid=tenant-a&contenthistid=A553FC51-CC12-C6AA-F56333E5916CA83D&parentid=8CD47134-D973-A94C-5AB9190D375C6A60&cacheid=0.9209552516968533"
+        "url": "/admin/?muraAction=cArch.loadExpireNotify&compactDisplay=true&siteid=tenant-a&contenthistid=DC777460-9761-E639-573826C095E766E0&parentid=8CD47134-D973-A94C-5AB9190D375C6A60&cacheid=0.8322717757797896"
       },
       "response": {
         "domModel": {
@@ -4795,7 +4795,7 @@
         "headers": {
           "content-type": "text/html;charset=UTF-8"
         },
-        "rawSha256": "f84a11788ae633d404a37be4afd3a8f2a56b057c37a18fdc230d32c3e4b5c71f",
+        "rawSha256": "2114de90afb6e3f846972d6c2c05d8156f1a77486958247e0d969b17a0f85299",
         "status": 200
       },
       "routeKey": "admin:carch.loadexpirenotify"
@@ -5312,7 +5312,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/?muraAction=cArch.loadRelatedContent&compactDisplay=true&contentid=D7D23FC5-1202-1243-F7463F217E1A9CD2&siteid=tenant-a&external=true&isNew=1&relatedcontentsetid=&&entitytype=content&cacheid=0.9236091056336436"
+        "url": "/admin/?muraAction=cArch.loadRelatedContent&compactDisplay=true&contentid=D7D23FC5-1202-1243-F7463F217E1A9CD2&siteid=tenant-a&external=true&isNew=1&relatedcontentsetid=&&entitytype=content&cacheid=0.7051687576506049"
       },
       "response": {
         "domModel": {
@@ -5849,7 +5849,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/index.cfm?muraAction=cArch.statusmodal&compactDisplay=true&siteid=tenant-a&contenthistid=A553FC51-CC12-C6AA-F56333E5916CA83D&cacheid=0.006551846818995344"
+        "url": "/admin/index.cfm?muraAction=cArch.statusmodal&compactDisplay=true&siteid=tenant-a&contenthistid=DC777460-9761-E639-573826C095E766E0&cacheid=0.007106941971622427"
       },
       "response": {
         "domModel": {
@@ -5901,7 +5901,7 @@
         "headers": {
           "content-type": "text/html;charset=UTF-8"
         },
-        "rawSha256": "6a3929a3ceb24e3e536164bd04b8a0ea47552d1b721b1f6b93cbb18912b7408b",
+        "rawSha256": "b610b3fbc2dbc7242adc09f60cc4ff10cfba0e5dedf7e66d1de61425ebcfe3fb",
         "status": 200
       },
       "routeKey": "admin:carch.statusmodal"
@@ -5929,7 +5929,7 @@
             "csrf_token": "<token>",
             "csrf_token_expires": "<token>",
             "muraAction": "carch.approvalaction",
-            "requestid": "A553FCBA-B289-A5AF-1AF19504FE492BF3",
+            "requestid": "DC7774B7-A03C-7B5F-B468CDDB5075CA4B",
             "siteid": "tenant-a"
           }
         },
@@ -5999,7 +5999,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/?muraAction=cArch.loadSelectedRelatedContent&compactDisplay=true&contenthistid=A5573961-E5DD-5154-7431F4353177BB11&type=Page&subtype=Default&siteid=tenant-a&relatedcontentsetid=&relateditems=%5B%5D&external=true&cacheid=0.847038522020548"
+        "url": "/admin/?muraAction=cArch.loadSelectedRelatedContent&compactDisplay=true&contenthistid=DC7AACF8-C209-6038-F54887BDAFECA7B6&type=Page&subtype=Default&siteid=tenant-a&relatedcontentsetid=&relateditems=%5B%5D&external=true&cacheid=0.8717519082755822"
       },
       "response": {
         "domModel": {
@@ -6098,7 +6098,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/?muraAction=cArch.loadExtendedAttributes&contentHistID=A5573961-E5DD-5154-7431F4353177BB11&type=Page&subType=Default&siteID=tenant-a&tablist=tabbasic,tabsummary,tabassoc,tabpublishing,tabschedule,tablayoutobjects,tabcategorization,tabtags,tabrelatedcontent,tabremote&cacheid=0.418328883388829"
+        "url": "/admin/?muraAction=cArch.loadExtendedAttributes&contentHistID=DC7AACF8-C209-6038-F54887BDAFECA7B6&type=Page&subType=Default&siteID=tenant-a&tablist=tabbasic,tabsummary,tabassoc,tabpublishing,tabschedule,tablayoutobjects,tabcategorization,tabtags,tabrelatedcontent,tabremote&cacheid=0.5280216135211441"
       },
       "response": {
         "body": {
@@ -6203,7 +6203,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/?muraAction=cArch.siteParents&compactDisplay=true&siteid=tenant-a&contentid=D7D23FC5-1202-1243-F7463F217E1A9CD2&parentid=8CD47134-D973-A94C-5AB9190D375C6A60&keywords=&isNew=1&cacheid=0.40796480377524336"
+        "url": "/admin/?muraAction=cArch.siteParents&compactDisplay=true&siteid=tenant-a&contentid=D7D23FC5-1202-1243-F7463F217E1A9CD2&parentid=8CD47134-D973-A94C-5AB9190D375C6A60&keywords=&isNew=1&cacheid=0.762496775180065"
       },
       "response": {
         "domModel": {
@@ -6309,7 +6309,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/?muraAction=cArch.loadExpireNotify&compactDisplay=true&siteid=tenant-a&contenthistid=A5573961-E5DD-5154-7431F4353177BB11&parentid=8CD47134-D973-A94C-5AB9190D375C6A60&cacheid=0.6907426024232931"
+        "url": "/admin/?muraAction=cArch.loadExpireNotify&compactDisplay=true&siteid=tenant-a&contenthistid=DC7AACF8-C209-6038-F54887BDAFECA7B6&parentid=8CD47134-D973-A94C-5AB9190D375C6A60&cacheid=0.8610394507426198"
       },
       "response": {
         "domModel": {
@@ -6354,7 +6354,7 @@
         "headers": {
           "content-type": "text/html;charset=UTF-8"
         },
-        "rawSha256": "f84a11788ae633d404a37be4afd3a8f2a56b057c37a18fdc230d32c3e4b5c71f",
+        "rawSha256": "2114de90afb6e3f846972d6c2c05d8156f1a77486958247e0d969b17a0f85299",
         "status": 200
       },
       "routeKey": "admin:carch.loadexpirenotify"
@@ -6871,7 +6871,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/?muraAction=cArch.loadRelatedContent&compactDisplay=true&contentid=D7D23FC5-1202-1243-F7463F217E1A9CD2&siteid=tenant-a&external=true&isNew=1&relatedcontentsetid=&&entitytype=content&cacheid=0.45863524642635556"
+        "url": "/admin/?muraAction=cArch.loadRelatedContent&compactDisplay=true&contentid=D7D23FC5-1202-1243-F7463F217E1A9CD2&siteid=tenant-a&external=true&isNew=1&relatedcontentsetid=&&entitytype=content&cacheid=0.6321355567408852"
       },
       "response": {
         "domModel": {
@@ -10289,14 +10289,14 @@
               "form": 1,
               "name": "displayIntervalTZ",
               "type": "hidden",
-              "value": "Etc/UTC"
+              "value": "UTC"
             },
             {
               "disabled": false,
               "form": 1,
               "name": "displayInterval",
               "type": "hidden",
-              "value": "{\"repeats\":0,\"detectconflicts\":0,\"allday\":0,\"timezone\":\"Etc/UTC\",\"every\":\"1\",\"type\":\"daily\",\"end\":\"never\",\"endon\":\"\",\"endafter\":\"0\",\"daysofweek\":\"\"}"
+              "value": "{\"repeats\":0,\"detectconflicts\":0,\"allday\":0,\"timezone\":\"UTC\",\"every\":\"1\",\"type\":\"daily\",\"end\":\"never\",\"endon\":\"\",\"endafter\":\"0\",\"daysofweek\":\"\"}"
             },
             {
               "disabled": false,
@@ -14290,7 +14290,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/?muraAction=cArch.edit&contenthistid=A5573961-E5DD-5154-7431F4353177BB11&locknode=false&contentid=D7D23FC5-1202-1243-F7463F217E1A9CD2&type=Page&parentid=8CD47134-D973-A94C-5AB9190D375C6A60&topid=8CD47134-D973-A94C-5AB9190D375C6A60&siteid=tenant-a&moduleid=00000000000000000000000000000000000&startrow=21"
+        "url": "/admin/?muraAction=cArch.edit&contenthistid=DC7AACF8-C209-6038-F54887BDAFECA7B6&locknode=false&contentid=D7D23FC5-1202-1243-F7463F217E1A9CD2&type=Page&parentid=8CD47134-D973-A94C-5AB9190D375C6A60&topid=8CD47134-D973-A94C-5AB9190D375C6A60&siteid=tenant-a&moduleid=00000000000000000000000000000000000&startrow=21"
       },
       "response": {
         "domModel": {
@@ -17234,14 +17234,14 @@
               "form": 1,
               "name": "displayIntervalTZ",
               "type": "hidden",
-              "value": "Etc/UTC"
+              "value": "UTC"
             },
             {
               "disabled": false,
               "form": 1,
               "name": "displayInterval",
               "type": "hidden",
-              "value": "{\"repeats\":0,\"detectconflicts\":0,\"allday\":0,\"timezone\":\"Etc/UTC\",\"every\":\"1\",\"type\":\"daily\",\"end\":\"never\",\"endon\":\"\",\"endafter\":\"0\",\"daysofweek\":\"\"}"
+              "value": "{\"repeats\":0,\"detectconflicts\":0,\"allday\":0,\"timezone\":\"UTC\",\"every\":\"1\",\"type\":\"daily\",\"end\":\"never\",\"endon\":\"\",\"endafter\":\"0\",\"daysofweek\":\"\"}"
             },
             {
               "disabled": false,
@@ -21220,7 +21220,7 @@
         "headers": {
           "content-type": "text/html;charset=UTF-8"
         },
-        "rawSha256": "202698c2bf2fa20eb3766d4045fbe82c063092c5b5d33e8f95fb81b8b6c25c2b",
+        "rawSha256": "4871f60984cfb8693ccb4d0fe9c93b7f8d69eaa1e7c43b32ca91ac0c1d9ed6ec",
         "status": 200
       },
       "routeKey": "admin:carch.edit"

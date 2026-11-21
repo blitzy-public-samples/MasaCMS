@@ -1,4 +1,4 @@
-# Golden scenarios: requests only; responses are whatever legacy answers at capture. Capture and replay follow this order, except the GS-PE-RH rehearsal scenarios, which run last.
+# Golden scenarios: requests only; responses are whatever legacy answers at capture. Capture and replay follow this order, except that scenarios declaring acrossTransition run first and the GS-PE-RH rehearsal scenarios last.
 # Scenario: id, title, service, role, sessions{name: {login, via}}, seedRefs[{as, source, path, where, index}], steps[], compare[], rows[{table, where}], normalisationOverrides, covers[]; optional purpose, tableVersion, fixtures, expected, decisionListRef, exceptionId, acrossTransition, replayFaults, browser, tasks.
 # Step: name, method, route, as, auth, csrf, csrfFrom, mergeHidden, headers, form | body | multipart{fields, files[{field, fixture | fromStep, filename, contentType}]}, extract, poll, settle, matrix, knownIssue, expected, decisionListRef, exceptionId, compare, candidates.
 # A multipart file's fromStep uploads the body of that earlier step's last response in the same scenario.

@@ -1,10 +1,10 @@
 {
-  "capturedAt": "2026-11-20T03:04:06.226Z",
+  "capturedAt": "2026-11-21T04:45:51.239Z",
   "fixtures": {
     "available": true,
     "reason": "fixtures loaded"
   },
-  "generatedAt": "2026-11-20T03:04:09.107Z",
+  "generatedAt": "2026-11-21T04:45:54.056Z",
   "generatedBy": "harness/src/golden/capture.ts",
   "origin": "legacy",
   "scenarioId": "GS-TS-06",
@@ -171,7 +171,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "4c7b87418311b0d617b8408314dd831e5693b25bf68ca83d31d3aa12ccce975b",
+        "rawSha256": "0d144a383702514f6b2c1e472f9451d30d96a831c61380c02dde35a0e1911986",
         "status": 200
       },
       "routeKey": "fixture:people/persons/{id}/archive@post"

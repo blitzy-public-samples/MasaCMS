@@ -1,10 +1,10 @@
 {
-  "capturedAt": "2026-11-20T03:04:18.666Z",
+  "capturedAt": "2026-11-21T04:46:03.807Z",
   "fixtures": {
     "available": true,
     "reason": "fixtures loaded"
   },
-  "generatedAt": "2026-11-20T03:04:19.725Z",
+  "generatedAt": "2026-11-21T04:46:04.965Z",
   "generatedBy": "harness/src/golden/capture.ts",
   "origin": "legacy",
   "scenarioId": "GS-FI-05",
@@ -349,7 +349,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "48784625bded758ba4df2e2ba6929d4f3a1b9110b437e3c0aaf1a0422a5cf5d4",
+        "rawSha256": "81ee9993046ec02fc17598f65f900c6c180b4652bb6b748d7066c277db705359",
         "status": 200
       },
       "routeKey": "fixture:finance/rollups@get"

@@ -1,10 +1,10 @@
 {
-  "capturedAt": "2026-11-20T03:06:59.408Z",
+  "capturedAt": "2026-11-21T04:48:47.697Z",
   "fixtures": {
     "available": true,
     "reason": "fixtures loaded"
   },
-  "generatedAt": "2026-11-20T03:07:02.997Z",
+  "generatedAt": "2026-11-21T04:48:51.430Z",
   "generatedBy": "harness/src/golden/capture.ts",
   "origin": "legacy",
   "scenarioId": "GS-PS-10",
@@ -367,7 +367,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "09b69e5bcb2107cae3edb289e42cd0ddaffb5c5dc19e5ebf573a73e223f57b45",
+        "rawSha256": "3528dbd8a4bef264bb0e82205f3dd563c86d70aaa7cd284fe904eb580867c068",
         "status": 200
       },
       "routeKey": "api:generatecsrftokens"
@@ -890,7 +890,7 @@
           }
         },
         "headers": {
-          "content-type": "multipart/form-data; boundary=----formdata-undici-068784534743"
+          "content-type": "multipart/form-data; boundary=----formdata-undici-004877693826"
         },
         "method": "POST",
         "url": "/admin/?muraAction=cSettings.deployPlugin"
@@ -1378,7 +1378,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "269344d581088a8b6bd63fd50efeb1ddd8fc05057c716444abd1f0f02fd54c41",
+        "rawSha256": "4f6b407a18dbc5d94472fc1e0d0a48d214feca18471454d8b8fa18c2aef21df8",
         "status": 200
       },
       "routeKey": "admin:csettings.deployplugin"
@@ -1975,7 +1975,7 @@
             "greeting": "GS-PS-10 greeting",
             "loadPriority": "5",
             "location": "global",
-            "moduleID": "A5376BFB-EC69-2E75-D0E4AF79B7B87D1E",
+            "moduleID": "DC5B11A6-EFD1-4971-8C693D7F525A2B0E",
             "package": "",
             "pluginalias": "GS-PS-10 Plugin",
             "siteAssignID": "tenant-b"
@@ -2551,7 +2551,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "cd8ebf933cf3b035ebc32602d9efb84e36cc2b82934768929638de8b32becb45",
+        "rawSha256": "6e8282ac74af1b02b420e695a9a0d25302764628f89374ea4456a63e902a6ee3",
         "status": 200
       },
       "routeKey": "admin:csettings.updateplugin"
@@ -3063,7 +3063,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/?muraAction=cSettings.editPlugin&moduleID=A5376BFB-EC69-2E75-D0E4AF79B7B87D1E"
+        "url": "/admin/?muraAction=cSettings.editPlugin&moduleID=DC5B11A6-EFD1-4971-8C693D7F525A2B0E"
       },
       "response": {
         "domModel": {
@@ -3558,7 +3558,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "09b2044b482efa6434835e73f3ae05e261d6536cf8cf4f3cf802bb05fbb914a4",
+        "rawSha256": "13ee4bf280c23479b6ea440bec5186254500eb885672535f90e542a4234ccceb",
         "status": 200
       },
       "routeKey": "admin:csettings.editplugin"
@@ -3626,7 +3626,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/index.cfm?muraAction=cSettings.createBundle&moduleid=A5376BFB-EC69-2E75-D0E4AF79B7B87D1E&siteID=&BundleName=gs-ps-10-plugin&bundleMode=plugin&csrf_token=<token>&csrf_token_expires=<token>"
+        "url": "/admin/index.cfm?muraAction=cSettings.createBundle&moduleid=DC5B11A6-EFD1-4971-8C693D7F525A2B0E&siteID=&BundleName=gs-ps-10-plugin&bundleMode=plugin&csrf_token=<token>&csrf_token_expires=<token>"
       },
       "response": {
         "export": {
@@ -3680,7 +3680,7 @@
           "last-modified": "<ts:http-date>, <ts:http-date>",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "4330a0e07f6acc0dc012310fe544febd775ef5e661564edc8971b3219ecac1b0",
+        "rawSha256": "c95a76f27806de570c41c16e58c9f614216fc63a8ce3f0724edde1a8df8d9f0d",
         "status": 200
       },
       "routeKey": "admin:csettings.createbundle"
@@ -3714,7 +3714,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/_api/json/v1/tenant-b/generateCSRFTokens?context=A5376BFB-EC69-2E75-D0E4AF79B7B87D1E"
+        "url": "/_api/json/v1/tenant-b/generateCSRFTokens?context=DC5B11A6-EFD1-4971-8C693D7F525A2B0E"
       },
       "response": {
         "body": {
@@ -3731,7 +3731,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "13c3c99d8e2672c1dc850c1afc75b2dc7697f391679561299a0ee8dd33c2559a",
+        "rawSha256": "3569aec7e81cf70423fe937cea611eeb0c82fc05f18b5fc6b6d8e3db65283d79",
         "status": 200
       },
       "routeKey": "api:generatecsrftokens"
@@ -4279,7 +4279,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/?muraAction=cSettings.deletePlugin&moduleID=A5376BFB-EC69-2E75-D0E4AF79B7B87D1E&csrf_token=<token>&csrf_token_expires=<token>"
+        "url": "/admin/?muraAction=cSettings.deletePlugin&moduleID=DC5B11A6-EFD1-4971-8C693D7F525A2B0E&csrf_token=<token>&csrf_token_expires=<token>"
       },
       "response": {
         "domModel": {
@@ -4799,7 +4799,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "8fa4cb952c87668a6311e25469729f2c3f3227ec824ed7c1d8ecfb25559d69a7",
+        "rawSha256": "2ed419d23a969476bbded99e04653a56501944adabf046dd27f221303f08e000",
         "status": 200
       },
       "routeKey": "admin:csettings.deleteplugin"

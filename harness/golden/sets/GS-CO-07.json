@@ -1,10 +1,10 @@
 {
-  "capturedAt": "2026-11-20T03:01:35.343Z",
+  "capturedAt": "2026-11-21T04:43:24.506Z",
   "fixtures": {
     "available": true,
     "reason": "fixtures loaded"
   },
-  "generatedAt": "2026-11-20T03:01:42.287Z",
+  "generatedAt": "2026-11-21T04:43:31.600Z",
   "generatedBy": "harness/src/golden/capture.ts",
   "origin": "legacy",
   "scenarioId": "GS-CO-07",
@@ -505,7 +505,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "d4e1fadb0f1c512ff434eb8b8cd5588e2953c4e4150bcb73726dc548540c2473",
+        "rawSha256": "91dab8c3afde03568f7202ebb6b1bcd55d886f4f07d44a8db6eb67d34a0cba79",
         "status": 200
       },
       "routeKey": "admin:carch.multifileupload"
@@ -561,7 +561,7 @@
           }
         },
         "headers": {
-          "content-type": "multipart/form-data; boundary=----formdata-undici-074513276635"
+          "content-type": "multipart/form-data; boundary=----formdata-undici-019112744753"
         },
         "method": "POST",
         "url": "/admin/?muraAction=cArch.update"
@@ -574,7 +574,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "b51028845f74cbd543fa49a350f777460bd04dd65a3b38f808a7b94365b0c2c0",
+        "rawSha256": "2a073f46366e65aac4474742edefcb210c9c7559e0133624fb56557e4dd25350",
         "status": 200
       },
       "routeKey": "admin:carch.update"
@@ -1046,7 +1046,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "fc036a3ce6aff4e686b458d84a5fc800bd51c45ad203c1304502e8c41f083342",
+        "rawSha256": "3b14cd685ff04b0c1343807064628093d26f82ec14d404b50d6e7b0a7bb2aa3c",
         "status": 200
       },
       "routeKey": "admin:carch.multifileupload"
@@ -1102,7 +1102,7 @@
           }
         },
         "headers": {
-          "content-type": "multipart/form-data; boundary=----formdata-undici-028849030671"
+          "content-type": "multipart/form-data; boundary=----formdata-undici-013581862664"
         },
         "method": "POST",
         "url": "/admin/?muraAction=cArch.update"
@@ -1115,7 +1115,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "971178c92522ba851fdb451a5efae185bf70f46e8747169c535e4a2b9491a545",
+        "rawSha256": "6be44954a7e56d77aa4c0bcb7aae8cf5e4439d970f5ed816533073bdf05bb825",
         "status": 200
       },
       "routeKey": "admin:carch.update{upload=image}"
@@ -1161,7 +1161,7 @@
           }
         },
         "headers": {
-          "content-type": "multipart/form-data; boundary=----formdata-undici-052974238883"
+          "content-type": "multipart/form-data; boundary=----formdata-undici-015619044223"
         },
         "method": "POST",
         "url": "/admin/?muraAction=cArch.multiFileUpload"
@@ -1607,7 +1607,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "40a1322c052ac1755b684f00b9ac3dd5b055ce689a4b080e7ec4e073d89c99c0",
+        "rawSha256": "c6c0b4f078efa83b7de3ae7118b292b628a140ca20e6f614499b676d6e6bea82",
         "status": 200
       },
       "routeKey": "admin:carch.multifileupload{upload=image}"
@@ -3921,7 +3921,7 @@
               "form": 1,
               "name": "displayIntervalTZ",
               "type": "hidden",
-              "value": "Etc/UTC"
+              "value": "UTC"
             },
             {
               "disabled": false,
@@ -7092,7 +7092,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "7bc21ad970dba7017fcdf43e84c1a24fba422beff63f9b50020bba4fbe6327fa",
+        "rawSha256": "6ba46ad9952bd2eabcd5439dc5c7f358e072b8d0700977d5976fed2b15f590fd",
         "status": 200
       },
       "routeKey": "admin:carch.edit"
@@ -7231,14 +7231,14 @@
               "changesetname": "",
               "closeCompactDisplay": "false",
               "compactDisplay": "false",
-              "contenthistid": "A50681AE-C4F9-AA7A-6B6CF55F97CF8C6B",
-              "contentid": "A506800D-9810-BCA6-3BFE04E7F088BB7A",
+              "contenthistid": "DC2A4F6F-A48B-5D7E-A632FC9F01431351",
+              "contentid": "DC2A4DAF-0258-78A9-7E85FD112E57D07C",
               "convertDisplayTimeZone": "true",
               "csrf_token": "<token>",
               "csrf_token_expires": "<token>",
               "display": "1",
               "displayInterval": "Daily",
-              "displayIntervalTZ": "Etc/UTC",
+              "displayIntervalTZ": "UTC",
               "displayIntervalllDay": "0",
               "displayStart": "",
               "displayStop": "",
@@ -7288,7 +7288,7 @@
           }
         },
         "headers": {
-          "content-type": "multipart/form-data; boundary=----formdata-undici-009196222551"
+          "content-type": "multipart/form-data; boundary=----formdata-undici-011888184802"
         },
         "method": "POST",
         "url": "/admin/?muraAction=cArch.update"
@@ -7906,7 +7906,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "5adc1b725eef1f0f4ec6ba50fccafc7d49574e4ef1ea37b91ebcd2156bbfdcdb",
+        "rawSha256": "017dd6fea52a184f2a35433688b96c3febc299ff46f33dd8481b599a145b1e23",
         "status": 200
       },
       "routeKey": "admin:carch.update"
@@ -10220,7 +10220,7 @@
               "form": 1,
               "name": "displayIntervalTZ",
               "type": "hidden",
-              "value": "Etc/UTC"
+              "value": "UTC"
             },
             {
               "disabled": false,
@@ -13391,7 +13391,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "2b456494f17289ed2619d3b8b0f9d3d4eee984e81548d1de7c624f7b19151068",
+        "rawSha256": "8dcc54f067a539f8509b08d874949d1d0d49a3d41c778db09ba29c3db4a20333",
         "status": 200
       },
       "routeKey": "admin:carch.edit"
@@ -13530,14 +13530,14 @@
               "changesetname": "",
               "closeCompactDisplay": "false",
               "compactDisplay": "false",
-              "contenthistid": "A50694AC-F248-9DE7-61EF66B355799926",
-              "contentid": "A506941A-010E-7458-46CD65D6C3997491",
+              "contenthistid": "DC2A642D-EB51-EB45-AFA4DEA9906792DB",
+              "contentid": "DC2A639F-F5D9-7E78-D9D1C855CD1C19C7",
               "convertDisplayTimeZone": "true",
               "csrf_token": "<token>",
               "csrf_token_expires": "<token>",
               "display": "1",
               "displayInterval": "Daily",
-              "displayIntervalTZ": "Etc/UTC",
+              "displayIntervalTZ": "UTC",
               "displayIntervalllDay": "0",
               "displayStart": "",
               "displayStop": "",
@@ -13587,7 +13587,7 @@
           }
         },
         "headers": {
-          "content-type": "multipart/form-data; boundary=----formdata-undici-039197324639"
+          "content-type": "multipart/form-data; boundary=----formdata-undici-064728127768"
         },
         "method": "POST",
         "url": "/admin/?muraAction=cArch.update"
@@ -14205,7 +14205,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "0074416f5d844f6fc378828d3f92920cee2922de86b9ad0ea5e81a763ef455b2",
+        "rawSha256": "ccb16e9bd173dad41a28e1f685615be7e7f4fbfa7fe2bd832cd4bef1a25d9b7a",
         "status": 200
       },
       "routeKey": "admin:carch.update{upload=image}"
@@ -14232,7 +14232,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/_api/json/v1/tenant-a/content/A506941A-010E-7458-46CD65D6C3997491?fields=fileid"
+        "url": "/_api/json/v1/tenant-a/content/DC2A639F-F5D9-7E78-D9D1C855CD1C19C7?fields=fileid"
       },
       "response": {
         "body": {
@@ -14253,7 +14253,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "2b03ed816ed105f1b2f317d831a4671c70c7600ba50973b5d3c28b9674c96162",
+        "rawSha256": "acae6fa1af61c59a3ff670450ecddf1dc5bce4b355a2161c4b7cd48a5494c84c",
         "status": 200
       },
       "routeKey": "api:content.findone"
@@ -14281,7 +14281,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/_api/render/file/?fileID=A5069C73-E483-8324-35CB0E42A41EC9F9"
+        "url": "/_api/render/file/?fileID=DC2A6C66-9009-4753-A8A56BA99660A585"
       },
       "response": {
         "domModel": {
@@ -14304,7 +14304,7 @@
             },
             {
               "level": 3,
-              "text": "File or directory /tmp/blitzy/scratch/<uuid:1>/w-020/stack2/sites/umbrella/cache/file/<id:55>_FILE.png does not exist."
+              "text": "File or directory /tmp/blitzy/scratch/<uuid:1>/w-020/proofs/opt2-clean-20261121T034533Z/sites/umbrella/cache/file/<id:55>_FILE.png does not exist."
             }
           ],
           "labels": [],
@@ -14318,7 +14318,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "b1d274e5aa1232ca1bc607085a03448530c7c8054beb5853f4f33d08cc17aae2",
+        "rawSha256": "0b33a3df34c071e12384ce5b55f376191bd1d493b8b488c27c67c9660e8ec014",
         "status": 500
       },
       "routeKey": "render:file"
@@ -14348,7 +14348,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/_api/render/small/?fileID=A5069C73-E483-8324-35CB0E42A41EC9F9"
+        "url": "/_api/render/small/?fileID=DC2A6C66-9009-4753-A8A56BA99660A585"
       },
       "response": {
         "export": {
@@ -14393,7 +14393,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/_api/render/medium/?fileID=A5069C73-E483-8324-35CB0E42A41EC9F9"
+        "url": "/_api/render/medium/?fileID=DC2A6C66-9009-4753-A8A56BA99660A585"
       },
       "response": {
         "export": {
@@ -14459,7 +14459,7 @@
             },
             {
               "level": 3,
-              "text": "File or directory /tmp/blitzy/scratch/<uuid:1>/w-020/stack2/sites/umbrella/cache/file/<id:56>_FILE.png does not exist."
+              "text": "File or directory /tmp/blitzy/scratch/<uuid:1>/w-020/proofs/opt2-clean-20261121T034533Z/sites/umbrella/cache/file/<id:56>_FILE.png does not exist."
             }
           ],
           "labels": [],
@@ -14473,7 +14473,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "fb633903abcc9162b1f9bec155b68f3180759c2ab7edd62b4073f52e04ca6cb9",
+        "rawSha256": "02f6cefc7a7bc7eb991d5cf7c689692a8f63b234269747038dc5dfdf03058041",
         "status": 500
       },
       "routeKey": "render:file"
@@ -14764,7 +14764,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "0d0619d56f73ca3538c45857888f92f2541d5c1040841d93573d9f04a5a02842",
+        "rawSha256": "d7cfdd8e1ae70287d99a80d75f4b1cbc9091c09e00ea52552d9348c71d8d31be",
         "status": 404
       },
       "routeKey": "opt2:/opt2/files/content-files/gs-unsigned"

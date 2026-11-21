@@ -764,11 +764,16 @@ describe('skipped scenarios and Mailpit resets', () => {
   }
 
   it.each([
-    { label: 'every non-rehearsal scenario', flags: [], order: ['GS-TS-04', 'GS-TS-02', 'GS-TS-01'] },
+    { label: 'every non-rehearsal scenario', flags: [], order: ['GS-TS-02', 'GS-TS-04', 'GS-TS-01'] },
     {
       label: 'an --only selection',
       flags: ['--only', 'GS-PE-RH-01,GS-TS-01,GS-PE-RH-03'],
       order: ['GS-TS-01', 'GS-PE-RH-03', 'GS-PE-RH-01'],
+    },
+    {
+      label: 'an --only selection with a crossing',
+      flags: ['--only', 'GS-TS-01,GS-PE-RH-01,GS-TS-02,GS-TS-04'],
+      order: ['GS-TS-02', 'GS-TS-04', 'GS-TS-01', 'GS-PE-RH-01'],
     },
     {
       label: 'the rehearsal pass',
@@ -780,7 +785,7 @@ describe('skipped scenarios and Mailpit resets', () => {
       flags: ['--rehearsal', '--only', 'GS-PE-RH-01,GS-TS-02'],
       order: ['rehearsal/GS-TS-02', 'GS-PE-RH-01'],
     },
-  ])('captures $label in replay order, crossings before the rehearsal scenarios', async ({ flags, order }) => {
+  ])('captures $label in replay order, acrossTransition first and the rehearsal scenarios last', async ({ flags, order }) => {
     const catalogue = await orderCatalogue();
     const fake = fakeLegacy();
     const logs: string[] = [];

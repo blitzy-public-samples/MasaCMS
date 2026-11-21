@@ -631,11 +631,11 @@ describe('run logs', () => {
   });
 
   it.each(['windows.json', 'transitions.json'] as const)(
-    'records into the committed %s placeholder, keeping its other keys',
+    'records into the committed %s, keeping its entries and other keys',
     async (file) => {
       const target = await makeTarget(OTHER_SHA);
       await copyFile(path.join(REPO_REPORTS_DIR, file), path.join(target.reportsDir, file));
-      const placeholder = await readDoc(target.reportsDir, file);
+      const committed = await readDoc(target.reportsDir, file);
       const { collectionKey, idKey = '', generatedBy } = RUN_LOGS[file];
       const replacement = { [idKey]: 'id-1', revision: 2 };
 
@@ -647,30 +647,30 @@ describe('run logs', () => {
         Object.fromEntries(
           Object.entries(report).filter(([key]) => !HEAD.includes(key) && key !== collectionKey && key !== 'summary'),
         );
-      expect(Object.keys(doc)).toEqual(Object.keys(placeholder));
+      expect(Object.keys(doc)).toEqual(Object.keys(committed));
       expect(doc).toMatchObject({ sourceSha: OTHER_SHA, generatedBy, generatedAt: FIXED_AT, status: 'recorded' });
-      expect(doc[collectionKey]).toEqual([replacement]);
-      expect(rest(doc)).toEqual(rest(placeholder));
+      expect(doc[collectionKey]).toEqual([...(committed[collectionKey] as unknown[]), replacement]);
+      expect(rest(doc)).toEqual(rest(committed));
     },
   );
 
-  it('rewrites the committed windows.json placeholder once with the rebuilt collection, redacted, keeping its other keys', async () => {
+  it('rewrites the committed windows.json once with the rebuilt collection, redacted, keeping its other keys', async () => {
     const target = await makeTarget(OTHER_SHA);
     await copyFile(path.join(REPO_REPORTS_DIR, 'windows.json'), path.join(target.reportsDir, 'windows.json'));
-    const placeholder = await readDoc(target.reportsDir, 'windows.json');
-    const rebuild = vi.fn((entries: unknown[]) => [...entries, windowEntry('W1', { durationMs: 6000, outcome: 'closed' }), windowEntry(`W:${EMAIL}`)]);
+    const committed = await readDoc(target.reportsDir, 'windows.json');
+    const rebuild = vi.fn((_entries: unknown[]) => [windowEntry('W1', { durationMs: 6000, outcome: 'closed' }), windowEntry(`W:${EMAIL}`)]);
 
     await rewriteLogEntries(target, 'windows.json', rebuild, { clock: fixedClock(FIXED_AT) });
 
     const doc = await readDoc(target.reportsDir, 'windows.json');
-    expect(rebuild).toHaveBeenCalledExactlyOnceWith([]);
-    expect(Object.keys(doc)).toEqual(Object.keys(placeholder));
+    expect(rebuild).toHaveBeenCalledExactlyOnceWith(committed.windows);
+    expect(Object.keys(doc)).toEqual(Object.keys(committed));
     expect(doc).toMatchObject({
       sourceSha: OTHER_SHA,
       generatedBy: 'migration/src/windows/',
       generatedAt: FIXED_AT,
       status: 'recorded',
-      unitIds: placeholder.unitIds,
+      unitIds: committed.unitIds,
       flagThresholdMs: WINDOW_FLAG_THRESHOLD_MS,
       summary: { count: 2, byOutcome: { closed: 1, open: 1 }, overThreshold: 1 },
     });
@@ -870,7 +870,8 @@ describe('run logs', () => {
   it('records a transition redacted and leaves it unchanged by later appends', async () => {
     const target = await makeTarget();
     await copyFile(path.join(REPO_REPORTS_DIR, 'transitions.json'), path.join(target.reportsDir, 'transitions.json'));
-    const placeholder = await readDoc(target.reportsDir, 'transitions.json');
+    const committed = await readDoc(target.reportsDir, 'transitions.json');
+    const earlier = committed.transitions as unknown[];
     const transition = (transitionId: string, overrides: Partial<TransitionLogEntry> = {}): TransitionLogEntry => ({
       transitionId,
       from: 'v0001',
@@ -885,12 +886,12 @@ describe('run logs', () => {
     const reconciliation = { differences: [DIFFERENCE], rowsImported: { 'identity.credential': 3 } };
 
     await appendLogEntry(target, 'transitions.json', transition('T1', { outcome: 'aborted', abortReason: ABORT_REASON, reconciliation }));
-    const [recorded] = (await readDoc(target.reportsDir, 'transitions.json')).transitions as unknown[];
+    const recorded = ((await readDoc(target.reportsDir, 'transitions.json')).transitions as unknown[])[earlier.length];
     await appendLogEntry(target, 'transitions.json', transition('T2'));
 
     const doc = await readDoc(target.reportsDir, 'transitions.json');
-    expect(doc.transitions).toEqual([recorded, expect.objectContaining({ transitionId: 'T2' })]);
-    expect(doc.planned).toEqual(placeholder.planned);
+    expect(doc.transitions).toEqual([...earlier, recorded, expect.objectContaining({ transitionId: 'T2' })]);
+    expect(doc.planned).toEqual(committed.planned);
     expect(recorded).toMatchObject({
       abortReason: MASKED_ABORT_REASON,
       entriesChanged: [FLAG_ROUTE],

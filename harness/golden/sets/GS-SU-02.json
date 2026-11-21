@@ -1,10 +1,10 @@
 {
-  "capturedAt": "2026-11-20T03:04:21.460Z",
+  "capturedAt": "2026-11-21T04:46:06.585Z",
   "fixtures": {
     "available": true,
     "reason": "fixtures loaded"
   },
-  "generatedAt": "2026-11-20T03:04:22.987Z",
+  "generatedAt": "2026-11-21T04:46:08.011Z",
   "generatedBy": "harness/src/golden/capture.ts",
   "origin": "legacy",
   "scenarioId": "GS-SU-02",
@@ -126,7 +126,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "6b5333430bc338c39346a4f0847e109f6f73b077009ad8d26ed23304148d6119",
+        "rawSha256": "b4ee53c20878d745dbbe9eed069145cf3cf59795c7b23d219d59d88abf61aeba",
         "status": 200
       },
       "routeKey": "fixture:surveys/surveys@post"
@@ -167,7 +167,7 @@
           "x-csrf_token_expires": "<token>"
         },
         "method": "POST",
-        "url": "/legacy-fixtures/cfml/api.cfm/surveys/surveys/A51F5B38-ABF7-5438-ACFB903F6CFF78E9/responses?siteid=tenant-a"
+        "url": "/legacy-fixtures/cfml/api.cfm/surveys/surveys/DC428BCE-0002-B958-98F8EBD36D1739ED/responses?siteid=tenant-a"
       },
       "response": {
         "body": {
@@ -189,7 +189,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "9b2fa2cad9db8e8cbfbb88a2656316ec0f802af16dc7fbce317a9c0b32d52397",
+        "rawSha256": "0320520acabbc1ae5de7c40bf3e2e9a14cf8d6d7931aee47f902f2e2bec1acdf",
         "status": 200
       },
       "routeKey": "fixture:surveys/surveys/{id}/responses@post"
@@ -233,7 +233,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/legacy-fixtures/cfml/api.cfm/surveys/surveys/A51F5B38-ABF7-5438-ACFB903F6CFF78E9/responses?siteid=tenant-a"
+        "url": "/legacy-fixtures/cfml/api.cfm/surveys/surveys/DC428BCE-0002-B958-98F8EBD36D1739ED/responses?siteid=tenant-a"
       },
       "response": {
         "body": {
@@ -265,7 +265,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "7cdd85bdc089dc28efc532ad949790b11b97acd966902508476e62c818664c22",
+        "rawSha256": "eec60ee6a7d2f4418baec7539e324425d2ff13c6c4ec019ba576bcdd5359c298",
         "status": 200
       },
       "routeKey": "fixture:surveys/surveys/{id}/responses@get"

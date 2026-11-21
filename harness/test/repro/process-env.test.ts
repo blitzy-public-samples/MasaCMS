@@ -261,16 +261,18 @@ describe('process_env OPT2_REPORTS_DIR', () => {
   it.each([
     ['a relative value against the checkout', 'out/reports', path.join(realpathSync(REPO_ROOT), 'out/reports')],
     ['an absolute value unchanged', '/srv/opt2-reports', '/srv/opt2-reports'],
-  ])('hands migration and operator_env %s', (_label, value, expected) => {
+  ])('hands migration, gateway and operator_env %s', (_label, value, expected) => {
     expect(runEnv('process_env', 'migration', { OPT2_REPORTS_DIR: value }).OPT2_REPORTS_DIR).toBe(expected);
+    expect(runEnv('process_env', 'gateway', { OPT2_REPORTS_DIR: value }).OPT2_REPORTS_DIR).toBe(expected);
     expect(runEnv('operator_env', '', { OPT2_REPORTS_DIR: value }).OPT2_REPORTS_DIR).toBe(expected);
   });
 
   it.each([
     ['unset', undefined],
     ['empty', ''],
-  ])('hands migration and operator_env none when %s, so migration keeps its default', (_label, value) => {
+  ])('hands migration, gateway and operator_env none when %s, so both keep their default', (_label, value) => {
     expect(runEnv('process_env', 'migration', { OPT2_REPORTS_DIR: value })).not.toHaveProperty('OPT2_REPORTS_DIR');
+    expect(runEnv('process_env', 'gateway', { OPT2_REPORTS_DIR: value })).not.toHaveProperty('OPT2_REPORTS_DIR');
     expect(runEnv('operator_env', '', { OPT2_REPORTS_DIR: value })).not.toHaveProperty('OPT2_REPORTS_DIR');
   });
 });

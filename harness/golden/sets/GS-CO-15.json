@@ -1,10 +1,10 @@
 {
-  "capturedAt": "2026-11-20T03:02:37.212Z",
+  "capturedAt": "2026-11-21T04:44:20.233Z",
   "fixtures": {
     "available": true,
     "reason": "fixtures loaded"
   },
-  "generatedAt": "2026-11-20T03:02:38.892Z",
+  "generatedAt": "2026-11-21T04:44:21.885Z",
   "generatedBy": "harness/src/golden/capture.ts",
   "origin": "legacy",
   "scenarioId": "GS-CO-15",
@@ -70,7 +70,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "1cd15797dde7b677b6e7716ca57d91f6aef3bd6aeb690dd439a7907ba910756b",
+        "rawSha256": "01eda81fa4d543bc05da5a7b3511b57feea935e5f057d855c3b157c4cf2ae58c",
         "status": 500
       },
       "routeKey": "rest:content.findone"
@@ -134,7 +134,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "162b46f619445018d60615f9b40f67938336809d64eb008a5cefd6146a63bc10",
+        "rawSha256": "28e6931903fea6bd88176959da59626ba45a3ce78fd4a42db3c290c300b70b9e",
         "status": 500
       },
       "routeKey": "rest:oauth2"
@@ -617,7 +617,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "0c217835be97b25ee682f0b7e25dcee58697bce2ca41c1110d1a662b5013f3c3",
+        "rawSha256": "7b084af631ed2236417fe905a9400dcc4a50f3265e0f930f54cae187f1ed8e26",
         "status": 403
       },
       "routeKey": "api:content.save"
@@ -1083,7 +1083,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "b510e99a21aa132e60df83cd30777939e860196cec216cc679ef9251c130f61d",
+        "rawSha256": "4633fb0bbd9e453187eb2021e0a18550663c880648571e288a636bbc97f87514",
         "status": 404
       },
       "routeKey": "api:content.findone"
@@ -1181,7 +1181,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "affc9504d9281a213643e1888929758454bf7c1e6bd09eb9743ce1c338aa9b48",
+        "rawSha256": "7981df527f5ba84977bc6ad2a8b71c0bd02339b12520eb6a13f5cc18860fff15",
         "status": 500
       },
       "routeKey": "api:content.findquery"

@@ -1,10 +1,10 @@
 {
-  "capturedAt": "2026-11-20T03:01:02.542Z",
+  "capturedAt": "2026-11-21T04:42:55.285Z",
   "fixtures": {
     "available": true,
     "reason": "fixtures loaded"
   },
-  "generatedAt": "2026-11-20T03:01:06.106Z",
+  "generatedAt": "2026-11-21T04:42:58.590Z",
   "generatedBy": "harness/src/golden/capture.ts",
   "origin": "legacy",
   "scenarioId": "GS-CO-01",
@@ -13,7 +13,7 @@
     "mail": [],
     "rows": {
       "content.content": {
-        "checksum": "dacfc7cac446100d6678875497bc70ae0c047a2b7678e055f9c4b93c23817156",
+        "checksum": "5f158d9459e05706aed207fe6338a3528975fa1aa922547b50051a4518d9345e",
         "columns": [
           {
             "name": "tcontent_ID",
@@ -315,11 +315,11 @@
         "entries": [
           {
             "count": 1,
-            "encoding": "i5:11041s8:tenant-as35:00000000000000000000000000000000000s35:00000000000000000000000000000000001s7:<id:47>s7:<id:52>NNNNNNNNs4:Pages7:Defaulti1:1i1:1s13:GS-CO-01 Pages13:GS-CO-01 PageNs13:gs-co-01-pageNNs20:<p>GS-CO-01 Page</p>s14:<ts:iso-local>s10:Admin Users7:<id:53>NNi1:1i1:0i1:1i1:0Ns5:_selfNi1:0NNNNi1:0Ns7:Inheriti1:0Ni1:0i2:10s7:ordernos3:ascNNi1:0NNi1:0s43:00000000000000000000000000000000001,<id:47>Ni1:1s13:gs-co-01-pages13:GS-CO-01 Pages14:<ts:iso-local>i1:0Ns5:smalls4:AUTOs4:AUTONi1:0i1:0Ns5:Dailys2:{}"
+            "encoding": "i5:11069s8:tenant-as35:00000000000000000000000000000000000s35:00000000000000000000000000000000001s7:<id:47>s7:<id:52>NNNNNNNNs4:Pages7:Defaulti1:1i1:1s13:GS-CO-01 Pages13:GS-CO-01 PageNs13:gs-co-01-pageNNs20:<p>GS-CO-01 Page</p>s14:<ts:iso-local>s10:Admin Users7:<id:53>NNi1:1i1:0i1:1i1:0Ns5:_selfNi1:0NNNNi1:0Ns7:Inheriti1:0Ni1:0i2:10s7:ordernos3:ascNNi1:0NNi1:0s43:00000000000000000000000000000000001,<id:47>Ni1:1s13:gs-co-01-pages13:GS-CO-01 Pages14:<ts:iso-local>i1:0Ns5:smalls4:AUTOs4:AUTONi1:0i1:0Ns5:Dailys2:{}"
           },
           {
             "count": 1,
-            "encoding": "i5:11042s7:defaults35:00000000000000000000000000000000000s35:00000000000000000000000000000000001s7:<id:50>s7:<id:54>NNNNNNNNs4:Pages7:Defaulti1:1i1:1s20:GS-CO-01 Editor Pages20:GS-CO-01 Editor PageNs20:gs-co-01-editor-pageNNs27:<p>GS-CO-01 Editor Page</p>s14:<ts:iso-local>s9:QA Editors7:<id:55>NNi1:1i1:0i1:1i1:0Ns5:_selfNi1:0NNNNi1:0Ns7:Inheriti1:0Ni1:0i2:10s7:ordernos3:ascNNi1:0NNi1:0s43:00000000000000000000000000000000001,<id:50>Ni1:1s20:gs-co-01-editor-pages20:GS-CO-01 Editor Pages14:<ts:iso-local>i1:0Ns5:smalls4:AUTOs4:AUTONi1:0i1:0Ns5:Dailys2:{}"
+            "encoding": "i5:11070s7:defaults35:00000000000000000000000000000000000s35:00000000000000000000000000000000001s7:<id:50>s7:<id:54>NNNNNNNNs4:Pages7:Defaulti1:1i1:1s20:GS-CO-01 Editor Pages20:GS-CO-01 Editor PageNs20:gs-co-01-editor-pageNNs27:<p>GS-CO-01 Editor Page</p>s14:<ts:iso-local>s9:QA Editors7:<id:55>NNi1:1i1:0i1:1i1:0Ns5:_selfNi1:0NNNNi1:0Ns7:Inheriti1:0Ni1:0i2:10s7:ordernos3:ascNNi1:0NNi1:0s43:00000000000000000000000000000000001,<id:50>Ni1:1s20:gs-co-01-editor-pages20:GS-CO-01 Editor Pages14:<ts:iso-local>i1:0Ns5:smalls4:AUTOs4:AUTONi1:0i1:0Ns5:Dailys2:{}"
           }
         ],
         "legacyTable": "tcontent",
@@ -1572,7 +1572,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "b600ae34e47d4df485ac57399c8bb6ac813d60511a20b48528bc19fe9ff84f80",
+        "rawSha256": "1301b0c34177dae08d67ec477454ed0e00cc1c7102d2ae1e425b65681024e0c5",
         "status": 200
       },
       "routeKey": "admin:carch.list"
@@ -3912,7 +3912,7 @@
               "form": 1,
               "name": "displayIntervalTZ",
               "type": "hidden",
-              "value": "Etc/UTC"
+              "value": "UTC"
             },
             {
               "disabled": false,
@@ -9576,7 +9576,7 @@
               "form": 1,
               "name": "displayIntervalTZ",
               "type": "hidden",
-              "value": "Etc/UTC"
+              "value": "UTC"
             },
             {
               "disabled": false,
@@ -12907,7 +12907,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "627904be2119d0ed002e0988eb74f105f50b8de8e5c6c433ee3695c0e3b3c6b8",
+        "rawSha256": "a74a85dbd062c94fc8fa63aa8a82a96817f4465ef82d3d7a580aeb622f89f7ba",
         "status": 200
       },
       "routeKey": "admin:carch.edit"
@@ -13547,8 +13547,8 @@
             "action": "add",
             "approved": "0",
             "body": "<p>GS-CO-01 Page</p>",
-            "contenthistid": "A501380E-C4E8-2ED2-C4340ECDA4C432C9",
-            "contentid": "A501361E-B78D-CFC4-08E1027B2E26B01B",
+            "contenthistid": "DC2582AA-0E33-B03B-971D3616DAD59ABF",
+            "contentid": "DC2580CA-016A-6F61-AB0149CB5A7F97EB",
             "csrf_token": "<token>",
             "csrf_token_expires": "<token>",
             "display": "1",
@@ -14182,7 +14182,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "9c08d8e1bd0f79cecc507c242e3adecca2272f3c0c1a38acf2d9c4f0e69db76d",
+        "rawSha256": "23000578f18bd88a4c585e2f8e1b676476ed1edb55a2eee6228d79edeb7b78ab",
         "status": 200
       },
       "routeKey": "admin:carch.update"
@@ -14272,6 +14272,11 @@
                   "label": "Page",
                   "selected": true,
                   "value": "Page^Default"
+                },
+                {
+                  "label": "Page / UnitTest",
+                  "selected": false,
+                  "value": "Page^UnitTest"
                 },
                 {
                   "label": "Folder",
@@ -16509,7 +16514,7 @@
               "form": 1,
               "name": "displayIntervalTZ",
               "type": "hidden",
-              "value": "Etc/UTC"
+              "value": "UTC"
             },
             {
               "disabled": false,
@@ -18412,6 +18417,11 @@
                   "value": "Page^Default"
                 },
                 {
+                  "label": "Page / UnitTest",
+                  "selected": false,
+                  "value": "Page^UnitTest"
+                },
+                {
                   "label": "Folder",
                   "selected": false,
                   "value": "Folder^Default"
@@ -20647,7 +20657,7 @@
               "form": 1,
               "name": "displayIntervalTZ",
               "type": "hidden",
-              "value": "Etc/UTC"
+              "value": "UTC"
             },
             {
               "disabled": false,
@@ -22465,7 +22475,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "986c928764c6b211eb1e9dba82a370ab3b789a70db4b997cb6632a2f583ceb55",
+        "rawSha256": "d8016ec25ebb5e8650accb6ecc58dfb8ff813f90be3e470c0aaa1940d40e3707",
         "status": 200
       },
       "routeKey": "admin:carch.edit"
@@ -22694,14 +22704,14 @@
             "changesetname": "",
             "closeCompactDisplay": "false",
             "compactDisplay": "false",
-            "contenthistid": "A5014BC3-00C9-990D-921DF263159E0E2C",
-            "contentid": "A5014AF8-C5BC-7E6E-6D30B6F8B13282DD",
+            "contenthistid": "DC2595D2-F945-E778-31E5BA11C96DC915",
+            "contentid": "DC25951D-F7AC-7C8D-C75E53AF4FEE637E",
             "convertDisplayTimeZone": "true",
             "csrf_token": "<token>",
             "csrf_token_expires": "<token>",
             "display": "1",
             "displayInterval": "Daily",
-            "displayIntervalTZ": "Etc/UTC",
+            "displayIntervalTZ": "UTC",
             "displayIntervalllDay": "0",
             "displayStart": "",
             "displayStop": "",
@@ -22943,7 +22953,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "7b433f8c4c3fef36f7826d30bae872f1a8048154e95b1328b2724b82bee0614e",
+        "rawSha256": "dd9b6a0043e04201e4e1ef4728d49a73d5c6b484f1812803468a320450134447",
         "status": 200
       },
       "routeKey": "admin:carch.update"

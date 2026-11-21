@@ -182,6 +182,13 @@ process_env() {
       _opt2_env_line OPT2_BRIDGE_HMAC_KEY "$bridge_key"
       # The versions up.sh selected for the fixture capability; both must read the same files.
       _opt2_env_line OPT2_CUTOVER_DIR "${OPT2_CUTOVER_DIR:-$REPO/gateway/cutover}"
+      # The reports migration writes and the gateway's activation reads; a relative value resolves against the
+      # checkout, as in test-all.sh and harness/src/lib/paths.ts.
+      if [[ -n ${OPT2_REPORTS_DIR:-} ]]; then
+        reports=$OPT2_REPORTS_DIR
+        [[ $reports == /* ]] || reports="$REPO/$reports"
+        _opt2_env_line OPT2_REPORTS_DIR "$reports"
+      fi
       ;;
   esac
   case $name in
@@ -197,12 +204,6 @@ process_env() {
         _opt2_env_line OPT2_MSSQL_TRUST_SERVER_CERT "$OPT2_MSSQL_TRUST_SERVER_CERT"
       fi
       _opt2_env_line OPT2_PRISTINE_DIR "$OPT2_PRISTINE_DIR"
-      # Resolved as test-all.sh and harness/src/lib/paths.ts resolve it: a relative value against the checkout.
-      if [[ -n ${OPT2_REPORTS_DIR:-} ]]; then
-        reports=$OPT2_REPORTS_DIR
-        [[ $reports == /* ]] || reports="$REPO/$reports"
-        _opt2_env_line OPT2_REPORTS_DIR "$reports"
-      fi
       # A command line that migration runs through /bin/sh.
       _opt2_env_line OPT2_LEGACY_RESTART_CMD "$(_opt2_sh_quote "$REPO/harness/repro/lib/legacy-start.sh")"
       # The caller's port file, server name and lock directory, so that restart addresses this stack.

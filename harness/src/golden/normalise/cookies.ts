@@ -6,7 +6,7 @@ import type { RecordedResponse } from '../steps.js';
 import type { NormaliseRules } from './rules.js';
 import { normaliseUrl } from './values.js';
 
-/** Persistence class of a Set-Cookie: no expiry, an expiry after the response, or one before it. */
+/** Persistence class of a Set-Cookie: no expiry, an expiry after the response, or one at or before it. */
 export type CookiePersistence = 'session' | 'persistent' | 'expired';
 
 /** A session cookie value against the scenario's previous one: none yet, the same value, or another. */
@@ -105,14 +105,16 @@ function keptText(attrs: Attributes, kept: ReadonlySet<string>, name: string): s
   return value === undefined ? undefined : value === true ? '' : value;
 }
 
-// Max-Age takes precedence over Expires (RFC 6265 5.3 step 3); an unparseable one is ignored.
+// Max-Age takes precedence over Expires (RFC 6265 5.3 step 3); an unparseable one is ignored. An Expires at the
+// response's Date is expired: a deletion writes the current second, which Date, stamped later, equals or passes.
 function persistenceOf(attrs: Attributes, from: ReadonlySet<string>, referenceDate: Date | undefined): CookiePersistence {
   const maxAge = from.has('max-age') ? attrs.get('max-age') : undefined;
   if (typeof maxAge === 'string' && MAX_AGE.test(maxAge)) return Number(maxAge) <= 0 ? 'expired' : 'persistent';
   const expiresText = from.has('expires') ? attrs.get('expires') : undefined;
   const expires = typeof expiresText === 'string' ? parseDate(expiresText) : undefined;
   if (expires === undefined) return 'session';
-  return expires.getTime() < (referenceDate ?? NO_DATE_REFERENCE).getTime() ? 'expired' : 'persistent';
+  if (referenceDate === undefined) return expires.getTime() < NO_DATE_REFERENCE.getTime() ? 'expired' : 'persistent';
+  return expires.getTime() <= referenceDate.getTime() ? 'expired' : 'persistent';
 }
 
 function byHopNamePath(a: NormalisedCookie, b: NormalisedCookie): number {

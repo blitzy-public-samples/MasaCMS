@@ -1,10 +1,10 @@
 {
-  "capturedAt": "2026-11-20T03:03:50.186Z",
+  "capturedAt": "2026-11-21T04:45:32.750Z",
   "fixtures": {
     "available": true,
     "reason": "fixtures loaded"
   },
-  "generatedAt": "2026-11-20T03:03:56.683Z",
+  "generatedAt": "2026-11-21T04:45:42.108Z",
   "generatedBy": "harness/src/golden/capture.ts",
   "origin": "legacy",
   "scenarioId": "GS-BR-01",
@@ -2344,7 +2344,7 @@
               "form": 1,
               "name": "displayIntervalTZ",
               "type": "hidden",
-              "value": "Etc/UTC"
+              "value": "UTC"
             },
             {
               "disabled": false,
@@ -8008,7 +8008,7 @@
               "form": 1,
               "name": "displayIntervalTZ",
               "type": "hidden",
-              "value": "Etc/UTC"
+              "value": "UTC"
             },
             {
               "disabled": false,
@@ -11339,7 +11339,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "6507a04e139bb846ddfee0d872001dfc3d0f1ad3875f8a12ad25614cc9894962",
+        "rawSha256": "ebf0322b15c113172ee082f58fc10967ec1e02868b37e7a3045dddab30c9880c",
         "status": 200
       },
       "routeKey": "admin:carch.edit"
@@ -13675,7 +13675,7 @@
               "form": 1,
               "name": "displayIntervalTZ",
               "type": "hidden",
-              "value": "Etc/UTC"
+              "value": "UTC"
             },
             {
               "disabled": false,
@@ -17056,8 +17056,8 @@
             "action": "add",
             "approved": "0",
             "body": "<p>GS-BR-01 Barrier Page</p>",
-            "contenthistid": "A51A9994-D54E-5623-0A44B4F999412814",
-            "contentid": "A51A9795-B325-F8FB-D73E98992D85A322",
+            "contenthistid": "DC3D66FB-FD2D-8FD7-F8E438881B7FBECC",
+            "contentid": "DC3D64D2-F1E0-DAF8-43F7AE5850F52682",
             "csrf_token": "<token>",
             "csrf_token_expires": "<token>",
             "display": "1",
@@ -19405,7 +19405,7 @@
               "form": 1,
               "name": "displayIntervalTZ",
               "type": "hidden",
-              "value": "Etc/UTC"
+              "value": "UTC"
             },
             {
               "disabled": false,
@@ -22779,7 +22779,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "b7c658b7e7084e2675fa5a44b32babf62ee6d6ec998edbb907dab599e256305f",
+        "rawSha256": "7c793d99b26cc10990ae2d07a7d7ab307bc12f211e7d2d640a0453dfb50d3770",
         "status": 200
       },
       "routeKey": "admin:carch.update"
@@ -26524,7 +26524,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/?previewid=A51AA40A-9EFF-F618-FC4DFADCC8971265"
+        "url": "/?previewid=DC3D72BA-B211-E791-09A384CB5ACA4C90"
       },
       "response": {
         "domModel": {
@@ -30258,7 +30258,7 @@
           "pragma": "no-cache",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "3719193244555b39eb09edcaea5147faebb8a42857e01514c652447bfcedcacd",
+        "rawSha256": "f50d4bd35b1c1fc10586ad9e91e38c4d4dfb0cbc704a3eabded452c859fc7fee",
         "status": 200
       },
       "routeKey": "page:render"
@@ -32998,7 +32998,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "e17dc9804533eb650e7013a77aab9a3f1fc07c4ec576b29a68740763afa362e3",
+        "rawSha256": "f3e26088181625ffdc628c0d802c46cf9a48ca03fb293a41bda1c3e10e2498a2",
         "status": 200
       },
       "routeKey": "admin:cusers.edituser"
@@ -34419,7 +34419,7 @@
             "csrf_token_expires": "<token>",
             "email": "gs-br-01-1@seed.opt2.test",
             "fname": "GS",
-            "groupid": "A4228347-C8E3-2667-AD1350B90BBE9B5F",
+            "groupid": "DA701BED-B975-5160-4C5F895BD6FB2F67",
             "isPrimary": "1",
             "isPublic": "0",
             "lname": "BR-01",
@@ -34437,7 +34437,7 @@
           "content-type": "application/x-www-form-urlencoded"
         },
         "method": "POST",
-        "url": "/admin/?muraAction=cUsers.update&userid=A51B3990-A2A7-1AB2-A5558AD23BE1226E&routeid="
+        "url": "/admin/?muraAction=cUsers.update&userid=DC3E0A7F-BC11-EFFB-52ACF473D129619E&routeid="
       },
       "response": {
         "domModel": {
@@ -35815,7 +35815,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "eef625a78fb19cacf52641eb150e27d332bfaca31daf62536f753ddf3ba97176",
+        "rawSha256": "c93647ef74cc5d6b0de097e2052319a168b13d9b1dbad77c52a9fbbb2f197872",
         "status": 200
       },
       "routeKey": "admin:cusers.update{type=2,action=add}"
@@ -36317,7 +36317,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "0cabee770b165eb8718b781b5b5411937752adfc3a5f14c8e3d77bc02d76179d",
+        "rawSha256": "3291740effa62579bd4747c094b7d17f61f8a53471f45f8720231efb80123d04",
         "status": 200
       },
       "routeKey": "admin:clogin.main"
@@ -37435,7 +37435,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "c2e3c549f450a6dc68ea691ed0ce0715fc5b2ea3cadf7d41a3ba28821919a7c9",
+        "rawSha256": "3122ecb8347d71247254ca170c1b7c08e460ddb5138f8e8706420319478d9e20",
         "status": 200
       },
       "routeKey": "admin:clogin.login"
@@ -38053,7 +38053,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "565b39f61c7a89789a9a0d7005f53cebff0056954053c290de29f2aafa668eaa",
+        "rawSha256": "b18bbb21d26b4b7f20328fa250b83d536f0d87aeae753d748795f0ff05f4189a",
         "status": 200
       },
       "routeKey": "admin:cdashboard.main"

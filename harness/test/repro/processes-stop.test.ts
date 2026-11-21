@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { REPO_ROOT, repoPath } from '../../src/lib/paths.js';
 import { startProcess } from '../../src/performance/run.js';
 import { readUpState, writeUpState } from '../../src/repro/up-state.js';
+import { databaseToolCalls, SANDBOX_DATABASE_ENV, writeDatabaseToolStubs } from './database-sandbox.js';
 
 const DOWN_SH = repoPath('harness', 'repro', 'down.sh');
 const UP_SH = repoPath('harness', 'repro', 'up.sh');
@@ -34,6 +35,8 @@ let stateDir: string;
 let pristineDir: string;
 let recordedDir: string;
 let elsewhere: string;
+let stubBin: string;
+let toolLog: string;
 const spawned: Spawned[] = [];
 
 beforeEach(async () => {
@@ -43,7 +46,10 @@ beforeEach(async () => {
   pristineDir = path.join(root, 'pristine');
   recordedDir = path.join(root, 'service');
   elsewhere = path.join(root, 'elsewhere');
-  for (const dir of [home, stateDir, pristineDir, recordedDir, elsewhere]) mkdirSync(dir, { recursive: true });
+  stubBin = path.join(root, 'stub-bin');
+  toolLog = path.join(root, 'database-tools.log');
+  for (const dir of [home, stateDir, pristineDir, recordedDir, elsewhere, stubBin]) mkdirSync(dir, { recursive: true });
+  writeDatabaseToolStubs(stubBin, toolLog);
 });
 
 afterEach(async () => {
@@ -121,16 +127,20 @@ async function startOrphan(env: NodeJS.ProcessEnv): Promise<{ leader: number; or
   return { leader: child.pid, orphan: track(Number(stdout.trim())) };
 }
 
-/** Runs `bash <script>` with the isolated HOME, state and pristine directories. */
+/** Runs `bash <script>` with the isolated HOME, state and pristine directories, sandbox databases and tool stubs. */
 async function runBash(args: string[], env: NodeJS.ProcessEnv = {}): Promise<Run> {
   const childEnv: NodeJS.ProcessEnv = {
     ...process.env,
     HOME: home,
     OPT2_STATE_DIR: stateDir,
     OPT2_PRISTINE_DIR: pristineDir,
+    ...SANDBOX_DATABASE_ENV,
+    PATH: `${stubBin}:${process.env.PATH ?? ''}`,
     ...env,
   };
-  for (const name of ['OPT2_LOCK_FLOCK_HELD', 'OPT2_LOCK_DIR', 'OPT2_PORTS_FILE', 'OPT2_CF_SERVER_NAME']) delete childEnv[name];
+  for (const name of ['OPT2_LOCK_FLOCK_HELD', 'OPT2_LOCK_WAIT', 'OPT2_LOCK_DIR', 'OPT2_PORTS_FILE', 'OPT2_CF_SERVER_NAME']) {
+    delete childEnv[name];
+  }
   const child = spawn('bash', args, { env: childEnv, stdio: ['ignore', 'pipe', 'pipe'] });
   let stdout = '';
   let stderr = '';
@@ -398,6 +408,34 @@ describe('down.sh and the recorded target processes', () => {
       );
       expect(runningAs(orphan)).toBe(true);
     }
+  });
+});
+
+describe('down.sh and the OPT-2 databases', () => {
+  it('lists the snapshot databases and probes PostgreSQL of the sandbox settings through the stubs only', async () => {
+    const { MURA_DBHOST, MURA_DBPORT, MURA_DBUSERNAME, MURA_DATABASE, PG_HOST, PG_PORT } = SANDBOX_DATABASE_ENV;
+    const probed = existsSync(repoPath('migration', 'dist', 'db-bootstrap', 'cli.js'));
+    writeFileSync(path.join(stateDir, 'tooling.json'), '{}\n');
+
+    const run = await runBash([DOWN_SH]);
+
+    expectTornDown(run);
+    const like = `${MURA_DATABASE.replaceAll('_', '[_]')}[_]opt2[_]snap[_]%`;
+    const listing = expect.arrayContaining([
+      'sqlcmd',
+      `${MURA_DBHOST},${MURA_DBPORT}`,
+      MURA_DBUSERNAME,
+      'master',
+      expect.stringContaining(`LIKE N'${like}'`),
+    ]);
+    const probe = ['pg_isready', '-q', '-h', PG_HOST, '-p', PG_PORT];
+    expect(databaseToolCalls(toolLog)).toEqual([listing, listing, ...(probed ? [probe] : [])]);
+    expect(run.stdout).toContain('snapshots: dropped none; backups deleted: none');
+    expect(run.stdout).toContain(
+      probed
+        ? `target schemas and roles: not dropped, PostgreSQL does not answer on ${PG_HOST}:${PG_PORT}`
+        : 'target schemas and roles: none dropped',
+    );
   });
 });
 

@@ -1,10 +1,10 @@
 {
-  "capturedAt": "2026-11-20T03:07:04.943Z",
+  "capturedAt": "2026-11-21T04:48:53.358Z",
   "fixtures": {
     "available": true,
     "reason": "fixtures loaded"
   },
-  "generatedAt": "2026-11-20T03:07:08.181Z",
+  "generatedAt": "2026-11-21T04:48:56.361Z",
   "generatedBy": "harness/src/golden/capture.ts",
   "origin": "legacy",
   "scenarioId": "GS-CO-22",
@@ -13,7 +13,7 @@
     "mail": [],
     "rows": {
       "content.content": {
-        "checksum": "90fd6faa1677dd8dcac9d07d7e40ea6520a49bff45e20ccb436cb4a9ff2eb6d0",
+        "checksum": "5a96e23bc31941101bed2b9299fa13ecfd64c9b27c2ef56c8b3b4ab3d66239f6",
         "columns": [
           {
             "name": "tcontent_ID",
@@ -315,7 +315,7 @@
         "entries": [
           {
             "count": 1,
-            "encoding": "i5:11070s8:tenant-as35:00000000000000000000000000000000003s35:00000000000000000000000000000000003s6:<id:9>s7:<id:10>NNNNNNNNs9:Components7:Defaulti1:1i1:1s18:GS-CO-22 Components18:GS-CO-22 ComponentNs19:/gs-co-22-componentNNs123:<p>Vespillo facilis tyrannus terreo. Victoria depopulo amitto derelinquo cavus adeptio. Delectatio cur ratione cotidie.</p>s14:<ts:iso-local>s10:Admin Users7:<id:11>NNi1:1i1:0i1:1i1:0Ns5:_selfNi1:0NNNNi1:1Ns7:Inheriti1:0Ni1:0i2:10s7:ordernos3:ascNNi1:0NNi1:0s42:00000000000000000000000000000000003,<id:9>Ni1:1s18:GS-CO-22 Components18:GS-CO-22 Components14:<ts:iso-local>i1:0Ns5:smalls4:AUTOs4:AUTONi1:0i1:0Ns5:Dailys2:{}"
+            "encoding": "i5:11098s8:tenant-as35:00000000000000000000000000000000003s35:00000000000000000000000000000000003s6:<id:9>s7:<id:10>NNNNNNNNs9:Components7:Defaulti1:1i1:1s18:GS-CO-22 Components18:GS-CO-22 ComponentNs19:/gs-co-22-componentNNs123:<p>Vespillo facilis tyrannus terreo. Victoria depopulo amitto derelinquo cavus adeptio. Delectatio cur ratione cotidie.</p>s14:<ts:iso-local>s10:Admin Users7:<id:11>NNi1:1i1:0i1:1i1:0Ns5:_selfNi1:0NNNNi1:1Ns7:Inheriti1:0Ni1:0i2:10s7:ordernos3:ascNNi1:0NNi1:0s42:00000000000000000000000000000000003,<id:9>Ni1:1s18:GS-CO-22 Components18:GS-CO-22 Components14:<ts:iso-local>i1:0Ns5:smalls4:AUTOs4:AUTONi1:0i1:0Ns5:Dailys2:{}"
           }
         ],
         "legacyTable": "tcontent",
@@ -391,7 +391,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "8674d1e41a09a385ca0510682278ed5d9c74f6ea33007a9d2e10d40dd455ab25",
+        "rawSha256": "75ea4d8aa921d30759b73a95d529275e29979f90150ce1c8c3b93fdad04c700b",
         "status": 200
       },
       "routeKey": "admin:carch.exportcomponent"
@@ -1088,7 +1088,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "d7956559f01d02b339804a868a22b37ecb94054cf5d9d8cdf341ebbba38402d0",
+        "rawSha256": "344e32d63592b1af3e489bcf4d80c07e62d17eb48f2ae51371484eece7760c9f",
         "status": 200
       },
       "routeKey": "admin:carch.importcomponent"
@@ -1731,14 +1731,14 @@
                 "contentType": "application/zip",
                 "field": "componentzip",
                 "filename": "gs-co-22-component.zip",
-                "sha256": "8674d1e41a09a385ca0510682278ed5d9c74f6ea33007a9d2e10d40dd455ab25",
+                "sha256": "75ea4d8aa921d30759b73a95d529275e29979f90150ce1c8c3b93fdad04c700b",
                 "size": 1162
               }
             ]
           }
         },
         "headers": {
-          "content-type": "multipart/form-data; boundary=----formdata-undici-089847620794"
+          "content-type": "multipart/form-data; boundary=----formdata-undici-042471094385"
         },
         "method": "POST",
         "url": "/admin/?muraAction=cArch.importcomponent&siteid=tenant-a"
@@ -2356,7 +2356,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "1b58e3934fc836154ceae41b19bb021af45c0653cf017fec7f4bb6c6eba8e285",
+        "rawSha256": "d879e444188c7e16c6b42f74a9f47969bc2176ced6db8396e665737bab4e6184",
         "status": 200
       },
       "routeKey": "admin:carch.importcomponent"

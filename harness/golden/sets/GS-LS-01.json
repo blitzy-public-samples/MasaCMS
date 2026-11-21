@@ -1,10 +1,10 @@
 {
-  "capturedAt": "2026-11-20T03:06:01.610Z",
+  "capturedAt": "2026-11-21T04:47:49.560Z",
   "fixtures": {
     "available": true,
     "reason": "fixtures loaded"
   },
-  "generatedAt": "2026-11-20T03:06:05.757Z",
+  "generatedAt": "2026-11-21T04:47:54.137Z",
   "generatedBy": "harness/src/golden/capture.ts",
   "origin": "legacy",
   "scenarioId": "GS-LS-01",
@@ -861,7 +861,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "07b62551340a621285c1641c913af631efea876f96a7b17594ac383c30ca4d88",
+        "rawSha256": "0727da5ed5ba27e7d6a7c2a032264efe7a6bd19622c91179ab1848f5dab1a31a",
         "status": 200
       },
       "routeKey": "admin:cemail.showallbounces"
@@ -1645,7 +1645,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "aa9350de79ba547bef92d39efd5b941fab67ea058d140acdc5932ea7498a0f90",
+        "rawSha256": "2539a15b951e5494e87f0840ad8c7ae33461ef2fca911e7de2b6dd124385afad",
         "status": 200
       },
       "routeKey": "admin:cemail.deletebounces"
@@ -2554,7 +2554,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "1ccd5a30b320c6b00bc0b99b18aad9ad33bbc526f7440e16e7ee3931dc578adb",
+        "rawSha256": "80f7f9eb96a8d99f9880dcb61afa54b3b9a723c7df6bded8024b4e22a6c0aab1",
         "status": 200
       },
       "routeKey": "admin:cmailinglist.edit"
@@ -3013,7 +3013,7 @@
             "direction": "add",
             "isPublic": "0",
             "ispurge": "0",
-            "mlid": "A52EDBA5-E662-C4C7-ADE3CD7F570F827E",
+            "mlid": "DC526924-B888-6467-C041F943ED0924DD",
             "siteid": "tenant-a"
           }
         },
@@ -3454,7 +3454,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "a36201db1a99ff6e36fc51acdf2cbc86a484bcabab7feb7104dc21058543455a",
+        "rawSha256": "acb7a945acfdcb6b2d2513098f206bde1a1060c0a1f09c851dc45656ec028d9b",
         "status": 200
       },
       "routeKey": "admin:cmailinglist.update"
@@ -3904,7 +3904,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/?muraAction=cMailingList.listmembers&siteid=tenant-a&mlid=A52EDBA5-E662-C4C7-ADE3CD7F570F827E"
+        "url": "/admin/?muraAction=cMailingList.listmembers&siteid=tenant-a&mlid=DC526924-B888-6467-C041F943ED0924DD"
       },
       "response": {
         "domModel": {
@@ -4337,7 +4337,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "e40634a244605a93f8b3f80e86c76dcb6f5e7196379957ccb5ef6f1bfdb70bca",
+        "rawSha256": "2e6fb7e3ee9345c2a909ad05d6fd4125192ac71b0f78cf33882f74770320815b",
         "status": 200
       },
       "routeKey": "admin:cmailinglist.listmembers"
@@ -4816,7 +4816,7 @@
             "fname": "GS",
             "isVerified": "1",
             "lname": "LS-01",
-            "mlid": "A52EDBA5-E662-C4C7-ADE3CD7F570F827E",
+            "mlid": "DC526924-B888-6467-C041F943ED0924DD",
             "siteid": "tenant-a"
           }
         },
@@ -5276,7 +5276,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "128a13469d7ad0ad7ebce5a11ba95cac2c0c26f628fd60636a70721339726bc0",
+        "rawSha256": "209964d7c9905fb5abdc762ef3a9ee32765c6c61d2bfb42fe7ff3db2988b1a4c",
         "status": 200
       },
       "routeKey": "admin:cmailinglist.updatemember"
@@ -5731,7 +5731,7 @@
         },
         "headers": {},
         "method": "GET",
-        "url": "/admin/?muraAction=cMailingList.updatemember&action=delete&mlid=A52EDBA5-E662-C4C7-ADE3CD7F570F827E&email=gs-ls-01-member@seed.opt2.test&siteid=tenant-a"
+        "url": "/admin/?muraAction=cMailingList.updatemember&action=delete&mlid=DC526924-B888-6467-C041F943ED0924DD&email=gs-ls-01-member@seed.opt2.test&siteid=tenant-a"
       },
       "response": {
         "domModel": {
@@ -6164,7 +6164,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "48f78d7140161fb1ba12b83b36eec1cd3cc9b8af0f51e24b3de4f24064f131ed",
+        "rawSha256": "da832b8d0dc0d3103b4a0fc266b9ed7a00c09754008b551daf3d92c135cc392b",
         "status": 200
       },
       "routeKey": "admin:cmailinglist.updatemember"
@@ -6562,7 +6562,7 @@
           "kind": "form",
           "value": {
             "action": "delete",
-            "mlid": "A52EDBA5-E662-C4C7-ADE3CD7F570F827E",
+            "mlid": "DC526924-B888-6467-C041F943ED0924DD",
             "siteid": "tenant-a"
           }
         },
@@ -6947,7 +6947,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "fd3513edd32c725f050d686179d96e932d8e8b79f43e375f2140faf12cb18562",
+        "rawSha256": "80dbcc572ff36d1984649db13f601e994e409908824dc16fd8da0d51c32c18c6",
         "status": 200
       },
       "routeKey": "admin:cmailinglist.update"

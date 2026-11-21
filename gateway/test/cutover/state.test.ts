@@ -244,15 +244,21 @@ describe.skipIf(!available)('cut-over state against PostgreSQL', () => {
 
   it('rejects v0003 in activation mode while rollback-before.json is pending-run', async () => {
     await setActive('v0002', 'v0001', 2);
-    const state = makeState('gw-a');
+    const dir = await mkdtemp(join(tmpdir(), 'state-test-'));
+    try {
+      await writeFile(join(dir, 'rollback-before.json'), JSON.stringify({ status: 'pending-run', result: 'pending-run' }));
+      const state = makeState('gw-a', { paths: { ...paths, reconciliationDir: dir } });
 
-    const error = await state.activate({ tableVersion: 'v0003', actor: OPERATOR }).catch((e: unknown) => e);
+      const error = await state.activate({ tableVersion: 'v0003', actor: OPERATOR }).catch((e: unknown) => e);
 
-    expect(error).toBeInstanceOf(ActivationRejected);
-    const findings = (error as ActivationRejected).findings;
-    expect(findings.length).toBeGreaterThan(0);
-    expect(findings.every((f) => f.rule === 'rollback-evidence')).toBe(true);
-    expect(await storedEpoch()).toBe(2);
+      expect(error).toBeInstanceOf(ActivationRejected);
+      const findings = (error as ActivationRejected).findings;
+      expect(findings.length).toBeGreaterThan(0);
+      expect(findings.every((f) => f.rule === 'rollback-evidence' && f.message === 'rollback-before.json has result pending-run')).toBe(true);
+      expect(await storedEpoch()).toBe(2);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it('reads the stored epoch for a write before the background refresh has applied it', async () => {

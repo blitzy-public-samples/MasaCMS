@@ -1,10 +1,10 @@
 {
-  "capturedAt": "2026-11-20T03:02:57.726Z",
+  "capturedAt": "2026-11-21T04:44:40.091Z",
   "fixtures": {
     "available": true,
     "reason": "fixtures loaded"
   },
-  "generatedAt": "2026-11-20T03:03:15.599Z",
+  "generatedAt": "2026-11-21T04:44:58.106Z",
   "generatedBy": "harness/src/golden/capture.ts",
   "origin": "legacy",
   "scenarioId": "GS-PUB-02",
@@ -3662,7 +3662,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "1c40aecafb154cb99e648614154626e3d7189c93dce3e08003dee0a153abd98b",
+        "rawSha256": "7d253bf0089b98ba9111affa53e1e3ff1a3a5172e437c09e9fd4d0a046df437d",
         "status": 200
       },
       "routeKey": "page:render"
@@ -3678,7 +3678,7 @@
               "httpOnly": true,
               "name": "userHash",
               "path": "/",
-              "persistence": "persistent",
+              "persistence": "expired",
               "secure": false,
               "value": ""
             },
@@ -3687,7 +3687,7 @@
               "httpOnly": true,
               "name": "userid",
               "path": "/",
-              "persistence": "persistent",
+              "persistence": "expired",
               "secure": false,
               "value": ""
             }
@@ -7340,7 +7340,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "acda0124c3de9df3a2527327ba90f8bf78578cc9e8402bb4e2c48ffadbfaf31c",
+        "rawSha256": "a6865bad4c8794671539b76defd1ee4d951e05d51f28ff5229f42f744a5e8b2c",
         "status": 200
       },
       "routeKey": "page:logout"
@@ -10991,7 +10991,7 @@
           "generator": "Masa CMS 7.6.1",
           "strict-transport-security": "max-age=1200"
         },
-        "rawSha256": "c0a219c0ddfba3507d0f83b5abf5d0dc0a6850fe7514693eaa68bc03bac58526",
+        "rawSha256": "9a8be6d993395656b3aaf66a71b2769d89c9a696c2b83ddc1c6f8dca979d943a",
         "status": 200
       },
       "routeKey": "page:render"
