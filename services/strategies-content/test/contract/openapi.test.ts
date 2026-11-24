@@ -1128,6 +1128,17 @@ describe('full app responses', () => {
       },
     },
     {
+      name: 'refuses a stored feed read without a user token with the legacy JSON 401',
+      method: 'GET',
+      url: `/_api/feed/v1/${SITE_A}?feedid=${IDS.feeds.local}`,
+      headers: () => serviceHeaders('gateway'),
+      status: 401,
+      verify: (res) => {
+        expect(res.headers['content-type']).toBe('application/json;charset=utf-8');
+        expect(errorOf(res)).toEqual({ message: 'Insufficient Account Permissions', code: 'invalid_request' });
+      },
+    },
+    {
       name: 'renders a stored feed as legacy RSS 2.0 with the site settings programs-sites resolves',
       method: 'GET',
       url: `/_api/feed/v1/${SITE_A}?feedid=${IDS.feeds.local}`,

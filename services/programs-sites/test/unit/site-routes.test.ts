@@ -685,6 +685,15 @@ describe('GET /v1/href-domains', () => {
     expect(sites.hrefDomains).toHaveBeenCalledExactlyOnceWith(db, siteId);
   });
 
+  it('answers the legacy 500 to a gateway invocation without a user token when neither the site nor default is registered', async () => {
+    sites.hrefDomains.mockRejectedValueOnce(new Error("Neither site '' nor the default site is registered"));
+    const res = await send('GET', '/v1/href-domains', 'service:gateway');
+    expect(res.statusCode).toBe(500);
+    expect(res.json()).toEqual({ apiversion: 'v1', method: 'invalid', error: { code: 'server_error', message: 'Unhandled Exception' } });
+    expect(res.headers).toMatchObject({ generator: 'Masa CMS 7.6.1', 'strict-transport-security': 'max-age=1200', etag: expect.stringMatching(/^[0-9A-F]{64}$/) });
+    expect(sites.hrefDomains).toHaveBeenCalledExactlyOnceWith(db, '');
+  });
+
   it.each([
     ['no credential', async () => ({}), 401],
     [

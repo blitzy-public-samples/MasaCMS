@@ -686,10 +686,11 @@ describe('main', () => {
         skipped: 0,
         parityJson: path.join(reports, 'parity.json'),
         parityMarkdown: path.join(reports, 'parity.md'),
-        exceptionsMarkdown: path.join(root, 'exceptions-list.md'),
+        exceptionsMarkdown: path.join(reports, 'exceptions-list.md'),
       },
     });
-    expect((await readdir(reports)).sort()).toStrictEqual(['parity.json', 'parity.md']);
+    expect((await readdir(reports)).sort()).toStrictEqual(['exceptions-list.md', 'parity.json', 'parity.md']);
+    expect(await readdir(root)).not.toContain('exceptions-list.md');
 
     const report = parityReportSchema.parse(JSON.parse(await readFile(path.join(reports, 'parity.json'), 'utf8')));
     expect(report.sourceSha).toBe(SHA);
@@ -704,7 +705,7 @@ describe('main', () => {
     const parityLines = (await readFile(path.join(reports, 'parity.md'), 'utf8')).split('\n');
     expect(parityLines.slice(0, 3)).toStrictEqual([`# ${PARITY_TITLE}`, `Source SHA: ${SHA}`, '']);
 
-    const exceptionLines = (await readFile(path.join(root, 'exceptions-list.md'), 'utf8')).split('\n');
+    const exceptionLines = (await readFile(path.join(reports, 'exceptions-list.md'), 'utf8')).split('\n');
     expect(exceptionLines.slice(0, 2)).toStrictEqual([`# ${EXCEPTIONS_TITLE}`, `Source SHA: ${SHA}`]);
     const rows = rowsBy(exceptionLines, /^EX-/);
     expect([...rows].map(([id, row]) => [id, row[4], row[5]])).toStrictEqual([
@@ -713,6 +714,20 @@ describe('main', () => {
     ]);
     for (const row of rows.values()) expect(row[6]).toMatch(/\(not in this run\)$/);
     expect(await readFile(exceptionsPath, 'utf8')).toBe(await readFile(EXCEPTIONS_FIXTURE, 'utf8'));
+  });
+
+  it('renders the default opt2/exceptions-list.json under OPT2_REPORTS_DIR, leaving opt2/exceptions-list.md unchanged', async () => {
+    const flags = ['--catalogue', CATALOGUE_FIXTURE, '--decision-list', DECISIONS_FIXTURE];
+    const readGolden = (id: string): Promise<GoldenSet> => readGoldenSet(id, path.join(goldens, `${id}.json`));
+    const outcome = await main(flags, env, { readGolden, clock: CLOCK });
+    const rendered = path.join(reports, 'exceptions-list.md');
+    expect(outcome.summary).toMatchObject({ exceptionsMarkdown: rendered });
+    expect((await readFile(rendered, 'utf8')).split('\n').slice(0, 2)).toStrictEqual([
+      `# ${EXCEPTIONS_TITLE}`,
+      `Source SHA: ${SHA}`,
+    ]);
+    const committed = opt2Path('exceptions-list.md');
+    expect(await digest(committed)).toBe(guarded[committed]);
   });
 
   it('exits 0 when every compared scenario passes', async () => {

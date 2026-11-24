@@ -330,7 +330,7 @@ describe.skipIf(!(await pgAvailable()))('feed routes', () => {
   });
 
   it('reads a stored feed only for a verified token', async () => {
-    expect((await get(`/_api/feed/v1/tenant-a/?feedid=${ids.rss20 ?? ''}`, {}, false)).statusCode).toBe(401);
+    expect((await get(`/_api/feed/v1/tenant-a/?feedid=${ids.rss20 ?? ''}`)).statusCode).toBe(401);
   });
 
   it('fails closed with the legacy 503 when the site settings owner is unavailable, asked once before the feed query', async () => {

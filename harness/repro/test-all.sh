@@ -630,13 +630,15 @@ stage_cutover() {
 }
 
 stage_equivalence() {
-  local failures=0 suite
+  local failures=0 suite exceptions_md="$REPORTS_DIR/exceptions-list.md"
+  # As compare.ts's exceptionsMarkdownPath: beside opt2/exceptions-list.json unless OPT2_REPORTS_DIR moves the reports.
+  if [[ $(realpath -ms -- "$REPORTS_DIR") == "$REPO/opt2/reports" ]]; then exceptions_md="$REPO/opt2/exceptions-list.md"; fi
   run_step "golden:replay through the gateway (v0002)" harness_run golden:replay || failures=1
   # golden:compare reads the interaction suite's browser replay records, so the suite runs before it.
   OPT2_UI_PHASE=replay run_e2e ui/interactions || failures=1
   run_step "golden:compare" harness_run golden:compare || failures=1
   run_step "golden:coverage" harness_run golden:coverage || failures=1
-  note_evidence "$REPORTS_DIR/parity.json" "$REPORTS_DIR/parity.md" "$REPORTS_DIR/exceptions-list.md"
+  note_evidence "$REPORTS_DIR/parity.json" "$REPORTS_DIR/parity.md" "$exceptions_md"
   for suite in "${E2E_SUITES[@]}"; do run_e2e "$suite" || failures=1; done
   run_step "security:scan" harness_run security:scan || failures=1
   note_evidence "$OPT2_STATE_DIR/security/summary.json"

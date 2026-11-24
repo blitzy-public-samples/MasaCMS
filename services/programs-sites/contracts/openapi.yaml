@@ -3324,6 +3324,9 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+          description: Neither the named site nor `default` is registered, where legacy's getSite fails.
         '503':
           $ref: '#/components/responses/Unavailable'
   /v1/user-sites:

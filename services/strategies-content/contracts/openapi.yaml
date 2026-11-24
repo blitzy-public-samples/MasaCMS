@@ -8702,12 +8702,16 @@ components:
           schema:
             $ref: '#/components/schemas/FeedError'
     FeedUnauthorized:
-      description: WDDX error `Insufficient Account Permissions`.
+      description: WDDX error `Insufficient Account Permissions` for a restricted feed; the legacy JSON 401 for a missing invocation credential or a missing, invalid or expired user token.
       headers:
         Generator:
           $ref: '#/components/headers/Generator'
         Strict-Transport-Security:
           $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+        WWW-Authenticate:
+          $ref: '#/components/headers/WWWAuthenticate'
       content:
         text/xml:
           schema:
@@ -8715,6 +8719,9 @@ components:
         application/rss+xml:
           schema:
             $ref: '#/components/schemas/FeedError'
+        application/json;charset=utf-8:
+          schema:
+            $ref: '#/components/schemas/LegacyError'
     FeedServerError:
       description: WDDX error `Unhandled Exception` with its stack trace.
       headers:

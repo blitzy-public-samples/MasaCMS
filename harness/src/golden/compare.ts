@@ -970,16 +970,20 @@ function differencesCell(differences: readonly ParityDifference[]): string {
   return `${differences.length} (${parts.join(', ')})`;
 }
 
-function referenceCell(exceptionId: string | null, decisionListRef: readonly string[] | null): string {
+function referenceCell(
+  exceptionId: string | null,
+  decisionListRef: readonly string[] | null,
+  exceptionsLink: string,
+): string {
   const parts: string[] = [];
-  if (exceptionId !== null) parts.push(`${EXCEPTIONS_LIST_LINK}: ${code(exceptionId)}`);
+  if (exceptionId !== null) parts.push(`${exceptionsLink}: ${code(exceptionId)}`);
   if (decisionListRef !== null) parts.push(`${DECISION_LIST_LINK}: ${codes(decisionListRef)}`);
   return parts.join('; ');
 }
 
-function scenarioRow(scenario: ScenarioParity, anchor: string = scenario.id): string {
+function scenarioRow(scenario: ScenarioParity, exceptionsLink: string, anchor: string = scenario.id): string {
   const result = `${code(scenario.result)}${scenario.reason === null ? '' : `: ${scenario.reason}`}`;
-  const reference = referenceCell(scenario.exceptionId, scenario.decisionListRef);
+  const reference = referenceCell(scenario.exceptionId, scenario.decisionListRef, exceptionsLink);
   const evidence = `golden ${code(scenario.evidence.golden)}, replay ${code(scenario.evidence.replay)}`;
   const cells = [
     `<a id="${anchor}"></a>${scenario.id}`,
@@ -996,8 +1000,11 @@ function fixturesLine(fixtures: ParityReport['fixtures']): string {
   return `Fixtures: ${fixtures.available ? 'available' : `unavailable${reason}`} (from ${code(fixtures.source)})`;
 }
 
-/** Body lines of `parity.md` for `writeMarkdown`, which adds the title and the `Source SHA:` line. */
-export function renderParityMarkdown(report: ParityReport): string[] {
+/**
+ * Body lines of `parity.md` for `writeMarkdown`, which adds the title and the `Source SHA:` line.
+ * `exceptionsLink` is the Markdown link to the exceptions list; see {@link parityExceptionsLink}.
+ */
+export function renderParityMarkdown(report: ParityReport, exceptionsLink: string = EXCEPTIONS_LIST_LINK): string[] {
   const { summary } = report;
   const lines = [
     `Status: ${report.status}`,
@@ -1027,7 +1034,7 @@ export function renderParityMarkdown(report: ParityReport): string[] {
     lines.push('No scenario was compared.');
   } else {
     lines.push('| ID | Service | Result | Differences | Evidence |', '|---|---|---|---|---|');
-    lines.push(...report.scenarios.map((scenario) => scenarioRow(scenario)));
+    lines.push(...report.scenarios.map((scenario) => scenarioRow(scenario, exceptionsLink)));
   }
   if (report.rehearsalCrossings !== undefined) {
     lines.push(
@@ -1040,7 +1047,7 @@ export function renderParityMarkdown(report: ParityReport): string[] {
       '',
       '| ID | Service | Result | Differences | Evidence |',
       '|---|---|---|---|---|',
-      ...report.rehearsalCrossings.map((crossing) => scenarioRow(crossing, `${crossing.id}-rehearsal`)),
+      ...report.rehearsalCrossings.map((crossing) => scenarioRow(crossing, exceptionsLink, `${crossing.id}-rehearsal`)),
     );
   }
   lines.push('', '## Unmet (withheld)', '');
@@ -1067,7 +1074,7 @@ export function renderParityMarkdown(report: ParityReport): string[] {
       return tableRow([p.scenario, code('withheld'), codes(p.routeKeys), reference]);
     }),
     ...report.planned.halted.map((p) =>
-      tableRow([p.scenario, code('halted'), codes(p.routeKeys), `${EXCEPTIONS_LIST_LINK}: ${code(p.exceptionId)}`]),
+      tableRow([p.scenario, code('halted'), codes(p.routeKeys), `${exceptionsLink}: ${code(p.exceptionId)}`]),
     ),
   );
   if (report.coverage !== undefined) {
@@ -1144,9 +1151,24 @@ export function renderExceptionsMarkdown(list: ExceptionsList, run?: ExceptionsR
 }
 
 
-/** `opt2/exceptions-list.md` beside the exceptions list at `exceptionsPath`. */
-export function exceptionsMarkdownPath(exceptionsPath: string): string {
+/**
+ * Exceptions-list Markdown path: `exceptions-list.md` in `reportsDir(env)` when `OPT2_REPORTS_DIR` names a directory
+ * other than `opt2/reports`, else beside the exceptions list at `exceptionsPath`.
+ */
+export function exceptionsMarkdownPath(exceptionsPath: string, env: EnvLike = process.env): string {
+  const dir = reportsDir(env);
+  if (dir !== opt2Path('reports')) return path.join(dir, 'exceptions-list.md');
   return exceptionsPath.replace(/\.json$/, '') + '.md';
+}
+
+/**
+ * `parity.md`'s link to the Markdown at {@link exceptionsMarkdownPath}: by file name when it lies beside `parity.md`
+ * in `reportsDir(env)`, else the committed layout's `../exceptions-list.md`, so no machine path enters the report.
+ */
+export function parityExceptionsLink(exceptionsPath: string, env: EnvLike = process.env): string {
+  const target = exceptionsMarkdownPath(exceptionsPath, env);
+  if (path.dirname(target) !== reportsDir(env)) return EXCEPTIONS_LIST_LINK;
+  return `[exceptions-list.md](${path.basename(target)})`;
 }
 
 async function exists(file: string): Promise<boolean> {
@@ -1271,7 +1293,8 @@ const HELP = [
   '',
   'Compares every golden set with its replay output under ${OPT2_STATE_DIR}/golden/replay/ (browser scenarios:',
   '${OPT2_STATE_DIR}/golden/browser/) and writes parity.json and parity.md to ${OPT2_REPORTS_DIR:-opt2/reports},',
-  'then the exceptions-list Markdown beside --exceptions (default opt2/exceptions-list.json), which is only read.',
+  'then the exceptions-list Markdown beside --exceptions (default opt2/exceptions-list.json), which is only read,',
+  'or to ${OPT2_REPORTS_DIR}/exceptions-list.md when OPT2_REPORTS_DIR names a directory other than opt2/reports.',
   'Rehearsal scenarios are included once their replay output exists; a rehearsal crossing',
   '(golden/replay/rehearsal/<id>.json) is compared under v0003 with harness/golden/sets/rehearsal/<id>.json and',
   'listed apart, outside the summary; any unlisted difference fails it, withheld variants included.',
@@ -1296,7 +1319,8 @@ function pathFlag(value: string | undefined, flag: string, fallback: string): st
 
 /**
  * Classifies every catalogue scenario and every replayed rehearsal crossing, writes `parity.json` and `parity.md`
- * under `reportsDir(env)`, then regenerates the exceptions-list Markdown. Exit 1 when any scenario or crossing fails.
+ * under `reportsDir(env)`, then regenerates the exceptions-list Markdown at {@link exceptionsMarkdownPath}. Exit 1 when
+ * any scenario or crossing fails.
  * Summary: the result counts, the crossings' counts when any was compared, and the written paths.
  */
 export async function main(argv: string[], env: EnvLike = process.env, deps: MainDeps = {}): Promise<CliOutcome> {
@@ -1361,13 +1385,17 @@ export async function main(argv: string[], env: EnvLike = process.env, deps: Mai
 
   const dir = reportsDir(env);
   const written = await writeJsonReport(path.join(dir, 'parity.json'), { ...report }, { generatedBy: GENERATED_BY });
-  const parityMarkdown = await writeMarkdown(path.join(dir, 'parity.md'), PARITY_TITLE, renderParityMarkdown(report));
+  const parityMarkdown = await writeMarkdown(
+    path.join(dir, 'parity.md'),
+    PARITY_TITLE,
+    renderParityMarkdown(report, parityExceptionsLink(exceptionsPath, env)),
+  );
   for (const { scenario } of exceptions) {
     if (!ctx.captured.has(scenario) && (await exists(goldenSetPath(scenario)))) ctx.captured.add(scenario);
   }
   const results = new Map(report.scenarios.map((scenario) => [scenario.id, scenario.result]));
   const exceptionsMarkdown = await writeMarkdown(
-    exceptionsMarkdownPath(exceptionsPath),
+    exceptionsMarkdownPath(exceptionsPath, env),
     EXCEPTIONS_TITLE,
     renderExceptionsMarkdown(list, { results, captured: ctx.captured }),
   );

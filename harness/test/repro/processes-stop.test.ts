@@ -5,7 +5,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { REPO_ROOT, repoPath } from '../../src/lib/paths.js';
+import { exceptionsMarkdownPath } from '../../src/golden/compare.js';
+import { EXCEPTIONS_LIST_PATH } from '../../src/inventory/disposition.js';
+import { isInsideRepo, REPO_ROOT, repoPath } from '../../src/lib/paths.js';
 import { startProcess } from '../../src/performance/run.js';
 import { readUpState, writeUpState } from '../../src/repro/up-state.js';
 import { databaseToolCalls, SANDBOX_DATABASE_ENV, writeDatabaseToolStubs } from './database-sandbox.js';
@@ -196,6 +198,18 @@ function scriptFunction(script: string, name: string): string {
 /** The text of up.sh's top-level function `name`. */
 function upShFunction(name: string): string {
   return scriptFunction(UP_SH, name);
+}
+
+/** test-all.sh's one-line function definition of each of `names`. */
+function testAllOneLiners(names: string[]): string {
+  const lines = readFileSync(TEST_ALL_SH, 'utf8').split('\n');
+  return names
+    .map((name) => {
+      const line = lines.find((candidate) => candidate.startsWith(`${name}() { `) && candidate.endsWith('; }'));
+      if (line === undefined) throw new Error(`test-all.sh defines no one-line function ${name}`);
+      return line;
+    })
+    .join('\n');
 }
 
 /** up.sh's first top-level assignment line of each variable in `names`, its initial value. */
@@ -629,4 +643,51 @@ describe("test-all.sh's require_stack", () => {
       );
     }
   });
+});
+
+describe("test-all.sh's stage_equivalence", () => {
+  it.each<{ reports: string; summary: 'names' | 'masks' | 'omits' }>([
+    { reports: '<repo>/opt2/reports', summary: 'names' },
+    { reports: '<repo>/./opt2/reports/', summary: 'names' },
+    { reports: '<scratch>/reports', summary: 'names' },
+    { reports: '<scratch>/reports', summary: 'masks' },
+    { reports: '<repo>/opt2/reports', summary: 'omits' },
+  ])(
+    'records the exceptions-list Markdown golden:compare writes for $reports when its summary $summary it',
+    async ({ reports: spelled, summary }) => {
+      const reports = spelled.replace('<repo>', REPO_ROOT).replace('<scratch>', root);
+      const runDir = path.join(root, 'run');
+      const compareLine = path.join(root, 'compare.stdout');
+      const exceptions = exceptionsMarkdownPath(EXCEPTIONS_LIST_PATH, { OPT2_REPORTS_DIR: reports });
+      const recorded = [`${reports}/parity.json`, `${reports}/parity.md`, exceptions];
+      mkdirSync(runDir);
+      // The default layout's reports are committed; a redirected directory gets empty stand-ins.
+      if (!isInsideRepo(reports)) {
+        mkdirSync(reports);
+        for (const file of recorded) writeFileSync(file, '');
+      }
+      const masked = path.join(path.dirname(reports), '[REDACTED]', path.basename(exceptions));
+      const named = { names: { exceptionsMarkdown: exceptions }, masks: { exceptionsMarkdown: masked }, omits: {} };
+      const line = { command: 'harness/src/golden/compare.ts', ok: false, code: 1, ...named[summary] };
+      writeFileSync(compareLine, `${JSON.stringify(line)}\n`);
+      const script = [
+        `RUN_DIR='${runDir}' STEP_STDOUT='${runDir}/step.stdout' REPORTS_DIR='${reports}' STAGE_N=7 MIGRATE=false`,
+        'E2E_SUITES=()',
+        testAllOneLiners(['meta_file', 'note_reason', 'note_unmet', 'set_result']),
+        scriptFunction(TEST_ALL_SH, 'note_evidence'),
+        scriptFunction(TEST_ALL_SH, 'stage_equivalence'),
+        // Only harness scripts run, each stubbed: golden:compare prints the row's summary line, the rest print nothing.
+        'run_step() { shift; if [[ $1 == harness_run ]]; then "$@" >"$STEP_STDOUT"; fi; }',
+        `harness_run() { if [[ $1 == golden:compare ]]; then cat '${compareLine}'; fi; }`,
+        'run_e2e() { :; }',
+        'stage_equivalence',
+      ].join('\n');
+
+      const run = await runLib(script);
+
+      expect(run.code, run.stderr).toBe(0);
+      // The later steps' evidence follows, as far as their files exist.
+      expect(readFileSync(path.join(runDir, 'stage-7.evidence'), 'utf8').split('\n').slice(0, 3)).toEqual(recorded);
+    },
+  );
 });

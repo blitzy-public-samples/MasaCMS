@@ -31,6 +31,7 @@ import {
   loadDecisionList,
   loadExceptionsList,
   main,
+  parityExceptionsLink,
   parityReportSchema,
   renderExceptionsMarkdown,
   renderParityMarkdown,
@@ -703,6 +704,24 @@ describe('renderParityMarkdown', () => {
     const unreferenced = { ...report, unmetWithheld: [{ id: 'GS-CO-05', decisionListRef: null, proposal: null }] };
     expect(renderParityMarkdown(unreferenced)).toContain('| GS-CO-05 | none recorded | none recorded |');
   });
+
+  it.each<[string, string | undefined, string]>([
+    ['opt2/exceptions-list.json', undefined, '../exceptions-list.md'],
+    ['opt2/exceptions-list.json', 'opt2/reports', '../exceptions-list.md'],
+    ['/s/exceptions-list.json', undefined, '../exceptions-list.md'],
+    ['opt2/reports/exceptions-list.json', undefined, 'exceptions-list.md'],
+    ['opt2/exceptions-list.json', '/s/reports', 'exceptions-list.md'],
+    ['/s/exceptions-list.json', '/s/reports', 'exceptions-list.md'],
+  ])('links the rendering of %s with OPT2_REPORTS_DIR=%s as %s', (from, reports, href) => {
+    const link = parityExceptionsLink(path.resolve(REPO_ROOT, from), { OPT2_REPORTS_DIR: reports });
+    expect(link).toBe(`[exceptions-list.md](${href})`);
+    const lines = renderParityMarkdown(fullReport(), link);
+    expect(lines.find((line) => line.startsWith('| <a id="GS-CO-05">'))).toContain(`; ${link}: \`EX-CO-05\` |`);
+    expect(lines).toContain(`| GS-CO-07 | \`halted\` |  | ${link}: \`EX-CO-07\` |`);
+    const targets = lines.join('\n').split('[exceptions-list.md](').slice(1);
+    expect(targets.length).toBeGreaterThan(1);
+    for (const target of targets) expect(target.startsWith(`${href})`)).toBe(true);
+  });
 });
 
 /** Lines from the heading starting with `heading` through the last row of its table; `[]` without the heading. */
@@ -780,11 +799,14 @@ describe('renderExceptionsMarkdown', () => {
     );
   });
 
-  it.each([
-    ['/r/opt2/exceptions-list.json', '/r/opt2/exceptions-list.md'],
-    ['/r/opt2/exceptions-list', '/r/opt2/exceptions-list.md'],
-  ])('places the rendering of %s at %s', (from, to) => {
-    expect(exceptionsMarkdownPath(from)).toBe(to);
+  it.each<[string, string | undefined, string]>([
+    ['/r/opt2/exceptions-list.json', undefined, '/r/opt2/exceptions-list.md'],
+    ['/r/opt2/exceptions-list', undefined, '/r/opt2/exceptions-list.md'],
+    ['/r/opt2/exceptions-list.json', 'opt2/reports', '/r/opt2/exceptions-list.md'],
+    ['/r/opt2/exceptions-list.json', './opt2/reports/', '/r/opt2/exceptions-list.md'],
+    ['/r/opt2/exceptions-list.json', '/s/reports', '/s/reports/exceptions-list.md'],
+  ])('places the rendering of %s with OPT2_REPORTS_DIR=%s at %s', (from, reports, to) => {
+    expect(exceptionsMarkdownPath(from, { OPT2_REPORTS_DIR: reports })).toBe(to);
   });
 });
 
@@ -930,7 +952,7 @@ describe('main', () => {
         skipped: 1,
         parityJson: path.join(reports, 'parity.json'),
         parityMarkdown: path.join(reports, 'parity.md'),
-        exceptionsMarkdown: path.join(root, 'exceptions-list.md'),
+        exceptionsMarkdown: path.join(reports, 'exceptions-list.md'),
       },
     });
     const records = logged.map((line) => JSON.parse(line) as Record<string, unknown>);
@@ -961,10 +983,27 @@ describe('main', () => {
 
     const parityLines = (await readFile(path.join(reports, 'parity.md'), 'utf8')).split('\n');
     expect(parityLines.slice(0, 3)).toEqual(['# Parity report', `Source SHA: ${SHA}`, '']);
-    const exceptionLines = (await readFile(path.join(root, 'exceptions-list.md'), 'utf8')).split('\n');
+    const exceptionLines = (await readFile(path.join(reports, 'exceptions-list.md'), 'utf8')).split('\n');
     expect(exceptionLines.slice(0, 2)).toEqual(['# Exceptions list', `Source SHA: ${SHA}`]);
     const entryLine = exceptionLines.find((line) => line.startsWith('| EX-CO-05 '));
     expect(entryLine).toMatch(/\(captured\), replay .* \(fail\) \|$/);
+  });
+
+  it('links parity.md to the exceptions-list Markdown it writes beside it under OPT2_REPORTS_DIR', async () => {
+    const halted = coScenario(6, { expected: 'halted', exceptionId: 'EX-CO-06' });
+    const flags = await inputs([halted], [entry({ id: 'EX-CO-06', scenario: 'GS-CO-06', status: 'halted' })]);
+    await writeJson(stateFile('replay', 'GS-CO-06.json'), replayOf(goldenOf(halted)));
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const outcome = await main(flags, env, { readGolden: async () => goldenOf(halted), clock: CLOCK });
+    expect(outcome.summary).toMatchObject({ exceptionsMarkdown: path.join(reports, 'exceptions-list.md') });
+
+    const parity = await readFile(path.join(reports, 'parity.md'), 'utf8');
+    expect(parity).toContain(
+      '| GS-CO-06 | `halted` | `api:content.findone` | [exceptions-list.md](exceptions-list.md): `EX-CO-06` |',
+    );
+    expect(parity).not.toContain('](../exceptions-list.md)');
+    const exceptions = await readFile(path.join(reports, 'exceptions-list.md'), 'utf8');
+    expect(exceptions.split('\n').find((line) => line.startsWith('| EX-CO-06 '))).toBeDefined();
   });
 
   it('exits 0 and logs to stderr when every scenario passes', async () => {
