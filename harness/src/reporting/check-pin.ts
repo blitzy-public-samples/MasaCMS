@@ -83,15 +83,13 @@ export const DELIVERABLE_PATTERNS: readonly { readonly glob: string; readonly re
 ];
 
 /**
- * Prefixes no tracked path may have. Their contents (Masa's downloaded theme, screenshots) are runtime artefacts
- * that are never committed, so they are also never deliverables, whether tracked or not.
+ * Prefixes of runtime artefacts (Masa's downloaded theme, screenshots): no path under them may be tracked except the
+ * exact paths in {@link TRACKED_FORBIDDEN_EXCEPTIONS}, and none, tracked or not, is a deliverable.
  */
 export const FORBIDDEN_TRACKED_PREFIXES: readonly string[] = ['themes/default/', 'blitzy/'];
 
-/** Exact paths under a forbidden prefix that may be tracked: the run's project guide, which ships with the pull request. */
-export const TRACKED_FORBIDDEN_EXCEPTIONS: readonly string[] = [
-  'blitzy/documentation/Project Guide - 48d51ddc-539f-48aa-8086-5041e07a1be6.md',
-];
+/** Exact paths under a forbidden prefix that may be tracked: the project guide, which ships with the pull request. */
+export const TRACKED_FORBIDDEN_EXCEPTIONS: readonly string[] = ['blitzy/documentation/Project Guide.md'];
 
 /** The `sites/<siteid>/` folder a path lies under. */
 const SITE_FOLDER = /^sites\/[^/]+\//;
@@ -276,7 +274,7 @@ export async function confirmPin(deps: PinDeps = {}): Promise<ConfirmResult> {
   return { mode: 'confirm', sha: pin.sha, subject: pin.subject, ok: findings.length === 0, findings };
 }
 
-/** Checks every deliverable for the pinned SHA, skipping untracked files of Masa runtime sites, and that no forbidden path is tracked. */
+/** Checks every deliverable for the pinned SHA, skipping untracked files of Masa runtime sites, and that no forbidden path other than an exact exception is tracked. */
 export async function checkDeliverables(deps: PinDeps = {}): Promise<DeliverablesResult> {
   const { root, git, pin } = resolveDeps(deps);
   const [listed, atPin, tracked] = await Promise.all([

@@ -77,6 +77,34 @@ export const UNFILTERED_NOT_MATCH_D = String.raw`(^|/)(core/vendor|node_modules|
 /** Patterns the unfiltered measurement excludes; directory names match at any depth. */
 export const UNFILTERED_EXCLUDES: readonly string[] = Object.freeze(['core/vendor', 'node_modules', '.git']);
 
+/** `--not-match-d` of the planning basis: `vendor` directories at any depth, `node_modules` and `.git`. */
+export const PLANNING_BASIS_NOT_MATCH_D = String.raw`(^|/)(vendor|node_modules|\.git)(/|$)`;
+
+/** `--not-match-f` of the complete planning basis. */
+export const PLANNING_BASIS_NOT_MATCH_F = String.raw`(^|/)(package-lock\.json|[^/]+\.min\.(js|css)|[^/]+\.map)$`;
+
+/** One planning-basis step: the patterns it adds and the regexes of every exclusion up to it. */
+export interface PlanningBasisStep {
+  readonly excludes: readonly string[];
+  readonly notMatchD: string;
+  readonly notMatchF?: string;
+}
+
+/** Exclusions that, added in order to the unfiltered rule, give the planning basis of the unfiltered figure. */
+export const PLANNING_BASIS_STEPS: readonly PlanningBasisStep[] = Object.freeze([
+  Object.freeze({ excludes: Object.freeze(['vendor']), notMatchD: PLANNING_BASIS_NOT_MATCH_D }),
+  Object.freeze({
+    excludes: Object.freeze(['package-lock.json']),
+    notMatchD: PLANNING_BASIS_NOT_MATCH_D,
+    notMatchF: String.raw`(^|/)package-lock\.json$`,
+  }),
+  Object.freeze({
+    excludes: Object.freeze(['*.min.js', '*.min.css', '*.map']),
+    notMatchD: PLANNING_BASIS_NOT_MATCH_D,
+    notMatchF: PLANNING_BASIS_NOT_MATCH_F,
+  }),
+]);
+
 /** cloc languages that make up CFML application code. */
 export const CFML_LANGUAGES: readonly string[] = Object.freeze(['ColdFusion CFScript', 'ColdFusion']);
 
@@ -297,8 +325,16 @@ export interface ClocReport {
   languages: ClocReportLanguage[];
   totals: Figure;
   cfmlApplicationCode: Figure & { languages: string[] };
-  unfiltered: Figure & { excludes: string[]; notMatchD: string };
+  unfiltered: Figure & { excludes: string[]; notMatchD: string; planningBasis: ClocPlanningBasis };
   detail: { blank: number; comment: number; perFile: ClocFile[]; reason: string };
+}
+
+/** Planning basis of the unfiltered figure; each `gap` entry is what one step removes from the figure before it. */
+export interface ClocPlanningBasis extends Figure {
+  excludes: string[];
+  notMatchD: string;
+  notMatchF: string;
+  gap: (Figure & { excludes: string[] })[];
 }
 
 /** One figure that differs from {@link PLANNING_FIGURES}; null where a side has no such row. */
@@ -312,6 +348,7 @@ export interface PlanningDifference {
 export interface PlanningComparison {
   matchesPlanning: boolean;
   versionMatches: boolean;
+  planningBasisMatches: boolean;
   differences: PlanningDifference[];
 }
 
@@ -352,8 +389,34 @@ export function reportLanguages(languages: readonly ClocLanguage[]): ClocReportL
   return rows;
 }
 
-/** Builds the `cloc.json` body from the filtered (by-file) and unfiltered runs over the extraction of `sha`. */
-export function buildClocReport(sha: string, filtered: ClocResult, unfiltered: ClocResult, measuredAt: Date): ClocReport {
+/** Planning basis from the unfiltered run and one run per {@link PLANNING_BASIS_STEPS} entry, in step order. */
+function planningBasisOf(unfiltered: ClocResult, steps: readonly ClocResult[]): ClocPlanningBasis {
+  let previous = figureOf(unfiltered.totals);
+  const gap = PLANNING_BASIS_STEPS.map((step, i) => {
+    const result = steps[i];
+    if (result === undefined) throw new Error(`no cloc result for planning-basis step ${i + 1} (${step.excludes.join(', ')})`);
+    const current = figureOf(result.totals);
+    const drop = { excludes: [...step.excludes], files: previous.files - current.files, code: previous.code - current.code };
+    previous = current;
+    return drop;
+  });
+  return {
+    excludes: [...UNFILTERED_EXCLUDES, ...PLANNING_BASIS_STEPS.flatMap((step) => step.excludes)],
+    notMatchD: PLANNING_BASIS_NOT_MATCH_D,
+    notMatchF: PLANNING_BASIS_NOT_MATCH_F,
+    ...previous,
+    gap,
+  };
+}
+
+/** Builds the `cloc.json` body from the filtered (by-file), unfiltered and planning-basis runs over the extraction of `sha`. */
+export function buildClocReport(
+  sha: string,
+  filtered: ClocResult,
+  unfiltered: ClocResult,
+  planningBasis: readonly ClocResult[],
+  measuredAt: Date,
+): ClocReport {
   return {
     sourceSha: sha,
     generatedBy: GENERATED_BY,
@@ -377,6 +440,7 @@ export function buildClocReport(sha: string, filtered: ClocResult, unfiltered: C
       excludes: [...UNFILTERED_EXCLUDES],
       notMatchD: UNFILTERED_NOT_MATCH_D,
       ...figureOf(unfiltered.totals),
+      planningBasis: planningBasisOf(unfiltered, planningBasis),
     },
     detail: {
       blank: filtered.totals.blank,
@@ -391,7 +455,10 @@ function sameFigure(a: Figure | null, b: Figure | null): boolean {
   return a !== null && b !== null && a.files === b.files && a.code === b.code;
 }
 
-/** Differences between `report` and {@link PLANNING_FIGURES}, per total, derived figure and language row. */
+/**
+ * Differences between `report` and {@link PLANNING_FIGURES}, per total, derived figure and language row, and whether
+ * the planning basis reproduces the unfiltered planning figure.
+ */
 export function comparePlanning(report: ClocReport): PlanningComparison {
   const candidates: PlanningDifference[] = [
     { figure: 'totals', planning: PLANNING_FIGURES.totals, measured: report.totals },
@@ -417,6 +484,7 @@ export function comparePlanning(report: ClocReport): PlanningComparison {
   return {
     matchesPlanning: differences.length === 0,
     versionMatches: report.command.version === PLANNING_FIGURES.version,
+    planningBasisMatches: sameFigure(PLANNING_FIGURES.unfiltered, figureOf(report.unfiltered.planningBasis)),
     differences,
   };
 }
@@ -457,6 +525,7 @@ function figureCells(figure: Figure | null): string {
 
 /** Markdown lines of `cloc.md` (after the title and `Source SHA:` line) for `report` and its planning comparison. */
 export function renderClocMarkdown(report: ClocReport, planning: PlanningComparison): string[] {
+  const basis = report.unfiltered.planningBasis;
   const lines = [
     `Measured with: ${report.measuredWith} · provenance: ${report.provenance} · measured at: ${report.measuredAt}`,
     '',
@@ -485,6 +554,13 @@ export function renderClocMarkdown(report: ClocReport, planning: PlanningCompari
     '',
     `- ${code('--not-match-d')}: ${code(report.unfiltered.notMatchD)}`,
     '',
+    'Planning basis of the unfiltered figure:',
+    '',
+    commandLine(clocArgs({ notMatchD: basis.notMatchD, notMatchF: basis.notMatchF })),
+    '',
+    `- ${code('--not-match-d')}: ${code(basis.notMatchD)}`,
+    `- ${code('--not-match-f')}: ${code(basis.notMatchF)}`,
+    '',
     '## Exclusions',
     '',
     '| Exclusion | Patterns | Why |',
@@ -505,11 +581,25 @@ export function renderClocMarkdown(report: ClocReport, planning: PlanningCompari
     '|---|---:|---:|',
     `| CFML application code (CFScript + tags) | ${figureCells(report.cfmlApplicationCode)} |`,
     `| Unfiltered (excludes only ${prose(report.unfiltered.excludes.map(code))}) | ${figureCells(report.unfiltered)} |`,
+    `| Unfiltered, planning basis (also excludes ${prose(basis.gap.flatMap((step) => step.excludes).map(code))}) | ${figureCells(basis)} |`,
     '',
     'Directory patterns match a directory name at any depth.',
     '',
     `Blank lines: ${num(report.detail.blank)}; comment lines: ${num(report.detail.comment)}. ` +
       `\`cloc.json\` lists the ${num(report.detail.perFile.length)} counted files under \`detail.perFile\`.`,
+    '',
+    '## Unfiltered reconciliation',
+    '',
+    `The planning basis measures ${num(basis.files)} files and ${num(basis.code)} code lines, which ` +
+      `${planning.planningBasisMatches ? 'equals' : 'differs from'} the unfiltered planning figure of ` +
+      `${num(PLANNING_FIGURES.unfiltered.files)} / ${num(PLANNING_FIGURES.unfiltered.code)} measured with cloc ${PLANNING_FIGURES.version}.`,
+    '',
+    'Each row is what one exclusion removes after the rows above it:',
+    '',
+    '| Exclusion | Files | Code lines |',
+    '|---|---:|---:|',
+    ...basis.gap.map((step) => `| ${prose(step.excludes.map(code))} | ${figureCells(step)} |`),
+    `| **Total** | **${num(report.unfiltered.files - basis.files)}** | **${num(report.unfiltered.code - basis.code)}** |`,
     '',
     '## Planning comparison',
     '',
@@ -603,6 +693,7 @@ export async function generateCloc(opts: GenerateClocOptions = {}): Promise<Cloc
   let clockTime: Date;
   let filtered: ClocResult;
   let unfiltered: ClocResult;
+  const planningBasis: ClocResult[] = [];
   try {
     scratch = await mkdtemp(path.join(assertOutsideRepo(os.tmpdir(), 'cloc scratch root'), 'opt2-cloc-'));
     dir = assertOutsideRepo(await extract(pin.sha, scratch), 'cloc extraction');
@@ -612,6 +703,10 @@ export async function generateCloc(opts: GenerateClocOptions = {}): Promise<Cloc
     stopIfInterrupted();
     unfiltered = await runCloc(dir, { ...UNFILTERED_OPTIONS, runner: opts.runner });
     stopIfInterrupted();
+    for (const step of PLANNING_BASIS_STEPS) {
+      planningBasis.push(await runCloc(dir, { notMatchD: step.notMatchD, notMatchF: step.notMatchF, runner: opts.runner }));
+      stopIfInterrupted();
+    }
   } finally {
     // The listeners stay until the removal ends, so a first signal during it waits for the removal too.
     try {
@@ -622,7 +717,7 @@ export async function generateCloc(opts: GenerateClocOptions = {}): Promise<Cloc
     }
     if (interrupted !== undefined) process.exit(128 + os.constants.signals[interrupted]);
   }
-  const measured = buildClocReport(pin.sha, filtered, unfiltered, clockTime);
+  const measured = buildClocReport(pin.sha, filtered, unfiltered, planningBasis, clockTime);
   const measuredAt = (await keptMeasuredAt(opts.reference ?? opt2Path('inventory', 'cloc.json'), measured)) ?? clockTime;
   const report: ClocReport = { ...measured, measuredAt: measuredAt.toISOString() };
   const planning = comparePlanning(report);
@@ -648,10 +743,10 @@ Options:
   --help       print this help and exit 0
 
 The commit pinned in opt2/source-pin.json is extracted with git archive into a new opt2-cloc-* directory under
-TMPDIR, measured with the full exclusions and again unfiltered, and removed, also when SIGINT, SIGTERM or SIGHUP
-interrupts the run. Figures or a cloc version that differ from the cloc ${CLOC_REQUIRED_VERSION} planning measurement are
-reported and noted in cloc.md, not failed. A measurement equal to the committed opt2/inventory/cloc.json keeps its
-measuredAt, so a rerun reproduces both files exactly.
+TMPDIR, measured with the full exclusions, again unfiltered and once per planning-basis step of the unfiltered
+figure, and removed, also when SIGINT, SIGTERM or SIGHUP interrupts the run. Figures or a cloc version that differ
+from the cloc ${CLOC_REQUIRED_VERSION} planning measurement are reported and noted in cloc.md, not failed. A measurement equal to
+the committed opt2/inventory/cloc.json keeps its measuredAt, so a rerun reproduces both files exactly.
 
 Requires: git and tar on PATH, a checkout that holds the pinned commit, cloc ${CLOC_REQUIRED_VERSION} on PATH (apt: cloc), and TMPDIR
 (default /tmp) outside the checkout.
@@ -677,6 +772,7 @@ export async function main(argv: string[], deps: Omit<GenerateClocOptions, 'out'
       totals: report.totals,
       cfmlApplicationCode: figureOf(report.cfmlApplicationCode),
       unfiltered: figureOf(report.unfiltered),
+      planningBasis: figureOf(report.unfiltered.planningBasis),
       ...planning,
     },
   };

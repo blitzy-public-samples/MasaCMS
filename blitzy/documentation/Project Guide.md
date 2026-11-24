@@ -266,7 +266,7 @@ The first three lines were driven directly at HEAD. The full-stack lines come fr
 | 15 | Reproduce legacy security weaknesses and propose fixes (AAP 0.11.1) | 5 open `fix` proposals, including the unauthenticated reload key `EX-SEC-APPRELOAD` | **Sanctioned:** AAP 0.11.1 and 0.7.5 require reproduce-and-propose | The weaknesses remain until a proposal is accepted | Decide each proposal (task A) |
 | 16 | Session adoption per AAP 0.4.2 | `EX-ADOPT-SESSION-COOKIES` is an accepted `fix`: cookies differ from legacy at adoption | **Sanctioned:** the AAP 0.4.2 adoption design | Intentional difference | None |
 | 17 | p95 at or below 1.5× legacy (AAP 0.9.2) | 54 of 71 sets above it (median 2.27×, maximum 10.54×); content save about 1.45 s | **Accepted per AAP 0.9.2:** above 1.5× is a finding, not a failure; the AAP 0.5.4 write windows and 0.12.3 barrier waits drive the cost | Slower writes | Re-measure and tune (task L) |
-| 18 | cloc unfiltered 1,243 files / 362,994 lines (AAP 0.3.1) | 1,350 / 368,039 measured; both figures stated in `opt2/inventory/cloc.md` | The AAP's own basis does not reproduce its figure; the filtered 1,179 / 228,839 matches | None | None |
+| 18 | cloc unfiltered 1,243 files / 362,994 lines (AAP 0.3.1) | 1,350 / 368,039 measured; both figures stated in `opt2/inventory/cloc.md` | The AAP's figure also excludes `vendor` at any depth, `package-lock.json`, `*.min.js`, `*.min.css` and `*.map`: that planning basis measures 1,243 / 362,994, and `cloc.md` attributes the 107-file, 5,045-line gap | None | None |
 | 19 | The generating run writes per-service activity bounds (AAP 0.9.5) | All bounds null in `opt2/speed/blitzy-activity.json`; hours `unavailable` in `opt2/reports/speed.md` | Not implemented in this run | Hours per 1,000 CFML lines are not computed | Supply run hours and regenerate (task F) |
 | 20 | Assumptions A1–A5 verified and recorded (AAP 0.2.3) | `opt2/reports/assumptions.md` has static evidence only; Status `pending-run` | The `--live` run was not executed in this run | Assumptions are only partly confirmed | Run it live (task E) |
 | 21 | Each Dockerfile built (not pushed) in CI (AAP 0.4.1, 0.10.3) | 14 Dockerfiles, never built | No Docker on the build host (AAP conflict C6), and CI has not run | Image defects are unknown | Run `services.yml` (task H) |
@@ -412,7 +412,7 @@ The critical path to production has four steps:
 
 ## 9.2 Environment Setup
 
-Export these variables for every session. The secrets come from your vault and never from the repository.
+These values are the single-owner defaults, for a host whose legacy ColdFusion server, SQL Server database, PostgreSQL cluster, Mailpit and Pub/Sub emulator project belong to this stack alone. The secrets come from your vault and never from the repository.
 
 ```bash
 # Legacy Masa
@@ -426,7 +426,7 @@ export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318   # OTLP/HTTP; 4317 is 
 export OPT2_STATE_DIR="$HOME/.opt2/state" OPT2_PRISTINE_DIR="$HOME/.opt2/pristine" TZ=UTC
 ```
 
-Start the shared tools:
+On such a host, start the tools:
 
 ```bash
 ACCEPT_EULA=Y MSSQL_PID=Express MSSQL_SA_PASSWORD="$MURA_DBPASSWORD" sqlservr >sqlservr.log 2>&1 &
@@ -438,6 +438,36 @@ mailpit --smtp 127.0.0.1:1025 --listen 127.0.0.1:8025 >mailpit.log 2>&1 &
 ```
 
 `harness/repro/up.sh` also starts SQL Server and PostgreSQL itself when they do not answer (`OPT2_SQLSERVR_CMD`, `OPT2_PG_START_CMD`). It starts the stack's own OTLP collector on 4319. It boots ColdFusion through `harness/repro/lib/legacy-start.sh`, from `harness/repro/server.json.template`, which carries the required `--add-opens` JVM arguments.
+
+**Shared hosts.** What other people use is never this stack's:
+
+- A ColdFusion server or legacy database others use is a read-only oracle: GET pages and API routes, and log in, only. No data writes, no application reload, no TestBox and no restart; never name it in `PORT`, `OPT2_LEGACY_SERVER_NAME` or `MURA_DATABASE`.
+- A shared Mailpit is one mailbox for everyone: never `DELETE /api/v1/messages` there, and filter by your own recipient.
+- Never bootstrap on a shared PostgreSQL cluster: the `<schema>_owner`, `_app` and `_migrator` roles are cluster-global.
+
+On a shared host, give the stack its own resources (§9.6 says why) and pass identical values to `up.sh`, `test-all.sh`, `down.sh` and `clean-checkout-proof.sh`, from one shell. In it, before anything of the stack starts, `masa-b` and `$STACK/pg` included, run this example for the port block 20100–20199, which holds `PORT` and `PG_PORT` too; check a port moved outside the block the same way. It stops with the reason unless the whole block is free and both listeners of the Mailpit it starts (`up.sh` never starts one) belong to that process. No stack command runs unless both checks pass, which it reports as `stack ready`, and no `test-all.sh` or `clean-checkout-proof.sh`, which empty that Mailpit, unless `own_mailpit` passes just before.
+
+```bash
+B=20100 STACK="$HOME/opt2-b"   # example values; STACK lies outside the checkout
+own_mailpit() {
+  [ -n "${MAILPIT_PID:-}" ] && [ "$(lsof -t -iTCP:$((B + 25)) -sTCP:LISTEN) $(lsof -t -iTCP:$((B + 26)) -sTCP:LISTEN)" = "$MAILPIT_PID $MAILPIT_PID" ] ||
+    { echo "Mailpit ports $((B + 25)) and $((B + 26)) do not both belong to pid ${MAILPIT_PID:-unset}" >&2; false; }
+}
+{ used="$(ss -Hltn "sport >= :$B and sport <= :$((B + 99))")" && [ -z "$used" ] ||
+    { echo "ports $B-$((B + 99)) are not free; choose another B: $used" >&2; false; }; } &&
+  mkdir -p "$STACK" && awk -F= -v b="$B" '/^OPT2_PORT_/ { print $1 "=" b + $2 - 8100 }' harness/repro/ports.env >"$STACK/ports.env" &&
+  printf 'OPT2_TOOL_PORT_%s=%s\n' PUBSUB_EMULATOR $((B + 85)) OTLP_HTTP $((B + 41)) \
+    MAILPIT_SMTP $((B + 25)) MAILPIT_HTTP $((B + 26)) >>"$STACK/ports.env" &&
+  { mailpit --smtp 127.0.0.1:$((B + 25)) --listen 127.0.0.1:$((B + 26)) >"$STACK/mailpit.log" 2>&1 & MAILPIT_PID=$!; sleep 2; } &&
+  own_mailpit &&
+  export OPT2_PORTS_FILE="$STACK/ports.env" OPT2_STATE_DIR="$STACK/state" OPT2_PRISTINE_DIR="$STACK/pristine" \
+    PORT=$((B + 80)) OPT2_LEGACY_SERVER_NAME=masa-b OPT2_CF_SERVER_NAME=opt2-legacy-b MURA_DATABASE=muradb_b \
+    PG_HOST=127.0.0.1 PG_PORT=$((B + 32)) PG_DATABASE=masa_services GOOGLE_CLOUD_PROJECT=opt2-b \
+    OPT2_PG_START_CMD="pg_ctl -D $STACK/pg -o '-p $((B + 32))' -l $STACK/pg.log start" OPT2_PG_STOP_CMD="pg_ctl -D $STACK/pg stop" \
+    MAILPIT_API_URL="http://127.0.0.1:$((B + 26))" SMTP_HOST=127.0.0.1 SMTP_PORT=$((B + 25)) && echo "stack ready"
+```
+
+`masa-b` is a CommandBox ColdFusion server of your own on `PORT`, whose webroot is this checkout, installed on its own Masa database `muradb_b`. Its Masa file store (`filedir`, by default inside this checkout) must be one no other server or checkout uses: `up.sh`, `test-all.sh` and `down.sh` empty it and extract saved copies into it. Its ColdFusion mail server, which Masa uses while `usedefaultsmtpserver` is true, and every Masa `mailserverip` and `mailserversmtpport`, global or per site, must name `127.0.0.1:$((B + 25))`; the exported `SMTP_HOST` and `SMTP_PORT` route no Masa mail and only name the listener `legacy-fixtures/load-fixtures.sh` checks. `$STACK/pg` is a private PostgreSQL 16 cluster holding the §9.1 admin role and `PG_DATABASE`.
 
 ## 9.3 Dependency Installation
 
@@ -468,7 +498,7 @@ Expected result: `gateway` passes 4,724 tests at 98.68% statements, with 144 con
 
 ## 9.5 Run One Service Locally
 
-`opt2-db bootstrap --target local` drops and recreates every OPT-2 schema and its fixed-name roles (`<schema>_owner`, `_app` and `_migrator`). Use a PostgreSQL cluster that no one else shares.
+`opt2-db bootstrap --target local` drops and recreates every OPT-2 schema and its fixed-name, cluster-global roles (`<schema>_owner`, `_app` and `_migrator`). Run it only with `PG_HOST` and `PG_PORT` naming a cluster no one else shares: on a shared host, the private cluster of §9.2.
 
 ```bash
 (cd harness && npm run repro:secrets)          # writes $OPT2_STATE_DIR/secrets (32 files)
@@ -486,22 +516,24 @@ curl -s http://127.0.0.1:8111/healthz                 # {"status":"ok"}
 curl -s http://127.0.0.1:8111/.well-known/jwks.json   # {"keys":[{"kty":"RSA",...}]}
 ```
 
-Every service follows this pattern, with its own `OPT2_SERVICE_NAME`, `<schema>_app` login and `OPT2_SERVICE_URLS` entries; each service's `README.md` lists them. An environment that is missing a required variable refuses start-up, naming the variable. Stop a service by the pid that owns its port: `kill $(lsof -t -iTCP:8111 -sTCP:LISTEN)`.
+Every service follows this pattern, with its own `OPT2_SERVICE_NAME`, `<schema>_app` login and `OPT2_SERVICE_URLS` entries; each service's `README.md` lists them. The ports shown are the single-owner defaults; on a shared host use your own block. An environment that is missing a required variable refuses start-up, naming the variable. Stop a service by the pid that owns its port: `kill $(lsof -t -iTCP:8111 -sTCP:LISTEN)`.
 
 ## 9.6 Full Stack: Boot, Accept, Tear Down
 
+On a shared host, first give the stack the isolated resources of §9.2: `up.sh` stops the ColdFusion server on `PORT`, takes and restores the pristine baseline of `MURA_DATABASE` and Masa's file store, and drops and recreates every OPT-2 schema and the fixed roles on `PG_HOST:PG_PORT`; `test-all.sh` deletes every message in the port file's Mailpit; `down.sh` restores the database and file store and restarts the original server. Run all four commands with the same values.
+
 ```bash
 harness/repro/up.sh --help          # prints the required environment
-harness/repro/up.sh                 # 0 = stack up (legacy on $PORT, gateway 8100, web 8101, migration 8102, services 8111–8120)
+harness/repro/up.sh                 # 0 = stack up (legacy on $PORT; gateway, web, migration and services on the port file's ports)
 harness/repro/test-all.sh           # stages 0–9; currently exits 2 (45 items withheld pending decisions)
 harness/repro/down.sh               # stops everything and restores legacy from the pristine baseline
 harness/repro/clean-checkout-proof.sh   # fresh clone: up.sh + test-all.sh, writes opt2/reports/reproducibility.md
 ```
 
-- **Run lock.** One stack per host at a time: every command takes `${OPT2_LOCK_DIR:-$HOME/.opt2}/run.lock`. Set `OPT2_LOCK_WAIT=<seconds>` to queue instead of refusing.
+- **Run lock.** Every command takes `${OPT2_LOCK_DIR:-$HOME/.opt2}/run.lock`, which serialises stacks but isolates none of their resources. Set `OPT2_LOCK_WAIT=<seconds>` to queue instead of refusing.
 - **Duration.** A full `test-all.sh` run takes about 3 hours; stage 7 alone takes about 95 minutes.
 - **Outputs.** Stage outputs go to `${OPT2_STATE_DIR}/test-all/stage-<n>.{json,out}`, and the summary to `opt2/reports/test-all.{json,md}`.
-- **Ports.** Ports come from `harness/repro/ports.env`. A second stack on the same host moves every port and name together; see `harness/README.md`, "One stack at a time".
+- **Ports.** `harness/repro/ports.env` serves a single-owner host only. On a shared host the stack needs its own `OPT2_PORTS_FILE`, moving every `OPT2_PORT_*` and `OPT2_TOOL_PORT_*` key, together with the other §9.2 values (`harness/README.md`, "One stack at a time").
 
 ## 9.7 Verification and Quality Gates
 
@@ -537,7 +569,7 @@ curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8199/opt2/stub/notes  
 - **Tests skip, or coverage drops below 90%.** The PostgreSQL and emulator probes give up after 2 s on a loaded host. Set `OPT2_TEST_REQUIRE_PG=1` and `OPT2_TEST_REQUIRE_PUBSUB=1` to fail fast, then rerun.
 - **TypeScript errors in a dependent package after a platform change.** Run `npm run build --prefix platform` first; a stale `platform/dist` gives type errors.
 - **No spans arrive.** The OTLP/HTTP exporters need port 4318. Sent to 4317, which is gRPC, they fail.
-- **`up.sh` refuses to start.** Either a port in `ports.env` is in use or equals `$PORT`, or another checkout holds `run.lock`. Run that checkout's `down.sh`, or wait with `OPT2_LOCK_WAIT`.
+- **`up.sh` refuses to start.** Either a port in `ports.env` is in use or equals `$PORT`, or another checkout holds `run.lock`. Run that checkout's `down.sh` only if its stack is yours; otherwise wait with `OPT2_LOCK_WAIT`.
 - **`test-all.sh` refuses to start after an interrupted run.** Background work is still suspended. Run `down.sh`, then `up.sh`.
 - **Install-time failures.**
   - The first Masa install fails with "The '' algorithm is not supported": export `MURA_DEFAULTHASHALGORITHM=CFMX_COMPAT` before ColdFusion starts.
@@ -546,7 +578,7 @@ curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8199/opt2/stub/notes  
 - **Tracked files changed by a check.**
   - `check:reviewability` rewrites the tracked placeholders `opt2/reports/reviewability.{json,md}`; restore them with `git checkout -- opt2/reports/reviewability.*`.
   - Validating a single Terraform module writes an untracked `.terraform.lock.hcl`; delete it.
-- **Never commit generated or environment files:** `server.json`, `config/settings.ini.cfm`, `plugins/`, `node_modules`, `dist`, `.next`, `coverage`, `src/generated`, `themes/default/` or `blitzy/`.
+- **Never commit generated or environment files:** `server.json`, `config/settings.ini.cfm`, `plugins/`, `node_modules`, `dist`, `.next`, `coverage`, `src/generated`, `themes/default/` or `blitzy/` (this guide excepted).
 
 # 10. Appendices
 
@@ -571,6 +603,8 @@ curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8199/opt2/stub/notes  
 
 ## B. Port Reference
 
+Single-owner defaults. Every row but legacy, SQL Server, PostgreSQL and the host collector comes from `harness/repro/ports.env`; a stack on a shared host moves those rows together through its own `OPT2_PORTS_FILE` and sets `PORT` and `PG_PORT` itself (§9.2).
+
 | Process | Port | Process | Port |
 |---|---|---|---|
 | gateway | 8100 | reporting | 8116 |
@@ -583,8 +617,6 @@ curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8199/opt2/stub/notes  
 | communications | 8115 | SQL Server / PostgreSQL | 1433 / 5432 |
 | Pub/Sub emulator | 8085 | Mailpit SMTP / API | 1025 / 8025 |
 | Host OTel Collector (gRPC / HTTP) | 4317 / 4318 | Stack OTel Collector (HTTP) | 4319 |
-
-These ports are defined in `harness/repro/ports.env`. Set `OPT2_PORTS_FILE` to use another file in the same format.
 
 ## C. Key File Locations
 

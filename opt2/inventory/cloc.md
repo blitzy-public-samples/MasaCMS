@@ -1,7 +1,7 @@
 # Legacy size report (cloc)
 Source SHA: 696383140578f8dea3ece26f80cd7bfb370ddf0f
 
-Measured with: cloc 1.98 · provenance: measured · measured at: 2026-11-16T19:21:07.799Z
+Measured with: cloc 1.98 · provenance: measured · measured at: 2026-11-24T12:09:13.282Z
 
 The input is a `git archive` extraction of the pin, made outside the checkout; `harness/src/inventory/cloc.ts` regenerates this file.
 
@@ -19,6 +19,13 @@ Unfiltered measurement:
     cd <extraction-dir> && cloc --json --fullpath --quiet --not-match-d='(^|/)(core/vendor|node_modules|\.git)(/|$)' .
 
 - `--not-match-d`: `(^|/)(core/vendor|node_modules|\.git)(/|$)`
+
+Planning basis of the unfiltered figure:
+
+    cd <extraction-dir> && cloc --json --fullpath --quiet --not-match-d='(^|/)(vendor|node_modules|\.git)(/|$)' --not-match-f='(^|/)(package-lock\.json|[^/]+\.min\.(js|css)|[^/]+\.map)$' .
+
+- `--not-match-d`: `(^|/)(vendor|node_modules|\.git)(/|$)`
+- `--not-match-f`: `(^|/)(package-lock\.json|[^/]+\.min\.(js|css)|[^/]+\.map)$`
 
 ## Exclusions
 
@@ -49,10 +56,24 @@ Unfiltered measurement:
 |---|---:|---:|
 | CFML application code (CFScript + tags) | 875 | 146,851 |
 | Unfiltered (excludes only `core/vendor`, `node_modules` and `.git`) | 1,350 | 368,039 |
+| Unfiltered, planning basis (also excludes `vendor`, `package-lock.json`, `*.min.js`, `*.min.css` and `*.map`) | 1,243 | 362,994 |
 
 Directory patterns match a directory name at any depth.
 
 Blank lines: 41,752; comment lines: 37,826. `cloc.json` lists the 1,179 counted files under `detail.perFile`.
+
+## Unfiltered reconciliation
+
+The planning basis measures 1,243 files and 362,994 code lines, which equals the unfiltered planning figure of 1,243 / 362,994 measured with cloc 1.98.
+
+Each row is what one exclusion removes after the rows above it:
+
+| Exclusion | Files | Code lines |
+|---|---:|---:|
+| `vendor` | 2 | 432 |
+| `package-lock.json` | 2 | 4,410 |
+| `*.min.js`, `*.min.css` and `*.map` | 103 | 203 |
+| **Total** | **107** | **5,045** |
 
 ## Planning comparison
 

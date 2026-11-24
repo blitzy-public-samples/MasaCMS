@@ -64,7 +64,7 @@ export interface CreateLoggerOptions {
   level?: string;
   /** Project of the Cloud Logging trace key; required when `env` is `cloud`. */
   googleCloudProject?: string;
-  /** Output stream; defaults to asynchronous stdout. */
+  /** Output stream; defaults to asynchronous stdout, or stderr while a `withLogsOnStderr` task runs. */
   destination?: DestinationStream;
 }
 
@@ -80,6 +80,19 @@ const TEXT_FIELD_KEYS: ReadonlySet<string> = new Set<string>(['tenantId', 'userI
 /** A word character (Unicode letter or digit, or `_`) at the start, or at the end, of a text. */
 const WORD_START = /^[\p{L}\p{N}_]/u;
 const WORD_END = /[\p{L}\p{N}_]$/u;
+
+/** Number of `withLogsOnStderr` tasks still running. */
+let stderrScopes = 0;
+
+/** Runs `task` with loggers created without a destination writing to stderr instead of stdout; resolves to its result. */
+export async function withLogsOnStderr<T>(task: () => Promise<T>): Promise<T> {
+  stderrScopes += 1;
+  try {
+    return await task();
+  } finally {
+    stderrScopes -= 1;
+  }
+}
 
 /** Copies the own keys of `source` that are in `keys` and not `undefined`. */
 function pick(source: Record<string, unknown>, keys: ReadonlySet<string>): Record<string, unknown> {
@@ -213,7 +226,7 @@ function traceMixin(cloudProject: string | undefined): () => TraceFields {
   };
 }
 
-/** Creates the process logger writing log-record.v1 JSON lines to stdout or `options.destination`; the first stdout logger also becomes the diagnostic logger. */
+/** Creates the process logger writing log-record.v1 JSON lines to stdout (stderr inside `withLogsOnStderr`) or `options.destination`; the first logger without a destination also becomes the diagnostic logger. */
 export function createLogger(options: CreateLoggerOptions): Logger {
   const { service, version, env, googleCloudProject } = options;
   for (const [name, value] of Object.entries({ service, version, env })) {
@@ -262,7 +275,7 @@ export function createLogger(options: CreateLoggerOptions): Logger {
     },
   };
 
-  const logger = pino(pinoOptions, options.destination ?? pino.destination({ dest: 1, sync: false }));
+  const logger = pino(pinoOptions, options.destination ?? pino.destination({ dest: stderrScopes > 0 ? 2 : 1, sync: false }));
 
   // pino 10 replaces `formatters.bindings` with an identity function on child loggers, so child bindings are
   // filtered here; children are created with Object.create(parent) and inherit this method. pino's custom-level

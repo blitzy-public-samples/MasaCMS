@@ -128,7 +128,7 @@ Loading:
 
 `--help` (or `-h`) prints each CLI's usage, options and environment variables and exits 0 before any variable is read. `npm ci` in a consumer links these into its `node_modules/.bin` from the committed `bin/` wrappers, which run the compiled `dist/<module>/cli.js` once the platform is built (the consumer's `postinstall` builds it). `node <path>/platform/dist/<module>/cli.js` runs the same CLI directly.
 
-`opt2-auth`, `opt2-outbox`, `opt2-events` and `opt2-tasks` write each diagnostic to stderr as one log-record.v1 line through `createCliDiagnostics` of `logging`, opened before the arguments and environment are parsed: a fixed message that names options but never quotes an argument, an environment error's safe text (each variable with its value-free reason), and a failure's safe `error` record. stdout carries only the help and the result.
+`opt2-auth`, `opt2-outbox`, `opt2-events` and `opt2-tasks` write each diagnostic to stderr as one log-record.v1 line through `createCliDiagnostics` of `logging`, opened before the arguments and environment are parsed: a fixed message that names options but never quotes an argument, an environment error's safe text (each variable with its value-free reason), and a failure's safe `error` record. stdout carries only the help and the result. While `opt2-auth` exports a matrix, loggers that `createLogger` makes without a destination write to stderr, so the app's own log lines stay off stdout.
 
 ## Value formats
 

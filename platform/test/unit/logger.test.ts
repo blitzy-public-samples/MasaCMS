@@ -1,13 +1,16 @@
 import { context, INVALID_SPAN_CONTEXT, trace, TraceFlags, type SpanContext } from '@opentelemetry/api';
 import { fastify } from 'fastify';
+import pino from 'pino';
 import type { DestinationStream } from 'pino';
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { getDiagnosticLogger, setDiagnosticLogger } from '../../src/logging/diagnostics.js';
 import { fastifyLoggerOptions } from '../../src/logging/fastify.js';
 import type { LogEnv, LogErrorRecord, LogFields } from '../../src/logging/fields.js';
 import {
   createLogger,
   serializeError,
   SEVERITY_BY_LEVEL,
+  withLogsOnStderr,
   type CreateLoggerOptions,
   type Logger,
 } from '../../src/logging/logger.js';
@@ -510,6 +513,87 @@ describe('createLogger base options', () => {
     const create = (): unknown => capture(options);
     expect(create).toThrow(TypeError);
     expect(create).toThrow(`createLogger: ${name} does not satisfy log-record.v1`);
+  });
+});
+
+describe('withLogsOnStderr', () => {
+  let fds: unknown[] = [];
+  let registered: Logger | undefined;
+
+  beforeEach(() => {
+    fds = [];
+    registered = getDiagnosticLogger();
+    vi.spyOn(pino, 'destination').mockImplementation((options) => {
+      fds.push((options as { dest?: unknown }).dest);
+      return { write: () => true } as unknown as ReturnType<typeof pino.destination>;
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    setDiagnosticLogger(registered);
+  });
+
+  /** Creates a logger without a destination, so the spy records the fd of its default destination. */
+  const probe = (): void => {
+    createLogger(BASE);
+  };
+
+  it.each<[string, () => Promise<void>, number[]]>([
+    [
+      'one task',
+      async () => {
+        expect(
+          await withLogsOnStderr(async () => {
+            probe();
+            return 'result';
+          }),
+        ).toBe('result');
+        probe();
+      },
+      [2, 1],
+    ],
+    [
+      'nested tasks',
+      async () => {
+        await withLogsOnStderr(async () => {
+          await withLogsOnStderr(async () => probe());
+          probe();
+        });
+        probe();
+      },
+      [2, 2, 1],
+    ],
+    [
+      'overlapping tasks',
+      async () => {
+        let release: () => void = () => undefined;
+        const first = withLogsOnStderr(() => new Promise<void>((resolve) => (release = resolve)));
+        await withLogsOnStderr(async () => probe());
+        probe();
+        release();
+        await first;
+        probe();
+      },
+      [2, 2, 1],
+    ],
+    [
+      'a rejected task',
+      async () => {
+        const failure = new Error('task failed');
+        await expect(
+          withLogsOnStderr(async () => {
+            probe();
+            throw failure;
+          }),
+        ).rejects.toBe(failure);
+        probe();
+      },
+      [2, 1],
+    ],
+  ])('gives loggers without a destination fd 2 only inside %s', async (_, run, expected) => {
+    await run();
+    expect(fds).toStrictEqual(expected);
   });
 });
 

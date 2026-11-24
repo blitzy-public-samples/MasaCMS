@@ -212,9 +212,7 @@ describe('deliverable selection', () => {
 
   it('FORBIDDEN_TRACKED_PREFIXES are the downloaded theme and the screenshot folder', () => {
     expect(FORBIDDEN_TRACKED_PREFIXES).toEqual(['themes/default/', 'blitzy/']);
-    expect(TRACKED_FORBIDDEN_EXCEPTIONS).toEqual([
-      'blitzy/documentation/Project Guide - 48d51ddc-539f-48aa-8086-5041e07a1be6.md',
-    ]);
+    expect(TRACKED_FORBIDDEN_EXCEPTIONS).toEqual(['blitzy/documentation/Project Guide.md']);
   });
 
   it.each<[string, boolean]>([
@@ -596,13 +594,19 @@ describe('checkDeliverables', () => {
   });
 
   it('reports each tracked path under themes/default/ or blitzy/ once, except the project guide, and never reads those folders', async () => {
-    const guide = 'blitzy/documentation/Project Guide - 48d51ddc-539f-48aa-8086-5041e07a1be6.md';
+    const guide = 'blitzy/documentation/Project Guide.md';
+    const guideNeighbours = [
+      'blitzy/documentation/Notes.md',
+      'blitzy/documentation/Project Guide - copy.md',
+      'blitzy/documentation/Project Guide.md.orig',
+    ];
     await writeTree({
       'themes/default/index.cfm': '<cfoutput>theme</cfoutput>\n',
       'themes/default/README.md': '# Theme\n',
       'blitzy/notes.md': '# Notes\n',
       'blitzy/run/summary.md': '# Untracked summary\n',
       [guide]: '# Project Guide\n',
+      ...Object.fromEntries(guideNeighbours.map((relPath) => [relPath, '# Project Guide\n'])),
       'themes/other/README.md': `Source SHA: ${SHA}\n`,
     });
     const tracked = [
@@ -612,6 +616,7 @@ describe('checkDeliverables', () => {
       'blitzy/notes.md',
       'blitzy/screens/login.png',
       guide,
+      ...guideNeighbours,
       'themes/other/README.md',
     ];
     const { run } = fakeRunner(listingReplies({ listed: [...tracked, 'blitzy/run/summary.md'], tracked }));
@@ -619,6 +624,7 @@ describe('checkDeliverables', () => {
     const result = await checkDeliverables({ root, git: { run } });
     expect(result).toMatchObject({ checked: 1, ok: false });
     expect(result.findings).toEqual<PinFinding[]>([
+      ...guideNeighbours.map((relPath): PinFinding => ({ kind: 'forbidden-tracked', path: relPath })),
       { kind: 'forbidden-tracked', path: 'blitzy/notes.md' },
       { kind: 'forbidden-tracked', path: 'blitzy/screens/login.png' },
       { kind: 'forbidden-tracked', path: 'themes/default/README.md' },

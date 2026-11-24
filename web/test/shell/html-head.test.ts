@@ -1,6 +1,7 @@
 // Unit tests for the global admin scripts against admin/common/layouts/includes/html_head.cfm.
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
+import { createContext, runInContext } from 'node:vm';
 import * as cheerio from 'cheerio';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CORE_VERSION, legacySettings, resetLegacySettingsForTests } from '@/lib/env';
@@ -143,6 +144,21 @@ function globals(markup: string): string[] {
   return script.split('\n').map((line) => line.replace(/^\t/, ''));
 }
 
+/** The counts of inline `text/javascript` scripts and of all scripts `markup` parses to. */
+function scriptCounts(markup: string): { inline: number; total: number } {
+  const $ = cheerio.load(markup);
+  return { inline: $('script[type="text/javascript"]:not([src])').length, total: $('script').length };
+}
+
+/** The globals a browser holds after running the inline scripts of `markup` in order, with an empty `window`. */
+function scriptGlobals(markup: string): Record<string, unknown> {
+  const $ = cheerio.load(markup);
+  const sandbox: Record<string, unknown> = { window: {} };
+  const context = createContext(sandbox);
+  for (const script of $('script:not([src])').toArray()) runInContext($(script).text(), context);
+  return sandbox;
+}
+
 let restoreEnv: () => void;
 
 beforeEach(() => {
@@ -169,7 +185,10 @@ describe('renderHtmlHead', () => {
     useSettings(settings);
     const ctx = request();
     const themeAssetPath = `${legacySettings().context}/themes/default`;
-    expect(portHead(ctx, { themeAssetPath })).toBe(legacyHead(ctx, themeAssetPath));
+    const markup = portHead(ctx, { themeAssetPath });
+    // Only the theme path's spelling departs: it is JavaScript-encoded, and the browser holds the same globals.
+    expect(markup).toBe(legacyHead(ctx, encodeJs(themeAssetPath)));
+    expect(scriptGlobals(markup)).toEqual(scriptGlobals(legacyHead(ctx, themeAssetPath)));
   });
 
   it('emits the legacy-rendered assets in order', () => {
@@ -185,7 +204,7 @@ describe('renderHtmlHead', () => {
     expect(globals(portHead(installedAdmin()))).toEqual([
       "var htmlEditorType='';",
       "var context='';",
-      "var themepath='/themes/default';",
+      "var themepath='\\x2Fthemes\\x2Fdefault';",
       "var rb='en_us';",
       "var siteid='default';",
       'var sessionTimeout=10800;',
@@ -241,12 +260,12 @@ describe('renderHtmlHead', () => {
     expect(globals(portHead(anonymousRequest()))).toContain(line);
   });
 
-  it('prints htmlEditorType, context and the theme path unencoded', () => {
+  it('prints htmlEditorType and context unencoded and encodes the theme path', () => {
     useSettings({ MURA_HTMLEDITORTYPE: "ck'editor", MURA_CONTEXT: '/c&m' });
     const lines = globals(portHead(adminS2Request(), { themeAssetPath: '/c&m/themes/my theme' }));
     expect(lines).toContain("var htmlEditorType='ck'editor';");
     expect(lines).toContain("var context='/c&m';");
-    expect(lines).toContain("var themepath='/c&m/themes/my theme';");
+    expect(lines).toContain("var themepath='\\x2Fc\\x26m\\x2Fthemes\\x2Fmy\\x20theme';");
   });
 
   it.each<[string, () => AdminRequest]>([
@@ -256,9 +275,25 @@ describe('renderHtmlHead', () => {
     ],
     ['a site whose theme lives under its own directory', () => adminS2Request({ site: { record: { theme: 'x' } } })],
     ['a site whose data programs-sites withholds', () => unservedEditorRequest()],
-  ])("prints legacy's theme path for %s as the gateway answered it", (_, request) => {
+  ])("encodes legacy's theme path for %s as the gateway answered it", (_, request) => {
     const themepath = 'https://cdn.example.com:8443/cms/sites/default/themes/x';
-    expect(globals(portHead(request(), { themeAssetPath: themepath }))).toContain(`var themepath='${themepath}';`);
+    expect(globals(portHead(request(), { themeAssetPath: themepath }))).toContain(
+      `var themepath='${encodeJs(themepath)}';`,
+    );
+  });
+
+  it.each<[string, string]>([
+    [
+      'script and markup delimiters',
+      `/c'ms/th"emes\\x/</script><script>window.__themepathBreakout=1</script><!--&amp;\n`,
+    ],
+    ['non-ASCII and line-separator characters', '/th\u00e8mes/\u65e5\u672c/\u{1F600}/\u2028\u2029\u00a0'],
+  ])('keeps the scripts whole and hands the browser a theme path with %s unchanged', (_, themeAssetPath) => {
+    const markup = portHead(installedAdmin(), { themeAssetPath });
+    expect(scriptCounts(markup)).toEqual(scriptCounts(portHead(installedAdmin())));
+    const defined = scriptGlobals(markup);
+    expect(defined.themepath).toBe(themeAssetPath);
+    expect(defined).not.toHaveProperty('window.__themepathBreakout');
   });
 
   it('fails when the shell data holds no theme path for the page site', () => {

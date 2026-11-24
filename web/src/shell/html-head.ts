@@ -17,8 +17,7 @@ export function renderHtmlHead({ ctx, data }: ShellContext): SafeHtml {
   const webrootVar = ctx.isLoggedIn
     ? html`var webroot='${js(webroot.slice(0, Math.max(0, webroot.length - context.length)))}';`
     : undefined;
-  // Kept as legacy emits them: the malformed filebrowser stylesheet tag, and the unencoded editor type, context and
-  // theme path.
+  // Kept as legacy emits them: the malformed filebrowser stylesheet tag, and the unencoded editor type and context.
   return html`
 
 <!-- Favicons -->
@@ -67,7 +66,7 @@ export function renderHtmlHead({ ctx, data }: ShellContext): SafeHtml {
 	<script type="text/javascript">
 	var htmlEditorType='${raw(htmlEditorType)}';
 	var context='${raw(context)}';
-	var themepath='${raw(legacySitePath(data.legacyPaths, 'themeAssetPath'))}';
+	var themepath='${js(legacySitePath(data.legacyPaths, 'themeAssetPath'))}';
 	var rb='${raw(encodeJs(ctx.session.rb).toLowerCase())}';
 	var siteid='${js(ctx.session.siteid)}';
 	var sessionTimeout=${raw(String(sessionTimeout * 60))};

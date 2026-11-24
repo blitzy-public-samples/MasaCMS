@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import type { FastifyInstance } from 'fastify';
 import { createCliDiagnostics, parseArgsProblem } from '../logging/index.js';
+import { withLogsOnStderr } from '../logging/logger.js';
 import { collectRouteMatrix, serializeRouteMatrix } from './matrix.js';
 
 const USAGE = 'usage: opt2-auth matrix --app <module> [--export <name>] [--options <json>] [--out <file>]';
@@ -13,6 +14,7 @@ const USAGE = 'usage: opt2-auth matrix --app <module> [--export <name>] [--optio
 const HELP = `${USAGE}
 
 Builds the Fastify app with the module's export, waits for ready (never listens) and writes its route/role matrix as JSON.
+Meanwhile, loggers the app creates through @opt2/platform/logging without a destination write to stderr.
   --app <module>     compiled ESM module, resolved against the working directory (required)
   --export <name>    builder export, called with the options; returns the app or { app } (default: buildApp)
   --options <json>   JSON value passed to the builder (default: {})
@@ -46,7 +48,8 @@ export async function main(argv: string[]): Promise<number> {
     if (args === 'help') {
       await writeStdout(HELP);
     } else {
-      await exportMatrix(args);
+      // The app's own log lines go to stderr, so stdout carries only the matrix.
+      await withLogsOnStderr(() => exportMatrix(args));
     }
     return 0;
   } catch (err) {

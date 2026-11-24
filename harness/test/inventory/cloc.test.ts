@@ -9,6 +9,8 @@ import {
   CLOC_NOT_MATCH_D,
   CLOC_NOT_MATCH_F,
   ClocUnavailable,
+  PLANNING_BASIS_NOT_MATCH_D,
+  PLANNING_BASIS_NOT_MATCH_F,
   PLANNING_FIGURES,
   UNFILTERED_EXCLUDES,
   UNFILTERED_NOT_MATCH_D,
@@ -134,6 +136,8 @@ describe('exclusions', () => {
     expect(CLOC_NOT_MATCH_D).toBe(committed.command.notMatchD);
     expect(CLOC_NOT_MATCH_F).toBe(committed.command.notMatchF);
     expect(JSON.parse(JSON.stringify(CLOC_EXCLUSIONS))).toEqual(committed.exclusions);
+    expect(PLANNING_BASIS_NOT_MATCH_D).toBe(committed.unfiltered.planningBasis.notMatchD);
+    expect(PLANNING_BASIS_NOT_MATCH_F).toBe(committed.unfiltered.planningBasis.notMatchF);
   });
 
   it.each(['core/vendor/x', 'node_modules/y', 'admin/assets/js/jquery', 'core/mura/lib/z.cfc', '.github/ISSUE_TEMPLATE'])(
@@ -323,8 +327,21 @@ describe('languages and planning figures', () => {
     ];
     const filtered: ClocResult = { version: '1.98', languages, totals: { files: 1179, blank: 0, comment: 0, code: 228839 } };
     const unfiltered: ClocResult = { version: '1.98', languages: [], totals: { ...unfilteredTotals, blank: 0, comment: 0 } };
-    const report = buildClocReport(pin.sha, filtered, unfiltered, new Date(0));
-    expect(comparePlanning(report)).toEqual({ matchesPlanning: differences.length === 0, versionMatches: true, differences });
+    const basis: ClocResult = { version: '1.98', languages: [], totals: { files: 1243, blank: 0, comment: 0, code: 362994 } };
+    const report = buildClocReport(pin.sha, filtered, unfiltered, [unfiltered, unfiltered, basis], new Date(0));
+    expect(comparePlanning(report)).toEqual({
+      matchesPlanning: differences.length === 0,
+      versionMatches: true,
+      planningBasisMatches: true,
+      differences,
+    });
+  });
+
+  it('rejects a missing planning-basis result', () => {
+    const result: ClocResult = { version: '1.98', languages: [], totals: { files: 0, blank: 0, comment: 0, code: 0 } };
+    expect(() => buildClocReport(pin.sha, result, result, [result, result], new Date(0))).toThrow(
+      'no cloc result for planning-basis step 3 (*.min.js, *.min.css, *.map)',
+    );
   });
 });
 
@@ -352,6 +369,9 @@ describe('generateCloc', () => {
     expect(runner.mock.calls.map(([, args]) => args)).toEqual([
       ['--json', '--fullpath', '--quiet', `--not-match-d=${CLOC_NOT_MATCH_D}`, `--not-match-f=${CLOC_NOT_MATCH_F}`, '--by-file', '.'],
       ['--json', '--fullpath', '--quiet', `--not-match-d=${UNFILTERED_NOT_MATCH_D}`, '.'],
+      ['--json', '--fullpath', '--quiet', `--not-match-d=${PLANNING_BASIS_NOT_MATCH_D}`, '.'],
+      ['--json', '--fullpath', '--quiet', `--not-match-d=${PLANNING_BASIS_NOT_MATCH_D}`, String.raw`--not-match-f=(^|/)package-lock\.json$`, '.'],
+      ['--json', '--fullpath', '--quiet', `--not-match-d=${PLANNING_BASIS_NOT_MATCH_D}`, `--not-match-f=${PLANNING_BASIS_NOT_MATCH_F}`, '.'],
     ]);
 
     const json = JSON.parse(await readFile(path.join(out, 'cloc.json'), 'utf8'));
@@ -367,7 +387,7 @@ describe('generateCloc', () => {
       unfiltered: { excludes: ['core/vendor', 'node_modules', '.git'], notMatchD: UNFILTERED_NOT_MATCH_D, files: 3, code: 105 },
       detail: { blank: 12, comment: 3 },
     });
-    expect(Object.keys(json.unfiltered).sort()).toEqual(['code', 'excludes', 'files', 'notMatchD']);
+    expect(Object.keys(json.unfiltered).sort()).toEqual(['code', 'excludes', 'files', 'notMatchD', 'planningBasis']);
     expect(json.command.args).toEqual(runner.mock.calls[0]?.[1]);
     expect(json.detail.perFile).toHaveLength(3);
     expect(result.jsonPath).toBe(path.join(out, 'cloc.json'));
@@ -381,7 +401,70 @@ describe('generateCloc', () => {
     expect(md).toContain(`\`${CLOC_NOT_MATCH_F}\``);
     expect(md).toContain(`- \`--not-match-d\`: \`${UNFILTERED_NOT_MATCH_D}\``);
     expect(md).toContain('| Unfiltered (excludes only `core/vendor`, `node_modules` and `.git`) | 3 | 105 |');
-    expect(md.split('`--not-match-f`')).toHaveLength(2);
+    expect(md.split('`--not-match-f`')).toHaveLength(3);
+  });
+
+  it.each([
+    ['equals', 1243, 362994, true],
+    ['differs from', 1244, 362990, false],
+  ])('attributes the unfiltered gap to each planning-basis step when the basis %s the planning figure', async (verb, files, code, matches) => {
+    const sums: [number, number][] = [
+      [1350, 368039],
+      [1348, 367607],
+      [1346, 363197],
+      [files, code],
+    ];
+    const runner = vi.fn<ClocRunner>(async (_file, args) => {
+      if (args.includes('--by-file')) return { stdout: JSON.stringify(CANNED_BY_FILE), stderr: '' };
+      const [nFiles, total] = sums.shift() ?? [0, 0];
+      return { stdout: JSON.stringify({ ...CANNED, SUM: { nFiles, blank: 0, comment: 0, code: total } }), stderr: '' };
+    });
+    const out = fresh('out');
+    const { report, planning } = await generateCloc({ out, extract: tempExtractor(), runner, reference: fresh('reference.json') });
+    const last = { files: 1346 - files, code: 363197 - code };
+    expect(report.unfiltered.planningBasis).toEqual({
+      excludes: ['core/vendor', 'node_modules', '.git', 'vendor', 'package-lock.json', '*.min.js', '*.min.css', '*.map'],
+      notMatchD: PLANNING_BASIS_NOT_MATCH_D,
+      notMatchF: PLANNING_BASIS_NOT_MATCH_F,
+      files,
+      code,
+      gap: [
+        { excludes: ['vendor'], files: 2, code: 432 },
+        { excludes: ['package-lock.json'], files: 2, code: 4410 },
+        { excludes: ['*.min.js', '*.min.css', '*.map'], ...last },
+      ],
+    });
+    expect(planning.planningBasisMatches).toBe(matches);
+    expect(planning.differences).toContainEqual({
+      figure: 'unfiltered',
+      planning: { files: 1243, code: 362994 },
+      measured: { files: 1350, code: 368039 },
+    });
+    const n = (value: number): string => value.toLocaleString('en-US');
+    const md = await readFile(path.join(out, 'cloc.md'), 'utf8');
+    expect(md).toContain(`cloc --json --fullpath --quiet --not-match-d='${PLANNING_BASIS_NOT_MATCH_D}' --not-match-f='${PLANNING_BASIS_NOT_MATCH_F}' .\n`);
+    expect(md).toContain(`- \`--not-match-f\`: \`${PLANNING_BASIS_NOT_MATCH_F}\``);
+    expect(md).toContain(
+      `| Unfiltered, planning basis (also excludes \`vendor\`, \`package-lock.json\`, \`*.min.js\`, \`*.min.css\` and \`*.map\`) | ${n(files)} | ${n(code)} |`,
+    );
+    expect(md).toContain(
+      [
+        '## Unfiltered reconciliation',
+        '',
+        `The planning basis measures ${n(files)} files and ${n(code)} code lines, which ${verb} the unfiltered planning figure of 1,243 / 362,994 measured with cloc 1.98.`,
+        '',
+        'Each row is what one exclusion removes after the rows above it:',
+        '',
+        '| Exclusion | Files | Code lines |',
+        '|---|---:|---:|',
+        '| `vendor` | 2 | 432 |',
+        '| `package-lock.json` | 2 | 4,410 |',
+        `| \`*.min.js\`, \`*.min.css\` and \`*.map\` | ${n(last.files)} | ${n(last.code)} |`,
+        `| **Total** | **${n(1350 - files)}** | **${n(368039 - code)}** |`,
+        '',
+        '## Planning comparison',
+      ].join('\n'),
+    );
   });
 
   it('reports and notes every figure that differs from the planning measurement', async () => {
@@ -475,13 +558,14 @@ describe('generateCloc', () => {
 });
 
 describe('generateCloc on an interrupting signal', () => {
-  const STEPS = ['extraction', 'filtered count', 'unfiltered count'] as const;
+  const STEPS = ['extraction', 'filtered count', 'unfiltered count', 'planning-basis count'] as const;
 
   it.each<[NodeJS.Signals, (typeof STEPS)[number], number]>([
     ['SIGTERM', 'extraction', 143],
     ['SIGTERM', 'filtered count', 143],
     ['SIGINT', 'unfiltered count', 130],
     ['SIGHUP', 'filtered count', 129],
+    ['SIGTERM', 'planning-basis count', 143],
   ])('on %s during the %s, finishes that step, removes the scratch extraction, then exits %i', async (signal, step, status) => {
     const before = signalListeners();
     let scratch = '';
@@ -503,7 +587,8 @@ describe('generateCloc on an interrupting signal', () => {
     });
     const runner = vi.fn<ClocRunner>(async (_file, args) => {
       const byFile = args.includes('--by-file');
-      if (step === (byFile ? 'filtered count' : 'unfiltered count')) interrupt();
+      const unfiltered = args.includes(`--not-match-d=${UNFILTERED_NOT_MATCH_D}`);
+      if (step === (byFile ? 'filtered count' : unfiltered ? 'unfiltered count' : 'planning-basis count')) interrupt();
       return { stdout: JSON.stringify(byFile ? CANNED_BY_FILE : CANNED), stderr: '' };
     });
     const exit = vi.spyOn(process, 'exit').mockImplementation((() => {
@@ -564,7 +649,7 @@ describe('generateCloc on an interrupting signal', () => {
       exit.mockRestore();
       vi.mocked(rm).mockReset();
     }
-    expect(runner).toHaveBeenCalledTimes(2);
+    expect(runner).toHaveBeenCalledTimes(5);
     expect(removing).toBe(path.dirname(tree));
     expect(during).toEqual(before.map((count) => count + 1));
     expect(atExit).toEqual({ scratch: false, tree: false, listeners: before });

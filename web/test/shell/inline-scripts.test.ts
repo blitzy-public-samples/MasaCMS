@@ -367,12 +367,14 @@ describe('renderHtmlHead globals', () => {
   it.each<[string, () => AdminRequest, string]>([
     ['the withheld session site', () => hostileRequest(), "/c-ms/themes/de'fault"],
     ['the served tenant-a site', () => tenantARequest('tenant-a'), '/c-ms/themes/tenant-a'],
-  ])("prints htmlEditorType, context and legacy's theme path of %s unencoded", (_, request, themepath) => {
+  ])("prints htmlEditorType and context unencoded and encodes legacy's theme path of %s", (_, request, themepath) => {
     useSettings({ MURA_HTMLEDITORTYPE: 'ck-editor', MURA_CONTEXT: '/c-ms' });
-    const lines = globals(headMarkup(request(), themepath));
+    const markup = headMarkup(request(), themepath);
+    const lines = globals(markup);
     expect(lines).toContain("var htmlEditorType='ck-editor';");
     expect(lines).toContain("var context='/c-ms';");
-    expect(lines).toContain(`var themepath='${themepath}';`);
+    expect(lines).toContain(`var themepath='${encodeJs(themepath)}';`);
+    expect(markup).not.toContain(themepath);
   });
 
   it.each<[Record<string, string>, string]>([

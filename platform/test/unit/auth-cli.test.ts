@@ -2,7 +2,8 @@
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
-import { fastify, type FastifyInstance } from 'fastify';
+import { fastify, type FastifyInstance, type FastifyServerOptions } from 'fastify';
+import pino from 'pino';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { main } from '../../src/auth/cli.js';
 import {
@@ -15,7 +16,7 @@ import {
   type TransportAuthenticator,
   type TransportSet,
 } from '../../src/auth/index.js';
-import { REDACTED, validateLogRecord } from '../../src/logging/index.js';
+import { createLogger, fastifyLoggerOptions, REDACTED, validateLogRecord } from '../../src/logging/index.js';
 
 const USAGE = 'usage: opt2-auth matrix --app <module> [--export <name>] [--options <json>] [--out <file>]';
 // Assembled at run time, so no literal credential appears in source.
@@ -104,15 +105,15 @@ function expectFailureLine(message: string, type: string): void {
   expect(stderrRecord()).toMatchObject({ severity: 'CRITICAL', message, error: { type, message: REDACTED } });
 }
 
-function trackedApp(): FastifyInstance {
-  const app = fastify();
+function trackedApp(options: FastifyServerOptions = {}): FastifyInstance {
+  const app = fastify(options);
   apps.push(app);
   return app;
 }
 
-/** An app with registerAuth applied and one requires, one public and one pubsub-push route without the site check. */
-function declaredApp(): FastifyInstance {
-  const app = trackedApp();
+/** An app built with `options`, with registerAuth applied and one requires, one public and one pubsub-push route without the site check. */
+function declaredApp(options: FastifyServerOptions = {}): FastifyInstance {
+  const app = trackedApp(options);
   registerAuth(app, { transports: TRANSPORTS });
   app.get('/v1/people', { config: { opt2: { requires: [Roles.siteAdmin, Roles.s2] } } }, async () => ({}));
   app.get('/healthz', { config: { opt2: { public: true } } }, async () => ({}));
@@ -269,6 +270,44 @@ describe('main', () => {
     expect(stdout).toBe('');
     expect(stderr).toBe('');
     expect(close).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    { target: 'stdout', out: undefined },
+    { target: '--out', out: 'matrix.json' },
+  ])('writes the log lines of an app logger without a destination to fd 2 and only the matrix to $target', async ({ out }) => {
+    const destinations: { dest: unknown; lines: string[] }[] = [];
+    vi.spyOn(pino, 'destination').mockImplementation((options) => {
+      const lines: string[] = [];
+      destinations.push({ dest: (options as { dest?: unknown }).dest, lines });
+      return { write: (line: string) => lines.push(line) } as unknown as ReturnType<typeof pino.destination>;
+    });
+    const logOptions = { service: 'matrix-app', version: '1.0.0', env: 'local' } as const;
+    let app: FastifyInstance | undefined;
+    scope.__opt2AuthCliBuilder = () => {
+      app = declaredApp(fastifyLoggerOptions(createLogger(logOptions)));
+      void app.register(async (instance) => {
+        instance.log.warn('plugin warning while ready');
+      });
+      return app;
+    };
+    const outPath = out === undefined ? undefined : join(dir, out);
+    expect(await main(['matrix', '--app', modulePath, ...(outPath === undefined ? [] : ['--out', outPath])])).toBe(0);
+
+    const matrix = outPath === undefined ? stdout : await readFile(outPath, 'utf8');
+    expect(matrix).toBe(serializeRouteMatrix(collectRouteMatrix(app as FastifyInstance)));
+    expect(matrix.split('\n')).toStrictEqual([JSON.stringify(DECLARED_MATRIX), '']);
+    expect(JSON.parse(matrix)).toStrictEqual(DECLARED_MATRIX);
+    expect(stdout).toBe(outPath === undefined ? matrix : '');
+    expect(stderr).toBe('');
+    expect(destinations.map(({ dest }) => dest)).toStrictEqual([2]);
+    const lines = destinations[0]?.lines.map((line) => JSON.parse(line) as LogLine);
+    expect(lines).toHaveLength(1);
+    expect(validateLogRecord(lines?.[0])).toStrictEqual({ valid: true, errors: [] });
+    expect(lines?.[0]).toMatchObject({ severity: 'WARNING', service: 'matrix-app', message: 'plugin warning while ready' });
+
+    createLogger(logOptions);
+    expect(destinations.map(({ dest }) => dest)).toStrictEqual([2, 1]);
   });
 
   it.each([
