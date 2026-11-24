@@ -72,6 +72,8 @@ export interface FeedRun {
   result: string;
   startedAt: string;
   finishedAt: string;
+  /** Cut-over version the feed's reconciliation measured. */
+  tableVersion?: string;
 }
 
 /** Parity outcome of one scenario or rehearsal crossing; `result` is `not-run` when `parity.json` does not list it. */
@@ -80,6 +82,8 @@ export interface ScenarioOutcome {
   result: string;
   golden?: string;
   replay?: string;
+  /** Cut-over version the comparison ran under, as `parity.json` records it on a rehearsal crossing. */
+  tableVersion?: string;
 }
 
 /** Fixture capability recorded in `${OPT2_STATE_DIR}/fixtures.json`. */
@@ -114,6 +118,10 @@ export interface RollbackReportInput {
    * golden set defaults to {@link SESSION_GOLDEN_SET}.
    */
   session: ScenarioOutcome;
+  /** The session scenario's rehearsal crossing replay, from `${OPT2_STATE_DIR}/golden/replay/rehearsal/<id>.json`. */
+  sessionReplay?: ReplayRun;
+  /** When `parity.json` was written. */
+  parityGeneratedAt?: string;
   fixtures?: FixtureStatus;
 }
 
@@ -128,11 +136,13 @@ export interface WriteRollbackReportResult {
 interface StoredOutcome {
   id: string;
   result: string;
+  tableVersion?: string;
   evidence?: { golden?: string; replay?: string };
 }
 
 /** `parity.json` fields the report reads; `rehearsalCrossings` holds scenarios replayed across the `v0003` activation. */
 interface StoredParity {
+  generatedAt?: string;
   scenarios?: StoredOutcome[];
   rehearsalCrossings?: StoredOutcome[];
 }
@@ -177,6 +187,7 @@ const TRANSITIONS_LOG = 'transitions.json';
 const PARITY_REPORT = 'parity.json';
 const FEED_REPORT = /^after-feed-[1-9]\d*\.json$/;
 const REPLAY_DIR = ['golden', 'replay'] as const;
+const CROSSING_REPLAY_DIR = 'rehearsal';
 const FIXTURES_FILE = 'fixtures.json';
 const NOT_RUN = 'not-run';
 const UNFINISHED = 'unfinished';
@@ -248,6 +259,11 @@ function within(time: string, start: string, end?: string): boolean {
   return ms(time) >= ms(start) && (end === undefined || ms(time) <= ms(end));
 }
 
+/** True when both times are recorded and `time` is at or after `start`. */
+function atOrAfter(time: string | undefined, start: string | undefined): boolean {
+  return time !== undefined && start !== undefined && within(time, start);
+}
+
 /**
  * Steps 5 and 6 up to the reconciliation of `R`. When `before` began inside the latest step 6, projection ended there and
  * succeeded, and the reconciliation's own outcome is the next row's.
@@ -267,6 +283,34 @@ function rehearsalRuns(input: RollbackReportInput): ReplayRun[] {
   );
 }
 
+/** The latest end among `runs`; `undefined` when there are none. */
+function lastFinished(runs: readonly ReplayRun[]): string | undefined {
+  return runs.reduce<string | undefined>((max, run) => (max === undefined || ms(run.finishedAt) > ms(max) ? run.finishedAt : max), undefined);
+}
+
+/** When the rollback version became active: the end of the latest rollback transition once it activated. */
+function activationOf(transition: TransitionLogEntry | undefined): string | undefined {
+  return transition?.outcome === 'activated' ? transition.finishedAt : undefined;
+}
+
+/** The session crossing's replay when it began under the rollback version at or after its activation. */
+function boundCrossing(input: RollbackReportInput): ReplayRun | undefined {
+  const { sessionReplay } = input;
+  const activation = activationOf(input.transition);
+  return sessionReplay?.tableVersion === ROLLBACK_VERSION && atOrAfter(sessionReplay.startedAt, activation) ? sessionReplay : undefined;
+}
+
+/** `replays` plus the bound session crossing. */
+function withCrossing(input: RollbackReportInput, replays: readonly ReplayRun[]): ReplayRun[] {
+  const crossing = boundCrossing(input);
+  return crossing === undefined ? [...replays] : [...replays, crossing];
+}
+
+/** Where the feed pass is looked for from: the end of the rehearsal replays and crossing, else of the re-baseline, else of the transition. */
+function feedSince(input: RollbackReportInput, replays: readonly ReplayRun[]): string | undefined {
+  return lastFinished(withCrossing(input, replays)) ?? input.rebaseline?.finishedAt ?? input.transition?.finishedAt;
+}
+
 /** From the first replay's start to the last one's end, with the verdict over every rehearsal outcome. */
 function rehearsalCells(runs: readonly ReplayRun[], verdict: string): StepCells {
   const [first, ...rest] = runs;
@@ -276,17 +320,21 @@ function rehearsalCells(runs: readonly ReplayRun[], verdict: string): StepCells 
   return [started, finished, verdict];
 }
 
+/** The last of `runs` that began at or after `since` and, when `until` is given, ended by it. */
+function lastFeedRun(runs: readonly FeedRun[], since: string | undefined, until: string | undefined): FeedRun | undefined {
+  if (since === undefined) return undefined;
+  return runs
+    .filter((run) => within(run.startedAt, since) && (until === undefined || ms(run.finishedAt) <= ms(until)))
+    .reduce<FeedRun | undefined>((last, run) => (last === undefined || ms(run.startedAt) > ms(last.startedAt) ? run : last), undefined);
+}
+
 /**
  * The last feed run that began at or after `since` and ended by the after-rollback reconciliation's start, or by its end
  * when the start is not recorded.
  */
 function feedPass(input: RollbackReportInput, since: string | undefined): FeedRun | undefined {
-  if (since === undefined) return undefined;
   const { after } = input.reconciliation;
-  const until = after.startedAt ?? after.generatedAt;
-  return (input.feeds ?? [])
-    .filter((run) => within(run.startedAt, since) && (until === undefined || ms(run.finishedAt) <= ms(until)))
-    .reduce<FeedRun | undefined>((last, run) => (last === undefined || ms(run.startedAt) > ms(last.startedAt) ? run : last), undefined);
+  return lastFeedRun(input.feeds ?? [], since, after.startedAt ?? after.generatedAt);
 }
 
 function feedCells(run: FeedRun | undefined): StepCells {
@@ -306,23 +354,66 @@ function rehearsalVerdict(outcomes: readonly ScenarioOutcome[]): string {
   return outcomes.every((outcome) => ACCEPTED.has(outcome.result)) ? 'pass' : 'incomplete';
 }
 
-function verdictOf(input: RollbackReportInput): RollbackResult {
-  const { transition, reconciliation, fixtures } = input;
-  const refs = [reconciliation.before, reconciliation.after];
-  const outcomes = [...input.scenarios, input.session];
+/** Which evidence belongs to the latest rollback transition's run; `unbound` labels, in run order, what is absent or from another run. */
+interface EvidenceBinding {
+  /** `rollback-before` began and ended in the transition's latest `final-state-and-reconcile` attempt. */
+  before: boolean;
+  /** `rollback-after` ran under the rollback version after the rehearsal. */
+  after: boolean;
+  /** The last feed run under the rollback version after the rehearsal, ended by a fresh `rollback-after`'s start. */
+  feed?: FeedRun;
+  /** `parity.json` was written after the rehearsal. */
+  parity: boolean;
+  unbound: string[];
+}
+
+/** Binds each piece of evidence to the latest rollback transition, each after the last in run order. */
+function bindEvidence(input: RollbackReportInput): EvidenceBinding {
+  const { transition, rebaseline, reconciliation, session } = input;
+  const { before, after } = reconciliation;
+  const activation = activationOf(transition);
+  const step = transition?.steps.findLast((logged) => logged.name === 'final-state-and-reconcile');
+  const inStep = (time: string | undefined): boolean => step !== undefined && time !== undefined && within(time, step.startedAt, step.finishedAt);
+  const beforeBound = inStep(before.startedAt ?? before.generatedAt) && inStep(before.generatedAt);
+  const rebaselined = rebaseline?.tableVersion === ROLLBACK_VERSION && atOrAfter(rebaseline.startedAt, activation);
+  const replays = rebaselined ? rehearsalRuns(input) : [];
+  const crossing = boundCrossing(input);
+  const rehearsalEnd = lastFinished(crossing === undefined ? replays : [...replays, crossing]);
+  const since = rehearsalEnd ?? (rebaselined ? rebaseline?.finishedAt : undefined) ?? activation;
+  const afterStart = after.startedAt ?? after.generatedAt;
+  const afterBound = after.tableVersion === ROLLBACK_VERSION && atOrAfter(afterStart, since);
+  const feeds = (input.feeds ?? []).filter((run) => run.tableVersion === ROLLBACK_VERSION);
+  const feed = lastFeedRun(feeds, since, afterBound ? afterStart : undefined);
+  const parity = atOrAfter(input.parityGeneratedAt, rehearsalEnd ?? activation);
+  const links: [label: string, holds: boolean][] = [
+    [`activated \`${ROLLBACK_VERSION}\` transition`, activation !== undefined],
+    [code(RECONCILIATION_REPORTS.before), beforeBound && before.tableVersion === ROLLBACK_FROM_VERSION && before.result === ZERO_DIFFERENCE],
+    ['re-baseline', rebaselined],
+    ...REHEARSAL_SCENARIOS.map((id): [string, boolean] => [`${id} replay`, replays.some((run) => run.id === id)]),
+    [`${SESSION_SCENARIO} crossing replay`, crossing !== undefined],
+    [`${SESSION_SCENARIO} crossing parity row`, session.tableVersion === ROLLBACK_VERSION],
+    ['feed pass', feed?.result === ZERO_DIFFERENCE],
+    [code(RECONCILIATION_REPORTS.after), afterBound && feed !== undefined && after.result === ZERO_DIFFERENCE],
+    [code(PARITY_REPORT), parity],
+  ];
+  return { before: beforeBound, after: afterBound, feed, parity, unbound: links.filter(([, holds]) => !holds).map(([label]) => label) };
+}
+
+/** `fail` only on an aborted transition or a failure in bound evidence; `pass` only when every link holds and every outcome is accepted. */
+function verdictOf(input: RollbackReportInput, binding: EvidenceBinding): RollbackResult {
+  const { transition, reconciliation, scenarios, session, fixtures } = input;
+  const crossingFailed = session.tableVersion === ROLLBACK_VERSION && session.result === 'fail';
   if (
     transition?.outcome === 'aborted' ||
-    refs.some((ref) => ref.result === DIFFERENCE) ||
-    outcomes.some((outcome) => outcome.result === 'fail')
+    (binding.before && reconciliation.before.result === DIFFERENCE) ||
+    (binding.after && reconciliation.after.result === DIFFERENCE) ||
+    binding.feed?.result === DIFFERENCE ||
+    (binding.parity && (scenarios.some((outcome) => outcome.result === 'fail') || crossingFailed))
   ) {
     return 'fail';
   }
   const complete =
-    transition?.outcome === 'activated' &&
-    input.rebaseline !== undefined &&
-    refs.every((ref) => ref.result === ZERO_DIFFERENCE) &&
-    fixtures?.available !== false &&
-    outcomes.every((outcome) => ACCEPTED.has(outcome.result));
+    binding.unbound.length === 0 && fixtures?.available !== false && [...scenarios, session].every((outcome) => ACCEPTED.has(outcome.result));
   return complete ? 'pass' : 'incomplete';
 }
 
@@ -399,8 +490,7 @@ function stepsSection(input: RollbackReportInput): string[] {
   const { transition, reconciliation } = input;
   const replays = rehearsalRuns(input);
   const rehearsal = rehearsalCells(replays, rehearsalVerdict([...input.scenarios, input.session]));
-  const rehearsedUntil = replays.length === 0 ? undefined : rehearsal[1];
-  const feed = feedPass(input, rehearsedUntil ?? input.rebaseline?.finishedAt ?? transition?.finishedAt);
+  const feed = feedPass(input, feedSince(input, replays));
   // Rows keep the committed report's runbook steps; each transition step folds into the row whose work it performs.
   const steps: [label: string, cells: StepCells][] = [
     ["Quiesce writers of `R`'s units", transitionCells(transition, ['transition-set', 'stop-new-work', 'confirm-inflight-finished'])],
@@ -503,12 +593,16 @@ function replaySection(input: RollbackReportInput): string[] {
 
 /** Renders the rehearsal report and its verdict; pure, so the same input gives the same Markdown. */
 export function renderRollbackReport(input: RollbackReportInput): { markdown: string; result: RollbackResult } {
-  const result = verdictOf(input);
+  const binding = bindEvidence(input);
+  const result = verdictOf(input, binding);
+  const { unbound } = binding;
+  const evidence = result === 'incomplete' && unbound.length > 0 ? [`Evidence missing or not from this rehearsal: ${unbound.join(', ')}.`] : [];
   const lines = [
     '# People-roster rollback rehearsal',
     '',
     `Source SHA: ${input.sourceSha}`,
     `Status: ${result}`,
+    ...evidence,
     `Generated by: ${GENERATED_BY} (\`opt2-migrate rollback report\`)`,
     `Runbook: ${code(RUNBOOK)}`,
     `Generated at: ${input.generatedAt}`,
@@ -543,7 +637,7 @@ async function readReconciliation(reportsDir: string, relPath: string): Promise<
 function scenarioOutcome(id: string, rows: readonly StoredOutcome[] | undefined): ScenarioOutcome {
   const found = rows?.find((scenario) => scenario.id === id);
   if (found === undefined) return { id, result: NOT_RUN };
-  return { id, result: found.result, golden: found.evidence?.golden, replay: found.evidence?.replay };
+  return { id, result: found.result, golden: found.evidence?.golden, replay: found.evidence?.replay, tableVersion: found.tableVersion };
 }
 
 /** The parsed JSON file at `segments` under the state directory, or `undefined` when it does not exist; other errors propagate. */
@@ -564,14 +658,20 @@ async function readFixtures(stateDir: string): Promise<FixtureStatus | undefined
   return doc === undefined ? undefined : { available: doc.available, reason: doc.reason ?? undefined };
 }
 
+/** Scenario `id`'s replay output under `segments` of the replay directory; `undefined` unless it records its start, end and version. */
+async function readReplay(stateDir: string, id: string, ...segments: string[]): Promise<ReplayRun | undefined> {
+  const doc = await readStateJson<StoredReplay>(stateDir, ...REPLAY_DIR, ...segments, `${id}.json`);
+  const { replayedAt, generatedAt, tableVersion } = doc ?? {};
+  if (typeof replayedAt !== 'string' || typeof generatedAt !== 'string' || typeof tableVersion !== 'string') return undefined;
+  return { id, tableVersion, startedAt: replayedAt, finishedAt: generatedAt };
+}
+
 /** The rehearsal scenarios' replay outputs under the state directory; a scenario without a complete one is left out. */
 async function readReplays(stateDir: string): Promise<ReplayRun[]> {
   const runs: ReplayRun[] = [];
   for (const id of REHEARSAL_SCENARIOS) {
-    const doc = await readStateJson<StoredReplay>(stateDir, ...REPLAY_DIR, `${id}.json`);
-    const { replayedAt, generatedAt, tableVersion } = doc ?? {};
-    if (typeof replayedAt !== 'string' || typeof generatedAt !== 'string' || typeof tableVersion !== 'string') continue;
-    runs.push({ id, tableVersion, startedAt: replayedAt, finishedAt: generatedAt });
+    const run = await readReplay(stateDir, id);
+    if (run !== undefined) runs.push(run);
   }
   return runs;
 }
@@ -591,7 +691,7 @@ async function readFeedRuns(reportsDir: string): Promise<FeedRun[]> {
     const doc = await readJsonReport<StoredFeedReconciliation>(reportsDir, relPath);
     const startedAt = doc?.feed?.startedAt;
     if (typeof startedAt !== 'string' || typeof doc?.generatedAt !== 'string') continue;
-    runs.push({ path: relPath, result: doc.result, startedAt, finishedAt: doc.generatedAt });
+    runs.push({ path: relPath, result: doc.result, startedAt, finishedAt: doc.generatedAt, tableVersion: doc.tableVersion ?? undefined });
   }
   return runs;
 }
@@ -637,6 +737,8 @@ export async function writeRollbackReport(
     feeds: await readFeedRuns(target.reportsDir),
     scenarios: REHEARSAL_SCENARIOS.map((id) => scenarioOutcome(id, parity?.scenarios)),
     session: scenarioOutcome(SESSION_SCENARIO, parity?.rehearsalCrossings),
+    sessionReplay: await readReplay(stateDir, SESSION_SCENARIO, CROSSING_REPLAY_DIR),
+    parityGeneratedAt: parity?.generatedAt,
     fixtures: await readFixtures(stateDir),
   });
   // writeMarkdownReport redacts the Markdown and ensures its Source SHA line from the same pin.

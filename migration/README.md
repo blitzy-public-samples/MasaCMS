@@ -28,7 +28,7 @@ Run as `node migration/dist/cli.js <command>` or through the `opt2-migrate` bin.
 | `snapshot drop --seq <n>` | Drops snapshot `n`'s database, backup and manifest rows; the `migration.snapshot` row stays |
 | `backfill --snapshot <n>` | Loads snapshot `n` into the owners in dependency order, transfers its files, reconciles `after-backfill` |
 | `feed [--snapshot <n>]` | Takes a feed snapshot (or resumes on `n`), applies each table's changes since its watermark, reconciles `after-feed-<n>` |
-| `transition --to <vNNNN> [--poll-ms <ms>]` | Asks the service for the transition to a cut-over version and waits, reading it every `--poll-ms` (1–2147483647, default 1000); exit 1 unless it completes |
+| `transition --to <vNNNN> [--poll-ms <ms>]` | Asks the service for the transition to a cut-over version and waits, reading it every `--poll-ms` (1–2147483647, default 1000), until it completes or aborts or its failing undo is escalated; exit 1 unless it completes |
 | `reconcile --point <name> [--units <unit,...>]` | Reconciles at a named point and writes its report |
 | `rollback-set` | Computes the people-roster group set `R` and checks it against `v0003` |
 | `rollback rebaseline` | Restarts the forward feed for `R`'s units from a fresh `rebaseline` snapshot |
@@ -140,7 +140,7 @@ DDL in [`db/migrations/0001_migration.sql`](db/migrations/0001_migration.sql), [
 | 7 | `activate` | Activates the version once and waits for every gateway instance's epoch |
 | 8 | `hand-off-and-reopen` | Hands off schedulers, sets gates `open` or `legacy`, releases leases, unfreezes, resumes queues and tasks, reconciles recurring tasks |
 
-An abort before step 7 reopens what it closed and leaves the active version unchanged. A transition that would make units `target`-authoritative is refused while the legacy database lacks `opt2_sync.projector_checkpoint` (run `init-legacy` first). One that would make a content unit `target`-authoritative is also refused (`cluster-unsafe`) unless `${OPT2_STATE_DIR}/baseline/environment.json` records `settings.cluster.clusterSafe: true` and the live `tclustercommands` is empty; a missing record refuses too (run `harness/src/baseline/environment.ts --phase services`).
+An abort before step 7 reopens what it closed and leaves the active version unchanged. An undo that fails keeps the transition `aborting` and is retried; five minutes after its first failure it is escalated once, as `error.undoFailures.escalatedAt` and an error log line naming what it still holds, and the transition turns `aborted` only once the undo succeeds. A transition that would make units `target`-authoritative is refused while the legacy database lacks `opt2_sync.projector_checkpoint` (run `init-legacy` first). One that would make a content unit `target`-authoritative is also refused (`cluster-unsafe`) unless `${OPT2_STATE_DIR}/baseline/environment.json` records `settings.cluster.clusterSafe: true` and the live `tclustercommands` is empty; a missing record refuses too (run `harness/src/baseline/environment.ts --phase services`).
 
 Orphan classification (the in-flight waits of step 3, reload windows and `opt2-ops drain-and-suspend`) reads the gateway's `cutoverStatusV2`; a gateway without it (404, or legacy's redirect of the path) falls back to `cutoverStatus`, where the rows of instances not live are the orphans.
 

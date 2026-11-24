@@ -1307,6 +1307,33 @@ describe('controlled legacy restart of step 3', () => {
     expect(kept.orphanRestart?.completedAt).toBeUndefined();
   });
 
+  it('an abort retried once legacy restarts again records the completion, imports before any gate opens, then reopens, unfreezes, resumes and releases', async () => {
+    const { h, record, fenced } = await atStep3();
+    m.restartLegacy.mockRejectedValueOnce(restartFailure()).mockRejectedValueOnce(restartFailure());
+    await expect(runTransitionStep(h.deps, record, 3)).rejects.toMatchObject({ name: 'TransitionAbortedError', step: 3 });
+    await expect(abortTransition(h.deps, { ...record, progress: h.persisted.at(-1)! })).rejects.toMatchObject({ name: 'TransitionAbortedError', step: 3 });
+    const kept = h.persisted.at(-1)!;
+    expect(kept).toMatchObject({ freezeRequested: true, extraLeasedUnits: expect.arrayContaining(fenced), schedulerPause: { siteMonitor: ['monitor'] } });
+    const persistedBefore = h.persisted.length;
+
+    const cleaned = await abortTransition(h.deps, { ...record, progress: kept });
+    expect(m.restartLegacy).toHaveBeenCalledTimes(3);
+    const completion = h.persisted.slice(persistedBefore).find((progress) => progress.orphanRestart?.completedAt !== undefined);
+    expect(completion?.orphanRestart).toMatchObject({ units: fenced, restartedAt: expect.any(String), completedAt: expect.any(String) });
+    expect(order(m.restartLegacy, 2)).toBeLessThan(order(m.importWindow));
+    expect(m.importWindow).toHaveBeenCalledWith(h.ctx, { windowId: record.transitionId, attempt: 1, units: fenced, scope: { table: true } });
+    const reopened = gateAt(h, (req) => req.op === 'open');
+    expect(order(m.importWindow)).toBeLessThan(reopened);
+    expect(gates(h).filter((req) => req.op === 'open')).toEqual([expect.objectContaining({ units: fenced, state: 'open', holderId: record.transitionId })]);
+    expect(order(h.gateway.unfreeze)).toBeGreaterThan(reopened);
+    expect(order(m.releaseLeases)).toBeGreaterThan(order(h.gateway.unfreeze));
+    expect(m.releaseLeases).toHaveBeenCalledWith(h.ctx, record.transitionId);
+    expect(h.scheduler.resumePaused).toHaveBeenCalledTimes(1);
+    expect(cleaned).toMatchObject({ closedGates: [], freezeRequested: false, extraLeasedUnits: [] });
+    expect(cleaned.orphanRestart).toBeUndefined();
+    expect(cleaned.schedulerPause).toBeUndefined();
+  });
+
   const cutShort: { name: string; restartedAt?: string; completedAt?: string; restarts: number; imports: number }[] = [
     { name: 'after its restart completed', restartedAt: '2026-06-30T12:00:00.000Z', completedAt: '2026-06-30T12:00:01.000Z', restarts: 0, imports: 1 },
     { name: 'after its restart intent, restarting legacy again first', restartedAt: '2026-06-30T12:00:00.000Z', restarts: 1, imports: 1 },

@@ -228,8 +228,8 @@ export interface TransitionProgress {
   handoffs?: { siteMonitor?: SiteMonitorHandoffResult; surveys?: SurveysHandoffResult; restore?: RestoreResult };
   /** Units returned to legacy whose forward feed restarts from a fresh snapshot (`opt2-migrate rollback rebaseline`). */
   rebaselineRequired: string[];
-  /** Failed undo attempts of an aborting transition: how many, and when the first failed. */
-  undoFailures?: { count: number; firstAt: string };
+  /** Failed undo attempts of an aborting transition: how many, when the first failed, and when they were escalated to an operator. */
+  undoFailures?: { count: number; firstAt: string; escalatedAt?: string };
 }
 
 /** One step's entry in the transition's step log. */

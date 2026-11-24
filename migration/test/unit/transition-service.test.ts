@@ -371,20 +371,31 @@ describe.skipIf(!pg)('transition service against PostgreSQL', () => {
     await next.stop();
   });
 
-  it.each([
+  const resumeFailure = new Error('Scheduler hand-off step resume failed: legacy bridge scheduler.resume failed with 500');
+  it.each<{ failing: string; undone: Partial<TransitionProgress>; leased: boolean; held: string; failure: Error }>([
     {
       failing: 'the gate reset',
-      undone: { closedGates: [{ owner: 'people' as const, unit: 'people.person', prior: 'legacy' as const }] },
+      undone: { closedGates: [{ owner: 'people', unit: 'people.person', prior: 'legacy' }] },
       leased: true,
       held: 'still held: gates people.person at people; leases people.person; paused legacy tasks opt2-survey-1-launch',
+      failure: resumeFailure,
     },
     {
       failing: 'the legacy task resume',
       undone: { closedGates: [] },
       leased: false,
       held: 'still held: paused legacy tasks opt2-survey-1-launch',
+      failure: resumeFailure,
     },
-  ])('fails an abort whose $failing keeps failing past the retry budget, naming what it still holds', async ({ undone, leased, held }) => {
+    {
+      // The undo records the restart's intent, then its command fails: a refusal while the old version stays active.
+      failing: 'controlled legacy restart',
+      undone: { orphanRestart: { units: ['people.person'], phase: 'executing', importAttempts: 0, restartedAt: '2026-06-30T12:00:00.000Z' } },
+      leased: true,
+      held: 'still held: legacy restart gates people.person; gates people.person at people; leases people.person; paused legacy tasks opt2-survey-1-launch',
+      failure: new TransitionAbortedError(3, 'Controlled legacy restart failed: restart command exited with 1', { units: ['people.person'] }),
+    },
+  ])('escalates an abort whose $failing keeps failing past the retry budget, naming what it still holds, and finishes it once the undo recovers', async ({ undone, leased, held, failure }) => {
     behaviour.set(5, async (deps, record) => {
       await deps.persist({
         ...record.progress,
@@ -396,7 +407,7 @@ describe.skipIf(!pg)('transition service against PostgreSQL', () => {
     let skewMs = 0;
     m.abortTransition.mockImplementation(async (deps: StepDeps, record: TransitionRecord) => {
       await deps.persist({ ...record.progress, ...undone });
-      throw new Error('Scheduler hand-off step resume failed: legacy bridge scheduler.resume failed with 500');
+      throw failure;
     });
     const svc = service('A', { config: SHORT, clock: { now: () => new Date(Date.now() + skewMs) } });
     const { transitionId } = await svc.start({ to: 'v0002' });
@@ -407,19 +418,40 @@ describe.skipIf(!pg)('transition service against PostgreSQL', () => {
     }
     await waitFor(() => logs.some((l) => String(l.args.at(-1)).includes('undo failed')), 'a failed undo');
     expect(await row(transitionId)).toMatchObject({ state: 'aborting', paused: { undoFailures: { count: expect.any(Number) } } });
-    // Five minutes later, by the service's clock, the next failure gives the undo up.
+    // Five minutes later, by the service's clock, the next failure escalates the undo once; later failures keep retrying it.
     skewMs = 5 * 60_000 + 1000;
-
-    const view = await settle(svc, transitionId);
+    const escalation = (l: LogCall) => l.level === 'error' && String(l.args.at(-1)).includes('needs an operator');
+    await waitFor(() => logs.some(escalation), 'the escalated undo');
+    const escalatedLog = logs.findIndex(escalation);
+    await waitFor(() => logs.slice(escalatedLog + 1).some((l) => String(l.args.at(-1)).includes('undo failed; it stays aborting')), 'a retry after the escalation');
+    const lines = logs.filter(escalation).map((l) => String(l.args.at(-1)));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatch(
+      new RegExp(`^Transition ${transitionId} undo failed \\d+ times since \\S+ and needs an operator to restore what the undo calls; it stays aborting and the undo is retried until it succeeds; `),
+    );
+    expect(lines[0]).toContain(held);
+    const stuck = await row(transitionId);
+    const { escalatedAt } = (stuck.paused as { undoFailures: { escalatedAt: string } }).undoFailures;
+    expect(stuck).toMatchObject({ state: 'aborting', finished_at: null, paused: { undoFailures: { escalatedAt: expect.any(String) } } });
+    const view = await svc.get(transitionId);
     contract(view);
-    expect(view).toMatchObject({ state: 'aborted', step: 5, error: { step: 5, state: 'failed' } });
-    expect(view.error?.message).toMatch(/^gates held by another holder; the undo failed \d+ times since \S+ and was given up: Scheduler hand-off step resume failed/);
-    expect(view.error?.message).toContain(held);
-    expect((await row(transitionId)).state).toBe('failed');
+    expect(view).toMatchObject({ state: 'running', step: 5, error: { step: 5, state: 'aborting', message: 'gates held by another holder', undoFailures: { escalatedAt } } });
+    await expect(svc.start({ to: 'v0002' })).rejects.toBeInstanceOf(TransitionInProgressError);
+
+    // The dependency recovers: the undo releases the lease and resumes the tasks, and the claim pass finishes the abort.
+    if (leased) await db.withMetadata((tx) => tx.query(`DELETE FROM ${tx.schema}.unit_lease WHERE holder_id = $1`, [transitionId]));
+    m.abortTransition.mockImplementation(async (_deps: StepDeps, record: TransitionRecord) => {
+      const { schedulerPause: _resumed, orphanRestart: _restarted, ...progress } = record.progress;
+      return { ...progress, closedGates: [] };
+    });
+    const done = await settle(svc, transitionId);
+    contract(done);
+    expect(done).toMatchObject({ state: 'aborted', step: 5, error: { step: 5, state: 'aborted', message: 'gates held by another holder' } });
+    expect(done.error).not.toHaveProperty('undoFailures');
+    expect(await row(transitionId)).toMatchObject({ state: 'aborted', closed_gates: [], finished_at: expect.any(Date) });
+    expect(logs.some((l) => l.args.at(-1) === `Transition ${transitionId} to v0002 failed`)).toBe(false);
     // The row turns terminal before its write is mirrored into transitions.json.
-    await waitFor(() => logEntry(transitionId).entry?.outcome === 'aborted', 'the failed transition in transitions.json');
-    await db.withMetadata((tx) => tx.query(`DELETE FROM ${tx.schema}.unit_lease WHERE holder_id = $1`, [transitionId]));
-    // A failed transition is terminal, so the next one starts.
+    await waitFor(() => logEntry(transitionId).entry?.outcome === 'aborted', 'the aborted transition in transitions.json');
     behaviour.clear();
     const next = await svc.start({ to: 'v0002' });
     expect(next.transitionId).not.toBe(transitionId);

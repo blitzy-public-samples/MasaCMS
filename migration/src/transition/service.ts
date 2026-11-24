@@ -171,8 +171,8 @@ function transitionTable(tx: MetadataTx): string {
 const MAX_CALL_MS = GATE_WAIT_MS + SERVICE_CALL_TIMEOUT_MS;
 
 /**
- * How long a failing undo is retried, from its first failure, before the transition fails: five minutes outlast a restart
- * of an owner, the gateway or ColdFusion, legacy start-up included, so a longer failure needs an operator.
+ * How long a failing undo is retried, from its first failure, before it is escalated to an operator: five minutes outlast a
+ * restart of an owner, the gateway or ColdFusion, legacy start-up included. The undo is still retried after it.
  */
 const UNDO_RETRY_BUDGET_MS = 5 * 60_000;
 
@@ -347,11 +347,18 @@ function reconciliationOf(progress: TransitionProgress): NonNullable<TransitionV
   return { report: reconciliationRef(done.reportPath), differences: done.differences, point: done.point, result: done.result };
 }
 
-/** Why the transition stopped: its abort reason, else the failure of the step it is at, which `resume()` runs again. */
+/**
+ * Why the transition stopped: its abort reason, with the failed undo attempts while it is still aborting, else the failure
+ * of the step it is at, which `resume()` runs again.
+ */
 function errorOf(record: TransitionRecord): NonNullable<TransitionView['error']> | undefined {
   const step = currentStep(record);
   const name = TRANSITION_STEPS.find((definition) => definition.step === step)?.name;
-  if (record.abortReason !== undefined) return { step, name, message: record.abortReason, state: record.state };
+  if (record.abortReason !== undefined) {
+    const { undoFailures } = record.progress;
+    const undo = record.state === 'aborting' && undoFailures !== undefined ? { undoFailures } : {};
+    return { step, name, message: record.abortReason, state: record.state, ...undo };
+  }
   const last = record.steps.at(-1);
   if (last?.step !== step || last.result !== 'error' || last.detail === undefined) return undefined;
   return { step, name, message: last.detail, state: record.state };
@@ -660,9 +667,8 @@ export function createTransitionService(base: MigrationContext, options: Transit
     ctx.logger.error({ error: serializeError(cause) }, `Transition ${record.transitionId} to ${record.to} failed`);
   }
 
-  /** Retrying the undo cannot succeed: a refusal, or the proposed version is active, so the transition can no longer abort. */
-  async function abortRefused(record: TransitionRecord, error: unknown): Promise<boolean> {
-    if (isRefusal(error)) return true;
+  /** The gateway confirms the proposed version active, so the transition can no longer abort. */
+  async function abortRefused(record: TransitionRecord): Promise<boolean> {
     try {
       return (await ctx.gateway.status()).tableVersion === record.to;
     } catch (statusError) {
@@ -672,7 +678,7 @@ export function createTransitionService(base: MigrationContext, options: Transit
     }
   }
 
-  /** What an aborting transition still holds or keeps paused, for the reason it fails with. */
+  /** What an aborting transition still holds or keeps paused, for the escalation of its failing undo. */
   async function heldByAbort(record: TransitionRecord): Promise<string> {
     const { progress, plan } = record;
     const held: string[] = [];
@@ -692,8 +698,9 @@ export function createTransitionService(base: MigrationContext, options: Transit
   }
 
   /**
-   * Undoes the side effects of an aborting transition. An undo that throws leaves the row aborting for the next pass until
-   * UNDO_RETRY_BUDGET_MS has passed since its first failure; then the transition fails with what it still holds.
+   * Undoes the side effects of an aborting transition; it turns aborted only once the undo succeeds, and fails only once the
+   * proposed version is active. Any other undo failure, a refusal included, leaves the row aborting for the next pass, and is
+   * escalated once, with what it still holds, when UNDO_RETRY_BUDGET_MS has passed since its first failure.
    */
   async function finishAbort(record: TransitionRecord): Promise<void> {
     const reason = record.abortReason ?? `Transition ${record.transitionId} was aborting`;
@@ -702,19 +709,22 @@ export function createTransitionService(base: MigrationContext, options: Transit
       progress = await abortTransition(stepDeps(record), record);
     } catch (error) {
       if (claimLost(error)) throw error;
-      if (await abortRefused(record, error)) {
+      if (await abortRefused(record)) {
         await fail(record, `${reason}; the abort was refused: ${messageOf(error)}`, error);
         return;
       }
       const previous = record.progress.undoFailures;
-      const failures = { count: (previous?.count ?? 0) + 1, firstAt: previous?.firstAt ?? now() };
+      const failures = { ...previous, count: (previous?.count ?? 0) + 1, firstAt: previous?.firstAt ?? now() };
+      const escalate = failures.escalatedAt === undefined && ctx.clock.now().getTime() - Date.parse(failures.firstAt) >= UNDO_RETRY_BUDGET_MS;
+      if (escalate) failures.escalatedAt = now();
       record.progress = { ...record.progress, undoFailures: failures };
-      if (ctx.clock.now().getTime() - Date.parse(failures.firstAt) >= UNDO_RETRY_BUDGET_MS) {
-        const given = `the undo failed ${String(failures.count)} times since ${failures.firstAt} and was given up: ${messageOf(error)}`;
-        await fail(record, `${reason}; ${given}; ${await heldByAbort(record)}`, error);
+      await persistRecord(record);
+      if (escalate) {
+        const failed = `undo failed ${String(failures.count)} times since ${failures.firstAt} and needs an operator to restore what the undo calls`;
+        const retried = 'it stays aborting and the undo is retried until it succeeds';
+        ctx.logger.error({ error: serializeError(error) }, `Transition ${record.transitionId} ${failed}; ${retried}; ${await heldByAbort(record)}`);
         return;
       }
-      await persistRecord(record);
       ctx.logger.error({ error: serializeError(error) }, `Transition ${record.transitionId} undo failed; it stays aborting until the undo is retried`);
       return;
     }

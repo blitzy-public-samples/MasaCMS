@@ -92,9 +92,16 @@ function isTerminal(state: TransitionStatus): boolean {
   return (TERMINAL_STATUSES as readonly TransitionStatus[]).includes(state);
 }
 
+/** The service escalated the transition's failing undo to an operator; it stays aborting while the undo is retried. */
+function undoEscalated(transition: Transition): boolean {
+  const failures = transition.error?.undoFailures as { escalatedAt?: unknown } | undefined;
+  return typeof failures?.escalatedAt === 'string';
+}
+
 /**
- * Starts the transition to `to` in the running migration service and reads it every `pollMs` until it completes or aborts.
- * @returns The transition in its terminal state.
+ * Starts the transition to `to` in the running migration service and reads it every `pollMs` until it completes or aborts,
+ * or its failing undo is escalated.
+ * @returns The transition in its terminal state, or still running with `error.undoFailures.escalatedAt` once its undo is escalated.
  * @throws TransitionCallError on a non-2xx answer other than 503, for example 409 while another transition runs.
  * @throws ServiceUnavailableError when the service answers 503 or cannot be reached.
  */
@@ -104,7 +111,7 @@ export async function requestTransition(
 ): Promise<Transition> {
   const body = { toVersion: to } satisfies TransitionStartRequest;
   let transition = await call<Transition>(ctx, OPERATIONS.start, OPERATIONS.start.path, body);
-  while (!isTerminal(transition.state)) {
+  while (!isTerminal(transition.state) && !undoEscalated(transition)) {
     await sleep(pollMs);
     transition = await call<Transition>(ctx, OPERATIONS.get, transitionPath(OPERATIONS.get, transition.transitionId));
   }
