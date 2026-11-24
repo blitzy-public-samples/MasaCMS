@@ -28,7 +28,7 @@ import {
 import { redact, runStep, type StepRecord, type StepRunOptions } from './steps.js';
 import { isMainModule, parseFlags, runCli, type CliOutcome } from '../lib/cli.js';
 import { stateDir, type EnvLike } from '../lib/paths.js';
-import { readJson, stableStringify, writeJsonReport, type ReportOptions } from '../lib/report.js';
+import { readJson, sortKeysDeep, writeJsonReport, type ReportOptions } from '../lib/report.js';
 
 /** Scenario id the workload's context and step errors carry. */
 export const WORKLOAD_ID = 'workload';
@@ -776,9 +776,9 @@ export function buildWorkloadPlan(
   return { seed, items, writes };
 }
 
-/** Lowercase hex SHA-256 of the plan's items as stable JSON. */
+/** Lowercase hex SHA-256 of the plan's items as sorted-key, two-space-indented JSON with one trailing newline. */
 export function planDigest(plan: Pick<WorkloadPlan, 'items'>): string {
-  return sha256Hex(stableStringify(plan.items));
+  return sha256Hex(`${JSON.stringify(sortKeysDeep(plan.items), null, 2)}\n`);
 }
 
 function collectStrings(value: unknown, out: Set<string>): void {

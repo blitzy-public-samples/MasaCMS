@@ -545,3 +545,30 @@ describe('runWorkload', () => {
     },
   );
 });
+
+describe('planDigest', () => {
+  it.each<[string, Step]>([
+    [
+      'declared',
+      {
+        route: '/admin/?muraAction=csettings.updatesite',
+        name: 'site-edit-save',
+        method: 'POST',
+        csrf: 'fetch-form',
+        form: { siteid: 'tenant-b', action: 'Update' },
+      },
+    ],
+    [
+      'reordered',
+      {
+        form: { action: 'Update', siteid: 'tenant-b' },
+        csrf: 'fetch-form',
+        method: 'POST',
+        name: 'site-edit-save',
+        route: '/admin/?muraAction=csettings.updatesite',
+      },
+    ],
+  ])('keeps the fixed digest of an item with %s key order', (_order, item) => {
+    expect(planDigest({ items: [item] })).toBe('4058e090d5439a51662930686b23d813516d314021b6d67564c44ecafcae9098');
+  });
+});

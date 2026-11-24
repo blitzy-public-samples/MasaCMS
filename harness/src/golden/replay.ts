@@ -696,8 +696,8 @@ export interface ReplayDeps extends OperatorDeps {
   logger?: Logger;
   exceptions?: AppendExceptionOptions;
   routeKeyOptions?: StepRunOptions['routeKeyOptions'];
-  /** Default {@link readGoldenSet}. */
-  readGolden?: (id: string) => Promise<GoldenSet>;
+  /** Default {@link readGoldenSet} of {@link goldenSetPath}; `crossing` asks for the rehearsal crossing's set. */
+  readGolden?: (id: string, crossing: boolean) => Promise<GoldenSet>;
   /** Run with `--rehearsal`: a non-rehearsal scenario replays as its rehearsal crossing. */
   rehearsal?: boolean;
 }
@@ -910,13 +910,14 @@ async function replayRun(
   io: { env: EnvLike; logger: Logger; secrets: SecretStore; at: string; write: OutputWriter },
 ): Promise<ReplayResult> {
   const { env, logger } = io;
-  const golden = await (deps.readGolden ?? readGoldenSet)(scenario.id);
+  const crossing = isCrossing(scenario.id, deps);
+  const readGolden = deps.readGolden ?? ((id, c) => readGoldenSet(id, goldenSetPath(id, c)));
+  const golden = await readGolden(scenario.id, crossing);
   if (golden.skipped !== undefined) {
     throw new GoldenConfigError(
-      `${scenario.id}: golden set ${goldenSetPath(scenario.id)} was captured ${golden.skipped}; capture it again`,
+      `${scenario.id}: golden set ${goldenSetPath(scenario.id, crossing)} was captured ${golden.skipped}; capture it again`,
     );
   }
-  const crossing = isCrossing(scenario.id, deps);
   const range = await stepRange(scenario, phase, deps.tableVersion, env, crossing);
   if (range === 'resumed-earlier') {
     const output = replayOutputPath(scenario.id, env, crossing);

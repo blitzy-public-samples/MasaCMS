@@ -13,9 +13,9 @@ Prerequisites: Node 22.23.4, npm 11.21.0, PostgreSQL 16, the Pub/Sub emulator, o
 Run from the repository root:
 
 - [`harness/repro/up.sh`](../harness/repro/up.sh) boots legacy and target with seed data, on the installed engines and without Docker; it exits 0 when the stack is up.
-- [`harness/repro/test-all.sh`](../harness/repro/test-all.sh) runs stages 0–9 in the order of proof and writes [`reports/test-all.json`](reports/test-all.json) and [`reports/test-all.md`](reports/test-all.md); it exits 0, or 2 when the legacy fixtures are unavailable and acceptance items are unmet.
+- [`harness/repro/test-all.sh`](../harness/repro/test-all.sh) runs stages 0–9 in the order of proof and writes [`reports/test-all.json`](reports/test-all.json) and [`reports/test-all.md`](reports/test-all.md); it exits 0 when every acceptance item is met, 2 when it completed with acceptance items unmet (such as scenarios withheld pending the user's decision, or legacy fixtures unavailable), each listed in `reports/test-all.md`, and 1 when a stage or service-matrix cell failed, or the run itself failed: interrupted, unable to start, or unable to write its report.
 - [`harness/repro/down.sh`](../harness/repro/down.sh) stops the stack, drops its snapshot databases and PostgreSQL schemas and roles, and restores the pristine legacy baseline.
-- [`harness/repro/clean-checkout-proof.sh`](../harness/repro/clean-checkout-proof.sh) proves both commands from a fresh clone and writes [`reports/reproducibility.md`](reports/reproducibility.md).
+- [`harness/repro/clean-checkout-proof.sh`](../harness/repro/clean-checkout-proof.sh) proves both commands from a fresh clone and records both exit codes and the digest of the clone's `test-all.json` in [`reports/reproducibility.md`](reports/reproducibility.md). Its verdict is separate: the proof passes only when `up.sh` exits 0 and `test-all.sh` exits 0, or 2 with the legacy fixtures unavailable; it exits 0 when the proof passed and the clone's stack stopped, 1 when the proof failed or a step could not run, and 2 on a usage error.
 
 ## Deliverable index
 
@@ -45,6 +45,7 @@ Paths are relative to `opt2/`.
 | [`reports/events.json`](reports/events.json) | `harness/src/events/report.ts` |
 | [`reports/observability.json`](reports/observability.json) | `harness/e2e/events/trace.e2e.test.ts` |
 | [`reports/platform-proof.json`](reports/platform-proof.json) | `harness/e2e/isolation/platform-proof.e2e.test.ts` |
+| [`reports/performance.json`](reports/performance.json), [`reports/performance.md`](reports/performance.md) | `harness/src/performance/run.ts`, run in `test-all.sh` stage 7 by `harness/e2e/performance/performance.e2e.test.ts` |
 | [`reports/test-all.json`](reports/test-all.json), [`reports/test-all.md`](reports/test-all.md) | `harness/repro/test-all.sh`, through `harness/src/reporting/test-all.ts` |
 | [`reports/reproducibility.md`](reports/reproducibility.md) | `harness/repro/clean-checkout-proof.sh` |
 | [`reports/speed.json`](reports/speed.json), [`reports/speed.md`](reports/speed.md) | `harness/src/reporting/speed.ts` |

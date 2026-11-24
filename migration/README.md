@@ -301,7 +301,7 @@ npm run test:security   # test/security: route and role matrix through app.injec
 npm start               # node dist/cli.js serve
 ```
 
-- Suites that need PostgreSQL create a throwaway schema from the `PG_*` variables, skip when `PG_HOST` is unset and fail when the server is unreachable. SQL Server, ColdFusion, the bridge, the gateway, the owners and Pub/Sub are in-process doubles (`test/helpers/`), so no suite needs a legacy server.
+- Suites that need PostgreSQL create a throwaway schema from the `PG_*` variables, skip when `PG_HOST` is unset unless `OPT2_TEST_REQUIRE_PG=1`, which makes an unset `PG_HOST` fail instead, and fail when the server is unreachable. The two cases in `test/unit/db-bootstrap-cli.test.ts` that run `opt2-db bootstrap` and `teardown --target local` are the exception: they drop and create the fixed-name schemas and the cluster-global `<schema>_owner`, `_app` and `_migrator` roles, so they are skipped by default (the two expected skips of `npm test`) and run only with `OPT2_DEDICATED_PG=1`, under the same `PG_HOST` rules. `PG_*` must then name a disposable PostgreSQL cluster the run owns, never a shared one: a separate database does not isolate roles. SQL Server, ColdFusion, the bridge, the gateway, the owners and Pub/Sub are in-process doubles (`test/helpers/`), so no suite needs a legacy server.
 - Headline suites: `test/windows.test.ts` (overlapping windows, a transition racing a window, gateway loss mid-write), `test/transition.test.ts` (pending seam event drained before the gates close), `test/projection-await.test.ts` (older open transaction holds the barrier), `test/reverse-crash.test.ts` (crash between the SQL Server commit and the mirror), `test/reverse-nokey.test.ts` (duplicate keyless rows).
 
 ## Links

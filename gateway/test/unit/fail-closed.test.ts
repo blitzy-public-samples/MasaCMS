@@ -179,40 +179,50 @@ describe('fixture routes fail closed in the fixture envelope naming the method a
     gateway = undefined;
   });
 
-  /** A version routing each fixture key to finance, the owner every case's request reaches. */
+  const PERSON_ID = '6F1E2D3C-4B5A-6978-8796A5B4C3D2E1F0';
+  const FIXTURE_OWNERS = ['finance', 'people'] as const;
+  type FixtureOwner = (typeof FIXTURE_OWNERS)[number];
+
+  /** A version routing each finance fixture key to finance and the people archive read to people. */
   const fixtureVersion = cutoverTable({
     tableVersion: 'v0902',
     entries: [
-      'fixture:finance/records@get',
-      'fixture:finance/rollups@get',
-      'fixture:finance/records/{id}/submit@get',
-      'fixture:finance/records/{id}/attachments/{id}@get',
-      'fixture:finance/records/{id}/attachments/x/y@get',
-      'fixture:nosuch/things@get',
-    ].map((route) => entry({ route, owningService: 'finance', state: 'target', kind: 'read' })),
+      ...[
+        'fixture:finance/records@get',
+        'fixture:finance/rollups@get',
+        'fixture:finance/records/{id}/submit@get',
+        'fixture:finance/records/{id}/attachments/{id}@get',
+        'fixture:finance/records/{id}/attachments/x/y@get',
+        'fixture:nosuch/things@get',
+      ].map((route) => entry({ route, owningService: 'finance', state: 'target', kind: 'read' })),
+      entry({ route: 'fixture:people/persons/{id}/archive@get', owningService: 'people', state: 'target', kind: 'read' }),
+    ],
   });
 
-  it.each([
-    ['a resource', `${FIXTURE}/finance/records`, 'finance.records'],
-    ['an action after the id', `${FIXTURE}/finance/records/${RECORD_ID}/submit`, 'finance.records.submit'],
-    ['a tail that is no CF UUID', `${FIXTURE}/finance/records/${RECORD_ID}/attachments/42`, 'finance.records.attachments.42'],
-    ['a CF UUID tail, which is an id', `${FIXTURE}/finance/records/${RECORD_ID}/attachments/${ATTACHMENT_ID}`, 'finance.records.attachments'],
-    ['mixed-case segments', `${FIXTURE}/Finance/Records/${RECORD_ID}/Submit`, 'finance.records.submit'],
-    ['a percent-encoded segment', `${FIXTURE}/finance/rec%6Frds`, 'finance.records'],
-    ['a query string carrying a method', `${FIXTURE}/finance/rollups?siteid=tenant-a&method=list`, 'finance.rollups'],
-    ['a query string turning the data namespace off', `${FIXTURE}/finance/rollups?siteid=tenant-a&useDataNamespace=false`, 'finance.rollups'],
-    ['more than five segments', `${FIXTURE}/finance/records/${RECORD_ID}/attachments/x/y`, 'invalid'],
-    ['a module api.cfm does not dispatch', `${FIXTURE}/nosuch/things`, 'invalid'],
-  ])('names, for %s (%s), the fixture method %s in the fixture 503', { timeout: CASE_TIMEOUT_MS }, async (_case, url, method) => {
-    gateway = await buildTestGateway({ version: fixtureVersion, services: ['finance'] });
-    await gateway.targets.finance?.setMode('503');
+  it.each<[string, string, string, FixtureOwner]>([
+    ['a resource', `${FIXTURE}/finance/records`, 'finance.records', 'finance'],
+    ['an action after the id', `${FIXTURE}/finance/records/${RECORD_ID}/submit`, 'finance.records.submit', 'finance'],
+    ['a tail that is no CF UUID', `${FIXTURE}/finance/records/${RECORD_ID}/attachments/42`, 'finance.records.attachments.42', 'finance'],
+    ['a CF UUID tail, which is an id', `${FIXTURE}/finance/records/${RECORD_ID}/attachments/${ATTACHMENT_ID}`, 'finance.records.attachments', 'finance'],
+    ['mixed-case segments', `${FIXTURE}/Finance/Records/${RECORD_ID}/Submit`, 'finance.records.submit', 'finance'],
+    ['a percent-encoded segment', `${FIXTURE}/people/pers%6Fns/${PERSON_ID}/archive`, 'people.persons.archive', 'people'],
+    ['a doubled slash before the prefix', `//legacy-fixtures/cfml/api.cfm/people/persons/${PERSON_ID}/archive`, 'people.persons.archive', 'people'],
+    ['a doubled slash inside the prefix', `/legacy-fixtures//cfml/api.cfm/people/persons/${PERSON_ID}/archive`, 'people.persons.archive', 'people'],
+    ['a doubled slash inside path info', `${FIXTURE}/people//persons/${PERSON_ID}/archive`, 'people.persons.archive', 'people'],
+    ['a query string carrying a method', `${FIXTURE}/finance/rollups?siteid=tenant-a&method=list`, 'finance.rollups', 'finance'],
+    ['a query string turning the data namespace off', `${FIXTURE}/finance/rollups?siteid=tenant-a&useDataNamespace=false`, 'finance.rollups', 'finance'],
+    ['more than five segments', `${FIXTURE}/finance/records/${RECORD_ID}/attachments/x/y`, 'invalid', 'finance'],
+    ['a module api.cfm does not dispatch', `${FIXTURE}/nosuch/things`, 'invalid', 'finance'],
+  ])('names, for %s (%s), the fixture method %s in the fixture 503', { timeout: CASE_TIMEOUT_MS }, async (_case, url, method, owner) => {
+    gateway = await buildTestGateway({ version: fixtureVersion, services: FIXTURE_OWNERS });
+    await Promise.all(FIXTURE_OWNERS.map((name) => gateway?.targets[name]?.setMode('503')));
     const res = await gateway.app.inject({ method: 'GET', url });
     const expected = fixtureUnavailable(method);
     expect(res.statusCode).toBe(503);
     expect(res.statusMessage).toBe(SERVICE_UNAVAILABLE_TEXT);
     expect(res.body).toBe(expected.body);
     expect(res.headers).toMatchObject(expected.headers);
-    expect(gateway.targets.finance?.requests).toHaveLength(1);
+    for (const name of FIXTURE_OWNERS) expect(gateway.targets[name]?.requests, name).toHaveLength(name === owner ? 1 : 0);
     expect(gateway.legacy.requests.filter((req) => req.path !== BRIDGE_SESSION_PATH)).toEqual([]);
   });
 });

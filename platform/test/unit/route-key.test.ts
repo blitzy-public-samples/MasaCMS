@@ -17,6 +17,7 @@ import {
   type VariantDeclaration,
   apiRequestPath,
   entityRemoteFunctionsFromKeys,
+  fixtureDispatchItems,
   fixtureDispatchPath,
   isLegacySessionManaged,
   listHasSqlKey,
@@ -1052,6 +1053,14 @@ describe('fixtureDispatchPath', () => {
   ])('%s', (_label, path, expected, opts) => {
     expect(fixtureDispatchPath(path, opts)).toBe(expected);
     expect(resultOf('GET', path, {}, opts).family === 'fixture').toBe(expected !== undefined);
+  });
+
+  it.each<[string, string, string[] | undefined, RouteKeyOptions?]>([
+    ['collapses separators and reads each item as api.cfm does', '//legacy-fixtures/cfml/api.cfm/People/Persons/Ab%201/ARCHIVE', ['people', 'persons', 'Ab 1', 'archive']],
+    ['removes the context', `/masa${FIXTURE}/people/persons/P1/archive`, ['people', 'persons', 'P1', 'archive'], { context: '/masa' }],
+    ['answers no items outside the fixture front controller', `/index.cfm${FIXTURE}/people/persons/P1/archive`, undefined],
+  ])('fixtureDispatchItems %s', (_label, path, expected, opts) => {
+    expect(fixtureDispatchItems(path, opts)).toEqual(expected);
   });
 });
 

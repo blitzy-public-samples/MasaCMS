@@ -1320,10 +1320,15 @@ export function apiRequestPath(path: string, opts: Pick<RouteKeyOptions, 'contex
   return normalisePath(path, opts.context ?? '').rootPath;
 }
 
+/** api.cfm's path_info items of a fixture request, each as api.cfm reads it; undefined outside the fixture front controller. */
+export function fixtureDispatchItems(path: string, opts: Pick<RouteKeyOptions, 'context'> = {}): string[] | undefined {
+  return fixtureItems(path, opts.context ?? '')?.map((item, at) => fixtureSegment(item, at));
+}
+
 /** The api.cfm path legacy dispatches a fixture request on, each item as api.cfm reads it; undefined outside the fixture front controller. */
 export function fixtureDispatchPath(path: string, opts: Pick<RouteKeyOptions, 'context'> = {}): string | undefined {
-  const items = fixtureItems(path, opts.context ?? '');
-  return items === undefined ? undefined : `${FIXTURE_PREFIX}${items.map((s, i) => encodeURIComponent(fixtureSegment(s, i))).join('/')}`;
+  const items = fixtureDispatchItems(path, opts);
+  return items === undefined ? undefined : `${FIXTURE_PREFIX}${items.map((item) => encodeURIComponent(item)).join('/')}`;
 }
 
 /** The cut-over route a key resolves to; `undefined` means legacy. A variant never falls back to its base. */

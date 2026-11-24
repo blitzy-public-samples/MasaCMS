@@ -179,14 +179,15 @@ function ownerOf(result: RouteKeyResult, entry: CutoverEntry | undefined, destin
   return result.family === 'admin' ? 'web' : entry.owningService;
 }
 
-/** Fail context of a routed request for `url`, with the route key and owner its fail-closed line names. */
+/** Fail context of a routed request for `url` under the configBean `opts.context`, with the route key and owner its fail-closed line names. */
 export function routedFailContext(
   result: RouteKeyResult,
   entry: CutoverEntry | undefined,
   destination: RoutedOutcome['destination'],
   url: string,
+  opts: Pick<RouteKeyOptions, 'context'> = {},
 ): FailContext {
-  const context: FailContext = { ...failContextFor(result, url), route: entry?.route ?? result.key };
+  const context: FailContext = { ...failContextFor(result, url, opts), route: entry?.route ?? result.key };
   const owner = ownerOf(result, entry, destination);
   return owner === undefined ? context : { ...context, owner };
 }
@@ -574,7 +575,7 @@ export function createMatcher(deps: MatcherDeps): Matcher {
         result,
         entry,
         destination,
-        failContext: routedFailContext(result, entry, destination, request.url),
+        failContext: routedFailContext(result, entry, destination, request.url, options),
         urlScope,
         scanFailed,
         ...(holdRoutes === undefined ? {} : { holdRoutes }),

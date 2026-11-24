@@ -5,6 +5,7 @@ import {
   buildEnvelope,
   canonicalMethodName,
   errorSpec,
+  fixtureDispatchItems,
   isCfUuid,
   legacyHeaders,
   paramsWithoutMethod,
@@ -12,6 +13,7 @@ import {
   unavailableResponseFor,
   type LegacyUnavailableResponse,
   type RouteFamily,
+  type RouteKeyOptions,
   type RouteKeyResult,
 } from '@opt2/platform/legacy-compat';
 import { serializeError } from '@opt2/platform/logging';
@@ -94,8 +96,7 @@ const TRANSPORT_FAILURE_CODES: ReadonlySet<string> = new Set([
 /** Connection-establishment failure codes, after which the callee never received the request. */
 const NOT_SENT_CODES: ReadonlySet<string> = new Set(['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'UND_ERR_CONNECT_TIMEOUT']);
 
-/** The fixture front controller and the modules it dispatches (legacy-fixtures/cfml/api.cfm:5). */
-const FIXTURE_PREFIX = '/legacy-fixtures/cfml/api.cfm/';
+/** The modules the fixture front controller dispatches (legacy-fixtures/cfml/api.cfm:5). */
 const FIXTURE_MODULES: ReadonlySet<string> = new Set([
   'people',
   'timesheets',
@@ -138,38 +139,33 @@ function resolvedMethod(route: RouteKeyResult): string | undefined {
   return supplied !== undefined && supplied.toLowerCase() === name ? supplied : canonicalMethodName(name);
 }
 
-/** `path` percent-decoded as the container decodes path info; a malformed escape, which the container rejects, stays as is. */
-function decodedPath(path: string): string {
-  try {
-    return decodeURIComponent(path);
-  } catch {
-    return path;
-  }
-}
-
 // api.cfm reads the method from its path info alone, never from a `method` parameter (api.cfm:36-58).
-/** api.cfm's method for request target `url`: `<module>.<resource>[.<action>][.<tail>]` lower-cased, a CF UUID tail left out. */
-function fixtureMethodOf(url: string): string {
-  const query = url.indexOf('?');
-  const path = decodedPath(query === -1 ? url : url.slice(0, query));
-  if (!path.toLowerCase().startsWith(FIXTURE_PREFIX)) return FIXTURE_INVALID_METHOD;
-  const segments = path.slice(FIXTURE_PREFIX.length).split('/').filter((segment) => segment !== '');
-  const [module, resource, , action, tail] = segments;
-  if (module === undefined || resource === undefined || segments.length > FIXTURE_MAX_SEGMENTS) return FIXTURE_INVALID_METHOD;
-  if (!FIXTURE_MODULES.has(module.toLowerCase())) return FIXTURE_INVALID_METHOD;
+/** api.cfm's method for its path_info `items` as fixtureDispatchItems reads them: `<module>.<resource>[.<action>][.<tail>]`, a CF UUID tail left out. */
+function fixtureMethodOf(items: readonly string[] | undefined): string {
+  if (items === undefined || items.length > FIXTURE_MAX_SEGMENTS) return FIXTURE_INVALID_METHOD;
+  const [module, resource, , action, tail] = items;
+  if (module === undefined || resource === undefined || !FIXTURE_MODULES.has(module)) return FIXTURE_INVALID_METHOD;
   const parts = [module, resource];
   if (action !== undefined) parts.push(action);
   if (tail !== undefined && !isCfUuid(tail)) parts.push(tail);
-  return parts.join('.').toLowerCase();
+  return parts.join('.');
 }
 
-/** Fail context of a request; a reload answers on the surface of the route it reloads in front of. */
-export function failContextFor(result: RouteKeyResult | undefined, path: string): FailContext {
+/** Fail context of a request on `path` under the configBean `opts.context`; a reload answers on the surface of the route it reloads in front of. */
+export function failContextFor(
+  result: RouteKeyResult | undefined,
+  path: string,
+  opts: Pick<RouteKeyOptions, 'context'> = {},
+): FailContext {
   if (result === undefined) return { surface: surfaceForFamily(undefined, path) };
   const route = result.afterReload ?? result;
   const surface = surfaceForFamily(route.family, path);
   if (surface === 'admin') return { surface };
-  if (route.family === 'fixture') return { surface, method: fixtureMethodOf(path), params: route.params, fixture: true };
+  if (route.family === 'fixture') {
+    const query = path.indexOf('?');
+    const items = fixtureDispatchItems(query === -1 ? path : path.slice(0, query), opts);
+    return { surface, method: fixtureMethodOf(items), params: route.params, fixture: true };
+  }
   return { surface, method: resolvedMethod(route), params: route.params };
 }
 

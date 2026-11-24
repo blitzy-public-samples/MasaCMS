@@ -11,6 +11,7 @@ import {
   routeKeyForRequest,
   type LegacyUnavailableResponse,
   type RouteFamily,
+  type RouteKeyOptions,
   type RouteKeyResult,
 } from '@opt2/platform/legacy-compat';
 import { createLogger, validateLogRecord } from '@opt2/platform/logging';
@@ -192,6 +193,35 @@ describe('failContextFor', () => {
     expect(failContextFor(route, '/legacy-fixtures/cfml/api.cfm/finance/invoices?method=list')).toEqual({
       surface: 'api',
       method: 'finance.invoices',
+      params: route.params,
+      fixture: true,
+    });
+  });
+
+  const PERSON_ID = '00532E14-B51F-226C-36938FA3E4A6396C';
+  const ARCHIVE = `people/persons/${PERSON_ID}/archive`;
+  it.each<[string, string, RouteKeyOptions?]>([
+    ['a doubled slash before the prefix', `//legacy-fixtures/cfml/api.cfm/${ARCHIVE}`],
+    ['a doubled slash inside the prefix', `/legacy-fixtures//cfml/api.cfm/${ARCHIVE}`],
+    ['a doubled slash before the script', `/legacy-fixtures/cfml//api.cfm/${ARCHIVE}`],
+    ['a doubled slash inside path info', `/legacy-fixtures/cfml/api.cfm/people//persons/${PERSON_ID}/archive`],
+    ['a parameter on a directory segment', `/legacy-fixtures;x=1/cfml/api.cfm/${ARCHIVE}`],
+    ['a percent-encoded segment', `/legacy-fixtures/cfml/api.cfm/people/pers%6Fns/${PERSON_ID}/archive?siteid=tenant-a`],
+    ['an encoded slash', `/legacy-fixtures/cfml/api.cfm/people%2Fpersons/${PERSON_ID}/archive`],
+    ['the configured context', `/masa/legacy-fixtures/cfml/api.cfm/${ARCHIVE}`, { context: '/masa' }],
+  ])('reports the fixture method the shared matcher keys for a path with %s', (_case, path, opts) => {
+    const route = routeOf('fixture', 'people/persons/{id}/archive@post', { siteid: 'tenant-a' });
+    const query = path.indexOf('?');
+    const keyed = routeKeyForRequest({ method: 'POST', path: query === -1 ? path : path.slice(0, query), query: {}, headers: {} }, opts);
+    expect(keyed.key).toBe(route.key);
+    expect(failContextFor(route, path, opts)).toEqual({ surface: 'api', method: 'people.persons.archive', params: route.params, fixture: true });
+  });
+
+  it('reports the invalid fixture method for a path outside the fixture front controller', () => {
+    const route = routeOf('fixture', 'people/persons/{id}/archive@post', {});
+    expect(failContextFor(route, `/index.cfm/legacy-fixtures/cfml/api.cfm/${ARCHIVE}`)).toEqual({
+      surface: 'api',
+      method: 'invalid',
       params: route.params,
       fixture: true,
     });

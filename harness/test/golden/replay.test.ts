@@ -233,8 +233,13 @@ const seed: SeedStore = {
 
 const clock = (): Date => new Date(REPLAYED_AT);
 
-function readGolden(id: string): Promise<GoldenSet> {
-  return readGoldenSet(id, path.join(setsDir, `${id}.json`));
+/** Path of `id`'s temp golden set, or of its rehearsal crossing's under `rehearsal/` when `crossing`. */
+function goldenFile(id: string, crossing = false): string {
+  return path.join(setsDir, ...(crossing ? ['rehearsal'] : []), `${id}.json`);
+}
+
+function readGolden(id: string, crossing = false): Promise<GoldenSet> {
+  return readGoldenSet(id, goldenFile(id, crossing));
 }
 
 function mainDeps(stack: FakeStack, invoker: HarnessInvoker): MainDeps {
@@ -358,7 +363,7 @@ interface GoldenStepSpec {
 }
 
 /** Temp golden set of `id`, each step a copy of the sample's findone renamed and re-addressed. */
-async function writeGolden(id: string, specs: readonly GoldenStepSpec[]): Promise<GoldenSet> {
+async function writeGolden(id: string, specs: readonly GoldenStepSpec[], crossing = false): Promise<GoldenSet> {
   const steps = specs.map((spec, index): GoldenStep => {
     const copy = structuredClone(sampleStep);
     const step: GoldenStep = {
@@ -373,7 +378,9 @@ async function writeGolden(id: string, specs: readonly GoldenStepSpec[]): Promis
     return step;
   });
   const set: GoldenSet = { ...structuredClone(goldenSample), scenarioId: id, steps };
-  await writeFile(path.join(setsDir, `${id}.json`), JSON.stringify(set));
+  const file = goldenFile(id, crossing);
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(file, JSON.stringify(set));
   return set;
 }
 
@@ -676,10 +683,16 @@ describe('main flags', () => {
     await writeCatalogue();
     await writeGolden('GS-CO-05', [{ name: 'findone', url: CONTENT_PATH }]);
     await writeGolden('GS-PE-RH-01', [{ name: 'rehearsal', url: `${CONTENT_PATH}?scenario=rehearsal` }]);
-    await writeGolden('GS-ID-09', [
-      { name: 'opened', url: '/admin/?muraAction=cDashboard.main' },
-      { name: 'after', url: '/admin/?muraAction=cUsers.list' },
-    ]);
+    for (const crossing of [false, true]) {
+      await writeGolden(
+        'GS-ID-09',
+        [
+          { name: 'opened', url: '/admin/?muraAction=cDashboard.main' },
+          { name: 'after', url: '/admin/?muraAction=cUsers.list' },
+        ],
+        crossing,
+      );
+    }
   });
 
   it('refuses --rehearsal while the gateway serves v0002, before any scenario request', async () => {
@@ -826,6 +839,52 @@ describe('main flags', () => {
     expect(crossingSessions).toBe(path.join(root, 'state', 'golden', 'sessions', 'rehearsal', 'GS-ID-09.json'));
     expect((await stat(crossingSessions)).mode & 0o777).toBe(0o600);
     expect(await readSessionState('GS-ID-09', env, true)).toMatchObject({ tableVersion: 'v0002', completed: true });
+  });
+
+  it('replays the rehearsal crossing against its rehearsal set and the v0002 crossing against the ordinary set', async () => {
+    await writeGolden(
+      'GS-ID-09',
+      [
+        { name: 'opened', url: '/admin/?muraAction=cDashboard.main' },
+        { name: 'after', url: '/admin/?muraAction=cUsers.list', gap: true },
+      ],
+      true,
+    );
+    const reads = vi.fn(readGolden);
+    const invoker = await operatorInvoker();
+    const run = (flags: string[], phase: string, tableVersion: string): ReturnType<typeof main> => {
+      const argv = [...flags, '--phase', phase, '--only', 'GS-ID-09', '--catalogue', catalogueFile];
+      return main(argv, env, { ...mainDeps(fakeStack({ tableVersion }), invoker), readGolden: reads });
+    };
+
+    const outcomes = [
+      await run([], 'pre-transition', 'v0001'),
+      await run([], 'resume', 'v0002'),
+      await run(['--rehearsal'], 'pre-transition', 'v0002'),
+      await run(['--rehearsal'], 'resume', 'v0003'),
+    ];
+
+    const exceptionId = 'EX-HALT-GS-ID-09-01';
+    const halted = [{ id: 'GS-ID-09', step: 'after', exceptionId }];
+    expect(outcomes).toEqual([
+      { code: 0, summary: summaryOf({ paused: 1, tableVersion: 'v0001' }) },
+      { code: 0, summary: summaryOf({ replayed: 1 }) },
+      { code: 0, summary: summaryOf({ paused: 1 }) },
+      { code: 0, summary: summaryOf({ replayed: 1, halted, tableVersion: 'v0003' }) },
+    ]);
+    expect(reads.mock.calls).toEqual([
+      ['GS-ID-09', false],
+      ['GS-ID-09', false],
+      ['GS-ID-09', true],
+      ['GS-ID-09', true],
+    ]);
+    expect((await readOutput('GS-ID-09')).halted).toEqual([]);
+    const crossing = replayOutputSchema.parse(JSON.parse(await readFile(replayOutputPath('GS-ID-09', env, true), 'utf8')));
+    expect(crossing.halted).toEqual([{ step: 'after', routeKey: ROUTE_KEY, reason: GAP_REASON, exceptionId }]);
+    expect((await readExceptions()).entries.find((entry) => entry.id === exceptionId)?.evidence).toEqual({
+      golden: 'harness/golden/sets/rehearsal/GS-ID-09.json',
+      replay: '${OPT2_STATE_DIR}/golden/replay/rehearsal/GS-ID-09.json',
+    });
   });
 
   it('fails a rehearsal resume with no crossing sessions saved, writing only the crossing output', async () => {

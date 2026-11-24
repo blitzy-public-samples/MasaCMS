@@ -2,7 +2,7 @@
 
 Source SHA: 696383140578f8dea3ece26f80cd7bfb370ddf0f
 
-Every entry in [`decision-list.json`](decision-list.json), which this file renders, has approval `pending`. Until the user approves an entry, the build withholds everything it lists, so no target table, mapping, route or cut-over entry exists for it, and its items keep running on legacy, inside write windows where they write target-authoritative units.
+Every entry in [`decision-list.json`](decision-list.json), which this file renders, has approval `pending`. Until the user approves an entry, the build withholds its target implementation and activation: no target table, mapping, migration or service route is built for it, and no cut-over version moves it to a service. Every version keeps its route keys as `decision` entries in state `legacy` (`legacy-write` where they write, `read` otherwise), so its items keep running on legacy, inside a write window whenever their write set includes a `target`-authoritative unit.
 
 ## Tables
 
