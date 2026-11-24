@@ -452,53 +452,95 @@ describe('buildGroups', () => {
 
 // ---- CLI ----
 
-describe('main', () => {
-  let dir: string;
-  let paths: GatewayPaths;
+/** The message `JSON.parse` rejects `text` with. */
+function parseError(text: string): string {
+  try {
+    JSON.parse(text);
+  } catch (error) {
+    return (error as SyntaxError).message;
+  }
+  throw new Error('the text is valid JSON');
+}
 
-  beforeAll(async () => {
-    dir = await mkdtemp(join(tmpdir(), 'build-groups-cli-'));
-    paths = resolveGatewayPaths({ OPT2_CUTOVER_DIR: dir });
-  });
+describe('main', () => {
+  const dirs: string[] = [];
 
   afterAll(async () => {
-    await rm(dir, { recursive: true, force: true });
+    await Promise.all(dirs.map((dir) => rm(dir, { recursive: true, force: true })));
   });
 
-  const run = async (argv: string[]) => {
+  /** Paths of a new, empty cut-over directory of the calling case. */
+  const casePaths = async (): Promise<GatewayPaths> => {
+    const dir = await mkdtemp(join(tmpdir(), 'build-groups-cli-'));
+    dirs.push(dir);
+    return resolveGatewayPaths({ OPT2_CUTOVER_DIR: dir });
+  };
+
+  const run = async (argv: string[], paths: GatewayPaths) => {
     const stdout: string[] = [];
     const stderr: string[] = [];
     const code = await main(argv, { paths, stdout: (text) => stdout.push(text), stderr: (text) => stderr.push(text) });
     return { code, stdout, stderr };
   };
 
+  /** The committed groups.json bytes, which the build must reproduce exactly. */
+  const committedBytes = (): Promise<string> => readFile(committed.groupsFile, 'utf8');
+
   it('reports a missing groups.json as a difference', async () => {
-    const { code, stdout, stderr } = await run([]);
-    expect(code).toBe(1);
-    expect(stdout[0]).toBe('@@ -1 +1 @@');
-    expect(stdout[1]).toBe(`+${serialiseGroups(buildGroups(await loadBuildGroupsInput(paths))).trimEnd()}`);
-    expect(stderr).toEqual([`build-groups: ${paths.groupsFile} does not exist; run with --write`]);
+    const paths = await casePaths();
+    expect(await run([], paths)).toEqual({
+      code: 1,
+      stdout: [],
+      stderr: [`build-groups: ${paths.groupsFile} does not exist; run with --write`],
+    });
   });
 
   it('writes with --write (repeatable) and then reports no difference', async () => {
-    expect((await run(['--write', '--write'])).code).toBe(0);
-    expect(await readFile(paths.groupsFile, 'utf8')).toBe(serialiseGroups(buildGroups(await loadBuildGroupsInput(paths))));
-    expect(await run([])).toEqual({ code: 0, stdout: [`build-groups: ${paths.groupsFile} is up to date`], stderr: [] });
+    const paths = await casePaths();
+    expect(await run(['--write', '--write'], paths)).toEqual({ code: 0, stdout: [`build-groups: wrote ${paths.groupsFile}`], stderr: [] });
+    const written = await readFile(paths.groupsFile, 'utf8');
+    expect(written).toBe(`${JSON.stringify(buildGroups(await loadBuildGroupsInput(paths)))}\n`);
+    expect(written).toBe(await committedBytes());
+    expect(await run([], paths)).toEqual({ code: 0, stdout: [`build-groups: ${paths.groupsFile} is up to date`], stderr: [] });
   });
 
-  it('prints a line diff and exits 1 when groups.json differs', async () => {
-    const current = await readFile(paths.groupsFile, 'utf8');
-    const edited = current.replace(`"generatedBy":"${GENERATED_BY}"`, '"generatedBy":"hand"');
-    expect(edited).not.toBe(current);
-    await writeFile(paths.groupsFile, edited);
-    const { code, stdout, stderr } = await run([]);
-    expect(code).toBe(1);
-    expect(stdout).toEqual(['@@ -1 +1 @@', `-${edited.trimEnd()}`, `+${current.trimEnd()}`]);
-    expect(stderr).toEqual([`build-groups: ${paths.groupsFile} differs from the build; run with --write`]);
+  it.each<[string, (bytes: string) => string, (file: string, seeded: string) => string[]]>([
+    [
+      'a line diff',
+      (bytes) => bytes.replace(`"generatedBy":"${GENERATED_BY}"`, '"generatedBy":"hand"'),
+      (file) => [
+        `--- ${file} (pretty-printed)`,
+        '+++ build (pretty-printed)',
+        '@@ -3 +3 @@',
+        '-  "generatedBy": "hand",',
+        `+  "generatedBy": "${GENERATED_BY}",`,
+      ],
+    ],
+    [
+      'a serialisation-only note',
+      (bytes) => `${JSON.stringify(JSON.parse(bytes), null, 2)}\n`,
+      (file) => [`${file} holds the built document but not in its compact serialisation`],
+    ],
+    [
+      'the parse error alone',
+      (bytes) => bytes.slice(0, Math.floor(bytes.length / 2)),
+      (file, seeded) => [`${file} is not valid JSON: ${parseError(seeded)}`],
+    ],
+  ])('prints %s and exits 1 when groups.json differs', async (_label, edit, expected) => {
+    const paths = await casePaths();
+    const current = await committedBytes();
+    const seeded = edit(current);
+    expect(seeded).not.toBe(current);
+    await writeFile(paths.groupsFile, seeded);
+    expect(await run([], paths)).toEqual({
+      code: 1,
+      stdout: expected(paths.groupsFile, seeded),
+      stderr: [`build-groups: ${paths.groupsFile} differs from the build; run with --write`],
+    });
   });
 
   it.each([[['--check']], [['--write', 'extra']]])('exits 2 on usage error %j', async (argv) => {
-    const { code, stderr } = await run(argv);
+    const { code, stderr } = await run(argv, await casePaths());
     expect(code).toBe(2);
     expect(stderr[0]).toMatch(/^build-groups: unknown argument/);
   });
@@ -506,13 +548,11 @@ describe('main', () => {
   it.each(['inventoryFile', 'tableOwnershipFile', 'exceptionsListFile'] as const)(
     'reports a %s of another commit and exits 1',
     async (key) => {
-      const file = join(dir, `other-commit-${basename(committed[key])}`);
+      const paths = await casePaths();
+      const file = join(paths.cutoverDir, `other-commit-${basename(committed[key])}`);
       const doc = JSON.parse(await readFile(committed[key], 'utf8')) as { sourceSha: string };
       await writeFile(file, JSON.stringify({ ...doc, sourceSha: '0'.repeat(40) }));
-      const stdout: string[] = [];
-      const stderr: string[] = [];
-      const code = await main([], { paths: { ...paths, [key]: file }, stdout: (text) => stdout.push(text), stderr: (text) => stderr.push(text) });
-      expect({ code, stdout, stderr }).toEqual({
+      expect(await run([], { ...paths, [key]: file })).toEqual({
         code: 1,
         stdout: [],
         stderr: [`build-groups: ${file} does not match its cut-over schema: /sourceSha must equal the pinned sha ${SHA}`],
@@ -521,7 +561,8 @@ describe('main', () => {
   );
 
   it('propagates read errors other than a missing file', async () => {
-    await expect(main([], { paths: { ...paths, groupsFile: dir }, stdout: () => undefined, stderr: () => undefined })).rejects.toThrow(/EISDIR/);
+    const paths = await casePaths();
+    await expect(run([], { ...paths, groupsFile: paths.cutoverDir })).rejects.toThrow(/EISDIR/);
   });
 });
 

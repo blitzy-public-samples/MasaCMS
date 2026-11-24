@@ -33,11 +33,15 @@ import type {
   InventoryWrite,
   InventoryWriter,
   OwnershipDoc,
+  RollbackRef,
   VariantsFile,
 } from './types.js';
 
-/** `ci` checks references only; `activation` also reads the rollback reconciliation reports. */
-export type ValidationMode = 'ci' | 'activation';
+/**
+ * `draft`, for versions still being generated, and `load`, for an activated version an instance routes by, check rollback
+ * references only; `ci` and `activation` also check each reference's report.
+ */
+export type ValidationMode = 'draft' | 'load' | 'ci' | 'activation';
 
 /** Inventory facts of one normalised route key, merged over every item that bears it. */
 export interface InventoryKeyFacts {
@@ -96,6 +100,7 @@ const FIXTURE_SCHEMA_TABLE = /^(?:synthetic|program_\w+)\./i;
 // A key ends in `{<variant>}` only when a declared variant matched (route-key.ts); fixture `{id}` segments end in `@<method>`.
 const VARIANT_SUFFIX = /\{[^{}]*\}$/;
 const ZERO_DIFFERENCE = 'zero-difference';
+const ROLLBACK_POINT = 'rollback-before';
 
 const DISPOSITION_RANK: Readonly<Record<Disposition, number>> = { carry: 0, retired: 1, 'legacy-served': 2, decision: 3 };
 // Rule an entry's units fall under, by the entry's kind.
@@ -297,20 +302,80 @@ function writeEntryGroups(groups: GroupsFile): Map<string, string[]> {
   return byKey;
 }
 
-type ReportVerdict = { ok: true } | { ok: false; reason: string };
+type ReportRead = { ok: true; body: Record<string, unknown> } | { ok: false; reason: string };
 
-/** Reads a reconciliation report named by a rollback reference from the reconciliation directory; a reason names the report by file name only. */
-function reportVerdict(reconciliationDir: string, report: string): ReportVerdict {
-  const name = basename(report);
-  let result: unknown;
+/** Reads the reconciliation report file `name` from the reconciliation directory; a reason names it by file name only. */
+function readReport(reconciliationDir: string, name: string): ReportRead {
+  let body: unknown;
   try {
-    result = (JSON.parse(readFileSync(join(reconciliationDir, name), 'utf8')) as { result?: unknown }).result;
+    body = JSON.parse(readFileSync(join(reconciliationDir, name), 'utf8'));
   } catch (error) {
     // A file-system error message repeats the absolute path, so only its code is reported.
     const { code, message } = error as NodeJS.ErrnoException;
     return { ok: false, reason: `${name} is unreadable: ${code ?? message}` };
   }
-  return result === ZERO_DIFFERENCE ? { ok: true } : { ok: false, reason: `${name} has result ${String(result)}` };
+  return typeof body === 'object' && body !== null && !Array.isArray(body)
+    ? { ok: true, body: body as Record<string, unknown> }
+    : { ok: false, reason: `${name} is unreadable: not a JSON object` };
+}
+
+/** Object members of a report list; any other value reads as an empty list. */
+function records(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value) ? value.filter((item): item is Record<string, unknown> => typeof item === 'object' && item !== null) : [];
+}
+
+/** Whether a report unit entry was compared with no difference and equal counts and checksums, its object manifest included unless null. */
+function isZeroUnit(entry: Record<string, unknown>): boolean {
+  const { status, differenceCount, legacyCount, targetCount, legacySha256, targetSha256, files } = entry;
+  const equalCounts = typeof legacyCount === 'number' && legacyCount === targetCount;
+  const rowsZero = status === 'compared' && differenceCount === 0 && equalCounts && typeof legacySha256 === 'string' && legacySha256 === targetSha256;
+  if (!rowsZero || files === null) return rowsZero;
+  if (typeof files !== 'object') return false;
+  const objects = files as Record<string, unknown>;
+  return objects.differenceCount === 0 && typeof objects.legacyObjects === 'number' && objects.legacyObjects === objects.targetObjects;
+}
+
+/**
+ * Why report `name` is not rollback evidence for `units` returning from version `from`, or undefined when it is: evidence is a
+ * zero-difference `rollback-before` report of the pin, taken at `from`, comparing every unit and each of its `unitTables`.
+ */
+function evidenceFault(
+  name: string,
+  read: ReportRead,
+  sourceSha: string,
+  from: string,
+  units: readonly string[],
+  unitTables: ReadonlyMap<string, readonly string[]>,
+): string | undefined {
+  if (!read.ok) return read.reason;
+  const { body } = read;
+  if (body.result !== ZERO_DIFFERENCE) return `${name} has result ${String(body.result)}`;
+  if (body.sourceSha !== sourceSha) return `${name} records sourceSha ${String(body.sourceSha)}, not the pinned ${sourceSha}`;
+  if (body.point !== ROLLBACK_POINT) return `${name} is point ${String(body.point)}, not ${ROLLBACK_POINT}`;
+  if (name !== `${ROLLBACK_POINT}.json`) return `${name} is not named after its point ${ROLLBACK_POINT}`;
+  if (body.tableVersion !== from) return `${name} was taken at ${String(body.tableVersion)}, not ${from}`;
+  if (body.expectedTableVersion !== from) return `${name} expected ${String(body.expectedTableVersion)}, not ${from}`;
+  if (body.tableVersionMatches !== true) return `${name} records tableVersionMatches ${String(body.tableVersionMatches)}`;
+  const entries = records(body.units);
+  // Legacy tables compared per unit, lower-cased; a unit no legacy table feeds is compared under a null table.
+  const compared = new Map<unknown, Set<unknown>>();
+  for (const { unit, legacyTable } of [...entries, ...records(body.emptyUnits)]) {
+    const tables = compared.get(unit) ?? new Set<unknown>();
+    compared.set(unit, tables.add(typeof legacyTable === 'string' ? legacyTable.toLowerCase() : legacyTable));
+  }
+  const skipped = new Set(records(body.skippedUnits).map((entry) => entry.unit));
+  const halted: unknown = (body.fileStore as { haltedUnits?: unknown } | null | undefined)?.haltedUnits;
+  for (const unit of units) {
+    if (skipped.has(unit)) return `${name} skipped unit ${unit}`;
+    if (Array.isArray(halted) && halted.includes(unit)) return `${name} halted file unit ${unit}`;
+    const tables = compared.get(unit);
+    if (tables === undefined) return `${name} lacks unit ${unit}`;
+    const missing = unitTables.get(unit)?.find((table) => !tables.has(table.toLowerCase()));
+    if (missing !== undefined) return `${name} lacks table ${missing} of unit ${unit}`;
+  }
+  const returning: ReadonlySet<unknown> = new Set(units);
+  const differing = entries.find((entry) => returning.has(entry.unit) && !isZeroUnit(entry));
+  return differing === undefined ? undefined : `${name} differs on unit ${String(differing.unit)}`;
 }
 
 /** A version indexed for the rules, with the context-derived key sets they share. */
@@ -547,29 +612,36 @@ function rollbackFindings(view: VersionView): Finding[] {
   const { table, ctx } = view;
   const prior = ctx.prior;
   if (prior === undefined) return [];
-  const verdicts = new Map<string, ReportVerdict>();
-  const verdictOf = (report: string): ReportVerdict => {
-    let verdict = verdicts.get(report);
-    if (verdict === undefined) {
-      verdict = reportVerdict(ctx.reconciliationDir, report);
-      verdicts.set(report, verdict);
+  const returning = new Set(
+    Object.entries(prior.groupAuthority)
+      .filter(([group, authority]) => authority === 'target' && view.authority(group) === 'legacy')
+      .map(([group]) => group),
+  );
+  const reads = new Map<string, ReportRead>();
+  // A reference is evidence only for the units of every returning group it names.
+  const faultOf = (ref: RollbackRef): string | undefined => {
+    const name = basename(ref.report);
+    let read = reads.get(name);
+    if (read === undefined) {
+      read = readReport(ctx.reconciliationDir, name);
+      reads.set(name, read);
     }
-    return verdict;
+    const units = ref.groups.filter((group) => returning.has(group)).flatMap((group) => [...(view.groupUnits.get(group) ?? [])]);
+    return evidenceFault(name, read, ctx.sourceSha, prior.tableVersion, units, view.unitTables);
   };
   const findings: Finding[] = [];
-  for (const [group, priorAuthority] of Object.entries(prior.groupAuthority)) {
-    if (priorAuthority !== 'target' || view.authority(group) !== 'legacy') continue;
+  for (const group of returning) {
     const refs = table.rollbackRefs.filter((ref) => ref.groups.includes(group));
     if (refs.length === 0) {
       findings.push({ rule: 'rollback-evidence', group, message: `returns to legacy from ${prior.tableVersion} without rollbackRefs` });
       continue;
     }
-    if (ctx.mode !== 'activation') continue;
+    if (ctx.mode === 'draft' || ctx.mode === 'load') continue;
     const reasons: string[] = [];
     for (const ref of refs) {
-      const verdict = verdictOf(ref.report);
-      if (verdict.ok) break;
-      reasons.push(verdict.reason);
+      const fault = faultOf(ref);
+      if (fault === undefined) break;
+      reasons.push(fault);
     }
     if (reasons.length === refs.length) findings.push({ rule: 'rollback-evidence', group, message: reasons.join('; ') });
   }

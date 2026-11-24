@@ -12,7 +12,7 @@ import type { InflightClearInput, InflightStore } from '../../src/cutover/inflig
 import { registerCutoverRoutes } from '../../src/cutover/routes.js';
 import { ActivationRejected, CutoverConflict, type CutoverState, type CutoverStatus, type CutoverStatusV2 } from '../../src/cutover/state.js';
 import { buildTestGateway, type TestGateway } from '../helpers/app.js';
-import { committedTable, pagesOf } from '../helpers/versions.js';
+import { committedGroups, committedTable, pagesOf, rollbackReport } from '../helpers/versions.js';
 
 const ROUTE = 'admin:cusers.update{type=1}';
 const AT = '2026-06-30T12:00:00.000+00:00';
@@ -395,8 +395,9 @@ describe('registerCutoverRoutes', () => {
   });
 });
 
-/** The groups committed v0003 returns to legacy on its rollback evidence. */
+/** The groups committed v0003 returns to legacy on its rollback evidence, and their units. */
 const ROLLBACK_GROUPS = (await committedTable('v0003')).rollbackRefs.flatMap((ref) => ref.groups);
+const ROLLBACK_UNITS = (await committedGroups()).groups.filter((group) => ROLLBACK_GROUPS.includes(group.id)).flatMap((group) => group.units);
 
 describe('activation of v0003 over the whole gateway', () => {
   let gateway: TestGateway | undefined;
@@ -419,7 +420,7 @@ describe('activation of v0003 over the whole gateway', () => {
   ])('reads rollback-before.json with result %s from OPT2_REPORTS_DIR, not the committed report', async (result, status, body) => {
     reports = await mkdtemp(join(tmpdir(), 'opt2-reports-'));
     await mkdir(join(reports, 'reconciliation'));
-    await writeFile(join(reports, 'reconciliation', 'rollback-before.json'), JSON.stringify({ result }));
+    await writeFile(join(reports, 'reconciliation', 'rollback-before.json'), JSON.stringify(rollbackReport(ROLLBACK_UNITS, { result })));
     gateway = await buildTestGateway({ version: 'v0002', env: { OPT2_REPORTS_DIR: reports } });
     expect(gateway.env.OPT2_REPORTS_DIR).toBe(reports);
 

@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { SYNTHETIC_V1_PREFIXES, normaliseRouteKey, routeKeyForEntryPoint } from '@opt2/platform/legacy-compat';
 import { baseEnvSchema, optionalEnvString } from '@opt2/platform/service-kit';
-import { carryWriteEntries, createWriteClosure, legacyWriteExceptionKeys, lineDiff, type WriteClosure } from './build-groups.js';
+import { carryWriteEntries, createWriteClosure, documentDiff, legacyWriteExceptionKeys, type WriteClosure } from './build-groups.js';
 import { CutoverSchemaError, FILE_STORE_TABLE, loadVersion } from './loader.js';
 import { resolveGatewayPaths, type GatewayPaths } from './paths.js';
 import { loadValidationContext, unpreventedWriters, validateVersion, type ValidationContext } from './validate.js';
@@ -476,7 +476,7 @@ export function buildVersions(ctx: ValidationContext, fixtures: Pick<FixtureStat
     },
   ];
 
-  const base: ValidationContext = { ...ctx, mode: 'ci' };
+  const base: ValidationContext = { ...ctx, mode: 'draft' };
   delete base.prior;
   const tables: CutoverTable[] = [];
   for (const spec of specs) {
@@ -647,7 +647,7 @@ export async function main(argv: readonly string[], io: BuildVersionsIo = {}): P
       stderr(`build-versions: ${file} does not exist; run with --write`);
       continue;
     }
-    for (const line of lineDiff(committed, generated)) stdout(line);
+    for (const line of documentDiff(file, committed, table)) stdout(line);
     stderr(`build-versions: ${file} differs from the build; run with --write`);
   }
   return differs ? 1 : 0;

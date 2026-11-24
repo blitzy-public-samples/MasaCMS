@@ -18,8 +18,8 @@ import { INSTANCE_LIVENESS_SECONDS, STATUS_PAGE_SIZE, createInflightStore } from
 import { CutoverSchemaError, buildRoutingIndex, loadGroups, loadVersion } from './loader.js';
 import type { GatewayPaths } from './paths.js';
 import { collectStatus, type CutoverStatusPages } from './status-pages.js';
-import type { CutoverTable, GroupsFile, RoutingIndex, VariantsFile } from './types.js';
-import { loadValidationContext, validateVersion } from './validate.js';
+import type { CutoverTable, Finding, GroupsFile, RoutingIndex, VariantsFile } from './types.js';
+import { loadValidationContext, validateVersion, type ValidationContext } from './validate.js';
 
 /** `CutoverStatus` of the gateway contract. */
 export type CutoverStatus = components['schemas']['CutoverStatus'];
@@ -70,6 +70,32 @@ export class CutoverConflict extends Error {
   }
 }
 
+/** Findings a `CutoverVersionInvalid` message names. */
+const NAMED_FINDINGS = 3;
+
+function describeInvalid(tableVersion: string, findings: readonly CutoverFinding[]): string {
+  const named = findings
+    .slice(0, NAMED_FINDINGS)
+    .map((finding) => `${finding.rule} ${finding.route ?? finding.unit ?? finding.group ?? '-'} ${finding.message}`);
+  const rest = findings.length > NAMED_FINDINGS ? `; ${findings.length - NAMED_FINDINGS} more` : '';
+  return `cut-over version ${tableVersion} fails validation: ${named.join('; ')}${rest}`;
+}
+
+/** The active version's file is missing or fails its schema or load-time check, so nothing routes by it; renders as the legacy 503. */
+export class CutoverVersionInvalid extends LegacyServiceUnavailableError {
+  override readonly name: string = 'CutoverVersionInvalid';
+
+  constructor(
+    readonly tableVersion: string,
+    readonly findings: CutoverFinding[],
+  ) {
+    super(describeInvalid(tableVersion, findings), 'auto', 'invalid-cutover-version');
+  }
+}
+
+/** Load-time rule check of a version against its stored previous version, if readable; resolves to its findings. */
+export type VersionCheck = (table: CutoverTable, prior: CutoverTable | undefined) => Promise<Finding[]>;
+
 /** Logger methods the state uses; Fastify's `app.log` satisfies it. */
 export interface CutoverStateLogger {
   info(obj: object, msg: string): void;
@@ -89,9 +115,14 @@ export interface CutoverStateOptions {
   variants: VariantsFile;
   /** Generated groups; read from `groups.json` when absent. */
   groups?: GroupsFile;
+  /** Check of each version before it is routed by; `validateVersion` in `load` mode when absent. */
+  checkVersion?: VersionCheck;
 }
 
-/** The active cut-over version of one gateway instance, and the operations that change it. */
+/**
+ * The active cut-over version of one gateway instance, and the operations that change it. An active version failing its load-time
+ * check (stored `previous`, every rule, rollback references) is refused with `CutoverVersionInvalid`.
+ */
 export interface CutoverState {
   /** Applies the stored state once and prunes long-dead instances, then refreshes and heartbeats, untraced, every second until `stop`. */
   start(): Promise<void>;
@@ -101,7 +132,7 @@ export interface CutoverState {
   active(): RoutingIndex | undefined;
   /** Epoch of the cached state. */
   epoch(): number;
-  /** Reads the stored epoch before a write is routed; throws `LegacyServiceUnavailableError` while no version is active. */
+  /** Reads the stored epoch before a write is routed; throws `LegacyServiceUnavailableError` while no valid version is active. */
   readEpochForWrite(): Promise<{ epoch: number; index: RoutingIndex }>;
   /** Whether the route key is frozen in the cached state; true while that state is stale, as for `active`. */
   isFrozen(route: string): boolean;
@@ -220,6 +251,15 @@ function isMissingFile(error: unknown): boolean {
   return (error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT';
 }
 
+/** Finding naming only the version for a version file that is missing or fails its schema; undefined for any other error. */
+function unreadableVersion(tableVersion: string, error: unknown): CutoverFinding | undefined {
+  if (isMissingFile(error)) return { rule: 'unknown-version', message: `no version file ${tableVersion}.json` };
+  if (error instanceof CutoverSchemaError) {
+    return { rule: 'schema', message: `${tableVersion}.json does not match its cut-over schema: ${error.detail}` };
+  }
+  return undefined;
+}
+
 /** Caches one promise per key and forgets it when it rejects, so a failed read is retried. */
 function cached<T>(cache: Map<string, Promise<T>>, key: string, load: () => Promise<T>): Promise<T> {
   let value = cache.get(key);
@@ -258,9 +298,68 @@ export function createCutoverState(opts: CutoverStateOptions): CutoverState {
 
   const groupsFor = (): Promise<GroupsFile> => cached(groupsFiles, paths.groupsFile, () => loadGroups(paths));
 
-  const indexFor = (tableVersion: string): Promise<RoutingIndex> =>
-    cached(indexes, tableVersion, async () => {
-      const [table, groups] = await Promise.all([tableFor(tableVersion), groupsFor()]);
+  // Validation inputs are immutable, so their context is read once; `load` mode checks rollback references only.
+  const contexts = new Map<string, Promise<ValidationContext>>();
+  const checkVersion: VersionCheck =
+    opts.checkVersion ??
+    (async (table, prior) => {
+      const ctx = await cached(contexts, paths.cutoverDir, () => loadValidationContext(paths, 'load'));
+      return validateVersion(table, prior === undefined ? ctx : { ...ctx, prior });
+    });
+  // Versions this instance's activation validated, and the messages of refusals already logged.
+  const activated = new Set<string>();
+  const reported = new Set<string>();
+
+  const versionFile = (tableVersion: string): string => join(paths.versionsDir, `${tableVersion}.json`);
+
+  /** `error`, logged the first time this instance meets its message; `file` is logged beside it, never put in it. */
+  const refusal = (error: CutoverVersionInvalid, file?: string): CutoverVersionInvalid => {
+    if (!reported.has(error.message)) {
+      reported.add(error.message);
+      const located = file === undefined ? '' : ` file=${file}`;
+      logger.error({}, `cut-over version refused for routing: instance=${instanceId} ${error.message}${located}`);
+    }
+    return error;
+  };
+
+  /** The version `previous` names; undefined for none, or a missing or schema-invalid file, which the check reports as unavailable. */
+  const priorOf = async (previous: string | null): Promise<CutoverTable | undefined> => {
+    if (previous === null) return undefined;
+    try {
+      return await tableFor(previous);
+    } catch (error) {
+      if (isMissingFile(error) || error instanceof CutoverSchemaError) return undefined;
+      throw error;
+    }
+  };
+
+  /** Rejects with `CutoverVersionInvalid` when `table`'s `previous` is not the stored `previous` or it fails its load-time check. */
+  const assertRoutable = async (table: CutoverTable, previous: string | null): Promise<void> => {
+    if (table.previous !== previous) {
+      const message = `previous ${table.previous ?? 'null'} is not the stored previous version ${previous ?? 'null'}`;
+      throw refusal(new CutoverVersionInvalid(table.tableVersion, [{ rule: 'previous-chain', message }]));
+    }
+    if (activated.has(table.tableVersion)) return;
+    const findings = await checkVersion(table, await priorOf(previous));
+    if (findings.length > 0) throw refusal(new CutoverVersionInvalid(table.tableVersion, findings));
+  };
+
+  /** The version to route by; a missing or schema-invalid file rejects with `CutoverVersionInvalid`, other errors as they are. */
+  const routableTable = async (tableVersion: string): Promise<CutoverTable> => {
+    try {
+      return await tableFor(tableVersion);
+    } catch (error) {
+      const finding = unreadableVersion(tableVersion, error);
+      if (finding === undefined) throw error;
+      throw refusal(new CutoverVersionInvalid(tableVersion, [finding]), versionFile(tableVersion));
+    }
+  };
+
+  /** Routing index of a stored `table_version`, bound to the stored `previous_version`; cached per pair. */
+  const indexFor = (tableVersion: string, previous: string | null): Promise<RoutingIndex> =>
+    cached(indexes, `${tableVersion} ${previous ?? 'null'}`, async () => {
+      const [table, groups] = await Promise.all([routableTable(tableVersion), groupsFor()]);
+      await assertRoutable(table, previous);
       return buildRoutingIndex(table, variants, groups);
     });
 
@@ -296,7 +395,7 @@ export function createCutoverState(opts: CutoverStateOptions): CutoverState {
         const epoch = Number(row.epoch);
         if (!snapshot.loaded || epoch > snapshot.epoch) {
           const { rows } = await tx.query<{ route: string }>(`SELECT route FROM ${freezeTable}`);
-          const index = row.table_version === null ? undefined : await indexFor(row.table_version);
+          const index = row.table_version === null ? undefined : await indexFor(row.table_version, row.previous_version);
           // A slower concurrent refresh never replaces a newer snapshot, so a seen freeze cannot be lost again.
           if (!snapshot.loaded || epoch > snapshot.epoch) {
             snapshot = { loaded: true, epoch, index, frozen: new Set(rows.map((frozen) => frozen.route)) };
@@ -391,16 +490,11 @@ export function createCutoverState(opts: CutoverStateOptions): CutoverState {
     try {
       return await tableFor(tableVersion);
     } catch (error) {
-      const refused = `cut-over activation refused: tableVersion=${tableVersion} instance=${instanceId}`;
-      if (isMissingFile(error)) {
-        logger.info({}, `${refused} rule=unknown-version file=${join(paths.versionsDir, `${tableVersion}.json`)}`);
-        throw new ActivationRejected([{ rule: 'unknown-version', message: `no version file ${tableVersion}.json` }]);
-      }
-      if (error instanceof CutoverSchemaError) {
-        logger.info({}, `${refused} rule=schema error=${error.message}`);
-        throw new ActivationRejected([{ rule: 'schema', message: `${tableVersion}.json does not match its cut-over schema: ${error.detail}` }]);
-      }
-      throw error;
+      const finding = unreadableVersion(tableVersion, error);
+      if (finding === undefined) throw error;
+      const cause = error instanceof CutoverSchemaError ? `error=${error.message}` : `file=${versionFile(tableVersion)}`;
+      logger.info({}, `cut-over activation refused: tableVersion=${tableVersion} instance=${instanceId} rule=${finding.rule} ${cause}`);
+      throw new ActivationRejected([finding]);
     }
   };
 
@@ -448,7 +542,7 @@ export function createCutoverState(opts: CutoverStateOptions): CutoverState {
           )
         ).rows[0]?.acknowledged_epoch ?? null,
     }));
-    const index = row.table_version === null ? undefined : await indexFor(row.table_version);
+    const index = row.table_version === null ? undefined : await indexFor(row.table_version, row.previous_version);
     return {
       head: {
         tableVersion: row.table_version,
@@ -475,7 +569,7 @@ export function createCutoverState(opts: CutoverStateOptions): CutoverState {
       );
       const row = rows[0];
       if (row === undefined) throw new Error(`${stateTable} holds no row; apply gateway/db/migrations first`);
-      const index = row.table_version === null ? undefined : await indexFor(row.table_version);
+      const index = row.table_version === null ? undefined : await indexFor(row.table_version, row.previous_version);
       // A route frozen under an earlier version stays unfreezable after that version is replaced.
       const frozen =
         op === 'unfreeze'
@@ -573,10 +667,12 @@ export function createCutoverState(opts: CutoverStateOptions): CutoverState {
           },
         ]);
       }
-      const prior = active === null ? undefined : await tableFor(active);
+      // `previous` is the active version here; an unreadable one leaves no prior, which the validator refuses as previous-chain.
+      const prior = await priorOf(active);
       const ctx = await loadValidationContext(paths, 'activation', prior === undefined ? {} : { prior });
       const findings = validateVersion(table, ctx);
       if (findings.length > 0) throw new ActivationRejected(findings);
+      activated.add(tableVersion);
       const { rows } = await withMetadata(db, (tx) =>
         tx.query<{ epoch: string }>(
           `UPDATE ${stateTable} SET table_version = $1, previous_version = $2, epoch = epoch + 1, activated_at = now(), activated_by = $3 ` +

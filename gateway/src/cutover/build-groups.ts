@@ -337,6 +337,21 @@ export function lineDiff(committed: string, generated: string): string[] {
   return lines;
 }
 
+/** Check-mode lines for a committed file whose bytes differ from `built`: a diff of both pretty-printed, or why none applies. */
+export function documentDiff(file: string, committed: string, built: unknown): string[] {
+  let value: unknown;
+  try {
+    value = JSON.parse(committed);
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) throw error;
+    return [`${file} is not valid JSON: ${error.message}`];
+  }
+  const before = JSON.stringify(value, null, 2);
+  const after = JSON.stringify(built, null, 2);
+  if (before === after) return [`${file} holds the built document but not in its compact serialisation`];
+  return [`--- ${file} (pretty-printed)`, '+++ build (pretty-printed)', ...lineDiff(before, after)];
+}
+
 async function readIfPresent(file: string): Promise<string | undefined> {
   try {
     return await readFile(file, 'utf8');
@@ -373,7 +388,8 @@ export async function main(argv: readonly string[], io: BuildGroupsIo = {}): Pro
     stderr(`build-groups: ${error.message}`);
     return 1;
   }
-  const generated = serialiseGroups(buildGroups(input));
+  const built = buildGroups(input);
+  const generated = serialiseGroups(built);
   if (argv.includes('--write')) {
     await writeFile(paths.groupsFile, generated);
     stdout(`build-groups: wrote ${paths.groupsFile}`);
@@ -384,12 +400,12 @@ export async function main(argv: readonly string[], io: BuildGroupsIo = {}): Pro
     stdout(`build-groups: ${paths.groupsFile} is up to date`);
     return 0;
   }
-  for (const line of lineDiff(committed ?? '', generated)) stdout(line);
-  stderr(
-    committed === undefined
-      ? `build-groups: ${paths.groupsFile} does not exist; run with --write`
-      : `build-groups: ${paths.groupsFile} differs from the build; run with --write`,
-  );
+  if (committed === undefined) {
+    stderr(`build-groups: ${paths.groupsFile} does not exist; run with --write`);
+    return 1;
+  }
+  for (const line of documentDiff(paths.groupsFile, committed, built)) stdout(line);
+  stderr(`build-groups: ${paths.groupsFile} differs from the build; run with --write`);
   return 1;
 }
 

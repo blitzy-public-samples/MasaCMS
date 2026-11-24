@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs';
+import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { copyFile, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -29,7 +29,9 @@ import {
   validateVersion,
   type DecisionListInput,
   type ValidationContext,
+  type ValidationMode,
 } from '../../src/cutover/validate.js';
+import { rollbackReport } from '../helpers/versions.js';
 
 const SHA = '696383140578f8dea3ece26f80cd7bfb370ddf0f';
 const SRC = { path: 'core/mura/user/userDAO.cfc', lines: [1, 1] as const };
@@ -300,6 +302,11 @@ const exceptions: ExceptionsDoc = {
   ],
 };
 
+/** Reconciliation directory holding valid rollback evidence for the fixture group returning in V3. */
+const EVIDENCE_DIR = mkdtempSync(join(tmpdir(), 'opt2-validate-'));
+scratch.push(EVIDENCE_DIR);
+writeFileSync(join(EVIDENCE_DIR, 'rollback-before.json'), JSON.stringify(rollbackReport(['people.person'])));
+
 function context(fields: Partial<ValidationContext> = {}): ValidationContext {
   const inv = fields.inventory ?? inventory();
   return {
@@ -312,7 +319,7 @@ function context(fields: Partial<ValidationContext> = {}): ValidationContext {
     exceptions,
     ownership,
     sourceSha: SHA,
-    reconciliationDir: committed.reconciliationDir,
+    reconciliationDir: EVIDENCE_DIR,
     ...fields,
   };
 }
@@ -757,47 +764,153 @@ describe('validateVersion', () => {
     expect(rulesOf(patch(V1, LIST, { route: ' Admin:cUsers.List ' }), context())).toEqual([]);
   });
 
-  describe('activation mode', () => {
-    const activation = (reconciliationDir: string): ValidationContext =>
-      context({ mode: 'activation', prior: V2, reconciliationDir });
-
-    it('fails while the rollback report is pending', async () => {
+  describe('rollback evidence', () => {
+    const UNITS = ['people.person'];
+    const MODES = ['ci', 'activation'] as const;
+    const ZERO_SHA = '0'.repeat(40);
+    const at = (name: string): string => `opt2/reports/reconciliation/${name}`;
+    const report = (fields: Record<string, unknown> = {}, units: readonly string[] = UNITS): string => JSON.stringify(rollbackReport(units, fields));
+    const unitEntry = (fields: Record<string, unknown>): Record<string, unknown> => ({
+      ...(rollbackReport(UNITS).units as Record<string, unknown>[])[0],
+      ...fields,
+    });
+    const finished = (mode: ValidationMode, reconciliationDir: string): ValidationContext => context({ mode, prior: V2, reconciliationDir });
+    /** Each case once per mode that validates finished versions. */
+    const perMode = <T extends unknown[]>(cases: T[]): [ValidationMode, ...T][] => MODES.flatMap((mode) => cases.map((c): [ValidationMode, ...T] => [mode, ...c]));
+    /** A reconciliation directory holding each named file. */
+    const evidence = async (files: Record<string, string>): Promise<string> => {
       const dir = await tempDir();
-      await writeFile(join(dir, 'rollback-before.json'), JSON.stringify({ status: 'pending-run', result: 'pending-run' }));
-      const findings = validateVersion(V3, activation(dir));
-      expect(findings).toHaveLength(1);
-      expect(findings[0]).toMatchObject({ rule: 'rollback-evidence', group: G_PERSON });
-      expect(findings[0]?.message).toBe('rollback-before.json has result pending-run');
+      await Promise.all(Object.entries(files).map(([name, content]) => writeFile(join(dir, name), content)));
+      return dir;
+    };
+    const SEVERAL = { ...V3, rollbackRefs: [{ ...ROLLBACK_REF, report: at('post-cutover.json') }, ROLLBACK_REF] };
+    /** An object-manifest comparison of a file unit, equal unless `fields` say otherwise. */
+    const manifest = (fields: Record<string, unknown> = {}): Record<string, unknown> => ({
+      legacyObjects: 2,
+      targetObjects: 2,
+      differences: [],
+      differenceCount: 0,
+      ...fields,
+    });
+    /** The fixture ownership with a second legacy table for the returning unit. */
+    const TWO_TABLES: Partial<ValidationContext> = {
+      ownership: { ...ownership, units: ownership.units.map((u) => (u.unit === UNITS[0] ? { ...u, legacyTables: ['tusers', 'tusersmemb'] } : u)) },
+    };
+
+    it.each<[ValidationMode, CutoverTable, string[]]>([
+      ['draft', V3, []],
+      ['draft', { ...V3, rollbackRefs: [] }, ['rollback-evidence']],
+      ['ci', V3, ['rollback-evidence']],
+      ['activation', V3, ['rollback-evidence']],
+    ])('in %s mode checks the rollback reference, and its report unless drafting', async (mode, t, expected) => {
+      expect(rulesOf(t, finished(mode, await tempDir()))).toEqual(expected);
     });
 
-    it('passes with a zero-difference report', async () => {
-      const dir = await tempDir();
-      await writeFile(join(dir, 'rollback-before.json'), JSON.stringify({ result: 'zero-difference' }));
-      expect(validateVersion(V3, activation(dir))).toEqual([]);
+    it.each<[string, CutoverTable, string[]]>([
+      ['accepts a reference', V3, []],
+      ['rejects a returning group without a reference', { ...V3, rollbackRefs: [] }, ['rollback-evidence']],
+    ])('in load mode %s whatever report a later reconcile wrote', async (_label, t, expected) => {
+      const dir = await evidence({ 'rollback-before.json': report({ tableVersion: 'v0003', tableVersionMatches: false }) });
+      expect(rulesOf(t, finished('load', dir))).toEqual(expected);
+      expect(rulesOf(t, finished('ci', dir))).toEqual(['rollback-evidence']);
     });
 
-    it('passes when one of several references has zero difference', async () => {
-      const dir = await tempDir();
-      await writeFile(join(dir, 'rollback-before.json'), JSON.stringify({ result: 'difference' }));
-      await writeFile(join(dir, 'rollback-extra.json'), JSON.stringify({ result: 'zero-difference' }));
-      const t = { ...V3, rollbackRefs: [ROLLBACK_REF, { ...ROLLBACK_REF, report: 'opt2/reports/reconciliation/rollback-extra.json' }] };
-      expect(validateVersion(t, activation(dir))).toEqual([]);
+    it.each(
+      perMode<[string, CutoverTable, Record<string, string>]>([
+        ['a zero-difference report', V3, { 'rollback-before.json': report() }],
+        ['a report comparing the unit empty', V3, { 'rollback-before.json': report({ emptyUnits: [{ unit: UNITS[0], legacyTable: 'tusers' }] }, []) }],
+        ['one valid reference of several', SEVERAL, { 'post-cutover.json': report({ point: 'post-cutover' }), 'rollback-before.json': report() }],
+        ['a report naming the table in another case', V3, { 'rollback-before.json': report({ units: [unitEntry({ legacyTable: 'TUsers' })] }) }],
+        ['a report with an equal object manifest', V3, { 'rollback-before.json': report({ units: [unitEntry({ files: manifest() })] }) }],
+      ]),
+    )('accepts in %s mode %s', async (mode, _label, t, files) => {
+      expect(validateVersion(t, finished(mode, await evidence(files)))).toEqual([]);
     });
 
-    it.each([
-      ['missing', undefined, /^rollback-before\.json is unreadable: ENOENT$/],
-      ['not JSON', '{', /^rollback-before\.json is unreadable: .*JSON/],
-    ] as const)('fails when the report is %s, naming it without its directory', async (_label, content, expected) => {
-      const dir = await tempDir();
-      if (content !== undefined) await writeFile(join(dir, 'rollback-before.json'), content);
-      const findings = validateVersion(V3, activation(dir));
-      expect(findings.map((f) => f.rule)).toEqual(['rollback-evidence']);
-      expect(findings[0]?.message).toMatch(expected);
+    const differing = (what: string, fields: Record<string, unknown>): [string, string, string, string] => [
+      `whose unit entry has ${what}`,
+      'rollback-before.json',
+      report({ units: [unitEntry(fields)] }),
+      'rollback-before.json differs on unit people.person',
+    ];
+    it.each(
+      perMode<[string, string, string | undefined, string | RegExp, Partial<ValidationContext>?]>([
+        ['that is missing', 'rollback-before.json', undefined, 'rollback-before.json is unreadable: ENOENT'],
+        ['that is not JSON', 'rollback-before.json', '{', /^rollback-before\.json is unreadable: .*JSON/],
+        ['that is not a JSON object', 'rollback-before.json', '[]', 'rollback-before.json is unreadable: not a JSON object'],
+        ['still pending', 'rollback-before.json', JSON.stringify({ status: 'pending-run', result: 'pending-run' }), 'rollback-before.json has result pending-run'],
+        ['with differences', 'rollback-before.json', report({ result: 'difference' }), 'rollback-before.json has result difference'],
+        ['of another commit', 'rollback-before.json', report({ sourceSha: ZERO_SHA }), `rollback-before.json records sourceSha ${ZERO_SHA}, not the pinned ${SHA}`],
+        ['of another point', 'rollback-before.json', report({ point: 'after-backfill' }), 'rollback-before.json is point after-backfill, not rollback-before'],
+        ['filed under another point', 'post-cutover.json', report(), 'post-cutover.json is not named after its point rollback-before'],
+        [
+          'taken at another version',
+          'rollback-before.json',
+          report({ expectedTableVersion: 'v0001', tableVersion: 'v0001' }),
+          'rollback-before.json was taken at v0001, not v0002',
+        ],
+        ['expecting another version', 'rollback-before.json', report({ expectedTableVersion: 'v0001' }), 'rollback-before.json expected v0001, not v0002'],
+        ['off its expected version', 'rollback-before.json', report({ tableVersionMatches: false }), 'rollback-before.json records tableVersionMatches false'],
+        ['without the returning unit', 'rollback-before.json', report({}, []), 'rollback-before.json lacks unit people.person'],
+        [
+          'comparing the returning unit empty for another table only',
+          'rollback-before.json',
+          report({ emptyUnits: [{ unit: UNITS[0], legacyTable: 'tother' }] }, []),
+          'rollback-before.json lacks table tusers of unit people.person',
+        ],
+        [
+          "without the returning unit's second table",
+          'rollback-before.json',
+          report(),
+          'rollback-before.json lacks table tusersmemb of unit people.person',
+          TWO_TABLES,
+        ],
+        [
+          'that skipped the returning unit',
+          'rollback-before.json',
+          report({ skippedUnits: [{ unit: UNITS[0], legacyTable: 'tusers', reason: 'table absent' }] }, []),
+          'rollback-before.json skipped unit people.person',
+        ],
+        [
+          'that halted the returning file unit',
+          'rollback-before.json',
+          report({ fileStore: { store: 's3', status: 'halted', reason: 'unsupported store', haltedUnits: UNITS } }, []),
+          'rollback-before.json halted file unit people.person',
+        ],
+        differing('a difference', { differenceCount: 1 }),
+        differing('unequal counts', { targetCount: 2 }),
+        differing('unequal checksums', { targetSha256: 'f'.repeat(64) }),
+        differing('an uncompared status', { status: 'skipped' }),
+        differing('an object manifest difference', { files: manifest({ differenceCount: 1 }) }),
+        differing('unequal object counts', { files: manifest({ targetObjects: 1 }) }),
+        differing('no files field', { files: undefined }),
+      ]),
+    )('rejects in %s mode a report %s, naming it without its directory', async (mode, _label, name, content, message, fields = {}) => {
+      const dir = await evidence(content === undefined ? {} : { [name]: content });
+      const findings = validateVersion({ ...V3, rollbackRefs: [{ ...ROLLBACK_REF, report: at(name) }] }, { ...finished(mode, dir), ...fields });
+      expect(findings).toEqual([
+        { rule: 'rollback-evidence', group: G_PERSON, message: typeof message === 'string' ? message : expect.stringMatching(message) },
+      ]);
       expect(findings[0]?.message).not.toContain(dir);
     });
 
-    it('needs only the reference in ci mode', async () => {
-      expect(validateVersion(V3, context({ prior: V2, reconciliationDir: await tempDir() }))).toEqual([]);
+    it.each(MODES)('holds the report in %s mode to every unit of the returning group', async (mode) => {
+      const wider = groups.groups.map((g) => (g.id === G_PERSON ? { ...g, units: [...UNITS, 'people.person_archive'] } : g));
+      const ctx = { ...finished(mode, await evidence({ 'rollback-before.json': report() })), groups: { ...groups, groups: wider } };
+      expect(validateVersion(V3, ctx)).toEqual([
+        { rule: 'rollback-evidence', group: G_PERSON, message: 'rollback-before.json lacks unit people.person_archive' },
+      ]);
+    });
+
+    it('joins the reason of every failing reference', async () => {
+      const dir = await evidence({ 'post-cutover.json': report({ point: 'post-cutover' }), 'rollback-before.json': report({ result: 'difference' }) });
+      expect(validateVersion(SEVERAL, finished('ci', dir))).toEqual([
+        {
+          rule: 'rollback-evidence',
+          group: G_PERSON,
+          message: 'post-cutover.json is point post-cutover, not rollback-before; rollback-before.json has result difference',
+        },
+      ]);
     });
   });
 });
@@ -867,7 +980,7 @@ describe('loadValidationContext', () => {
 
 // ---- CLI ----
 
-async function fixturePaths(versions: CutoverTable[] = [V1, V2, V3]): Promise<GatewayPaths> {
+async function fixturePaths(versions: CutoverTable[] = [V1, V2, V3], report: unknown = rollbackReport(['people.person'])): Promise<GatewayPaths> {
   const root = await tempDir();
   const cutoverDir = join(root, 'cutover');
   const opt2 = join(root, 'opt2');
@@ -905,7 +1018,7 @@ async function fixturePaths(versions: CutoverTable[] = [V1, V2, V3]): Promise<Ga
       confirmedAt: '2026-06-01T00:00:00Z',
       confirmCommand: 'cd harness && npx tsx src/reporting/check-pin.ts --confirm',
     }),
-    json(join(reconciliationDir, 'rollback-before.json'), { result: 'pending-run' }),
+    json(join(reconciliationDir, 'rollback-before.json'), report),
     ...versions.map((t) => json(join(paths.versionsDir, `${t.tableVersion}.json`), t)),
   ]);
   return paths;
@@ -920,7 +1033,7 @@ async function run(argv: string[], paths?: GatewayPaths): Promise<{ code: number
 }
 
 describe('main', () => {
-  it.each([[['--ci']], [[]]])('validates the whole chain with %j', async (argv) => {
+  it.each([[['--ci']], [[]], [['--activation']], [['--activation', '--ci']]])('validates the whole chain with %j', async (argv) => {
     expect(await run(argv, await fixturePaths())).toEqual({ code: 0, out: ['ok v0001', 'ok v0002', 'ok v0003'], err: [] });
   });
 
@@ -928,15 +1041,10 @@ describe('main', () => {
     expect(await run(['--version', 'v0002'], await fixturePaths())).toEqual({ code: 0, out: ['ok v0002'], err: [] });
   });
 
-  it.each([[['--activation']], [['--ci', '--activation']]])('reads the reconciliation report with %j', async (argv) => {
-    const result = await run(argv, await fixturePaths());
+  it.each([[['--ci']], [[]], [['--activation']], [['--ci', '--activation']]])('reads the reconciliation report with %j', async (argv) => {
+    const result = await run(argv, await fixturePaths(undefined, { status: 'pending-run', result: 'pending-run' }));
     expect(result.code).toBe(1);
-    expect(result.out.slice(0, 2)).toEqual(['ok v0001', 'ok v0002']);
-    expect(result.out[2]).toMatch(/^v0003 rollback-evidence grp:people\.person .*has result pending-run$/);
-  });
-
-  it('lets the last mode flag win', async () => {
-    expect((await run(['--activation', '--ci'], await fixturePaths())).code).toBe(0);
+    expect(result.out).toEqual(['ok v0001', 'ok v0002', 'v0003 rollback-evidence grp:people.person rollback-before.json has result pending-run']);
   });
 
   it('prints one line per finding', async () => {
@@ -957,13 +1065,20 @@ describe('main', () => {
     expect(result.out).toEqual(['ok v0001', 'v0002 previous-chain - previous is null although v0001 precedes v0002']);
   });
 
-  it('reports a version that fails its schema', async () => {
+  it.each([
+    { label: 'fails its schema', text: '{"tableVersion":"v0002"}', line: /^v0002 schema - .*v0002\.json does not match its cut-over schema/ },
+    {
+      label: 'names another version in its tableVersion',
+      text: JSON.stringify(V1),
+      line: /^v0002 schema - .*v0002\.json does not match its cut-over schema: \/tableVersion must equal the file name v0002$/,
+    },
+  ])('reports a version that $label', async ({ text, line }) => {
     const paths = await fixturePaths([V1]);
-    await writeFile(join(paths.versionsDir, 'v0002.json'), '{"tableVersion":"v0002"}');
+    await writeFile(join(paths.versionsDir, 'v0002.json'), text);
     const result = await run([], paths);
     expect(result.code).toBe(1);
     expect(result.out[0]).toBe('ok v0001');
-    expect(result.out[1]).toMatch(/^v0002 schema - .*v0002\.json does not match its cut-over schema/);
+    expect(result.out[1]).toMatch(line);
   });
 
   it('reports a previous whose file fails its schema', async () => {

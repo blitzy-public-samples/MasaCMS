@@ -14,7 +14,7 @@ import { startLegacyOrigin, type LegacyOrigin, type LegacyOriginOptions } from '
 import { createMemoryGatewayDb, type MemoryGatewayDb, type MemoryGatewaySeed } from './memory-store.js';
 import { startMigrationDouble, type MigrationDouble, type MigrationDoubleOptions } from './migration-double.js';
 import { startTargetDouble, type TargetDouble, type TargetDoubleOptions } from './target-double.js';
-import { committedTable, writeCutoverDir, type CommittedVersion } from './versions.js';
+import { acceptEveryVersion, committedTable, writeCutoverDir, type CommittedVersion } from './versions.js';
 
 /** Site user tokens are minted for unless a suite names another. */
 const DEFAULT_SITE = 'default';
@@ -270,6 +270,8 @@ export async function buildTestGateway(opts: TestGatewayOptions = {}): Promise<T
       identityClient,
       migrationClient: opts.migrationClient,
       bridgeClient: opts.bridgeClient,
+      // Fixture tables pass no inventory rule, so only committed versions keep the real load-time check.
+      checkVersion: tempCutoverDir === undefined ? undefined : acceptEveryVersion,
     });
     // app.close() leaves the service client's agent open, so it is closed after the app.
     resources.push(() => app.opt2.client.close());

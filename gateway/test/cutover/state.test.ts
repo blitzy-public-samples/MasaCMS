@@ -1,6 +1,6 @@
 /** Cut-over state against a throwaway `gateway` schema: activation chain and validation, epoch CAS, freezes, visibility and status. */
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { connect, createServer, type AddressInfo, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -29,14 +29,17 @@ import {
   fixedClock,
   pgAvailable,
   testPgConfig,
+  testVerifier,
   type ThrowawaySchema,
 } from '@opt2/platform/testing';
+import { buildApp } from '../../src/app.js';
 import { INSTANCE_LIVENESS_SECONDS, STATUS_PAGE_SIZE, createInflightStore } from '../../src/cutover/inflight.js';
 import { loadGroups, loadVariants } from '../../src/cutover/loader.js';
 import { resolveGatewayPaths, type GatewayPaths } from '../../src/cutover/paths.js';
 import {
   ActivationRejected,
   CutoverConflict,
+  CutoverVersionInvalid,
   INSTANCE_RETENTION_SECONDS,
   REFRESH_INTERVAL_MS,
   SNAPSHOT_MAX_AGE_MS,
@@ -44,9 +47,13 @@ import {
   type CutoverState,
   type CutoverStateLogger,
   type CutoverStatus,
+  type VersionCheck,
 } from '../../src/cutover/state.js';
 import { collectStatus, statusJson } from '../../src/cutover/status-pages.js';
 import type { GroupsFile, VariantsFile } from '../../src/cutover/types.js';
+import { main as validateMain } from '../../src/cutover/validate.js';
+import { prepareTestStateDir, testEnv } from '../helpers/env.js';
+import { acceptEveryVersion, committedTable, cutoverTable, rollbackReport, writeCutoverDir } from '../helpers/versions.js';
 
 const FROZEN_ROUTE = 'admin:cperm.update';
 const OPERATOR = 'service:operator';
@@ -65,7 +72,14 @@ describe.skipIf(!available)('cut-over state against PostgreSQL', () => {
 
   const makeState = (
     instanceId: string,
-    overrides: { clock?: Clock; db?: TenantDb; logger?: CutoverStateLogger; paths?: GatewayPaths; groups?: GroupsFile } = {},
+    overrides: {
+      clock?: Clock;
+      db?: TenantDb;
+      logger?: CutoverStateLogger;
+      paths?: GatewayPaths;
+      groups?: GroupsFile;
+      checkVersion?: VersionCheck;
+    } = {},
   ): CutoverState => {
     const state = createCutoverState({
       db: overrides.db ?? handle.app,
@@ -75,6 +89,7 @@ describe.skipIf(!available)('cut-over state against PostgreSQL', () => {
       logger: overrides.logger ?? silent,
       variants,
       groups: 'groups' in overrides ? overrides.groups : groups,
+      checkVersion: overrides.checkVersion,
     });
     started.push(state);
     return state;
@@ -833,6 +848,332 @@ describe.skipIf(!available)('cut-over state against PostgreSQL', () => {
       if (holding) held.release();
       await db.end();
     }
+  });
+
+  describe('load-time validation', () => {
+    // A withheld legacy-write variant of the people roster.
+    const TAMPERED_ROUTE = 'admin:cusers.update{type=2,action=delete}';
+    const REFUSED = 'cut-over version refused for routing: instance=gw-a cut-over version v0003 fails validation: ';
+    const dirs: string[] = [];
+    let tamperedEnv: { OPT2_CUTOVER_DIR: string; OPT2_REPORTS_DIR: string };
+    let tamperedPaths: GatewayPaths;
+    let orphanPaths: GatewayPaths;
+    // Directories whose v0003.json claims another place in the chain than the stored row gives it.
+    const forgedPaths = new Map<string, GatewayPaths>();
+    // The groups committed v0003 returns to legacy, in v0002's order, and their units.
+    let returning: string[];
+    let returningUnits: string[];
+
+    beforeAll(async () => {
+      const [v0001, v0002, v0003] = await Promise.all([committedTable('v0001'), committedTable('v0002'), committedTable('v0003')]);
+      const forgeries = { 'previous null': { previous: null }, 'previous v0001': { previous: 'v0001' }, 'tableVersion v0001': { tableVersion: 'v0001' } };
+      for (const [label, fields] of Object.entries(forgeries)) {
+        const dir = await writeCutoverDir(v0001, { groups, extraTables: [v0002] });
+        dirs.push(dir);
+        const forged = resolveGatewayPaths({ OPT2_CUTOVER_DIR: dir });
+        await writeFile(join(forged.versionsDir, 'v0003.json'), JSON.stringify({ ...v0003, ...fields }));
+        forgedPaths.set(label, forged);
+      }
+      const tampered = {
+        ...v0003,
+        entries: v0003.entries.map((item) => (item.route === TAMPERED_ROUTE ? { ...item, state: 'target' as const } : item)),
+      };
+      // v0003's routing as a successor of the tampered version, returning no group.
+      const successor = cutoverTable({
+        tableVersion: 'v0004',
+        previous: 'v0003',
+        groupAuthority: v0003.groupAuthority,
+        createdAt: v0003.createdAt,
+        entries: v0003.entries,
+      });
+      const cutoverDir = await writeCutoverDir(v0001, { groups, extraTables: [v0002, tampered, successor] });
+      const orphanDir = await writeCutoverDir(v0002, { groups });
+      const reportsDir = await mkdtemp(join(tmpdir(), 'state-test-'));
+      dirs.push(cutoverDir, orphanDir, reportsDir);
+      orphanPaths = resolveGatewayPaths({ OPT2_CUTOVER_DIR: orphanDir });
+      returning = Object.keys(v0002.groupAuthority).filter(
+        (id) => v0002.groupAuthority[id] === 'target' && v0003.groupAuthority[id] === 'legacy',
+      );
+      returningUnits = groups.groups.filter((group) => returning.includes(group.id)).flatMap((group) => group.units);
+      await mkdir(join(reportsDir, 'reconciliation'));
+      await writeFile(join(reportsDir, 'reconciliation', 'rollback-before.json'), JSON.stringify(rollbackReport(returningUnits)));
+      tamperedEnv = { OPT2_CUTOVER_DIR: cutoverDir, OPT2_REPORTS_DIR: reportsDir };
+      tamperedPaths = resolveGatewayPaths(tamperedEnv);
+    });
+
+    afterAll(async () => {
+      await Promise.all(dirs.map((dir) => rm(dir, { recursive: true, force: true })));
+    });
+
+    it.each([
+      ['v0001', null, 1],
+      ['v0002', 'v0001', 2],
+      ['v0003', 'v0002', 3],
+    ] as const)('starts on committed %s through the rule check and routes by it', async (tableVersion, previous, epoch) => {
+      await setActive(tableVersion, previous, epoch);
+      const state = makeState('gw-a');
+
+      await state.start();
+
+      expect(state.active()?.table.tableVersion).toBe(tableVersion);
+      expect(state.active()?.entryFor(FROZEN_ROUTE)).toBeDefined();
+      expect((await state.readEpochForWrite()).index.table.tableVersion).toBe(tableVersion);
+    });
+
+    it.each<{
+      label: string;
+      active: readonly [string, string, number];
+      dir: () => GatewayPaths;
+      findings: object[];
+      detail: string;
+      /** The unreadable version file a refusal's log line names. */
+      file?: string;
+      check?: VersionCheck;
+    }>([
+      {
+        label: 'a withheld legacy-write entry set to target',
+        active: ['v0003', 'v0002', 3] as const,
+        dir: () => tamperedPaths,
+        findings: [
+          { rule: 'withheld-never-target', route: TAMPERED_ROUTE, message: 'withheld entry is target' },
+          { rule: 'legacy-write-always-legacy', route: TAMPERED_ROUTE, message: 'legacy-write entry is target' },
+        ],
+        detail: `withheld-never-target ${TAMPERED_ROUTE} withheld entry is target; legacy-write-always-legacy ${TAMPERED_ROUTE} legacy-write entry is target`,
+      },
+      {
+        label: 'no file for its previous version',
+        active: ['v0002', 'v0001', 2] as const,
+        dir: () => orphanPaths,
+        findings: [{ rule: 'previous-chain', message: 'previous v0001 is not available' }],
+        detail: 'previous-chain - previous v0001 is not available',
+      },
+      ...([['previous null'], ['previous v0001'], ['previous null', acceptEveryVersion]] as Array<[string, VersionCheck?]>).map(
+        ([forgery, check]) => ({
+          label: `a file claiming ${forgery}${check === undefined ? '' : ' under a check that accepts every version'}`,
+          active: ['v0003', 'v0002', 3] as const,
+          dir: () => forgedPaths.get(forgery) as GatewayPaths,
+          findings: [{ rule: 'previous-chain', message: `${forgery} is not the stored previous version v0002` }],
+          detail: `previous-chain - ${forgery} is not the stored previous version v0002`,
+          check,
+        }),
+      ),
+      {
+        label: 'a file claiming tableVersion v0001',
+        active: ['v0003', 'v0002', 3] as const,
+        dir: () => forgedPaths.get('tableVersion v0001') as GatewayPaths,
+        findings: [{ rule: 'schema', message: 'v0003.json does not match its cut-over schema: /tableVersion must equal the file name v0003' }],
+        detail: 'schema - v0003.json does not match its cut-over schema: /tableVersion must equal the file name v0003',
+        file: 'v0003.json',
+      },
+    ])('refuses at start a stored version with $label, routing nothing by it and committing nothing', async ({ active, dir, findings, detail, file, check }) => {
+      const [tableVersion, previous, epoch] = active;
+      await setActive(tableVersion, previous, epoch);
+      const logger = { info: vi.fn(), error: vi.fn() };
+      const state = makeState('gw-a', { paths: dir(), logger, checkVersion: check });
+
+      const error = await state.start().catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(CutoverVersionInvalid);
+      expect(error).toBeInstanceOf(LegacyServiceUnavailableError);
+      expect((error as CutoverVersionInvalid).tableVersion).toBe(tableVersion);
+      expect((error as CutoverVersionInvalid).findings).toEqual(findings);
+      const message = `cut-over version ${tableVersion} fails validation: ${detail}`;
+      expect((error as CutoverVersionInvalid).message).toBe(message);
+      expect(state.active()).toBeUndefined();
+      await expect(state.readEpochForWrite()).rejects.toBeInstanceOf(CutoverVersionInvalid);
+      await expect(state.status()).rejects.toBeInstanceOf(CutoverVersionInvalid);
+      await expect(state.freeze([FROZEN_ROUTE], OPERATOR)).rejects.toBeInstanceOf(CutoverVersionInvalid);
+      const located = file === undefined ? '' : ` file=${join(dir().versionsDir, file)}`;
+      expect(logger.error.mock.calls).toEqual([[{}, `cut-over version refused for routing: instance=gw-a ${message}${located}`]]);
+      expect(await storedEpoch()).toBe(epoch);
+      expect(await sql(`SELECT route FROM ${handle.schema}.cutover_freeze`)).toEqual([]);
+      expect(await sql(`SELECT instance_id FROM ${handle.schema}.instance`)).toEqual([]);
+    });
+
+    it('starts on an activated v0003 after a later reconcile replaced its rollback report, which CI and activation still reject', async () => {
+      const reportsDir = await mkdtemp(join(tmpdir(), 'state-test-'));
+      dirs.push(reportsDir);
+      await mkdir(join(reportsDir, 'reconciliation'));
+      const report = join(reportsDir, 'reconciliation', 'rollback-before.json');
+      await writeFile(report, JSON.stringify(rollbackReport(returningUnits)));
+      const reportPaths = resolveGatewayPaths({ OPT2_REPORTS_DIR: reportsDir });
+      await setActive('v0002', 'v0001', 2);
+      expect(await makeState('gw-op', { paths: reportPaths }).activate({ tableVersion: 'v0003', actor: OPERATOR })).toEqual({
+        tableVersion: 'v0003',
+        epoch: 3,
+      });
+
+      await writeFile(report, JSON.stringify(rollbackReport(returningUnits, { tableVersion: 'v0003', tableVersionMatches: false })));
+      const state = makeState('gw-a', { paths: reportPaths });
+      await state.start();
+
+      expect(state.active()?.table.tableVersion).toBe('v0003');
+      expect((await state.readEpochForWrite()).index.table.tableVersion).toBe('v0003');
+      for (const mode of ['--ci', '--activation']) {
+        const out: string[] = [];
+        const write = (line: string): void => {
+          out.push(line);
+        };
+        expect(await validateMain([mode, '--version', 'v0003'], { paths: reportPaths, stdout: write, stderr: write })).toBe(1);
+        expect(out).toEqual(returning.map((group) => `v0003 rollback-evidence ${group} rollback-before.json was taken at v0003, not v0002`));
+      }
+    });
+
+    it('refuses an index it built once the stored previous version of the same active version changes', async () => {
+      await setActive('v0003', 'v0002', 3);
+      const state = makeState('gw-a');
+      await state.start();
+      expect(state.active()?.table.tableVersion).toBe('v0003');
+
+      await setActive('v0003', 'v0001', 4);
+      const error = await state.readEpochForWrite().catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(CutoverVersionInvalid);
+      expect((error as CutoverVersionInvalid).findings).toEqual([
+        { rule: 'previous-chain', message: 'previous v0002 is not the stored previous version v0001' },
+      ]);
+      expect(state.epoch()).toBe(3);
+    });
+
+    it('fails closed once a background refresh meets a version that fails its rules, and recovers when a valid successor is activated', async () => {
+      await setActive('v0002', 'v0001', 2);
+      const logger = { info: vi.fn(), error: vi.fn() };
+      const state = makeState('gw-a', { paths: tamperedPaths, logger });
+      const check = vi.fn<VersionCheck>(() => Promise.resolve([]));
+      const operator = makeState('gw-op', { paths: tamperedPaths, checkVersion: check });
+      await state.start();
+      expect(state.active()?.table.tableVersion).toBe('v0002');
+
+      await setActive('v0003', 'v0002', 3);
+
+      await vi.waitFor(() => expect(logger.error).toHaveBeenCalledWith({}, expect.stringContaining(REFUSED)), { timeout: 2000, interval: 25 });
+      await vi.waitFor(() => expect(state.active()).toBeUndefined(), { timeout: SNAPSHOT_MAX_AGE_MS, interval: 25 });
+      expect(state.epoch()).toBe(2);
+      expect(state.isFrozen('admin:carch.audit')).toBe(true);
+      await expect(state.readEpochForWrite()).rejects.toBeInstanceOf(CutoverVersionInvalid);
+      expect(logger.error.mock.calls.filter(([, msg]) => String(msg).startsWith(REFUSED))).toHaveLength(1);
+
+      expect(await operator.activate({ tableVersion: 'v0004', actor: OPERATOR })).toEqual({ tableVersion: 'v0004', epoch: 4 });
+      expect(operator.active()?.table.tableVersion).toBe('v0004');
+      expect(check).not.toHaveBeenCalled();
+      await vi.waitFor(() => expect(state.active()?.table.tableVersion).toBe('v0004'), {
+        timeout: REFRESH_INTERVAL_MS + SNAPSHOT_MAX_AGE_MS,
+        interval: 25,
+      });
+      expect(state.epoch()).toBe(4);
+      expect((await state.readEpochForWrite()).index.entryFor(TAMPERED_ROUTE)?.state).toBe('legacy');
+    });
+
+    it.each<{ label: string; text?: (probe: string, v0002: object) => string; finding: RegExp; rule: string }>([
+      { label: 'is missing', finding: /^no version file v0002\.json$/, rule: 'unknown-version' },
+      {
+        label: 'is cut off inside a string',
+        text: (probe) => `{"tableVersion":"v0002","previous":"v0001","createdAt":"${probe}`,
+        finding: /^v0002\.json does not match its cut-over schema: \/ is not valid JSON: Unterminated string in JSON at position \d+ \(line 1 column \d+\)$/,
+        rule: 'schema',
+      },
+      {
+        label: 'fails its schema',
+        text: (probe, v0002) => JSON.stringify({ ...v0002, [probe]: true }),
+        finding: /^v0002\.json does not match its cut-over schema: \/ must NOT have additional properties$/,
+        rule: 'schema',
+      },
+    ])('refuses a stored version whose file $label as the legacy 503, logging it once, and routes by it once the file is readable', async ({
+      text,
+      finding,
+      rule,
+    }) => {
+      const [v0002, v0003] = await Promise.all([committedTable('v0002'), committedTable('v0003')]);
+      const probe = `probe-${randomUUID()}`;
+      const dir = await writeCutoverDir(await committedTable('v0001'), { groups, extraTables: [v0003] });
+      dirs.push(dir);
+      const unreadable = resolveGatewayPaths({ OPT2_CUTOVER_DIR: dir });
+      const file = join(unreadable.versionsDir, 'v0002.json');
+      if (text !== undefined) await writeFile(file, text(probe, v0002));
+      await setActive('v0002', 'v0001', 2);
+      const logger = { info: vi.fn(), error: vi.fn() };
+      const state = makeState('gw-a', { paths: unreadable, logger });
+
+      const error = await state.start().catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(CutoverVersionInvalid);
+      expect(error).toBeInstanceOf(LegacyServiceUnavailableError);
+      const { tableVersion, findings, message } = error as CutoverVersionInvalid;
+      expect([tableVersion, findings]).toEqual(['v0002', [{ rule, message: expect.stringMatching(finding) }]]);
+      expect(message).toBe(`cut-over version v0002 fails validation: ${rule} - ${findings[0]?.message ?? ''}`);
+      for (const leaked of [dir, probe]) expect(message).not.toContain(leaked);
+      expect(state.active()).toBeUndefined();
+      const write = await state.readEpochForWrite().catch((e: unknown) => e);
+      expect(write).toBeInstanceOf(CutoverVersionInvalid);
+      expect(write).toBeInstanceOf(LegacyServiceUnavailableError);
+      expect((write as CutoverVersionInvalid).message).toBe(message);
+      await expect(state.status()).rejects.toBeInstanceOf(CutoverVersionInvalid);
+      await expect(state.freeze([FROZEN_ROUTE], OPERATOR)).rejects.toBeInstanceOf(CutoverVersionInvalid);
+      // A successor is validated against the version it follows, which is unreadable here.
+      const successor = await state.activate({ tableVersion: 'v0003', actor: OPERATOR }).catch((e: unknown) => e);
+      expect(successor).toBeInstanceOf(ActivationRejected);
+      expect((successor as ActivationRejected).findings).toEqual([{ rule: 'previous-chain', message: 'previous v0002 is not available' }]);
+      expect(logger.error.mock.calls).toEqual([[{}, `cut-over version refused for routing: instance=gw-a ${message} file=${file}`]]);
+      expect(await storedEpoch()).toBe(2);
+      expect(await sql(`SELECT route FROM ${handle.schema}.cutover_freeze`)).toEqual([]);
+
+      await writeFile(file, JSON.stringify(v0002));
+      await state.start();
+
+      expect(state.active()?.table.tableVersion).toBe('v0002');
+      expect((await state.readEpochForWrite()).index.table.tableVersion).toBe('v0002');
+      expect(await state.activate({ tableVersion: 'v0003', actor: OPERATOR })).toEqual({ tableVersion: 'v0003', epoch: 3 });
+      expect(state.active()?.table.tableVersion).toBe('v0003');
+      expect(logger.error).toHaveBeenCalledTimes(1);
+    });
+
+    it('rejects start with any other read failure of the stored version as it is, logging no refusal', async () => {
+      const dir = await writeCutoverDir(await committedTable('v0001'), { groups });
+      dirs.push(dir);
+      const unreadable = resolveGatewayPaths({ OPT2_CUTOVER_DIR: dir });
+      await mkdir(join(unreadable.versionsDir, 'v0002.json'));
+      await setActive('v0002', 'v0001', 2);
+      const logger = { info: vi.fn(), error: vi.fn() };
+
+      const error = await makeState('gw-a', { paths: unreadable, logger })
+        .start()
+        .catch((e: unknown) => e);
+
+      expect(error).not.toBeInstanceOf(LegacyServiceUnavailableError);
+      expect((error as NodeJS.ErrnoException).code).toBe('EISDIR');
+      expect(logger.error).not.toHaveBeenCalled();
+    });
+
+    it('fails the gateway start-up on a stored version that fails its rules', async () => {
+      await setActive('v0003', 'v0002', 3);
+      await prepareTestStateDir();
+      const app = await buildApp({ env: testEnv(tamperedEnv), verifierOverride: testVerifier(), db: handle.app, instanceId: 'gw-app' });
+      try {
+        await expect(app.ready()).rejects.toBeInstanceOf(CutoverVersionInvalid);
+      } finally {
+        await app.close();
+        await app.opt2.client.close();
+      }
+    });
+  });
+});
+
+describe('CutoverVersionInvalid', () => {
+  it('names the version and its first three findings, counts the rest, and is the legacy 503', () => {
+    const error = new CutoverVersionInvalid('v0009', [
+      { rule: 'route-once', route: 'admin:a.b', message: 'appears in 2 entries' },
+      { rule: 'unprevented-writer', unit: 'people.person', group: 'grp:people.person', message: 'x writes it' },
+      { rule: 'group-authority', group: 'grp:people.person', message: 'group has no authority' },
+      { rule: 'source-sha', message: 'sourceSha a is not the pinned b' },
+      { rule: 'previous-chain', message: 'previous v0008 is not available' },
+    ]);
+
+    expect(error.message).toBe(
+      'cut-over version v0009 fails validation: route-once admin:a.b appears in 2 entries; unprevented-writer people.person x writes it; ' +
+        'group-authority grp:people.person group has no authority; 2 more',
+    );
+    expect([error.name, error.reason, error.surface, error.findings.length]).toEqual(['CutoverVersionInvalid', 'invalid-cutover-version', 'auto', 5]);
+    expect(error).toBeInstanceOf(LegacyServiceUnavailableError);
   });
 });
 

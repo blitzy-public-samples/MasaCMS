@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { copyFile, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { basename, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { matchRouteKey, routeKeyForRequest } from '@opt2/platform/legacy-compat';
 import { serializeError } from '@opt2/platform/logging';
 import { EnvFileError } from '@opt2/platform/service-kit';
@@ -335,6 +335,12 @@ describe('schema failures', () => {
       '/entries/0/state',
     ],
     [
+      'a version whose tableVersion is not its file name',
+      VERSIONS.v0002,
+      (file) => loadVersion({ ...paths, versionsDir: join(file, '..') }, 'v0009'),
+      '/tableVersion must equal the file name v0009',
+    ],
+    [
       'a variant condition with a non-string value',
       { sourceSha: SHA, variants: [{ route: ROSTER_ADD, variant: 'type=2', when: [{ param: 'type', equals: 2 }] }] },
       (file) => loadVariants({ ...paths, variantsFile: file }),
@@ -370,6 +376,43 @@ describe('schema failures', () => {
     expect(schemaError.message).toBe(`${file} does not match its cut-over schema: ${schemaError.detail}`);
     expect(schemaError.detail).toContain(instancePath);
     expect(schemaError.detail).not.toContain(caseDir);
+  });
+
+  it.each<[string, string, () => string, (file: string) => Promise<unknown>]>([
+    [
+      'the committed v0002',
+      'v0002.json',
+      () => readFileSync(join(committed.versionsDir, 'v0002.json'), 'utf8'),
+      (file) => loadVersion({ ...paths, versionsDir: dirname(file) }, 'v0002'),
+    ],
+    [
+      'the schema file',
+      'cutover-table.schema.json',
+      () => readFileSync(committed.schemaFile, 'utf8'),
+      (file) => loadVersion({ ...paths, schemaFile: file }, 'v0001'),
+    ],
+    ['groups.json', 'groups.json', () => json(GROUPS), (file) => loadGroups({ ...paths, groupsFile: file })],
+    ['the inventory', 'legacy-inventory.json', () => json(INVENTORY), (file) => loadInventory({ ...paths, inventoryFile: file })],
+  ])('rejects %s cut short with a CutoverSchemaError quoting the parser, not the text', async (_label, name, whole, load) => {
+    const full = whole();
+    const text = full.slice(0, Math.floor(full.length / 2));
+    const file = join(await mkdtemp(join(dir, 'json-')), name);
+    await writeFile(file, text);
+    let parserMessage = '';
+    try {
+      JSON.parse(text);
+    } catch (error) {
+      parserMessage = (error as SyntaxError).message;
+    }
+    expect(parserMessage).not.toBe('');
+    const error = await load(file).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(error).toBeInstanceOf(CutoverSchemaError);
+    expect(error).toMatchObject({ file, detail: `/ is not valid JSON: ${parserMessage}` });
+    expect((error as CutoverSchemaError).message).toBe(`${file} does not match its cut-over schema: / is not valid JSON: ${parserMessage}`);
+    expect((error as CutoverSchemaError).message).not.toContain(text.slice(0, 20));
   });
 });
 

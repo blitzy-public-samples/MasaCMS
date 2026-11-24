@@ -363,7 +363,7 @@ async function readCutoverFile(paths: Pick<GatewayPaths, 'cutoverDir'>, file: st
 
 /** Compiles one schema file; its `$defs` and `sourceSha` rule also constrain the ids in variants.json and groups.json. */
 async function compileValidators(paths: Pick<GatewayPaths, 'cutoverDir' | 'schemaFile'>): Promise<Validators> {
-  const version = JSON.parse(await readCutoverFile(paths, paths.schemaFile)) as AnySchemaObject;
+  const version = parseJson(paths.schemaFile, await readCutoverFile(paths, paths.schemaFile)) as AnySchemaObject;
   // Copies of the schema (OPT2_CUTOVER_DIR) share one `$id`; without it every copy compiles beside the others in the one Ajv instance.
   delete version.$id;
   const $defs = { ...version.$defs, sourceSha: version.properties.sourceSha, variantCondition: VARIANT_CONDITION };
@@ -397,9 +397,20 @@ const opt2Validators = {
 /** A check a schema cannot express, as an instance path and its message. */
 type Violation = readonly [instancePath: string, message: string];
 
+/** Parsed `text`; a syntax error rejects as a `CutoverSchemaError` carrying only the parser's message. */
+function parseJson(file: string, text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) throw error;
+    const message = `is not valid JSON: ${error.message}`;
+    throw new CutoverSchemaError(file, [{ keyword: 'json', instancePath: '', schemaPath: '#', params: {}, message }]);
+  }
+}
+
 /** Parses and schema-validates `text`, then rejects any violation `check` finds in the result. */
 function parseValidated<T>(file: string, text: string, validate: ValidateFunction<T>, check: (value: T) => Violation[]): T {
-  const value: unknown = JSON.parse(text);
+  const value = parseJson(file, text);
   if (!validate(value)) throw new CutoverSchemaError(file, validate.errors ?? []);
   const violations = check(value);
   if (violations.length > 0) {
@@ -552,14 +563,19 @@ export async function loadExceptionsList(paths: Pick<GatewayPaths, 'exceptionsLi
   return readValidated(paths.exceptionsListFile, opt2Validators.exceptions, (doc) => pinViolations(doc, pin));
 }
 
-/** Reads and schema-validates `versions/<tableVersion>.json`; a missing file rejects with an `EnvFileError` of code ENOENT. */
+/**
+ * Reads and schema-validates `versions/<tableVersion>.json`, whose `tableVersion` must be its file name; a missing file rejects
+ * with an `EnvFileError` of code ENOENT.
+ */
 export async function loadVersion(
   paths: Pick<GatewayPaths, 'cutoverDir' | 'versionsDir' | 'schemaFile'>,
   tableVersion: string,
 ): Promise<CutoverTable> {
   const { version } = await validatorsFor(paths);
   const file = join(paths.versionsDir, `${tableVersion}.json`);
-  return parseValidated(file, await readCutoverFile(paths, file), version, () => []);
+  return parseValidated(file, await readCutoverFile(paths, file), version, (table) =>
+    table.tableVersion === tableVersion ? [] : [['/tableVersion', `must equal the file name ${tableVersion}`]],
+  );
 }
 
 /** Ids of the committed version files (`vNNNN`), sorted; an unreadable versions directory rejects with `EnvFileError`. */

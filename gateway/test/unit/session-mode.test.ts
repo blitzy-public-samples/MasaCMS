@@ -188,7 +188,7 @@ function jarCookiesOf(row: LegacyJarRow | undefined): JarCookies {
 
 /** Commits `table` as the active version and loads it into the instance through an operator unfreeze. */
 async function activate(gateway: TestGateway, table: CutoverTable, mode: SessionMode): Promise<void> {
-  memoryOf(gateway).setActive(table.tableVersion);
+  memoryOf(gateway).setActive(table.tableVersion, { previous: table.previous });
   const res = await gateway.app.inject({
     method: 'POST',
     url: UNFREEZE_PATH,

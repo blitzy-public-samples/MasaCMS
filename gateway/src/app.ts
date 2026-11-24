@@ -30,7 +30,7 @@ import { createInflightStore } from './cutover/inflight.js';
 import { inventoryFactsOf, loadInventory, loadTableOwnership, loadVariants } from './cutover/loader.js';
 import { resolveGatewayPaths } from './cutover/paths.js';
 import { registerCutoverRoutes } from './cutover/routes.js';
-import { createCutoverState } from './cutover/state.js';
+import { createCutoverState, type CutoverStateOptions } from './cutover/state.js';
 import type { LoadedInventoryFacts, OwnershipUnit, RoutingIndex } from './cutover/types.js';
 import { createSessionBarrier } from './dispatcher/barrier.js';
 import { registerEdgeRoute, type DispatcherDeps } from './dispatcher/dispatch.js';
@@ -184,6 +184,8 @@ export interface BuildAppOptions {
   bridgeClient?: BridgeClient;
   /** False skips loading the active version and the site registry, and their refresh loops (route matrix export); defaults to true. */
   startBackground?: boolean;
+  /** Load-time check of each cut-over version; the cut-over state's rule validation when absent. */
+  checkVersion?: CutoverStateOptions['checkVersion'];
 }
 
 /** `admin` for paths under the legacy admin directory, the admin route family; `api` for every other path. */
@@ -230,7 +232,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   // Forwarders pass absolute legacy and service URLs, so reply-from has no base.
   await app.register(replyFrom, replyFromOptions());
 
-  const state = createCutoverState({ db, clock, paths, instanceId, logger: app.log, variants });
+  const state = createCutoverState({ db, clock, paths, instanceId, logger: app.log, variants, checkVersion: options.checkVersion });
   const inflight = createInflightStore({ db, instanceId, unitsOf: (route) => state.active()?.entryFor(route)?.units });
 
   const identity = options.identityClient ?? createIdentityClient(client);

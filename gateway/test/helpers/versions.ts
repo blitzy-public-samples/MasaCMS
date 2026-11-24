@@ -12,7 +12,13 @@ import {
   loadVersion,
 } from '../../src/cutover/loader.js';
 import { resolveGatewayPaths } from '../../src/cutover/paths.js';
-import { DEFAULT_FREEZE_WAIT_MS, type CutoverState, type CutoverStatus, type CutoverStatusV2 } from '../../src/cutover/state.js';
+import {
+  DEFAULT_FREEZE_WAIT_MS,
+  type CutoverState,
+  type CutoverStatus,
+  type CutoverStatusV2,
+  type VersionCheck,
+} from '../../src/cutover/state.js';
 import type { CutoverStatusOf, CutoverStatusPages } from '../../src/cutover/status-pages.js';
 import type {
   Authority,
@@ -37,8 +43,13 @@ const GENERATED_BY = 'gateway/test/helpers/versions.ts';
 const PLACEHOLDER_SHA256 = '0'.repeat(64);
 const POLL_MS = 10;
 
-// The loaders are asynchronous; the pin and the small variants file are read once here so the builders below stay synchronous.
-const [pin, committedVariantsFile] = await Promise.all([loadSourcePin(COMMITTED), loadVariants(COMMITTED)]);
+// The loaders are asynchronous; the pin, the small variants file and the ownership are read once here so the builders below stay synchronous.
+const [pin, committedVariantsFile, committedOwnershipDoc] = await Promise.all([
+  loadSourcePin(COMMITTED),
+  loadVariants(COMMITTED),
+  loadTableOwnership(COMMITTED),
+]);
+const committedUnitTables = new Map(committedOwnershipDoc.units.map(({ unit, legacyTables }) => [unit, legacyTables]));
 
 /** The pinned source SHA, as `opt2/source-pin.json` records it. */
 export const TEST_SOURCE_SHA: string = pin.sha;
@@ -141,6 +152,9 @@ export function groupsForTable(table: CutoverTable): GroupsFile {
   return groupsFile([...groups].map(([id, group]) => ({ id, ...group })));
 }
 
+/** Load-time check accepting every version, for fixture tables that no inventory rule admits. */
+export const acceptEveryVersion: VersionCheck = () => Promise.resolve([]);
+
 /** The committed `variants.json`. */
 export function committedVariants(): VariantsFile {
   return committedVariantsFile;
@@ -170,6 +184,39 @@ export function committedTable(version: CommittedVersion): Promise<CutoverTable>
 export function committedGroups(): Promise<GroupsFile> {
   committedGroupsFile ??= loadGroups(COMMITTED);
   return committedGroupsFile;
+}
+
+/**
+ * A zero-difference `rollback-before` report of the pin, taken at v0002, with one entry per committed-ownership legacy table of each
+ * of `units` (a null table for a unit without one); `fields` override its own.
+ */
+export function rollbackReport(units: readonly string[], fields: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    sourceSha: TEST_SOURCE_SHA,
+    point: 'rollback-before',
+    expectedTableVersion: 'v0002',
+    tableVersion: 'v0002',
+    tableVersionMatches: true,
+    units: units.flatMap((unit) => {
+      const tables = committedUnitTables.get(unit) ?? [];
+      return (tables.length > 0 ? tables : [null]).map((legacyTable) => ({
+        unit,
+        legacyTable,
+        status: 'compared',
+        legacyCount: 1,
+        targetCount: 1,
+        legacySha256: PLACEHOLDER_SHA256,
+        targetSha256: PLACEHOLDER_SHA256,
+        differenceCount: 0,
+        files: null,
+      }));
+    }),
+    skippedUnits: [],
+    emptyUnits: [],
+    fileStore: { store: null, status: 'not-applicable', haltedUnits: [] },
+    result: 'zero-difference',
+    ...fields,
+  };
 }
 
 /** The routing index of a committed version over the committed groups and variants. */

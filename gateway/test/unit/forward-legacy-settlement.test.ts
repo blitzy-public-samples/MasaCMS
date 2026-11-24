@@ -31,6 +31,8 @@ const HOLD_MS = 500;
 const SETTLE_DELAY_MS = 300;
 /** How long a test waits to show that something never happens. */
 const QUIET_MS = 1_000;
+/** How long a wait on FORWARD_CONNECTIONS exchanges may take on a loaded host. */
+const BOUND_WAIT = { timeout: 15_000, interval: 20 };
 const CHUNK = Buffer.alloc(64 * 1024, 0x61);
 const CHUNK_COUNT = 16;
 const LEGACY_BODY = 'committed';
@@ -372,7 +374,7 @@ describe('forwardToLegacy when the request never reaches legacy', () => {
     expect(legacy.requests).toHaveLength(0);
   });
 
-  it("a lenient forward past the agent's bound: settles not-sent, answers the 503 after it, and the next forward goes once one ends", async () => {
+  it("a lenient forward past the agent's bound: settles not-sent, answers the 503 after it, and the next forward goes once one ends", { timeout: 3 * BOUND_WAIT.timeout }, async () => {
     const waiting: Socket[] = [];
     let connections = 0;
     let holding = true;
@@ -393,7 +395,7 @@ describe('forwardToLegacy when the request never reaches legacy', () => {
       const origin = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}`;
       const gateway = await startGateway({ mode: 'buffer', onSettled, origin, gatewayAgent: true, lenientHead: true });
       const held = Array.from({ length: FORWARD_CONNECTIONS }, () => send(gateway, WRITE_PATH).outcome);
-      await vi.waitFor(() => expect(waiting).toHaveLength(FORWARD_CONNECTIONS));
+      await vi.waitFor(() => expect(waiting).toHaveLength(FORWARD_CONNECTIONS), BOUND_WAIT);
 
       let committedAtResponse = false;
       const refused = await send(gateway, WRITE_PATH, {
@@ -410,7 +412,7 @@ describe('forwardToLegacy when the request never reaches legacy', () => {
       holding = false;
       for (const socket of waiting) answer(socket);
       expect((await Promise.all(held)).map((outcome) => outcome.status)).toEqual(Array.from({ length: FORWARD_CONNECTIONS }, () => 204));
-      await vi.waitFor(async () => expect((await send(gateway, WRITE_PATH).outcome).status).toBe(204));
+      await vi.waitFor(async () => expect((await send(gateway, WRITE_PATH).outcome).status).toBe(204), BOUND_WAIT);
       expect(onSettled.mock.calls.filter(([outcome]) => outcome === 'completed').length).toBeGreaterThan(FORWARD_CONNECTIONS);
     } finally {
       for (const socket of waiting) socket.destroy();
