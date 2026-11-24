@@ -22,11 +22,14 @@ import {
   ROUTED_PACKAGES,
   diffOutcomes,
   expectationsFor,
+  forgedExpectations,
   loadMatrices,
   matrixDir,
   matrixExportCommand,
   matrixFile,
   routeMatrixFileSchema,
+  withEdgeGates,
+  type EdgeGate,
   type Expectation,
   type ExpectationReason,
   type LoadedMatrix,
@@ -69,6 +72,8 @@ const REASONS = {
   'missing-role': true,
   'other-tenant': true,
   'managed-transport': true,
+  'refused-credential': true,
+  'edge-gate': true,
 } as const satisfies Record<ExpectationReason, true>;
 
 /** The routed package called `name`. */
@@ -134,10 +139,12 @@ function expectedOutcome(route: RouteMatrixEntry, subject: RoleSubject, forwarde
     const granted = subject.roles.includes(invokerRole) && hasAnyRole(subject.roles, route.requires ?? []);
     return invoker && granted ? 'allow' : 'deny';
   }
-  if (subject.kind !== 'user') {
+  // The gateway refuses an invoker's credential on its own routes, where a user's session carries no credential.
+  if (invoker && !forwarded) return 'deny';
+  if (subject.kind !== 'user' || !forwarded) {
     const ownCredential = subject.kind === 'service' && !invoker;
     const publicPass = route.public === true && (ownCredential || forwarded || route.invocationOptional === true);
-    return publicPass || (!invoker && hasAnyRole(subject.roles, route.requires ?? [])) ? 'allow' : 'deny';
+    return publicPass || (ownCredential && hasAnyRole(subject.roles, route.requires ?? [])) ? 'allow' : 'deny';
   }
   const roles = [...subject.roles, serviceRole('gateway')];
   const granted = route.public === true || hasAnyRole(roles, route.requires ?? []);
@@ -595,25 +602,21 @@ describe('expectationsFor', () => {
     }
   });
 
-  const CREDENTIALLESS_REASONS: Readonly<Record<string, ExpectationReason>> = {
-    anonymous: 'anonymous',
-    [serviceRole('pubsub-invoker')]: 'managed-transport',
-    [serviceRole('tasks-invoker')]: 'managed-transport',
-  };
+  const SESSIONS: ReadonlySet<string> = new Set(['anonymous', ...userNames]);
+  const INVOKERS: ReadonlySet<string> = new Set([serviceRole('pubsub-invoker'), serviceRole('tasks-invoker')]);
 
   it.each([
-    { label: "the gateway's own public route", pkg: 'gateway', route: OPEN_ROUTE, verdict: 'deny 401' },
-    { label: "the gateway's own invocationOptional route", pkg: 'gateway', route: { ...OPEN_ROUTE, invocationOptional: true as const }, verdict: 'allow' },
-    { label: "an owner's public route, which the gateway's forward reaches", pkg: PEOPLE.name, route: OPEN_ROUTE, verdict: 'allow' },
-  ])('gives anonymous and the managed invokers $verdict on $label and allows every other subject', ({ pkg, route, verdict }) => {
+    { label: "the gateway's own public route", pkg: 'gateway', route: OPEN_ROUTE, sessions: 'deny 401', invokers: 'deny 401' },
+    { label: "the gateway's own invocationOptional route", pkg: 'gateway', route: { ...OPEN_ROUTE, invocationOptional: true as const }, sessions: 'allow', invokers: 'deny 401' },
+    { label: "an owner's public route, which the gateway's forward reaches", pkg: PEOPLE.name, route: OPEN_ROUTE, sessions: 'allow', invokers: 'allow' },
+  ])('gives anonymous and user sessions $sessions and the managed invokers $invokers on $label and allows the other workloads', ({ pkg, route, sessions, invokers }) => {
     const expectations = expectationsFor({ package: pkg, file: `${pkg}.json`, matrix: { routes: [route] } });
     expect(expectations).toHaveLength(ROLE_SET.length);
-    for (const expectation of expectations) {
-      const reason = CREDENTIALLESS_REASONS[expectation.subject];
-      const denied = verdict === 'deny 401' && reason !== undefined;
-      expect(expectation, expectation.subject).toMatchObject(
-        denied ? { outcome: 'deny', status: 401, reason } : { outcome: 'allow', reason: 'public' },
-      );
+    for (const { subject, ...verdict } of expectations) {
+      const invoker = INVOKERS.has(subject);
+      const denied = (invoker ? invokers : SESSIONS.has(subject) ? sessions : 'allow') === 'deny 401';
+      const reason = invoker ? 'refused-credential' : 'anonymous';
+      expect(verdict, subject).toMatchObject(denied ? { outcome: 'deny', status: 401, reason } : { outcome: 'allow', reason: 'public' });
     }
   });
 
@@ -707,7 +710,10 @@ describe('expectationsFor', () => {
   });
 
   it('assigns every expectation reason the module declares', () => {
-    const reasons = new Set(expectationsFor(peopleMatrix(SITED)).map((e) => e.reason));
+    const people = expectationsFor(peopleMatrix(SITED));
+    const gated = withEdgeGates(people, [{ package: PEOPLE.name, routes: [`GET ${HEALTH_URL}`], admits: [], because: 'test' }]);
+    const gateway = expectationsFor({ package: 'gateway', file: 'gateway.json', matrix: SITED });
+    const reasons = new Set([...people, ...gated, ...gateway].map((e) => e.reason));
     expect(reasons).toEqual(new Set(Object.keys(REASONS)));
   });
 
@@ -719,6 +725,53 @@ describe('expectationsFor', () => {
         expect([401, 403]).toContain(expectation.status);
       }
     }
+  });
+});
+
+describe('withEdgeGates', () => {
+  const expectations = expectationsFor(peopleMatrix());
+  const gateAt = (url: string): EdgeGate => ({ package: PEOPLE.name, routes: [`GET ${url}`], admits: [Roles.s2], because: 'test' });
+  const gate = gateAt(HEALTH_URL);
+  const gated = withEdgeGates(expectations, [gate, gateAt(USERS_URL)]);
+
+  it.each<[string, string, string, Pick<Expectation, 'outcome' | 'status' | 'reason'>]>([
+    ['keeps the declared allow of the admitted', Roles.s2, HEALTH_URL, { outcome: 'allow', status: undefined, reason: 'public' }],
+    ['denies 403 the declared allow of', Roles.siteAdmin, HEALTH_URL, { outcome: 'deny', status: 403, reason: 'edge-gate' }],
+    ['denies 401 the declared allow of', 'anonymous', HEALTH_URL, { outcome: 'deny', status: 401, reason: 'edge-gate' }],
+    ['denies 401 the declared allow of', serviceRole('identity'), HEALTH_URL, { outcome: 'deny', status: 401, reason: 'edge-gate' }],
+    ['keeps the declared deny of the admitted', Roles.s2, USERS_URL, { outcome: 'deny', status: 403, reason: 'missing-role' }],
+    ['keeps the declared deny of', Roles.member, USERS_URL, { outcome: 'deny', status: 403, reason: 'missing-role' }],
+    ['keeps the declared deny of', 'anonymous', USERS_URL, { outcome: 'deny', status: 401, reason: 'anonymous' }],
+  ])('%s %s on %s, a gated route', (_case, subject, url, verdict) => {
+    const { outcome, status, reason } = expectationOf(gated, url, subject);
+    expect({ outcome, status, reason }).toEqual(verdict);
+  });
+
+  it('leaves every cell of an ungated route, and every declared deny of a gated one, as it was', () => {
+    expect(expectationsAt(USERS_URL).every((e) => e.outcome === 'deny')).toBe(true);
+    expect(gated).toHaveLength(expectations.length);
+    expect(gated.filter((e) => e.url !== HEALTH_URL)).toEqual(expectations.filter((e) => e.url !== HEALTH_URL));
+  });
+
+  it.each<[string, EdgeGate]>([
+    ['an undeclared url', { ...gate, routes: ['GET /v1/none'] }],
+    ['another method', { ...gate, routes: [`POST ${USERS_URL}`] }],
+    ['another package', { ...gate, package: 'identity' }],
+  ])('throws a MatrixError for a gate on %s, which no expectation carries', (_case, stale) => {
+    expect(() => withEdgeGates(expectations, [gate, stale])).toThrow(MatrixError);
+    expect(() => withEdgeGates(expectations, [stale])).toThrow(`edge gate names ${stale.routes[0]}, which no expectation carries`);
+  });
+});
+
+describe('forgedExpectations', () => {
+  it.each<[string, string, (anonymous: Expectation) => Partial<Expectation>]>([
+    ["keeps anonymous's verdict where the gateway forwards", PEOPLE.name, ({ outcome, status, reason }) => ({ outcome, status, reason })],
+    ["denies 401 as a refused credential on the gateway's own routes", 'gateway', () => ({ outcome: 'deny', status: 401, reason: 'refused-credential' })],
+  ])('relabels each anonymous expectation as the forged subject and %s', (_case, pkg, verdictOf) => {
+    const expectations = expectationsFor({ package: pkg, file: `${pkg}.json`, matrix: SAMPLE });
+    const anonymous = expectations.filter((e) => e.subject === 'anonymous');
+    expect(anonymous).toHaveLength(SAMPLE.routes.length);
+    expect(forgedExpectations(expectations, 'forged')).toEqual(anonymous.map((e) => ({ ...e, subject: 'forged', ...verdictOf(e) })));
   });
 });
 
@@ -747,18 +800,18 @@ describe('diffOutcomes', () => {
     expect(diff.unexpectedDenies).toEqual([]);
   });
 
-  it('passes but lists an expected allow observed as denied', () => {
+  it('fails on and lists an expected allow observed as denied', () => {
     const diff = diffOutcomes(expectations, answeredWith(conforming, allowedAnonymous, 401));
-    expect(diff.pass).toBe(true);
+    expect(diff.pass).toBe(false);
     expect(diff.unexpectedAllows).toEqual([]);
     expect(diff.unexpectedDenies).toEqual([
       { expectation: allowedAnonymous, observation: observe(allowedAnonymous, 401) },
     ]);
   });
 
-  it('lists a deny answered with the other deny status as a status mismatch without failing', () => {
+  it('fails on a deny answered with the other deny status and lists it as a status mismatch', () => {
     const diff = diffOutcomes(expectations, answeredWith(conforming, deniedMember, 401));
-    expect(diff.pass).toBe(true);
+    expect(diff.pass).toBe(false);
     expect(diff.statusMismatches).toEqual([{ expectation: deniedMember, observation: observe(deniedMember, 401) }]);
     expect(diff.unexpectedAllows).toEqual([]);
     expect(diff.unexpectedDenies).toEqual([]);
@@ -789,6 +842,23 @@ describe('diffOutcomes', () => {
       missing,
       unmatched: [],
       pass: false,
+    });
+  });
+
+  const EDGE_PATHS = ['/v1/users', '/api/v1/users'];
+  it.each<[string, readonly string[]]>([
+    ['one of them observed', EDGE_PATHS.slice(0, 1)],
+    ['both observed', EDGE_PATHS],
+  ])('judges a cell sent to two edge paths at each path (%s)', (_case, observedPaths) => {
+    const sent = EDGE_PATHS.map((path): Expectation => ({ ...deniedMember, path }));
+    const observed = observedPaths.map((path): Observation => ({ ...observe(deniedMember, 403), path }));
+    expect(diffOutcomes(sent, observed)).toEqual({
+      unexpectedAllows: [],
+      unexpectedDenies: [],
+      statusMismatches: [],
+      missing: sent.filter((cell) => !observedPaths.includes(cell.path ?? '')),
+      unmatched: [],
+      pass: observedPaths.length === EDGE_PATHS.length,
     });
   });
 

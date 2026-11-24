@@ -59,7 +59,6 @@ const FIXTURE = '/legacy-fixtures/cfml/api.cfm';
 const RECORD = `${FIXTURE}/finance/records/:id`;
 const FILE_ROUTE = '/opt2/files/finance-attachments/:tenantId/:objectName';
 const EXPORT_FILE_ROUTE = '/opt2/files/reporting-exports/:tenantId/:objectName';
-const SIGNED_QUERY = '?expires=1&sig=test';
 const FINANCE_ACTIONS = ['approve', 'edit', 'reject', 'resubmit', 'submit'];
 const RELAY_URL = '/internal/v1/relay/:service/*';
 const RELAY_TARGET = 'identity';
@@ -119,13 +118,6 @@ let version: CutoverVersion;
 let gateway: LoadedMatrix;
 let matrices: LoadedMatrix[];
 let reach: ReachMap;
-const signed: string[] = [];
-
-/** Test signer: records each path and appends a fixed query. */
-function sign(path: string): string {
-  signed.push(path);
-  return `${path}${SIGNED_QUERY}`;
-}
 
 /** The reach of `pkg`'s `method url`, asserted to be listed exactly once. */
 function reachOf(pkg: string, method: string, url: string): ProbedRoute | NotProbedRoute {
@@ -148,7 +140,7 @@ beforeAll(async () => {
   const gatewayRoutes = await readJson(GATEWAY_MATRIX_FILE, routeMatrixFileSchema);
   gateway = { package: 'gateway', file: GATEWAY_MATRIX_FILE, matrix: gatewayRoutes };
   matrices = [gateway, FINANCE, STUB, PEOPLE];
-  reach = gatewayReach({ matrices, version, variants, sign, gatewayParams: { service: RELAY_TARGET } });
+  reach = gatewayReach({ matrices, version, variants, gatewayParams: { service: RELAY_TARGET } });
 });
 
 describe('loadCutoverVersion', () => {
@@ -218,7 +210,7 @@ describe('gatewayReach', () => {
     ['leaves a non-gateway parameter of the same name to a CF UUID', { noteId: 'given' }, ID],
   ])('%s', async (_name, gatewayParams, service) => {
     const { variants } = await loadInventoryVariants();
-    const filled = gatewayReach({ matrices, version, variants, sign: (path) => path, gatewayParams });
+    const filled = gatewayReach({ matrices, version, variants, gatewayParams });
     const relay = filled.probed.find((entry) => entry.package === 'gateway' && entry.method === 'GET' && entry.url === RELAY_URL);
     expect(relay?.paths[0]?.path).toMatch(new RegExp(`^/internal/v1/relay/${service}/v1/opt2-authz-probe/${ID}$`));
     const note = filled.probed.find((entry) => entry.package === 'stub' && entry.url === '/opt2/stub/notes/:noteId');
@@ -270,15 +262,12 @@ describe('gatewayReach', () => {
     expect(paths[0]?.path).toMatch(filledPattern(url));
   });
 
-  it('sends the finance attachment file route on a path the injected signer signed', () => {
+  it('probes the finance attachment file route on one unsigned path marked signed', () => {
     const { paths } = probedOf('finance', 'GET', FILE_ROUTE);
-    const unsigned = filledPattern(FILE_ROUTE);
     expect(paths).toHaveLength(1);
-    expect(paths[0]?.entry).toEqual({ route: 'opt2:/opt2/files/finance-attachments/**', kind: 'read' });
-    expect(paths[0]?.path.endsWith(SIGNED_QUERY)).toBe(true);
-    expect(paths[0]?.path.slice(0, -SIGNED_QUERY.length)).toMatch(unsigned);
-    expect(signed).toHaveLength(1);
-    expect(signed[0]).toMatch(unsigned);
+    expect(paths[0]).toMatchObject({ entry: { route: 'opt2:/opt2/files/finance-attachments/**', kind: 'read' }, signed: true });
+    expect(paths[0]?.path).toMatch(filledPattern(FILE_ROUTE));
+    expect(reach.probed.flatMap((entry) => entry.paths).filter((path) => path.signed === true)).toHaveLength(1);
     expect(probedSignedBuckets(reach)).toEqual(['finance-attachments']);
   });
 
@@ -287,34 +276,29 @@ describe('gatewayReach', () => {
     const expires = 2_000_000_000;
     const object = { tenantId: TENANT_A.tenantId, objectName: '0A1B2C3D-4E5F-6A7B-8C9D0E1F2A3B4C5D.txt' };
 
-    /** Reach of `matrix` beside the gateway, with `signedFileParams` and a recording local signer. */
+    /** Reach of `matrix` beside the gateway with `signedFileParams`, and its paths marked signed. */
     async function signedReach(
       matrix: LoadedMatrix,
       signedFileParams: Partial<Record<BucketName, Record<string, string>>>,
-    ): Promise<{ reach: ReachMap; sent: string[] }> {
+    ): Promise<{ reach: ReachMap; signed: string[] }> {
       const { variants } = await loadInventoryVariants();
-      const sent: string[] = [];
-      const signer = localFileSigner(key, expires);
-      const sign = (path: string): string => {
-        sent.push(path);
-        return signer(path);
-      };
-      return { reach: gatewayReach({ matrices: [gateway, matrix], version, variants, sign, signedFileParams }), sent };
+      const filled = gatewayReach({ matrices: [gateway, matrix], version, variants, signedFileParams });
+      const paths = filled.probed.flatMap((entry) => entry.paths);
+      return { reach: filled, signed: paths.filter((path) => path.signed === true).map((path) => path.path) };
     }
 
     it.each<[BucketName, LoadedMatrix, string]>([
       ['finance-attachments', FINANCE, FILE_ROUTE],
       ['reporting-exports', REPORTING, EXPORT_FILE_ROUTE],
-    ])('probes the %s file route at the supplied tenant and object, signed for that key', async (bucket, matrix, url) => {
-      const { reach: filled, sent } = await signedReach(matrix, { [bucket]: object });
+    ])('probes the %s file route at the supplied tenant and object, unsigned, as a path its signer signs for that key', async (bucket, matrix, url) => {
+      const { reach: filled, signed } = await signedReach(matrix, { [bucket]: object });
       const objectPath = `/opt2/files/${bucket}/${object.tenantId}/${object.objectName}`;
-      expect(sent).toEqual([objectPath]);
+      expect(signed).toEqual([objectPath]);
       const paths = filled.probed.find((entry) => entry.package === matrix.package && entry.url === url)?.paths ?? [];
       expect(paths).toHaveLength(1);
-      const path = paths[0]?.path ?? '';
-      expect(path.startsWith(`${objectPath}?`)).toBe(true);
+      expect(paths[0]).toMatchObject({ path: objectPath, signed: true });
       // The gateway verifies the URL; the owner also requires the verified key to be `<:tenantId>/<:objectName>`.
-      expect(verifySignedUrl(path, (expires - 1) * 1000, key)).toEqual({
+      expect(verifySignedUrl(localFileSigner(key, expires)(objectPath), (expires - 1) * 1000, key)).toEqual({
         ok: true,
         bucket,
         key: `${object.tenantId}/${object.objectName}`,
@@ -324,17 +308,17 @@ describe('gatewayReach', () => {
     });
 
     it("fills a signed-file route with CF UUIDs when only another bucket's values are supplied", async () => {
-      const { sent } = await signedReach(FINANCE, { 'reporting-exports': object });
-      expect(sent).toHaveLength(1);
-      expect(sent[0]).toMatch(filledPattern(FILE_ROUTE));
+      const { signed } = await signedReach(FINANCE, { 'reporting-exports': object });
+      expect(signed).toHaveLength(1);
+      expect(signed[0]).toMatch(filledPattern(FILE_ROUTE));
     });
 
     it('leaves a same-named parameter of a route outside /opt2/files/ to a CF UUID', async () => {
       const tenantRoute = '/opt2/stub/tenants/:tenantId';
-      const { reach: filled, sent } = await signedReach(matrixOf('stub', [route('GET', tenantRoute)]), {
+      const { reach: filled, signed } = await signedReach(matrixOf('stub', [route('GET', tenantRoute)]), {
         'finance-attachments': object,
       });
-      expect(sent).toEqual([]);
+      expect(signed).toEqual([]);
       expect(filled.probed.find((entry) => entry.url === tenantRoute)?.paths[0]?.path).toMatch(filledPattern(tenantRoute));
     });
   });

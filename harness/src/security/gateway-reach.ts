@@ -101,6 +101,8 @@ export async function loadCutoverVersion(
 export interface GatewayPath {
   path: string;
   entry?: { route: string; kind: EntryKind };
+  /** Set on a signed-file path, which stays unsigned here and is signed only by the request that sends it. */
+  signed?: true;
 }
 
 /** Whether a route is served by the gateway itself or forwarded to its owner by a cut-over entry. */
@@ -135,12 +137,11 @@ export interface ReachMap {
   notProbed: NotProbedRoute[];
 }
 
-/** Inputs of {@link gatewayReach}; `sign` turns an `/opt2/files/<bucket>/<key>` path into the signed URL to send. */
+/** Inputs of {@link gatewayReach}. */
 export interface ReachInputs {
   matrices: readonly LoadedMatrix[];
   version: CutoverVersion;
   variants: readonly VariantDeclaration[];
-  sign: (path: string) => string;
   /** Values of named parameters of the gateway's own routes, by name; any other parameter gets a fresh CF UUID. */
   gatewayParams?: Readonly<Record<string, string>>;
   /** Values of named parameters of each bucket's signed-file routes, by bucket then name, naming a stored object. */
@@ -343,8 +344,8 @@ function reachOf(context: ReachContext, matrix: LoadedMatrix, route: RouteMatrix
     const owned = entry !== undefined && entry.owningService === pkg && entry.state === 'target';
     if (!owned || reached.has(entry.route)) continue;
     reached.add(entry.route);
-    const signed = result.key.startsWith(SIGNED_FILE_KEY_PREFIX);
-    paths.push({ path: signed ? context.inputs.sign(path) : path, entry: { route: entry.route, kind: entry.kind } });
+    const signed = result.key.startsWith(SIGNED_FILE_KEY_PREFIX) ? { signed: true as const } : {};
+    paths.push({ path, entry: { route: entry.route, kind: entry.kind }, ...signed });
   }
   if (paths.length > 0) return { package: pkg, method, url, reach: 'cut-over', paths };
 

@@ -1,5 +1,5 @@
 // Gateway authorisation matrix: every declared route the gateway reaches, probed at its edge paths per subject.
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -33,13 +33,18 @@ import {
   ROUTED_PACKAGES,
   diffOutcomes,
   expectationsFor,
+  forgedExpectations,
   loadMatrices,
   matrixDir,
   matrixExportCommand,
   matrixFile,
+  withEdgeGates,
+  type EdgeGate,
   type Expectation,
   type LoadedMatrix,
   type MatrixDiff,
+  type MatrixFinding,
+  type Observation,
 } from '../../src/security/authz-matrix.js';
 import {
   classifyResponse,
@@ -92,7 +97,6 @@ function roleSubject(name: string): RoleSubject {
   return subject;
 }
 
-const ANONYMOUS_SUBJECT = roleSubject('anonymous').name;
 /** Label of the cookie-less probes that carry a test-key s2 token the running stack must not trust. */
 const FORGED_SUBJECT = 'forged-token';
 /** Callee the forged test-key credentials are addressed to. */
@@ -107,8 +111,8 @@ const FORGED_CONTEXT_HEADERS: Readonly<Record<string, string>> = Object.freeze({
   'X-OPT2-Roles': `${Roles.s2},${Roles.platformOperator}`,
 });
 
-/** Lifetime of the signed-file probe URLs, in seconds: they are signed once and sent within the hook bound. */
-const SIGNED_PROBE_TTL_S = HOOK_TIMEOUT_MS / 1000;
+/** Lifetime of a signed-file probe URL, in seconds: each is signed by the request that sends it. */
+const SIGNED_PROBE_TTL_S = 5 * 60;
 
 /** Bytes and content type of the objects the signed-file probes download. */
 const PROBE_OBJECT_BODY = Buffer.from('opt2 authz probe\n', 'utf8');
@@ -129,6 +133,33 @@ function probeObjects(): ProbeObject[] {
     return { bucket, key, params: { tenantId, objectName: key.slice(tenantId.length + 1) } };
   });
 }
+
+const SURVEYS_API = '/legacy-fixtures/cfml/api.cfm/surveys/surveys';
+const SIGNATURE_API = '/legacy-fixtures/cfml/api.cfm/esignature/requests';
+const FIXTURE_GATE = 'the fixture handler requires a login (else 401) holding an admitted role group (else 403)';
+
+/** Gates that admit fewer subjects than their routes declare; each turns a declared allow of any other subject into a deny. */
+const EDGE_GATES: readonly EdgeGate[] = [
+  {
+    package: 'stub',
+    routes: ['', '/:noteId', '/:noteId/projection'].map((tail) => `GET /opt2/stub/notes${tail}`),
+    admits: [Roles.s2, 'editor'],
+    because: "a path-only probe names no site, so its token is the default site's, where only s2 and editor hold roles",
+  },
+  {
+    package: 'surveys',
+    routes: ['', '/:id', '/:id/responses', '/:id/tasks'].map((tail) => `GET ${SURVEYS_API}${tail}`),
+    admits: [Roles.surveysManager],
+    because: FIXTURE_GATE,
+  },
+  { package: 'e-signature', routes: [`GET ${SIGNATURE_API}`], admits: [Roles.esignatureSigner], because: FIXTURE_GATE },
+  {
+    package: 'e-signature',
+    routes: [`GET ${SIGNATURE_API}/:id/audit`, `GET ${SIGNATURE_API}/:id/verify`],
+    admits: [Roles.esignatureSigner, Roles.esignatureAuditor],
+    because: FIXTURE_GATE,
+  },
+];
 
 /** Relay target filled into the gateway's `:service`: an unknown one is answered by the not-found handler, whose log names no relay route. */
 const RELAY_PROBE_SERVICE = 'identity';
@@ -224,8 +255,11 @@ async function exportMatrices(): Promise<LoadedMatrix[]> {
   return loadMatrices(dir);
 }
 
-/** Sends every cell to its edge path under a fresh `x-request-id` and returns its observations; a subject's session opens at its first cell. */
-async function probeAll(cells: readonly ProbeCell[]): Promise<ReachProbe[]> {
+/**
+ * Sends every cell to its edge path under a fresh `x-request-id` and returns its observations; a subject's session
+ * opens at its first cell. Only the request signs a signed-file path, with `hmacKey`, so observations stay unsigned.
+ */
+async function probeAll(cells: readonly ProbeCell[], hmacKey: Buffer): Promise<ReachProbe[]> {
   const sessions = new Map<string, Promise<SubjectSession>>();
   const forgedAs = roleSubject(Roles.s2);
   const clientFor = async (subject: string): Promise<ProbeClient> => {
@@ -245,9 +279,10 @@ async function probeAll(cells: readonly ProbeCell[]): Promise<ReachProbe[]> {
   await runPool(cells, MAX_IN_FLIGHT, async ({ expectation, path }) => {
     const { session, headers } = await clientFor(expectation.subject);
     const requestId = newProbeRequestId();
+    const expires = Math.floor(Date.now() / 1000) + SIGNED_PROBE_TTL_S;
     const result = await session.request({
       method: expectation.method,
-      path: path.path,
+      path: path.signed === true ? localFileSigner(hmacKey, expires)(path.path) : path.path,
       headers: { ...FORGED_CONTEXT_HEADERS, ...headers, [REQUEST_ID_HEADER]: requestId },
       followRedirects: false,
     });
@@ -274,14 +309,30 @@ async function awaitVerdicts(
   }
 }
 
-/** Asserts that `result` holds no unexpected allow, listing the first findings and their total on failure. */
-function expectNoUnexpectedAllows(result: MatrixDiff): void {
-  const shown = result.unexpectedAllows.slice(0, FINDINGS_SHOWN).map(({ observation: o }) => {
-    const sentTo = 'path' in o ? String(o.path) : o.url;
-    return `${o.package} ${o.method} ${o.url} at ${sentTo} as ${o.subject}: HTTP ${o.status}`;
-  });
-  const total = result.unexpectedAllows.length;
-  expect(shown, `${total} unexpected allow(s); the first ${shown.length} are listed`).toEqual([]);
+/** `<package> <METHOD> <url>` of a cell, the unsigned edge path an observation was sent to, and its subject. */
+function cellLabel(cell: Observation | Expectation): string {
+  const sentTo = 'path' in cell ? ` at ${String(cell.path)}` : '';
+  return `${cell.package} ${cell.method} ${cell.url}${sentTo} as ${cell.subject}`;
+}
+
+/** Asserts that `result` holds no finding, listing the first FINDINGS_SHOWN of each kind and every total on failure. */
+function expectNoFindings(result: MatrixDiff): void {
+  const judged = ({ expectation: e, observation: o }: MatrixFinding): string => {
+    const wanted = e === undefined ? 'no cell' : `${[e.outcome, e.status].filter(Boolean).join(' ')} (${e.reason})`;
+    return `${cellLabel(o)}: HTTP ${o.status}, expected ${wanted}`;
+  };
+  const findings: Record<string, string[]> = {
+    unexpectedAllows: result.unexpectedAllows.map(judged),
+    unexpectedDenies: result.unexpectedDenies.map(judged),
+    statusMismatches: result.statusMismatches.map(judged),
+    missing: result.missing.map((e) => `${cellLabel(e)}: not observed`),
+  };
+  const totals = Object.entries(findings).map(([kind, lines]) => `${lines.length} ${kind}`);
+  const shown = Object.entries(findings).flatMap(([kind, lines]) =>
+    lines.slice(0, FINDINGS_SHOWN).map((line) => `${kind}: ${line}`),
+  );
+  expect(shown, `${totals.join(', ')}; the first ${FINDINGS_SHOWN} of each are listed`).toEqual([]);
+  expect(result.pass).toBe(true);
 }
 
 describe('gateway authorisation matrix', () => {
@@ -290,6 +341,7 @@ describe('gateway authorisation matrix', () => {
   let verdicts: ReachVerdict[];
   let diff: MatrixDiff;
   let forgedDiff: MatrixDiff;
+  let reportFile: string;
   let probing = false;
   let storage: LocalStorageAdapter | undefined;
   const stored: ProbeObject[] = [];
@@ -303,12 +355,10 @@ describe('gateway authorisation matrix', () => {
       loadStorageHmacKey(stateDir()),
     ]);
     const objects = probeObjects();
-    const sign = localFileSigner(hmacKey, Math.floor(Date.now() / 1000) + SIGNED_PROBE_TTL_S);
     reach = gatewayReach({
       matrices: loaded,
       version,
       variants,
-      sign,
       gatewayParams: { service: RELAY_PROBE_SERVICE },
       signedFileParams: Object.fromEntries(objects.map(({ bucket, params }) => [bucket, params])),
     });
@@ -319,17 +369,15 @@ describe('gateway authorisation matrix', () => {
       stored.push(object);
       await storage.put(object.bucket, object.key, PROBE_OBJECT_BODY, { contentType: PROBE_OBJECT_TYPE });
     }
-    const expected = loaded.flatMap((matrix) => expectationsFor(matrix, ROLE_SET));
-    const forgedExpected = expected
-      .filter((expectation) => expectation.subject === ANONYMOUS_SUBJECT)
-      .map((expectation) => ({ ...expectation, subject: FORGED_SUBJECT }));
+    const expected = withEdgeGates(loaded.flatMap((matrix) => expectationsFor(matrix, ROLE_SET)), EDGE_GATES);
+    const forgedExpected = forgedExpectations(expected, FORGED_SUBJECT);
     const { send, skipped } = sendPlan([...expected, ...forgedExpected], reach.probed);
     const owners = [...new Set(reach.probed.map((route) => route.package))];
     const observed = await withRestoredServices(DEBUG_SUCCESS_OWNERS, async () => {
       for (const name of DEBUG_SUCCESS_OWNERS) await restartService(name, { extraEnv: { LOG_LEVEL: 'debug' } });
       const fromOffsets = capturedLogOffsets({ packages: owners });
       probing = true;
-      const observations = await probeAll(send);
+      const observations = await probeAll(send, hmacKey);
       const judge = (index: RequestRecordIndex): ReachVerdict[] =>
         reachVerdicts(reach.probed, [...expected, ...forgedExpected], observations, skipped, index);
       return { probes: observations, verdicts: await awaitVerdicts(judge, owners, fromOffsets) };
@@ -338,8 +386,9 @@ describe('gateway authorisation matrix', () => {
     verdicts = observed.verdicts;
     const forged = (entry: { subject: string }): boolean => entry.subject === FORGED_SUBJECT;
     const role = (entry: { subject: string }): boolean => !forged(entry);
-    // Only sent cells are judged; skipped and unreached cells are reported on their own, so `missing` names lost probes.
-    const sent = [...new Set(send.map((cell) => cell.expectation))];
+    // Only sent cells are judged, each at its unsigned edge path; skipped and unreached cells are reported on their own,
+    // so `missing` names lost probes.
+    const sent = send.map(({ expectation, path }): Expectation => ({ ...expectation, path: path.path }));
     diff = diffOutcomes(sent.filter(role), probes.filter(role));
     forgedDiff = diffOutcomes(sent.filter(forged), probes.filter(forged));
     const securityDir = join(stateDir(), 'security');
@@ -363,7 +412,8 @@ describe('gateway authorisation matrix', () => {
       diff,
       forgedDiff,
     };
-    await writeFile(join(securityDir, 'gateway-matrix.json'), stableStringify(report), 'utf8');
+    reportFile = join(securityDir, 'gateway-matrix.json');
+    await writeFile(reportFile, stableStringify(report), 'utf8');
   }, HOOK_TIMEOUT_MS);
 
   afterAll(async () => {
@@ -397,12 +447,20 @@ describe('gateway authorisation matrix', () => {
     expect(shown, `${failed.length} route(s) without owner evidence; the first ${shown.length} are listed`).toEqual([]);
   });
 
-  it('reports zero unexpected allows for every route and role subject', () => {
-    expectNoUnexpectedAllows(diff);
+  it('reports zero unexpected allows, unexpected denies, wrong denial statuses and lost probes for every route and role subject', () => {
+    expectNoFindings(diff);
   });
 
-  it('denies forged user tokens wherever anonymous is denied', () => {
-    expectNoUnexpectedAllows(forgedDiff);
+  it("gives forged user tokens anonymous's verdict where the gateway forwards and refuses them on its own routes", () => {
+    expectNoFindings(forgedDiff);
+  });
+
+  it('writes signed-file probes to the matrix report as unsigned paths only', async () => {
+    const text = await readFile(reportFile, 'utf8');
+    const written = (JSON.parse(text) as { reach: { reachable: { routes: ProbedRoute[] } } }).reach.reachable.routes;
+    expect(written.some((route) => route.paths.some((path) => path.signed === true))).toBe(true);
+    // A count, so a failure prints no signature.
+    expect(text.match(/[?&](?:sig|expires)=/g)?.length ?? 0, `${reportFile}: signed query values`).toBe(0);
   });
 });
 

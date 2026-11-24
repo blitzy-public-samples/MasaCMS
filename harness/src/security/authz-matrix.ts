@@ -184,7 +184,15 @@ export async function loadMatrices(
 export type Outcome = 'allow' | 'deny';
 
 /** Rule that decided an expectation. */
-export type ExpectationReason = 'public' | 'role' | 'anonymous' | 'missing-role' | 'other-tenant' | 'managed-transport';
+export type ExpectationReason =
+  | 'public'
+  | 'role'
+  | 'anonymous'
+  | 'missing-role'
+  | 'other-tenant'
+  | 'managed-transport'
+  | 'refused-credential'
+  | 'edge-gate';
 
 /** Expected authorisation outcome of one subject on one route; `status` is set only for a deny. */
 export interface Expectation {
@@ -196,6 +204,8 @@ export interface Expectation {
   outcome: Outcome;
   status?: 401 | 403;
   reason: ExpectationReason;
+  /** Edge path the cell is sent to, where its route is probed at several and each path is judged on its own. */
+  path?: string;
 }
 
 type Verdict = Pick<Expectation, 'outcome' | 'status' | 'reason'>;
@@ -219,13 +229,13 @@ const INVOKER_ROLES: Readonly<Record<ManagedTransport, string>> = Object.freeze(
 
 const MANAGED_TRANSPORTS = TRANSPORTS.filter((transport): transport is ManagedTransport => transport !== 'service');
 
-// User requests arrive through the gateway, so they also carry its invocation credential and that credential's roles.
+// User requests the gateway forwards carry its invocation credential and that credential's roles.
 const USER_REQUEST_CALLER = 'gateway';
 
 /** Package whose own routes see a subject's own credentials; the gateway forwards to every other package's routes. */
 const GATEWAY_PACKAGE = 'gateway';
 
-/** The only reader of `RoleSubject` fields. */
+/** The only reader of `RoleSubject` fields; user roles include the gateway's, which only forwarded requests carry. */
 function subjectView(subject: RoleSubject): SubjectView {
   const isUser = subject.kind === 'user';
   return {
@@ -271,11 +281,13 @@ function verdictFor(route: RouteMatrixEntry, view: SubjectView, forwarded: boole
   }
   // A public route still needs an invocation credential, which the gateway's forward supplies, unless it declares invocationOptional.
   const passesWithoutOwnCredential = route.public === true && (forwarded || route.invocationOptional === true);
-  if (view.kind === 'anonymous') {
+  // A user's browser session presents no credential of its own, so the gateway's own routes see it as anonymous.
+  if (view.kind === 'anonymous' || (view.kind === 'user' && !forwarded)) {
     return passesWithoutOwnCredential ? allow('public') : deny(401, 'anonymous');
   }
-  // Managed invokers present no invocation credential here, and the invocation verifier refuses theirs.
+  // The gateway's invocation verifier refuses a managed invoker's credential, which its forward replaces with its own.
   if (view.invokerOf !== undefined) {
+    if (!forwarded) return deny(401, 'refused-credential');
     return passesWithoutOwnCredential ? allow('public') : deny(401, 'managed-transport');
   }
   const verdict = roleVerdict(route, view.roles, view.kind === 'user');
@@ -320,6 +332,73 @@ export function expectationsFor(matrix: LoadedMatrix, subjects: readonly RoleSub
     );
 }
 
+/** `expectation` with `verdict` in place of its own. */
+function withVerdict(expectation: Expectation, verdict: Verdict): Expectation {
+  const { status: _status, ...rest } = expectation;
+  return { ...rest, ...verdict };
+}
+
+/** Kind of each of `subjects`, by name. */
+function kindsOf(subjects: readonly RoleSubject[]): ReadonlyMap<string, RoleSubject['kind']> {
+  return new Map(subjects.map((subject) => [subject.name, subject.kind]));
+}
+
+/** Anonymous's expectations relabelled `name`; the gateway's own routes refuse the forged token with 401. */
+export function forgedExpectations(
+  expected: readonly Expectation[],
+  name: string,
+  subjects: readonly RoleSubject[] = ROLE_SET,
+): Expectation[] {
+  const kinds = kindsOf(subjects);
+  return expected
+    .filter((expectation) => kinds.get(expectation.subject) === 'anonymous')
+    .map((expectation) => {
+      const forged = { ...expectation, subject: name };
+      return forged.package === GATEWAY_PACKAGE ? withVerdict(forged, deny(401, 'refused-credential')) : forged;
+    });
+}
+
+/** A gate the route declarations do not state: on its routes it denies every subject outside `admits`. */
+export interface EdgeGate {
+  package: string;
+  /** `<METHOD> <url>` of each gated route. */
+  routes: readonly string[];
+  /** Names of the subjects the gate lets through to the declared verdict. */
+  admits: readonly string[];
+  because: string;
+}
+
+/**
+ * `expected` with each gated route narrowed by its gate: a declared allow of a subject it does not admit becomes a deny,
+ * 403 for a user and 401 otherwise, and every other cell keeps its declared verdict; throws `MatrixError` when a gate
+ * names a route no expectation carries.
+ */
+export function withEdgeGates(
+  expected: readonly Expectation[],
+  gates: readonly EdgeGate[],
+  subjects: readonly RoleSubject[] = ROLE_SET,
+): Expectation[] {
+  const routeOf = ({ package: pkg, method, url }: Expectation): string => `${pkg} ${method} ${url}`;
+  const carried = new Set(expected.map(routeOf));
+  const gateOf = new Map<string, EdgeGate>();
+  for (const gate of gates) {
+    for (const route of gate.routes) {
+      if (!carried.has(`${gate.package} ${route}`)) {
+        throw new MatrixError(gate.package, `edge gate names ${route}, which no expectation carries`, { route });
+      }
+      gateOf.set(`${gate.package} ${route}`, gate);
+    }
+  }
+  const kinds = kindsOf(subjects);
+  return expected.map((expectation) => {
+    const gate = gateOf.get(routeOf(expectation));
+    if (gate === undefined || expectation.outcome === 'deny' || gate.admits.includes(expectation.subject)) {
+      return expectation;
+    }
+    return withVerdict(expectation, deny(kinds.get(expectation.subject) === 'user' ? 403 : 401, 'edge-gate'));
+  });
+}
+
 /** Status one subject's request received on one route; `url` is the matrix route template. */
 export interface Observation {
   package: string;
@@ -327,6 +406,8 @@ export interface Observation {
   url: string;
   subject: string;
   status: number;
+  /** Edge path the request was sent to; it is matched to the expectation sent to the same path. */
+  path?: string;
 }
 
 /** An observation that contradicts its expectation, or has none. */
@@ -335,7 +416,7 @@ export interface MatrixFinding {
   observation: Observation;
 }
 
-/** Comparison of expected and observed outcomes; `pass` is false on an unexpected allow or unobserved expectation. */
+/** Comparison of expected and observed outcomes; `pass` is false on any finding but an unmatched deny. */
 export interface MatrixDiff {
   unexpectedAllows: MatrixFinding[];
   unexpectedDenies: MatrixFinding[];
@@ -345,15 +426,27 @@ export interface MatrixDiff {
   pass: boolean;
 }
 
-function outcomeKey(entry: Pick<Observation, 'package' | 'method' | 'url' | 'subject'>): string {
+/** Route, subject and, where set, edge path of one cell. */
+type CellRef = Pick<Observation, 'package' | 'method' | 'url' | 'subject' | 'path'>;
+
+function routeSubjectKey(entry: CellRef): string {
   return `${entry.package}|${entry.method.toUpperCase()}|${entry.url}|${entry.subject}`;
 }
 
-function byKey<T>(keyOf: (item: T) => string): (a: T, b: T) => number {
-  return (a, b) => compareText(keyOf(a), keyOf(b));
+/** Key of one cell; a cell carrying an edge path is keyed apart from its route's other paths. */
+function outcomeKey(entry: CellRef): string {
+  return entry.path === undefined ? routeSubjectKey(entry) : `${routeSubjectKey(entry)}|${entry.path}`;
 }
 
-/** Judges each observation against its expectation; 401 and 403 are denies, any other status passed authorisation. */
+/** Orders cells by package, method, url and subject, then by edge path. */
+function cellOrder(a: CellRef, b: CellRef): number {
+  return compareText(routeSubjectKey(a), routeSubjectKey(b)) || compareText(a.path ?? '', b.path ?? '');
+}
+
+/**
+ * Judges each observation against the expectation of its cell, its edge path included where the cell carries one; 401
+ * and 403 are denies, any other status passed authorisation.
+ */
 export function diffOutcomes(expected: readonly Expectation[], observed: readonly Observation[]): MatrixDiff {
   const governing = new Map<string, Expectation>();
   for (const expectation of expected) {
@@ -387,14 +480,14 @@ export function diffOutcomes(expected: readonly Expectation[], observed: readonl
       statusMismatches.push({ expectation, observation });
     }
   }
-  const findingOrder = byKey((finding: MatrixFinding) => outcomeKey(finding.observation));
-  const missing = expected.filter((expectation) => !seen.has(outcomeKey(expectation))).sort(byKey(outcomeKey));
+  const findingOrder = (a: MatrixFinding, b: MatrixFinding): number => cellOrder(a.observation, b.observation);
+  const missing = expected.filter((expectation) => !seen.has(outcomeKey(expectation))).sort(cellOrder);
   return {
     unexpectedAllows: unexpectedAllows.sort(findingOrder),
     unexpectedDenies: unexpectedDenies.sort(findingOrder),
     statusMismatches: statusMismatches.sort(findingOrder),
     missing,
-    unmatched: unmatched.sort(byKey(outcomeKey)),
-    pass: unexpectedAllows.length === 0 && missing.length === 0,
+    unmatched: unmatched.sort(cellOrder),
+    pass: [unexpectedAllows, unexpectedDenies, statusMismatches, missing].every((list) => list.length === 0),
   };
 }
