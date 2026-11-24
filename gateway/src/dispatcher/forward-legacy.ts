@@ -74,7 +74,7 @@ export interface LegacyForwardContext {
   failContext: FailContext;
   /** Longest wait for legacy's head, and between its body bytes; defaults to {@link LEGACY_EXCHANGE_TIMEOUT_MS}. */
   timeoutMs?: number;
-  /** True when legacy's head may hold bytes undici refuses: it is read by Node's lenient parser and relayed byte for byte. */
+  /** True when legacy's head may hold `Location` bytes undici refuses: it is read by the lenient forward and relayed byte for byte. */
   lenientHead?: boolean;
 }
 

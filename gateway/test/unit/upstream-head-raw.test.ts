@@ -1,11 +1,11 @@
-// Tests writeUpstreamHead on header values Node refuses to write: an upstream line kept as received goes out byte for byte, any other refused value throws.
+// Tests writeUpstreamHead on header values Node refuses to write: an upstream Location kept as received goes out byte for byte, any other refused value throws.
 import { Buffer } from 'node:buffer';
 import { createServer, type IncomingHttpHeaders, type OutgoingHttpHeaders, type Server, type ServerResponse } from 'node:http';
 import { connect, type AddressInfo } from 'node:net';
 import { afterEach, describe, expect, it } from 'vitest';
 import { writeUpstreamHead, type RawResponseHead } from '../../src/dispatcher/response-head.js';
 
-/** A `Location` value only a lenient parser reads: DEL, NUL, a C0 control and 0xFF. */
+/** A `Location` value only the lenient forward reads: DEL, NUL, a C0 control and 0xFF. */
 const RAW = './?a\u007f\u0000\u0001b\u00ff';
 
 let server: Server | undefined;
@@ -43,11 +43,19 @@ describe('writeUpstreamHead with a value Node refuses', () => {
     expect(bytes).not.toContain('opt2-raw-');
   });
 
-  it('throws as writeHead does for a refused value the upstream did not send, leaving the response able to send another head', async () => {
+  it.each<[string, RawResponseHead, IncomingHttpHeaders, OutgoingHttpHeaders]>([
+    ['the upstream did not send', head, received, { ...received, location: `${RAW}x` } as OutgoingHttpHeaders],
+    [
+      'outside Location, though the upstream sent it',
+      { ...head, lines: ['Set-Cookie', 'a=\u0001', 'Content-Length', '0'] },
+      { 'set-cookie': ['a=\u0001'], 'content-length': '0' },
+      { 'set-cookie': ['a=\u0001'], 'content-length': '0' },
+    ],
+  ])('throws as writeHead does for a refused value %s, leaving the response able to send another head', async (_case, upstreamHead, upstreamReceived, headers) => {
     let thrown: unknown;
     const bytes = await answer((res) => {
       try {
-        writeUpstreamHead(res, 302, head, received, { ...received, location: `${RAW}x` } as OutgoingHttpHeaders);
+        writeUpstreamHead(res, 302, upstreamHead, upstreamReceived, headers);
       } catch (error) {
         thrown = error;
       }

@@ -10,7 +10,7 @@ import {
 } from 'node:http';
 import type { FastifyReplyFromOptions } from '@fastify/reply-from';
 import { Agent, SERVICE_MAX_HEADER_SIZE, type Dispatcher } from '@opt2/platform/service-kit';
-import { lenientResponse } from './lenient-response.js';
+import { isLegacyLocationValue, LenientForwards } from './lenient-response.js';
 import { sendRequestTarget } from './request-target.js';
 
 /** A final response head as received: status, reason phrase and header lines in wire order, each value's bytes read as latin1. */
@@ -73,17 +73,59 @@ export function recordResponseHead<T>(slot: ResponseHeadSlot, forward: () => T):
   return currentSlot.run(slot, forward);
 }
 
+/** Connections the forward agent opens per origin, and lenient exchanges it holds in flight per origin. */
+export const FORWARD_CONNECTIONS = 128;
+
+/** The forward agent: its close refuses and drains its lenient exchanges alongside its own requests, its destroy fails both. */
+class ForwardAgent extends Agent {
+  /** Whether a close awaits the error-less destroy undici's close makes once its requests drain; not `#`, as `compose` returns a Proxy. */
+  private closeDestroyPending = false;
+
+  constructor(private readonly lenient: LenientForwards) {
+    super({ pipelining: 1, connections: FORWARD_CONNECTIONS, maxHeaderSize: SERVICE_MAX_HEADER_SIZE });
+  }
+
+  override close(): Promise<void>;
+  override close(callback: () => void): void;
+  override close(callback?: (error?: Error | null) => void): Promise<void> | void {
+    if (callback === undefined) return new Promise((resolve, reject) => this.close(settle(resolve, reject)));
+    if (!this.closed && !this.destroyed) this.closeDestroyPending = true;
+    const drained = this.lenient.close();
+    super.close((error?: Error | null) => void drained.then(() => callback(error)));
+  }
+
+  override destroy(): Promise<void>;
+  override destroy(error: Error | null): Promise<void>;
+  override destroy(callback: () => void): void;
+  override destroy(error: Error | null, callback: () => void): void;
+  override destroy(error?: Error | null | (() => void), callback?: () => void): Promise<void> | void {
+    if (typeof error === 'function') return this.destroy(null, error);
+    if (callback === undefined) return new Promise((resolve, reject) => this.destroy(error ?? null, settle(resolve, reject)));
+    // The destroy a close ends in leaves the lenient exchanges to drain; any other fails them.
+    const closing = this.closeDestroyPending && !error;
+    if (closing) this.closeDestroyPending = false;
+    const ended = closing ? this.lenient.close().then(() => this.lenient.destroy(null)) : this.lenient.destroy(error ?? null);
+    super.destroy(error ?? null, () => void ended.then(callback));
+  }
+}
+
+/** An undici callback settling a promise: rejected with its error, else resolved. */
+function settle(resolve: () => void, reject: (error: Error) => void): () => void {
+  return (error?: Error | null) => (error ? reject(error) : resolve());
+}
+
 /**
- * reply-from options of every forward: reply-from's own agent defaults, the lenient parser a forward may ask for, the head
+ * reply-from options of every forward: reply-from's own agent defaults, the lenient forward a forward may ask for, the head
  * recorder, the raw request target, and a response-head limit that admits legacy echoing a request head of its limit (a
- * redirect's `Location`); the agent is destroyed on close.
+ * redirect's `Location`); the agent and its lenient exchanges are destroyed on close.
  * reply-from's per-forward info lines are off, so each request logs only the service kit's request line.
  */
 export function replyFromOptions(): FastifyReplyFromOptions {
-  const agent = new Agent({ pipelining: 1, connections: 128, maxHeaderSize: SERVICE_MAX_HEADER_SIZE });
+  const lenient = new LenientForwards(FORWARD_CONNECTIONS);
+  const agent = new ForwardAgent(lenient);
   // reply-from types `undici` against its own undici copy, but calls only `request(options, callback)` and `destroy()` on it.
   return {
-    undici: agent.compose(lenientResponse, recordHead, sendRequestTarget) as FastifyReplyFromOptions['undici'],
+    undici: agent.compose(lenient.interceptor, recordHead, sendRequestTarget) as FastifyReplyFromOptions['undici'],
     destroyAgent: true,
     disableRequestLogging: true,
   };
@@ -185,8 +227,8 @@ function isUpstreamLine(head: RawResponseHead, name: string, value: string): boo
 }
 
 /**
- * `lines` with each upstream value Node rejects, as a lenient parser reads one, swapped for a placeholder `writeHead` takes,
- * and the raw line each placeholder line stands for; any other value Node rejects throws as `writeHead` does.
+ * `lines` with each upstream `Location` Node rejects, in legacy's form as the lenient forward reads it, swapped for a placeholder
+ * `writeHead` takes, and the raw line each placeholder line stands for; any other value Node rejects throws as `writeHead` does.
  */
 function rawUpstreamLines(head: RawResponseHead, lines: readonly string[]): { lines: string[]; raw: Map<string, string> } {
   const out = [...lines];
@@ -198,7 +240,7 @@ function rawUpstreamLines(head: RawResponseHead, lines: readonly string[]): { li
     try {
       validateHeaderValue(name, value);
     } catch (error) {
-      if (!isUpstreamLine(head, name, value)) throw error;
+      if (name.toLowerCase() !== 'location' || !isLegacyLocationValue(value) || !isUpstreamLine(head, name, value)) throw error;
       const placeholder = `opt2-raw-${randomUUID()}`;
       out[index + 1] = placeholder;
       raw.set(`${name}: ${placeholder}\r\n`, `${name}: ${value}\r\n`);
@@ -210,8 +252,8 @@ function rawUpstreamLines(head: RawResponseHead, lines: readonly string[]): { li
 /**
  * Writes the response head from `head`: its reason phrase while `statusCode` is its status, {@link upstreamHeaderLines},
  * no Date the upstream did not send, the client's HTTP/1.0 or HTTP/1.1, and `Connection` and framing for the client
- * connection, which, when it closes, gets a close-delimited body in place of a chunked one. An upstream value Node
- * refuses to write, which only a lenient parser reads, is written byte for byte. Throws as `writeHead` does, leaving
+ * connection, which, when it closes, gets a close-delimited body in place of a chunked one. An upstream `Location` Node
+ * refuses to write, which only the lenient forward reads, is written byte for byte. Throws as `writeHead` does, leaving
  * `res` able to send another head.
  */
 export function writeUpstreamHead(

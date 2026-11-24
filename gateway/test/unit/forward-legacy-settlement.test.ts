@@ -22,7 +22,7 @@ import {
   type LegacyForwardContext,
   type LegacySettlement,
 } from '../../src/dispatcher/forward-legacy.js';
-import { replyFromOptions } from '../../src/dispatcher/response-head.js';
+import { FORWARD_CONNECTIONS, replyFromOptions } from '../../src/dispatcher/response-head.js';
 import { sendBytes, startHttpDouble, type DoubleHandler, type HttpDouble } from '../helpers/http-double.js';
 
 /** How long the legacy stand-in runs a held write before answering, and again while streaming its answer. */
@@ -45,7 +45,7 @@ type OnSettled = (outcome: LegacySettlement) => Promise<void>;
 type OnBuffered = (res: BufferedLegacyResponse) => Promise<void>;
 
 /** Context fields a test chooses, plus the legacy origin; the rest is fixed. */
-type GatewayOptions = Pick<LegacyForwardContext, 'mode' | 'beforeSend' | 'onBuffered' | 'onSettled' | 'timeoutMs'> & {
+type GatewayOptions = Pick<LegacyForwardContext, 'mode' | 'beforeSend' | 'onBuffered' | 'onSettled' | 'timeoutMs' | 'lenientHead'> & {
   origin?: string;
   /** Registers reply-from with the gateway's agent, which sends the raw request target, in place of reply-from's own. */
   gatewayAgent?: boolean;
@@ -370,6 +370,52 @@ describe('forwardToLegacy when the request never reaches legacy', () => {
     expect(committedAtResponse).toBe(true);
     expect(onSettled.mock.calls).toEqual([['not-sent']]);
     expect(legacy.requests).toHaveLength(0);
+  });
+
+  it("a lenient forward past the agent's bound: settles not-sent, answers the 503 after it, and the next forward goes once one ends", async () => {
+    const waiting: Socket[] = [];
+    let connections = 0;
+    let holding = true;
+    const answer = (socket: Socket): void => void socket.end('HTTP/1.1 204 No Content\r\n\r\n');
+    const server = createTcpServer((socket) => {
+      connections += 1;
+      socket.on('error', () => undefined);
+      socket.once('data', () => (holding ? waiting.push(socket) : answer(socket)));
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    let committed = false;
+    const onSettled = vi.fn<OnSettled>(async (outcome) => {
+      if (outcome !== 'not-sent') return;
+      await delay(SETTLE_DELAY_MS);
+      committed = true;
+    });
+    try {
+      const origin = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}`;
+      const gateway = await startGateway({ mode: 'buffer', onSettled, origin, gatewayAgent: true, lenientHead: true });
+      const held = Array.from({ length: FORWARD_CONNECTIONS }, () => send(gateway, WRITE_PATH).outcome);
+      await vi.waitFor(() => expect(waiting).toHaveLength(FORWARD_CONNECTIONS));
+
+      let committedAtResponse = false;
+      const refused = await send(gateway, WRITE_PATH, {
+        atResponse: () => {
+          committedAtResponse = committed;
+        },
+      }).outcome;
+
+      expect(refused).toMatchObject({ status: 503, complete: true });
+      expect(refused.body.toString()).toBe(LEGACY_ERROR_PAGE_HTML);
+      expect(committedAtResponse).toBe(true);
+      expect(onSettled.mock.calls).toEqual([['not-sent']]);
+      expect(connections).toBe(FORWARD_CONNECTIONS);
+      holding = false;
+      for (const socket of waiting) answer(socket);
+      expect((await Promise.all(held)).map((outcome) => outcome.status)).toEqual(Array.from({ length: FORWARD_CONNECTIONS }, () => 204));
+      await vi.waitFor(async () => expect((await send(gateway, WRITE_PATH).outcome).status).toBe(204));
+      expect(onSettled.mock.calls.filter(([outcome]) => outcome === 'completed').length).toBeGreaterThan(FORWARD_CONNECTIONS);
+    } finally {
+      for (const socket of waiting) socket.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 });
 
