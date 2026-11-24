@@ -1,5 +1,4 @@
 // Stored toauthtokens.data text: ACF serializeJSON(getSession()), its isJSON/deserializeJSON read-back and getTokenInfo.
-import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   ACF_SESSION_JSON_LAYOUT,
@@ -11,6 +10,7 @@ import {
   serializeLegacySessionJson,
   tokenInfoFromSessionJson,
 } from '../../src/legacy/session-json.js';
+import { STORED_SESSION_JSON } from '../helpers/session-fixture.js';
 
 const USER_ID = 'A1B2C3D4-E5F6-4A7B-8C9D0E1F2A3B4C5D';
 const ADMIN_GROUP_ID = 'B2C3D4E5-F6A7-4B8C-9D0E1F2A3B4C5D6E';
@@ -31,7 +31,7 @@ const CAPTURED_SESSION_JSON =
   '"LASTLOGIN":"June, 29 2026 17:45:30"},' +
   '"blockLoginUntil":"","SITEID":"tenant-a","rememberMe":"0","loginAttempts":"0"}';
 
-const PROBE_SESSION_JSON = readFileSync(new URL('../fixtures/legacy/oauth-token-data.json', import.meta.url), 'utf8');
+const PROBE_SESSION_JSON = STORED_SESSION_JSON;
 
 const TOKEN_INFO_HIDDEN = new Set(['csrfsecretkey', 'csrfusedtokens', 'isloggedin', 'lastlogin', 'password']);
 

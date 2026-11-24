@@ -49,6 +49,7 @@ import {
 } from '../../src/migration/mappings/index.js';
 import { EXTEND_SUBTYPE, IDENTITY_UNITS, OWNED_TABLES, UNIT_TABLES } from '../../src/repo/tables.js';
 import { buildTestApp, headersFor, type TestApp } from '../helpers/app.js';
+import { STORED_SESSION_JSON } from '../helpers/session-fixture.js';
 
 const OWNER = 'identity';
 const SITE_ID = 'tenant-a';
@@ -252,7 +253,7 @@ const NULL_AND_EMPTY: Readonly<Record<string, readonly [nulls: readonly string[]
   'identity.extend_data': [['remoteID'], ['attributeValue']],
 };
 
-const SESSION_DOCUMENT = readFileSync(new URL('../fixtures/legacy/oauth-token-data.json', import.meta.url), 'utf8');
+const SESSION_DOCUMENT = STORED_SESSION_JSON;
 const TRASH_DOCUMENT =
   "<wddxPacket version='1.0'><header/><data><struct type='coldfusion.runtime.Struct'>" +
   `<var name='USERID'><string>${GROUP_ID}</string></var><var name='GROUPNAME'><string>Editors: QA</string></var>` +

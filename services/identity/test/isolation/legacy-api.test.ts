@@ -65,6 +65,7 @@ import {
   type OracleAnswer,
 } from '../helpers/legacy-api.js';
 import { TEST_PASSWORDS } from '../helpers/rows.js';
+import { STORED_SESSION_JSON } from '../helpers/session-fixture.js';
 
 const SITE_C = 'tenant-c';
 const SECRET = 'K0000000-0000-0000-0000000000000003';
@@ -1040,7 +1041,7 @@ describe.skipIf(!available)('JSON API against PostgreSQL', () => {
     it('answers a group read with the 500 after a migrated token restored its session JSON, which raises nothing itself', async () => {
       const { rest } = routeDeps(handle.app, repo, people, outbound.fetch, SETTINGS);
       const token = nextId('T');
-      const data = readFileSync(new URL('../fixtures/legacy/oauth-token-data.json', import.meta.url), 'utf8');
+      const data = STORED_SESSION_JSON;
       const expires = new Date(NOW.getTime() + 3_600_000);
       await gated(SITE_C, (tx) => repo.insertToken(tx, { token, granttype: 'password', clientid: nextId('C'), userid: S2.sub, accesscode: null, data, expires }));
       const url = `/_api/rest/v1/${SITE_C}/group/${ids.helpers}`;
@@ -1058,7 +1059,7 @@ describe.skipIf(!available)('JSON API against PostgreSQL', () => {
     // The credential block reads url.access_token as start-up's scan trims it (jsonApiUtility.cfc:484-533).
     it('answers tokeninfo of a space-padded URL token as of the token itself', async () => {
       const token = nextId('T');
-      const data = readFileSync(new URL('../fixtures/legacy/oauth-token-data.json', import.meta.url), 'utf8');
+      const data = STORED_SESSION_JSON;
       const expires = new Date(NOW.getTime() + 3_600_000);
       await gated(SITE_C, (tx) => repo.insertToken(tx, { token, granttype: 'password', clientid: nextId('C'), userid: S2.sub, accesscode: null, data, expires }));
       const url = (sent: string): string => `/_api/rest/v1/${SITE_C}/oauth2/tokeninfo?${new URLSearchParams({ access_token: sent, client_id: 'x' }).toString()}`;

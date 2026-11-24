@@ -1,5 +1,4 @@
 /** REST credential exchange and OAuth token endpoints through `authenticateRestRequest`, against legacy's observed ACF 2023 answers and a throwaway `identity` schema. */
-import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import bcrypt from 'bcryptjs';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -14,6 +13,7 @@ import { parseLegacySessionJson } from '../../src/legacy/session-json.js';
 import { createIdentityRepository, type IdentityRepository } from '../../src/repo/repository.js';
 import { IDENTITY_UNITS } from '../../src/repo/tables.js';
 import { authenticateRestRequest, type OAuthRouteDeps, type RestAuthInput, type RestAuthOutcome } from '../../src/routes/oauth.js';
+import { STORED_SESSION_JSON } from '../helpers/session-fixture.js';
 
 const NOW = new Date(2026, 5, 30, 12, 0, 0, 0);
 const CLOCK = fixedClock(NOW);
@@ -24,7 +24,7 @@ const SITE_A = 'tenant-a';
 /** A site legacy holds and identity's registry does not, so no REST event of it builds a content renderer. */
 const GHOST = 'ghost';
 const FAST_SETTINGS: LoginSettings = { password: { ...DEFAULT_LOGIN_SETTINGS.password, bcryptLogRounds: 4 }, strikes: DEFAULT_LOGIN_SETTINGS.strikes };
-const STORED_SESSION = readFileSync(new URL('../fixtures/legacy/oauth-token-data.json', import.meta.url), 'utf8');
+const STORED_SESSION = STORED_SESSION_JSON;
 const STORED_USER = '7E3C1A20-5B4D-4F6E-8A9B0C1D2E3F4A5B';
 /** `info` of the stored session as legacy answered it, keys and order included. */
 const STORED_INFO =
