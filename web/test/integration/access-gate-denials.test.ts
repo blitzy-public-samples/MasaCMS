@@ -55,8 +55,8 @@ describe('deniedGate', () => {
   ])('sends a 401 in %s mode under %j where the application gate sends a public user', (mode, settings, location) => {
     useSettings(settings);
     // Legacy's gate sends a public user without sites to clogin.logout.
-    const gated = noSitesRequest({ s2IsPrivate: false }, { circuit: 'cusers', item: 'list' });
-    const denied = deniedGate(401, { mode, headers: new Headers({ referer: REFERER }) });
+    const gated = noSitesRequest({ s2IsPrivate: false }, { circuit: 'cusers', item: 'list', mode });
+    const denied = deniedGate(401, { headers: new Headers({ referer: REFERER }) });
 
     expect(denied).toEqual({ kind: 'redirect', location });
     expect(denied).toEqual(applicationGate(gated));
@@ -152,7 +152,7 @@ describe('a service answer through the production gateway client', () => {
 
     expect(error).toBeInstanceOf(GatewayDenialError);
     expect(error).toMatchObject({ service, operation, status });
-    const carried = { mode: 'page' as const, headers: new Headers() };
+    const carried = { headers: new Headers() };
     expect(deniedGate((error as GatewayDenialError).status, carried)).toEqual({ kind: 'redirect', location: to });
     expect(fake.requests.find(({ path }) => key.endsWith(path))?.headers.authorization).toMatch(/^Bearer /);
   });

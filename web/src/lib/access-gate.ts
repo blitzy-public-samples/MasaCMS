@@ -57,7 +57,7 @@ export function applicationGate(req: AdminRequest): GateDecision {
 }
 
 /** Handlers answer a GatewayDenialError with this: clogin.logout for its 401, the circuit's `secure()` for its 403. */
-export function deniedGate(status: 401 | 403, req: Pick<AdminRequest, 'mode' | 'headers'>): GateDecision {
+export function deniedGate(status: 401 | 403, req: Pick<AdminRequest, 'headers'>): GateDecision {
   if (status === 401) return redirectTo(adminActionPath(ADMIN_LOGIN_REDIRECT_ACTION));
   return backUp(req.headers);
 }

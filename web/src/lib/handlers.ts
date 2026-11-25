@@ -175,14 +175,14 @@ function uploadsOf(form: FormData | URLSearchParams): UploadPart[] {
 /** The answer for a failed request, with the fixed reason of an expected refusal; an unmapped error gets legacy's 500. */
 function answerFailure<T>(
   error: unknown,
-  input: Pick<PipelineRequest, 'mode' | 'headers'>,
+  input: Pick<PipelineRequest, 'headers'>,
   answers: Answers<T>,
   context: LegacyResponseContext,
 ): { answer: T; denial?: string } {
   if (error instanceof LegacyServiceUnavailableError) return { answer: answers.unavailable(context) };
   if (error instanceof WebAuthError) return { answer: answers.refused(error.status), denial: error.reason };
   if (error instanceof GatewayDenialError) {
-    const denied = deniedGate(error.status, { mode: input.mode, headers: input.headers });
+    const denied = deniedGate(error.status, input);
     if (denied.kind === 'redirect') {
       return {
         answer: answers.redirect(denied.location, [], context),
