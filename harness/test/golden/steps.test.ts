@@ -1656,7 +1656,7 @@ describe('runStep extraction', () => {
   });
 
   it('binds dom values from markup held in a JSON body string', async () => {
-    const route = '/admin/?muraAction=cUsers.loadExtendedAttributes&baseID=FIXTURE-USER-9&type=2&subType=GSPE06';
+    const route = '/admin/?muraAction=cUsers.loadExtendedAttributes&baseID=FIXTURE-USER-9&type=2&subType=FixtureSubType';
     const fake = fakeOrigin({ [`GET ${route}`]: fragments });
     const { record } = await runSingle(
       {
