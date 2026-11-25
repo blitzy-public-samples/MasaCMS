@@ -2,7 +2,7 @@ openapi: 3.1.0
 info:
   title: openapi-components
   version: 1.0.0
-  description: Components the service, gateway and migration contracts share; each contract aliases every one it uses under the same name.
+  description: Components the service, gateway and migration contracts share; each contract aliases every one it uses, a base component or an `x-opt2-variants` variant, under the same name.
   license:
     name: GPL-2.0-only
     identifier: GPL-2.0-only
@@ -1284,3 +1284,136 @@ components:
           $ref: '#/components/schemas/NullableString'
         finishedAt:
           $ref: '#/components/schemas/LocalTimestamp'
+x-opt2-variants:
+  oauth:
+    headers:
+      WWWAuthenticate:
+        description: Challenge legacy sets before the failure; the `invalid_grant_type` value keeps legacy's missing closing quote.
+        schema:
+          type: string
+          examples:
+            - Basic
+            - 'Bearer error="invalid_access_token"'
+            - Bearer
+            - 'Bearer error="invalid_client_credentials"'
+            - 'Bearer error="invalid_authorization_code"'
+            - 'Bearer error="invalid_client_refresh_token"'
+            - 'Bearer error="invalid_grant_type'
+    responses:
+      BadRequest:
+        description: 'Legacy 400: `invalidParameters`, `badRequest` or `invalidTokens`.'
+        headers:
+          Generator:
+            $ref: '#/components/headers/Generator'
+          Strict-Transport-Security:
+            $ref: '#/components/headers/StrictTransportSecurity'
+          ETag:
+            $ref: '#/components/headers/ETag'
+        content:
+          application/json;charset=utf-8:
+            schema:
+              $ref: '#/x-opt2-variants/oauth/schemas/LegacyError'
+      Forbidden:
+        description: The verified identities hold none of the required roles, or a supplied `siteid` differs from the token's site.
+        headers:
+          Generator:
+            $ref: '#/components/headers/Generator'
+          Strict-Transport-Security:
+            $ref: '#/components/headers/StrictTransportSecurity'
+          ETag:
+            $ref: '#/components/headers/ETag'
+        content:
+          application/json;charset=utf-8:
+            schema:
+              $ref: '#/x-opt2-variants/oauth/schemas/LegacyError'
+      LegacyNotFound:
+        description: Legacy 404 (`mura404`) in the error envelope.
+        headers:
+          Generator:
+            $ref: '#/components/headers/Generator'
+          Strict-Transport-Security:
+            $ref: '#/components/headers/StrictTransportSecurity'
+          ETag:
+            $ref: '#/components/headers/ETag'
+        content:
+          application/json;charset=utf-8:
+            schema:
+              $ref: '#/x-opt2-variants/oauth/schemas/LegacyError'
+      NotFound:
+        description: Legacy 404 in the error envelope.
+        headers:
+          Generator:
+            $ref: '#/components/headers/Generator'
+          Strict-Transport-Security:
+            $ref: '#/components/headers/StrictTransportSecurity'
+          ETag:
+            $ref: '#/components/headers/ETag'
+        content:
+          application/json;charset=utf-8:
+            schema:
+              $ref: '#/x-opt2-variants/oauth/schemas/LegacyError'
+      ServerError:
+        description: Legacy 500 `server_error`.
+        headers:
+          Generator:
+            $ref: '#/components/headers/Generator'
+          Strict-Transport-Security:
+            $ref: '#/components/headers/StrictTransportSecurity'
+          ETag:
+            $ref: '#/components/headers/ETag'
+        content:
+          application/json;charset=utf-8:
+            schema:
+              $ref: '#/x-opt2-variants/oauth/schemas/LegacyError'
+      Unauthorized:
+        description: 'Legacy 401: `authorization` without a qualifying credential, or `invalidAccessToken`/`accessTokenExpired` for a bad user token.'
+        headers:
+          Generator:
+            $ref: '#/components/headers/Generator'
+          Strict-Transport-Security:
+            $ref: '#/components/headers/StrictTransportSecurity'
+          ETag:
+            $ref: '#/components/headers/ETag'
+          WWW-Authenticate:
+            $ref: '#/x-opt2-variants/oauth/headers/WWWAuthenticate'
+        content:
+          application/json;charset=utf-8:
+            schema:
+              $ref: '#/x-opt2-variants/oauth/schemas/LegacyError'
+    schemas:
+      LegacyError:
+        type: object
+        description: Legacy JSON API error envelope.
+        required:
+          - apiversion
+          - method
+          - error
+        additionalProperties: true
+        properties:
+          apiversion:
+            type: string
+            const: v1
+          method:
+            type: string
+          params:
+            type: object
+          error:
+            $ref: '#/components/schemas/LegacyErrorBody'
+  without-layout:
+    schemas:
+      LegacyEnvelope:
+        type: object
+        description: Legacy JSON API success envelope; `params` is absent under `suppressAPIParams`, and `data` keys move to the top level when `useDataNamespace` is false.
+        required:
+          - apiversion
+          - method
+        additionalProperties: true
+        properties:
+          apiversion:
+            type: string
+            const: v1
+          method:
+            type: string
+          params:
+            type: object
+          data: {}

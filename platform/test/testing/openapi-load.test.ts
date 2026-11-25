@@ -68,6 +68,36 @@ describe('loadOpenApiDocument', () => {
     });
   });
 
+  it('replaces a variant alias with the variant, its variant refs rebound to the same-named components', () => {
+    const loaded = loadOpenApiDocument(new URL('variant/openapi.json', FIXTURES), JSON.parse);
+    const rebound = JSON.parse(JSON.stringify(SHARED['x-opt2-variants']).replaceAll('#/x-opt2-variants/strict/', '#/components/')) as Record<string, Json>;
+    expect(componentsOf(loaded)).toEqual({ ...rebound.strict, headers: { WritePosition: componentsOf(SHARED).headers?.WritePosition } });
+    const response = { method: 'GET', path: '/v1/health', contentType: 'application/json' };
+    expect(assertResponseMatchesOpenApi(loaded, { ...response, status: 200, body: { status: 'degraded' } })).toEqual({ status: 'degraded' });
+    expect(assertResponseMatchesOpenApi(loaded, { ...response, status: 401, body: '"degraded"' })).toBe('degraded');
+    expect(() => assertResponseMatchesOpenApi(loaded, { ...response, status: 200, body: { status: 'ok', extra: true } })).toThrow(
+      ContractAssertionError,
+    );
+  });
+
+  it('rewrites a variant ref object shared by two places of a copy at both places', () => {
+    const parse = (text: string): unknown => {
+      const doc = JSON.parse(text) as { 'x-opt2-variants'?: { strict: { schemas: { Health: { properties: Json } } } } };
+      const properties = doc['x-opt2-variants']?.strict.schemas.Health.properties;
+      if (properties !== undefined) {
+        properties.again = properties.status; // mirrors a YAML alias: one object at two places
+      }
+      return doc;
+    };
+    const loaded = loadOpenApiDocument(new URL('variant/openapi.json', FIXTURES), parse);
+    const status = { $ref: '#/components/schemas/Status' };
+    expect((componentsOf(loaded).schemas?.Health as { properties: Json }).properties).toEqual({ status, again: status });
+    const response = { method: 'GET', path: '/v1/health', status: 200, contentType: 'application/json' };
+    const body = { status: 'degraded', again: 'degraded' };
+    expect(assertResponseMatchesOpenApi(loaded, { ...response, body })).toEqual(body);
+    expect(() => assertResponseMatchesOpenApi(loaded, { ...response, body: { ...body, again: 'down' } })).toThrow(ContractAssertionError);
+  });
+
   it('returns a self-contained document deep-equal to its parse', () => {
     const file = new URL('shared.json', FIXTURES);
     expect(loadOpenApiDocument(file, JSON.parse)).toEqual(JSON.parse(readFileSync(file, 'utf8')));
@@ -105,6 +135,10 @@ describe('loadOpenApiDocument', () => {
     ['a non-local $ref outside components', 'outside-component.json', /outside-component\.json#\/paths\/~1x\/get\/responses\/200: \$ref \.\.\/shared\.json#\/components\/responses\/Unauthorized is not local/],
     ['a non-local $ref inside a target', 'target-outside-component.json', /target-with-nested-ref\.json#\/components\/schemas\/Wrapped\/properties\/a: .* is not local/],
     ['a local $ref the result does not resolve', 'unresolved-local.json', /unresolved-local\.json#\/components\/schemas\/Health\/properties\/status: \$ref #\/components\/schemas\/Status does not resolve/],
+    ['a copied $ref a same-named local definition would rebind', 'rebound-local.json', /rebound-local\.json#\/components\/schemas\/Health\/properties\/status: \$ref #\/components\/schemas\/Status designates \S+shared\.json#\/components\/schemas\/Status but would bind to the local definition #\/components\/schemas\/Status$/],
+    ['a copied $ref an alias of another definition would rebind', 'rebound-alias.json', /rebound-alias\.json#\/components\/schemas\/Health\/properties\/status: \$ref #\/components\/schemas\/Status designates \S+shared\.json#\/components\/schemas\/Status but would bind to \S+shared\.json#\/x-opt2-variants\/strict\/schemas\/Status$/],
+    ['a copied $ref to part of a component', 'partial-ref.json', /partial-ref\.json#\/x-opt2-variants\/v\/schemas\/Pair\/properties\/b: \$ref #\/x-opt2-variants\/v\/schemas\/Pair\/properties\/a does not point to a whole component$/],
+    ['a copied $ref its own file does not resolve', 'dangling-ref.json', /dangling-ref\.json#\/x-opt2-variants\/v\/schemas\/Pair\/properties\/a: \$ref #\/x-opt2-variants\/v\/schemas\/Absent does not resolve: \S+dangling-ref\.json has no #\/x-opt2-variants\/v\/schemas\/Absent$/],
   ])('throws a TypeError naming the file and pointer for %s', (_label, fixture, message) => {
     const error = thrown(() => loadOpenApiDocument(new URL(`errors/${fixture}`, FIXTURES), JSON.parse));
     expect(error).toBeInstanceOf(TypeError);

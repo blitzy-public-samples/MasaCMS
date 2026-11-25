@@ -4201,17 +4201,7 @@ components:
     AccessControlAllowCredentials:
       $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/headers/AccessControlAllowCredentials'
     WWWAuthenticate:
-      description: Challenge legacy sets before the failure; the `invalid_grant_type` value keeps legacy's missing closing quote.
-      schema:
-        type: string
-        examples:
-          - Basic
-          - 'Bearer error="invalid_access_token"'
-          - Bearer
-          - 'Bearer error="invalid_client_credentials"'
-          - 'Bearer error="invalid_authorization_code"'
-          - 'Bearer error="invalid_client_refresh_token"'
-          - 'Bearer error="invalid_grant_type'
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/x-opt2-variants/oauth/headers/WWWAuthenticate'
     ConnectionClose:
       description: The connection closes after the answer.
       schema:
@@ -4629,18 +4619,7 @@ components:
               - $ref: '#/components/schemas/PeopleEnvelope'
               - $ref: '#/components/schemas/LegacyError'
     LegacyNotFound:
-      description: Legacy 404 (`mura404`) in the error envelope.
-      headers:
-        Generator:
-          $ref: '#/components/headers/Generator'
-        Strict-Transport-Security:
-          $ref: '#/components/headers/StrictTransportSecurity'
-        ETag:
-          $ref: '#/components/headers/ETag'
-      content:
-        application/json;charset=utf-8:
-          schema:
-            $ref: '#/components/schemas/LegacyError'
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/x-opt2-variants/oauth/responses/LegacyNotFound'
     LegacyServerError:
       description: Legacy 500 `server_error`.
       headers:
@@ -4694,72 +4673,15 @@ components:
         Connection:
           $ref: '#/components/headers/ConnectionClose'
     BadRequest:
-      description: 'Legacy 400: `invalidParameters`, `badRequest` or `invalidTokens`.'
-      headers:
-        Generator:
-          $ref: '#/components/headers/Generator'
-        Strict-Transport-Security:
-          $ref: '#/components/headers/StrictTransportSecurity'
-        ETag:
-          $ref: '#/components/headers/ETag'
-      content:
-        application/json;charset=utf-8:
-          schema:
-            $ref: '#/components/schemas/LegacyError'
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/x-opt2-variants/oauth/responses/BadRequest'
     Unauthorized:
-      description: 'Legacy 401: `authorization` without a qualifying credential, or `invalidAccessToken`/`accessTokenExpired` for a bad user token.'
-      headers:
-        Generator:
-          $ref: '#/components/headers/Generator'
-        Strict-Transport-Security:
-          $ref: '#/components/headers/StrictTransportSecurity'
-        ETag:
-          $ref: '#/components/headers/ETag'
-        WWW-Authenticate:
-          $ref: '#/components/headers/WWWAuthenticate'
-      content:
-        application/json;charset=utf-8:
-          schema:
-            $ref: '#/components/schemas/LegacyError'
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/x-opt2-variants/oauth/responses/Unauthorized'
     Forbidden:
-      description: The verified identities hold none of the required roles, or a supplied `siteid` differs from the token's site.
-      headers:
-        Generator:
-          $ref: '#/components/headers/Generator'
-        Strict-Transport-Security:
-          $ref: '#/components/headers/StrictTransportSecurity'
-        ETag:
-          $ref: '#/components/headers/ETag'
-      content:
-        application/json;charset=utf-8:
-          schema:
-            $ref: '#/components/schemas/LegacyError'
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/x-opt2-variants/oauth/responses/Forbidden'
     NotFound:
-      description: Legacy 404 in the error envelope.
-      headers:
-        Generator:
-          $ref: '#/components/headers/Generator'
-        Strict-Transport-Security:
-          $ref: '#/components/headers/StrictTransportSecurity'
-        ETag:
-          $ref: '#/components/headers/ETag'
-      content:
-        application/json;charset=utf-8:
-          schema:
-            $ref: '#/components/schemas/LegacyError'
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/x-opt2-variants/oauth/responses/NotFound'
     ServerError:
-      description: Legacy 500 `server_error`.
-      headers:
-        Generator:
-          $ref: '#/components/headers/Generator'
-        Strict-Transport-Security:
-          $ref: '#/components/headers/StrictTransportSecurity'
-        ETag:
-          $ref: '#/components/headers/ETag'
-      content:
-        application/json;charset=utf-8:
-          schema:
-            $ref: '#/components/schemas/LegacyError'
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/x-opt2-variants/oauth/responses/ServerError'
     QueueControlled:
       description: The queue's state after the operation.
       content:
@@ -4863,23 +4785,7 @@ components:
     LegacyErrorBody:
       $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/schemas/LegacyErrorBody'
     LegacyError:
-      type: object
-      description: Legacy JSON API error envelope.
-      required:
-        - apiversion
-        - method
-        - error
-      additionalProperties: true
-      properties:
-        apiversion:
-          type: string
-          const: v1
-        method:
-          type: string
-        params:
-          type: object
-        error:
-          $ref: '#/components/schemas/LegacyErrorBody'
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/x-opt2-variants/oauth/schemas/LegacyError'
     LegacyUnavailable:
       $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/schemas/LegacyUnavailable'
     LegacyErrors:

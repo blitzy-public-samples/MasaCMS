@@ -106,7 +106,7 @@ Loading:
 |---|---|
 | `contracts/event-envelope.v1.json` | `eventId`, `eventType`, `schemaVersion`, `tenantId`, `occurredAt`, `producer`, `aggregateType`, `aggregateId`, `aggregateVersion`, `traceparent`, `tracestate`, `correlationId`, `causationId`, `payload` |
 | `contracts/log-record.v1.json` | `timestamp`, `severity`, `message`, `service`, `version`, `env`; `traceId`, `spanId`, `traceSampled`; `tenantId`, `userId`, `requestId`, `eventId`; `route`, `httpMethod`, `statusCode`, `latencyMs`; `error.{type,message,stack}`; in the cloud also `logging.googleapis.com/{trace,spanId,trace_sampled}` |
-| `contracts/openapi-components.v1.yaml` | OpenAPI components shared by the service, gateway and migration contracts. Each `contracts/openapi.yaml` keeps every component name and aliases a shared one as `{$ref: <this file>#/components/<kind>/<name>}`; load such a document in tests with `loadOpenApiDocument` |
+| `contracts/openapi-components.v1.yaml` | OpenAPI components shared by the service, gateway and migration contracts. Each `contracts/openapi.yaml` keeps every component name and aliases a shared one under the same name as `{$ref: <this file>#/components/<kind>/<name>}`, or a variant as `{$ref: <this file>#/x-opt2-variants/<variant>/<kind>/<name>}`; load such a document in tests with `loadOpenApiDocument` |
 
 - Pub/Sub attributes mirror `eventId`, `eventType`, `schemaVersion`, `tenantId`, `aggregateVersion` and `traceparent`. The ordering key is `aggregateId`.
 - Topics are named `<service>.<entity>.<event>.v<major>`. Each producer owns its payload schemas under `services/<producer>/contracts/events/<topic>.json` (AAP 0.4.4).

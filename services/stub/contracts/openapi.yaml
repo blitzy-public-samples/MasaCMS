@@ -1114,21 +1114,7 @@ components:
     NullableString:
       $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/schemas/NullableString'
     LegacyEnvelope:
-      type: object
-      description: Legacy JSON API success envelope; `params` is absent under `suppressAPIParams`, and `data` keys move to the top level when `useDataNamespace` is false.
-      required:
-        - apiversion
-        - method
-      additionalProperties: true
-      properties:
-        apiversion:
-          type: string
-          const: v1
-        method:
-          type: string
-        params:
-          type: object
-        data: {}
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/x-opt2-variants/without-layout/schemas/LegacyEnvelope'
     LegacyError:
       $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/schemas/LegacyError'
     LegacyUnavailable:
