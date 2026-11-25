@@ -1,12 +1,12 @@
-// Committed reconciliation evidence as one full baseline report plus difference records; the runtime writer is untouched.
+// Committed reconciliation evidence as one full baseline report plus difference records against it; the runtime writer is untouched.
 import { createHash } from 'node:crypto';
-import { readdir, readFile, unlink } from 'node:fs/promises';
+import { readdir, readFile, rm, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { loadConfig, resolveReportsDir } from '../config.js';
 import { readSourceSha, writeFileAtomic } from '../reports/index.js';
-import { RECONCILIATION_DIR } from './report.js';
+import { RECONCILIATION_DIR, renderSummary, type SummaryRow } from './report.js';
 
 /** Subdirectory of `reconciliation/` holding the archived points. */
 export const ARCHIVE_DIR = 'archive';
@@ -31,12 +31,11 @@ export interface JsonObject {
 /** Object key or array index. */
 export type PathSegment = string | number;
 
-/** One edit, applied in record order to the base report. */
+/** One edit, applied in record order to the baseline report. */
 export type Operation =
   | { op: 'set'; path: PathSegment[]; value: JsonValue }
   | { op: 'delete'; path: PathSegment[] }
-  | { op: 'splice'; path: PathSegment[]; index: number; remove: number; insert: JsonValue[] }
-  | { op: 'order'; path: PathSegment[]; keys: string[] };
+  | { op: 'splice'; path: PathSegment[]; index: number; remove: number; insert: JsonValue[] };
 
 /** A value replaced before archiving. */
 export interface Redaction {
@@ -44,7 +43,7 @@ export interface Redaction {
   rule: string;
 }
 
-/** A point stored as the operations that turn its base point's report into its own. */
+/** A point stored as the operations that turn the baseline report into its own. */
 export interface DifferenceRecord {
   sourceSha: string;
   generatedBy: string;
@@ -52,7 +51,7 @@ export interface DifferenceRecord {
   tableVersion: string | null;
   snapshotSeq: number | null;
   result: string;
-  /** Point whose reconstructed report the operations apply to. */
+  /** The baseline point the operations apply to. */
   base: string;
   /** SHA-256 of the reconstructed report's compact bytes. */
   sha256: string;
@@ -68,10 +67,6 @@ export class ArchiveError extends Error {
   override readonly name = 'ArchiveError';
 }
 
-/** Hunks whose pairings cost more cells than this align positionally. */
-const ALIGN_LIMIT = 4096;
-/** Arrays whose common-subsequence table exceeds this many cells diff as one hunk. */
-const LCS_LIMIT = 4_000_000;
 const ABSOLUTE_REPORT_PATH = /^\/(?:.*\/)?(opt2\/reports\/[^/].*)$/;
 
 function isObject(value: JsonValue | undefined): value is JsonObject {
@@ -105,131 +100,39 @@ export function diffJson(base: JsonValue, target: JsonValue, at: PathSegment[] =
   return ops !== undefined && sizeOf(ops) < sizeOf(replace) ? ops : replace;
 }
 
-function diffObject(base: JsonObject, target: JsonObject, at: PathSegment[]): Operation[] {
-  const ops: Operation[] = [];
-  const baseKeys = Object.keys(base);
+/** Per-key edits, or `undefined` when the target's key order cannot come from deletes and appended sets. */
+function diffObject(base: JsonObject, target: JsonObject, at: PathSegment[]): Operation[] | undefined {
   const targetKeys = Object.keys(target);
-  for (const key of baseKeys) if (!Object.hasOwn(target, key)) ops.push({ op: 'delete', path: [...at, key] });
+  const kept = Object.keys(base).filter((key) => Object.hasOwn(target, key));
+  const order = [...kept, ...targetKeys.filter((key) => !Object.hasOwn(base, key))];
+  if (order.some((key, i) => key !== targetKeys[i])) return undefined;
+  const ops: Operation[] = Object.keys(base)
+    .filter((key) => !Object.hasOwn(target, key))
+    .map((key): Operation => ({ op: 'delete', path: [...at, key] }));
   for (const key of targetKeys) {
     const value = target[key] as JsonValue;
     if (Object.hasOwn(base, key)) ops.push(...diffJson(base[key] as JsonValue, value, [...at, key]));
     else ops.push({ op: 'set', path: [...at, key], value });
   }
-  const order = [...baseKeys.filter((key) => Object.hasOwn(target, key)), ...targetKeys.filter((key) => !Object.hasOwn(base, key))];
-  if (order.some((key, i) => key !== targetKeys[i])) ops.push({ op: 'order', path: at, keys: targetKeys });
   return ops;
 }
 
-/** Index pairs of a longest common subsequence of `a` and `b`. */
-function commonPairs(a: readonly number[], b: readonly number[]): [number, number][] {
-  const width = b.length + 1;
-  if ((a.length + 1) * width > LCS_LIMIT) return [];
-  const table = new Int32Array((a.length + 1) * width);
-  for (let i = a.length - 1; i >= 0; i--) {
-    for (let j = b.length - 1; j >= 0; j--) {
-      table[i * width + j] =
-        a[i] === b[j] ? (table[(i + 1) * width + j + 1] ?? 0) + 1 : Math.max(table[(i + 1) * width + j] ?? 0, table[i * width + j + 1] ?? 0);
-    }
-  }
-  const pairs: [number, number][] = [];
-  for (let i = 0, j = 0; i < a.length && j < b.length; ) {
-    if (a[i] === b[j]) pairs.push([i++, j++]);
-    else if ((table[(i + 1) * width + j] ?? 0) >= (table[i * width + j + 1] ?? 0)) i++;
-    else j++;
-  }
-  return pairs;
-}
-
-/** Alignment step inside a hunk: pair `a` with `b`, delete `a`, or insert `b`. */
-type Step = { kind: 'pair'; a: number; b: number } | { kind: 'delete' } | { kind: 'insert'; b: number };
-
-/** Cheapest alignment of `base[a0, a1)` with `target[b0, b1)`; large hunks pair positionally. */
-function alignHunk(base: readonly JsonValue[], target: readonly JsonValue[], a0: number, a1: number, b0: number, b1: number): Step[] {
-  const rows = a1 - a0;
-  const cols = b1 - b0;
-  if (rows * cols > ALIGN_LIMIT || rows === 0 || cols === 0) {
-    const paired = Math.min(rows, cols);
-    return [
-      ...Array.from({ length: paired }, (_, k): Step => ({ kind: 'pair', a: a0 + k, b: b0 + k })),
-      ...Array.from({ length: rows - paired }, (): Step => ({ kind: 'delete' })),
-      ...Array.from({ length: cols - paired }, (_, k): Step => ({ kind: 'insert', b: b0 + paired + k })),
-    ];
-  }
-  const width = cols + 1;
-  const cost = new Float64Array((rows + 1) * width);
-  const choice = new Uint8Array((rows + 1) * width);
-  const at = (i: number, j: number): number => cost[i * width + j] ?? 0;
-  for (let i = rows; i >= 0; i--) {
-    for (let j = cols; j >= 0; j--) {
-      if (i === rows && j === cols) continue;
-      let best = Infinity;
-      let pick = 0;
-      if (i < rows && j < cols) {
-        const pair = sizeOf(diffJson(base[a0 + i] as JsonValue, target[b0 + j] as JsonValue)) + at(i + 1, j + 1);
-        if (pair < best) [best, pick] = [pair, 1];
-      }
-      if (i < rows && 1 + at(i + 1, j) < best) [best, pick] = [1 + at(i + 1, j), 2];
-      if (j < cols) {
-        const insert = JSON.stringify(target[b0 + j]).length + 1 + at(i, j + 1);
-        if (insert < best) [best, pick] = [insert, 3];
-      }
-      cost[i * width + j] = best;
-      choice[i * width + j] = pick;
-    }
-  }
-  const steps: Step[] = [];
-  for (let i = 0, j = 0; i < rows || j < cols; ) {
-    const pick = choice[i * width + j];
-    if (pick === 1) {
-      steps.push({ kind: 'pair', a: a0 + i++, b: b0 + j++ });
-    } else if (pick === 2) {
-      steps.push({ kind: 'delete' });
-      i++;
-    } else {
-      steps.push({ kind: 'insert', b: b0 + j++ });
-    }
-  }
-  return steps;
-}
-
+/** Common prefix and suffix kept, the middle paired by position, and one `splice` for the surplus. */
 function diffArray(base: readonly JsonValue[], target: readonly JsonValue[], at: PathSegment[]): Operation[] {
-  const ids = new Map<string, number>();
-  const idOf = (value: JsonValue): number => {
-    const text = JSON.stringify(value);
-    const known = ids.get(text);
-    if (known !== undefined) return known;
-    ids.set(text, ids.size);
-    return ids.size - 1;
-  };
-  const a = base.map(idOf);
-  const b = target.map(idOf);
-  const anchors = [...commonPairs(a, b), [a.length, b.length] as [number, number]];
+  const baseText = base.map((value) => JSON.stringify(value));
+  const targetText = target.map((value) => JSON.stringify(value));
+  const shorter = Math.min(base.length, target.length);
+  let start = 0;
+  while (start < shorter && baseText[start] === targetText[start]) start++;
+  let end = 0;
+  while (end < shorter - start && baseText[base.length - 1 - end] === targetText[target.length - 1 - end]) end++;
+  const paired = shorter - start - end;
   const ops: Operation[] = [];
-  let pos = 0;
-  let a0 = 0;
-  let b0 = 0;
-  for (const [a1, b1] of anchors) {
-    let remove = 0;
-    let insert: JsonValue[] = [];
-    const flush = (): void => {
-      if (remove === 0 && insert.length === 0) return;
-      ops.push({ op: 'splice', path: at, index: pos, remove, insert });
-      pos += insert.length;
-      [remove, insert] = [0, []];
-    };
-    for (const step of alignHunk(base, target, a0, a1, b0, b1)) {
-      if (step.kind === 'delete') remove += 1;
-      else if (step.kind === 'insert') insert.push(target[step.b] as JsonValue);
-      else {
-        flush();
-        ops.push(...diffJson(base[step.a] as JsonValue, target[step.b] as JsonValue, [...at, pos]));
-        pos += 1;
-      }
-    }
-    flush();
-    pos += 1;
-    [a0, b0] = [a1 + 1, b1 + 1];
-  }
+  for (let i = start; i < start + paired; i++) ops.push(...diffJson(base[i] as JsonValue, target[i] as JsonValue, [...at, i]));
+  const index = start + paired;
+  const remove = base.length - end - index;
+  const insert = target.slice(index, target.length - end);
+  if (remove > 0 || insert.length > 0) ops.push({ op: 'splice', path: at, index, remove, insert });
   return ops;
 }
 
@@ -245,27 +148,26 @@ function valueAt(root: JsonValue, at: readonly PathSegment[]): JsonValue {
 }
 
 function applyOne(root: JsonValue, op: Operation): JsonValue {
+  const fail = (): never => {
+    throw new ArchiveError(`Cannot ${String((op as { op?: unknown }).op)} at ${JSON.stringify(op.path)}`);
+  };
+  if (!Array.isArray(op.path)) return fail();
   if (op.op === 'set' && op.path.length === 0) return structuredClone(op.value);
-  if (op.op === 'splice' || op.op === 'order') {
+  if (op.op === 'splice') {
     const node = valueAt(root, op.path);
-    if (op.op === 'splice' && Array.isArray(node) && op.index >= 0 && op.remove >= 0 && op.index + op.remove <= node.length) {
-      node.splice(op.index, op.remove, ...structuredClone(op.insert));
-      return root;
-    }
-    if (op.op === 'order' && isObject(node) && op.keys.length === Object.keys(node).length && op.keys.every((key) => Object.hasOwn(node, key))) {
-      const entries = op.keys.map((key) => [key, node[key] as JsonValue] as const);
-      for (const key of op.keys) delete node[key];
-      for (const [key, value] of entries) node[key] = value;
-      return root;
-    }
-    throw new ArchiveError(`Cannot ${op.op} at ${JSON.stringify(op.path)}`);
+    const { index, remove, insert } = op;
+    if (!Array.isArray(node) || !Array.isArray(insert) || !Number.isInteger(index) || !Number.isInteger(remove)) return fail();
+    if (index < 0 || remove < 0 || index + remove > node.length) return fail();
+    node.splice(index, remove, ...structuredClone(insert));
+    return root;
   }
+  if (op.op !== 'set' && op.op !== 'delete') return fail();
   const parent = valueAt(root, op.path.slice(0, -1));
   const last = op.path.at(-1);
   if (op.op === 'set' && Array.isArray(parent) && typeof last === 'number' && last >= 0 && last < parent.length) parent[last] = structuredClone(op.value);
   else if (op.op === 'set' && isObject(parent) && typeof last === 'string') parent[last] = structuredClone(op.value);
   else if (op.op === 'delete' && isObject(parent) && typeof last === 'string' && Object.hasOwn(parent, last)) delete parent[last];
-  else throw new ArchiveError(`Cannot ${op.op} at ${JSON.stringify(op.path)}`);
+  else fail();
   return root;
 }
 
@@ -324,129 +226,59 @@ export function buildRecord(args: {
   };
 }
 
-/** Directed edge of the base graph; `below` is the edge it stands for one contraction level down. */
-interface Edge {
-  from: number;
-  to: number;
-  weight: number;
-  below?: Edge;
-}
-
-/** First cycle among the chosen in-edges, as its nodes, or `null`. */
-function findCycle(chosen: readonly (Edge | undefined)[], root: number): number[] | null {
-  const walkOf = new Map<number, number>();
-  for (let start = 0; start < chosen.length; start++) {
-    const walk: number[] = [];
-    let node = start;
-    for (let edge = chosen[node]; node !== root && edge !== undefined && !walkOf.has(node); edge = chosen[node]) {
-      walkOf.set(node, start);
-      walk.push(node);
-      node = edge.from;
-    }
-    if (walkOf.get(node) === start && node !== root) return walk.slice(walk.indexOf(node));
-  }
-  return null;
-}
-
-/** Minimum-weight spanning arborescence rooted at `root` (Chu-Liu/Edmonds) over `nodes` nodes. */
-function minArborescence(nodes: number, root: number, edges: readonly Edge[]): Edge[] {
-  const chosen = new Array<Edge | undefined>(nodes);
-  for (const edge of edges) {
-    const current = chosen[edge.to];
-    if (edge.to !== root && edge.from !== edge.to && (current === undefined || edge.weight < current.weight)) chosen[edge.to] = edge;
-  }
-  const cycle = findCycle(chosen, root);
-  if (cycle === null) return chosen.filter((edge): edge is Edge => edge !== undefined);
-  const inCycle = new Set(cycle);
-  const merged = nodes;
-  const contracted: Edge[] = [];
-  for (const edge of edges) {
-    const fromIn = inCycle.has(edge.from);
-    const toIn = inCycle.has(edge.to);
-    if (fromIn && toIn) continue;
-    const weight = toIn ? edge.weight - (chosen[edge.to] as Edge).weight : edge.weight;
-    contracted.push({ from: fromIn ? merged : edge.from, to: toIn ? merged : edge.to, weight, below: edge });
-  }
-  const picked = minArborescence(nodes + 1, root, contracted).map((edge) => edge.below as Edge);
-  const entry = picked.find((edge) => inCycle.has(edge.to)) as Edge;
-  return [...picked, ...cycle.filter((node) => node !== entry.to).map((node) => chosen[node] as Edge)];
-}
-
-/** The archive of a set of points: the baseline, and each record's base. */
+/** The archive of a set of points: the point stored in full, and the redactions of every point that had any. */
 export interface ArchivePlan {
   baseline: string;
-  bases: Record<string, string>;
+  redactions: Record<string, Redaction[]>;
 }
 
 /**
- * Archives `reports` (point name to full report): redacts each, then stores the baseline whose records total fewest bytes in
- * full and every other point as a record against the base a minimum arborescence assigns it; ties go to the earlier name.
+ * Archives `reports` (point name to full report): redacts each, stores in full the baseline whose records against it total
+ * fewest bytes (ties go to the earlier name), and every other point as a record against it.
  */
 export function buildArchive(reports: Readonly<Record<string, JsonObject>>, sourceSha: string): { plan: ArchivePlan; documents: Record<string, ArchiveDocument> } {
   const names = Object.keys(reports).sort();
   if (names.length === 0) throw new ArchiveError('No reports to archive');
-  const redacted = names.map((name) => {
-    const entry = redactReport(reports[name] as JsonObject);
-    if (entry.report.point !== name) throw new ArchiveError(`${name}.json records point ${JSON.stringify(entry.report.point)}`);
-    return entry;
-  });
-  const records = new Map<string, DifferenceRecord>();
-  const edges: Edge[] = [];
-  names.forEach((base, from) => {
-    redacted.forEach(({ report, redactions }, to) => {
-      if (from === to) return;
-      const record = buildRecord({ report, base, baseReport: (redacted[from] as (typeof redacted)[number]).report, sourceSha, redactions });
-      records.set(`${String(from)}>${String(to)}`, record);
-      edges.push({ from, to, weight: reportBytes(record).length });
-    });
-  });
-  let best: { root: number; weight: number; tree: Edge[] } | undefined;
-  names.forEach((_, root) => {
-    const tree = minArborescence(names.length, root, edges);
-    const weight = tree.reduce((sum, edge) => sum + edge.weight, 0);
-    if (best === undefined || weight < best.weight) best = { root, weight, tree };
-  });
-  const { root, tree } = best as NonNullable<typeof best>;
-  const baseline = names[root] as string;
-  const documents: Record<string, ArchiveDocument> = { [baseline]: (redacted[root] as (typeof redacted)[number]).report };
-  const bases: Record<string, string> = {};
-  for (const edge of tree) {
-    const point = names[edge.to] as string;
-    bases[point] = names[edge.from] as string;
-    documents[point] = records.get(`${String(edge.from)}>${String(edge.to)}`) as DifferenceRecord;
+  const redacted = new Map(
+    names.map((name) => {
+      const entry = redactReport(reports[name] as JsonObject);
+      if (entry.report.point !== name) throw new ArchiveError(`${name}.json records point ${JSON.stringify(entry.report.point)}`);
+      return [name, entry] as const;
+    }),
+  );
+  let best: { baseline: string; bytes: number; records: Record<string, DifferenceRecord> } | undefined;
+  for (const [baseline, { report: baseReport }] of redacted) {
+    const records = Object.fromEntries(
+      [...redacted].filter(([name]) => name !== baseline).map(([name, entry]) => [name, buildRecord({ ...entry, base: baseline, baseReport, sourceSha })]),
+    );
+    const bytes = Object.values(records).reduce((sum, record) => sum + Buffer.byteLength(reportBytes(record)), 0);
+    if (best === undefined || bytes < best.bytes) best = { baseline, bytes, records };
   }
-  return { plan: { baseline, bases }, documents };
+  const { baseline, records } = best as NonNullable<typeof best>;
+  const redactions = Object.fromEntries([...redacted].filter(([, entry]) => entry.redactions.length > 0).map(([name, entry]) => [name, entry.redactions]));
+  return { plan: { baseline, redactions }, documents: { [baseline]: (redacted.get(baseline) as { report: JsonObject }).report, ...records } };
 }
 
-/** Shared, cached reconstruction; callers clone before handing a report out. */
-function rebuild(archive: ReadonlyMap<string, ArchiveDocument>, point: string, cache: Map<string, JsonObject>, chain: readonly string[]): JsonObject {
-  const cached = cache.get(point);
-  if (cached !== undefined) return cached;
-  if (chain.includes(point)) throw new ArchiveError(`Base cycle: ${[...chain, point].join(' -> ')}`);
+/** The full report of `point`: a copy of the baseline, or the baseline with the record's operations applied and its SHA-256 checked. */
+export function reconstructPoint(archive: ReadonlyMap<string, ArchiveDocument>, point: string): JsonObject {
   const doc = archive.get(point);
   if (doc === undefined) throw new ArchiveError(`No archived point ${point}`);
-  let report: JsonObject;
+  let report: JsonValue;
   if (isDifferenceRecord(doc)) {
-    const base = rebuild(archive, doc.base, cache, [...chain, point]);
-    let rebuilt: JsonValue;
+    const base = archive.get(doc.base);
+    if (base === undefined) throw new ArchiveError(`No archived point ${doc.base}`);
+    if (isDifferenceRecord(base)) throw new ArchiveError(`${point}: base ${doc.base} is a difference record, not the full baseline`);
     try {
-      rebuilt = applyOperations(base, doc.operations);
+      report = applyOperations(base, doc.operations);
     } catch (error) {
       throw new ArchiveError(`${point}: ${(error as Error).message}`);
     }
-    if (!isObject(rebuilt) || reportSha256(rebuilt) !== doc.sha256) throw new ArchiveError(`${point}: reconstructed report does not match sha256 ${doc.sha256}`);
-    report = rebuilt;
+    if (!isObject(report) || reportSha256(report) !== doc.sha256) throw new ArchiveError(`${point}: reconstructed report does not match sha256 ${doc.sha256}`);
   } else {
-    report = doc;
+    report = structuredClone(doc);
   }
   if (report.point !== point) throw new ArchiveError(`${point}: report records point ${JSON.stringify(report.point)}`);
-  cache.set(point, report);
   return report;
-}
-
-/** The full report of `point`, rebuilt through its chain of bases and checked against each record's SHA-256. */
-export function reconstructPoint(archive: ReadonlyMap<string, ArchiveDocument>, point: string): JsonObject {
-  return structuredClone(rebuild(archive, point, new Map(), []));
 }
 
 /** One verified archived point. */
@@ -458,19 +290,21 @@ export interface VerifiedPoint {
 }
 
 /**
- * Reconstructs every point and checks one full baseline exists, every file and report carries `sourceSha`, and each record's
- * identity fields equal its report's.
+ * Reconstructs every point and checks one full baseline exists, every record's `base` names it, every file and report carries
+ * `sourceSha`, and each record's identity fields equal its report's.
  * @throws ArchiveError listing every problem.
  */
 export function verifyArchive(archive: ReadonlyMap<string, ArchiveDocument>, sourceSha: string): { baseline: string; points: VerifiedPoint[] } {
   const problems: string[] = [];
-  const cache = new Map<string, JsonObject>();
   const points: VerifiedPoint[] = [];
   const baselines = [...archive].filter(([, doc]) => !isDifferenceRecord(doc)).map(([name]) => name);
   if (baselines.length !== 1) problems.push(`Expected one full baseline, found ${String(baselines.length)}: ${baselines.join(', ')}`);
   for (const [point, doc] of [...archive].sort(([a], [b]) => (a < b ? -1 : 1))) {
+    if (isDifferenceRecord(doc) && baselines.length === 1 && doc.base !== baselines[0]) {
+      problems.push(`${point}: base ${doc.base} is not the baseline ${String(baselines[0])}`);
+    }
     try {
-      const report = rebuild(archive, point, cache, []);
+      const report = reconstructPoint(archive, point);
       if (doc.sourceSha !== sourceSha || report.sourceSha !== sourceSha) problems.push(`${point}: sourceSha is not ${sourceSha}`);
       if (isDifferenceRecord(doc)) {
         const expected = identityOf(report);
@@ -500,15 +334,67 @@ export async function readArchive(dir: string): Promise<Map<string, ArchiveDocum
   return readJsonDir(dir);
 }
 
-/** Archives every full point report of `sourceDir` but {@link KEPT_IN_PLACE} into `archiveDir`, removing stale archive files. */
-export async function writeArchive(sourceDir: string, archiveDir: string, sourceSha: string): Promise<ArchivePlan> {
-  const reports = Object.fromEntries([...(await readJsonDir(sourceDir))].filter(([name]) => !KEPT_IN_PLACE.includes(name)));
-  const { plan, documents } = buildArchive(reports, sourceSha);
+const SUMMARY_FILE = 'summary.md';
+
+/** `summary.md` as the runtime writer renders `sources`, with archived points linked into the archive and the Archive paragraph. */
+function archiveSummary(sources: ReadonlyMap<string, JsonObject>, plan: ArchivePlan, sourceSha: string, faults: readonly string[]): string {
+  const rows = [...sources].map(([name, report]): SummaryRow => {
+    const counts = isObject(report.summary) ? report.summary : {};
+    return {
+      point: textOrNull(report.point) ?? name,
+      file: `${name}.json`,
+      tableVersion: textOrNull(report.tableVersion),
+      expectedTableVersion: textOrNull(report.expectedTableVersion),
+      units: countOrNull(counts.units),
+      unitsWithDifferences: countOrNull(counts.unitsWithDifferences),
+      orphans: countOrNull(counts.orphans),
+      result: textOrNull(report.result) ?? 'missing',
+    };
+  });
+  const links = [...sources.keys()]
+    .filter((name) => !KEPT_IN_PLACE.includes(name))
+    .map((name) => {
+      const href = encodeURIComponent(`${name}.json`);
+      return [`| [${name}.json](${href}) |`, `| [${ARCHIVE_DIR}/${name}.json](${ARCHIVE_DIR}/${href}) |`] as const;
+    });
+  const lines = renderSummary(rows, sourceSha, faults)
+    .split('\n')
+    .map((line) => links.reduce((text, [from, to]) => text.replace(from, to), line));
+  const kept = KEPT_IN_PLACE.map((name) => `\`${name}\``).join(', ');
+  const redactions = plan.redactions[plan.baseline] ?? [];
+  const redacted = redactions.length === 0 ? '' : ` The baseline's redactions: ${redactions.map((entry) => `\`${JSON.stringify(entry.path)}\` (${entry.rule})`).join(', ')}.`;
+  const verdict = lines.findIndex((line) => line.startsWith('Zero difference at every point: '));
+  if (verdict < 0) throw new ArchiveError('Rendered summary.md has no verdict line');
+  lines.splice(
+    verdict + 2,
+    0,
+    `Archive: [\`${ARCHIVE_DIR}/\`](${ARCHIVE_DIR}/) holds every point but ${kept} as one full baseline report (\`${plan.baseline}.json\`) plus difference records that \`${ARCHIVE_GENERATED_BY}\` reconstructs.${redacted}`,
+    '',
+  );
+  return lines.join('\n');
+}
+
+/**
+ * Archives every point report of `sourceDir` but {@link KEPT_IN_PLACE} into `archiveDir`, removing stale archive files, then
+ * writes the kept reports and `summary.md` (rows in `faults` order) beside it and removes the archived points' copies there.
+ * @throws ArchiveError, before anything is written, when a report's `point` is not its file name, its `sourceSha` is not
+ * `sourceSha`, or the archive does not verify.
+ */
+export async function writeArchive(sourceDir: string, archiveDir: string, sourceSha: string, faults: readonly string[]): Promise<ArchivePlan> {
+  const sources = await readJsonDir(sourceDir);
+  const missing = KEPT_IN_PLACE.filter((name) => !sources.has(name));
+  if (missing.length > 0) throw new ArchiveError(`${sourceDir} has no ${missing.map((name) => `${name}.json`).join(', ')}`);
+  for (const name of KEPT_IN_PLACE) verifyArchive(new Map([[name, sources.get(name) as JsonObject]]), sourceSha);
+  const { plan, documents } = buildArchive(Object.fromEntries([...sources].filter(([name]) => !KEPT_IN_PLACE.includes(name))), sourceSha);
+  verifyArchive(new Map(Object.entries(documents)), sourceSha);
   for (const [point, doc] of Object.entries(documents)) await writeFileAtomic(path.join(archiveDir, `${point}.json`), reportBytes(doc));
   for (const stale of [...(await readJsonDir(archiveDir)).keys()].filter((name) => !Object.hasOwn(documents, name))) {
     await unlink(path.join(archiveDir, `${stale}.json`));
   }
-  verifyArchive(await readArchive(archiveDir), sourceSha);
+  const dir = path.dirname(archiveDir);
+  for (const name of KEPT_IN_PLACE) await writeFileAtomic(path.join(dir, `${name}.json`), reportBytes(sources.get(name)));
+  for (const point of Object.keys(documents)) await rm(path.join(dir, `${point}.json`), { force: true });
+  await writeFileAtomic(path.join(dir, SUMMARY_FILE), archiveSummary(sources, plan, sourceSha, faults));
   return plan;
 }
 
@@ -521,7 +407,8 @@ export async function main(argv: readonly string[], out: (line: string) => void 
   const [command, first, second] = argv;
   const defaultDir = path.join(resolveReportsDir(config, process.env), RECONCILIATION_DIR, ARCHIVE_DIR);
   if (command === 'build' && first !== undefined) {
-    out(`${JSON.stringify(await writeArchive(first, second ?? defaultDir, sourceSha))}\n`);
+    const faults = config.faults.map((fault) => fault.name);
+    out(`${JSON.stringify(await writeArchive(first, second ?? defaultDir, sourceSha, faults))}\n`);
     return 0;
   }
   if (command === 'verify' && second === undefined) {

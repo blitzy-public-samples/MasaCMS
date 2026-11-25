@@ -7,6 +7,8 @@ Generated at: 2026-11-25T18:24:19.169Z
 Exit code: 2 (unmet: completed with acceptance items unmet)
 Fixtures: available (fixtures loaded) (from `${OPT2_STATE_DIR}/fixtures.json`)
 
+Provenance: the evidence that stages 4, 6, 8 and 9 cite under `opt2/reports/reconciliation/`, `opt2/reports/transitions.json`, `opt2/reports/windows.json` and `opt2/reports/rollback-rehearsal.md` is kept from the 2026-11-21 acceptance run, with the entries of the six removed synthetic modules pruned from the reconciliation reports, `transitions.json` and `rollback-rehearsal.md`; the stage results and the service matrix are this run's.
+
 ## Stages
 
 | Stage | Name | Result | Duration | Evidence |

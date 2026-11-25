@@ -239,7 +239,7 @@ Written under `OPT2_REPORTS_DIR` (default `opt2/reports/`); each carries `source
 |---|---|
 | `reconciliation/{after-backfill,after-feed-<n>,after-fault-<fault>,checkpoint,post-cutover,rollback-before,rollback-after}.json` | `reconcile`, `backfill`, `feed`, `fault`, transitions |
 | `reconciliation/summary.md` | Regenerated with every reconciliation report |
-| `reconciliation/archive/<point>.json` | Committed evidence only: one full baseline report plus difference records, built, verified and reconstructed by `npx tsx src/reconcile/archive.ts build\|verify\|show`; no `opt2-migrate` command reads it |
+| `reconciliation/archive/<point>.json` | Committed evidence only: one full baseline report plus difference records against it. `npx tsx src/reconcile/archive.ts build <run reconciliation dir>` rewrites the archive, `rollback-before.json` and `summary.md` and drops the archived points' top-level copies; publish them only with the same run's `rollback-rehearsal.md`, `transitions.json` and `windows.json`, and update or drop `test-all.md`'s Provenance line when the retained run changes; `verify` and `show <point>` check and reconstruct it; no `opt2-migrate` command reads it |
 | `windows.json` | Every write window: route, units, scope, phases with timestamps, rows imported, outcome. Written from `migration.write_window` by `window report` and when the service stops |
 | `transitions.json` | Every transition: versions, `setT`, steps, outcome |
 | `migration-order.json` | The dependency order, from `backfill` and `feed` |

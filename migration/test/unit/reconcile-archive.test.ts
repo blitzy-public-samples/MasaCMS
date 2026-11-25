@@ -54,7 +54,7 @@ vi.mock('node:fs/promises', async (importOriginal) => {
 const PIN_SHA = '696383140578f8dea3ece26f80cd7bfb370ddf0f';
 const RECONCILIATION = fileURLToPath(new URL('../../../opt2/reports/reconciliation/', import.meta.url));
 const ARCHIVE = path.join(RECONCILIATION, ARCHIVE_DIR);
-const BASELINE = 'after-fault-service-restarted-mid-apply';
+const BASELINE = 'after-fault-pubsub-redelivery';
 const FAULTS = [
   'applier-killed-mid-batch',
   'duplicate-batch',
@@ -189,8 +189,6 @@ describe('committed reconciliation archive', () => {
 });
 
 describe('diffJson and applyOperations', () => {
-  const many = (prefix: string, count: number): JsonValue[] => Array.from({ length: count }, (_, i) => ({ id: `${prefix}${String(i)}`, n: i }));
-
   it.each<[string, JsonValue, JsonValue]>([
     ['equal documents', { a: [1, { b: 2 }] }, { a: [1, { b: 2 }] }],
     ['a changed scalar', { a: 1, b: 'x' }, { a: 2, b: 'x' }],
@@ -198,7 +196,6 @@ describe('diffJson and applyOperations', () => {
     ['reordered keys', { a: 1, b: 2, c: 3 }, { c: 3, a: 1, b: 2 }],
     ['a key added before existing ones', { b: 2 }, { a: 1, b: 2 }],
     ['array inserts, deletes and changed elements', [unit('a', 1), unit('b', 2), unit('c', 3), unit('d', 4)], [unit('a', 1), unit('b', 5), unit('x', 9), unit('d', 4), unit('e', 1)]],
-    ['a hunk too large to align', many('p', 70), many('q', 71)],
     ['an emptied array', [1, 2, 3], []],
     ['a filled array', [], [{ a: 1 }]],
     ['a type change', { a: [1, 2] }, { a: { 0: 1 } }],
@@ -228,8 +225,7 @@ describe('diffJson and applyOperations', () => {
     ['a delete of an array element', [1], { op: 'delete', path: [0] }],
     ['a splice past the end', [1], { op: 'splice', path: [], index: 1, remove: 1, insert: [] }],
     ['a splice of an object', { a: 1 }, { op: 'splice', path: [], index: 0, remove: 0, insert: [] }],
-    ['an order missing a key', { a: 1, b: 2 }, { op: 'order', path: [], keys: ['a'] }],
-    ['an order naming an unknown key', { a: 1 }, { op: 'order', path: [], keys: ['b'] }],
+    ['an unknown operation', { a: 1 }, { op: 'order', path: [], keys: ['a'] } as unknown as Operation],
   ])('rejects %s', (_name, base, op) => {
     expect(() => applyOperations(base, [op])).toThrow(ArchiveError);
   });
@@ -257,39 +253,33 @@ describe('buildArchive', () => {
     p4: report('p4', [unit('z', 9)], { fault: { name: 'f', reportPath: '/w/opt2/reports/reconciliation/p1.json' } }),
   };
 
-  /** Bytes of every arborescence over the points, by brute force over each non-root point's base. */
-  function cheapestTotal(): number {
-    const names = Object.keys(reports).sort();
-    const size = (point: string, base: string): number =>
-      reportBytes(buildRecord({ ...redactReport(reports[point] as JsonObject), base, baseReport: redactReport(reports[base] as JsonObject).report, sourceSha: PIN_SHA })).length;
-    let best = Infinity;
-    for (const root of names) {
-      const others = names.filter((name) => name !== root);
-      const choose = (i: number, bases: Record<string, string>): void => {
-        if (i === others.length) {
-          const reaches = (point: string, seen: string[] = []): boolean => point === root || (!seen.includes(point) && reaches(bases[point] as string, [...seen, point]));
-          if (others.every((point) => reaches(point))) best = Math.min(best, others.reduce((sum, point) => sum + size(point, bases[point] as string), 0));
-          return;
-        }
-        for (const base of names) if (base !== others[i]) choose(i + 1, { ...bases, [others[i] as string]: base });
-      };
-      choose(0, {});
-    }
-    return best;
+  /** Bytes of every record against `baseline`. */
+  function recordBytes(baseline: string): number {
+    const baseReport = redactReport(reports[baseline] as JsonObject).report;
+    return Object.keys(reports)
+      .filter((name) => name !== baseline)
+      .reduce((sum, name) => sum + Buffer.byteLength(reportBytes(buildRecord({ ...redactReport(reports[name] as JsonObject), base: baseline, baseReport, sourceSha: PIN_SHA }))), 0);
   }
 
-  it('stores the baseline whose records total fewest bytes in full and reconstructs every point', () => {
+  it('stores the baseline whose records total fewest bytes in full and every other point as a record against it', () => {
     const { plan, documents } = buildArchive(reports, PIN_SHA);
     const archive = new Map(Object.entries(documents));
-    const records = [...archive.values()].filter(isDifferenceRecord);
-    expect(records).toHaveLength(3);
-    expect(records.reduce((sum, record) => sum + reportBytes(record).length, 0)).toBe(cheapestTotal());
-    expect(Object.keys(plan.bases).sort()).toEqual(Object.keys(reports).filter((name) => name !== plan.baseline).sort());
-    for (const [point, base] of Object.entries(plan.bases)) expect((documents[point] as DifferenceRecord).base).toBe(base);
+    expect(recordBytes(plan.baseline)).toBe(Math.min(...Object.keys(reports).map(recordBytes)));
+    expect(isDifferenceRecord(documents[plan.baseline] as ArchiveDocument)).toBe(false);
+    for (const point of Object.keys(reports).filter((name) => name !== plan.baseline)) expect((documents[point] as DifferenceRecord).base).toBe(plan.baseline);
     for (const point of Object.keys(reports)) expect(reconstructPoint(archive, point)).toEqual(redactReport(reports[point] as JsonObject).report);
     expect(documents.p4).toMatchObject({ redactions: [{ path: ['fault', 'reportPath'], rule: REDACTION_RULE }] });
     expect(reconstructPoint(archive, 'p4').fault).toEqual({ name: 'f', reportPath: 'opt2/reports/reconciliation/p1.json' });
     expect(verifyArchive(archive, PIN_SHA)).toMatchObject({ baseline: plan.baseline });
+  });
+
+  it('lists the redactions of every point that had any, the baseline included', () => {
+    const fault = (point: string): JsonObject => ({ fault: { name: 'f', reportPath: `/w/opt2/reports/reconciliation/${point}.json` } });
+    const { plan, documents } = buildArchive({ q1: report('q1', units, fault('q1')), q2: report('q2', units, fault('q2')), q3: report('q3', [unit('z', 9)]) }, PIN_SHA);
+    const redactions = [{ path: ['fault', 'reportPath'], rule: REDACTION_RULE }];
+    expect(plan).toEqual({ baseline: 'q1', redactions: { q1: redactions, q2: redactions } });
+    expect(documents.q1).toMatchObject({ fault: { reportPath: 'opt2/reports/reconciliation/q1.json' } });
+    expect(documents.q2).toMatchObject({ base: 'q1', redactions });
   });
 
   it.each<[string, Record<string, JsonObject>, RegExp]>([
@@ -318,7 +308,7 @@ describe('reconstructPoint and verifyArchive', () => {
   it.each<[string, Map<string, ArchiveDocument>, string, RegExp]>([
     ['a missing point', archiveOf(['base', base]), 'next', /No archived point next/],
     ['a missing base', archiveOf(['next', record()]), 'next', /No archived point base/],
-    ['a base cycle', archiveOf(['next', record({ base: 'other' })], ['other', record({ base: 'next' })]), 'next', /Base cycle: next -> other -> next/],
+    ['a base that is a difference record', archiveOf(['base', base], ['next', record()], ['other', record({ base: 'next' })]), 'other', /other: base next is a difference record/],
     ['a tampered sha256', archiveOf(['base', base], ['next', record({ sha256: '0'.repeat(64) })]), 'next', /does not match sha256/],
     ['an inapplicable operation', archiveOf(['base', base], ['next', record({ operations: [{ op: 'delete', path: ['nope'] }] })]), 'next', /^next: Cannot delete/],
     ['a report naming another point', archiveOf(['next', report('base', [])]), 'next', /records point "base"/],
@@ -331,15 +321,16 @@ describe('reconstructPoint and verifyArchive', () => {
     ['a foreign sourceSha', archiveOf(['base', base], ['next', record({ sourceSha: 'f'.repeat(40) })]), /next: sourceSha is not/],
     ['an identity unlike the report', archiveOf(['base', base], ['next', record({ snapshotSeq: 9 })]), /next: snapshotSeq 9 differs from 1/],
     ['an unreconstructible record', archiveOf(['base', base], ['next', record({ base: 'gone' })]), /No archived point gone/],
+    ['a record whose base is not the baseline', archiveOf(['base', base], ['next', record()], ['other', record({ base: 'next' })]), /other: base next is not the baseline base/],
   ])('verifyArchive rejects %s', (_name, archive, message) => {
     expect(() => verifyArchive(archive, PIN_SHA)).toThrow(message);
   });
 });
 
 describe('writeArchive and main', () => {
-  async function sourceDir(): Promise<string> {
+  async function sourceDir(extra: JsonObject = {}): Promise<string> {
     const dir = await tempDir();
-    await writeFile(path.join(dir, 'a.json'), reportBytes(report('a', [unit('a', 1), unit('b', 2)])));
+    await writeFile(path.join(dir, 'a.json'), reportBytes(report('a', [unit('a', 1), unit('b', 2)], extra)));
     await writeFile(path.join(dir, 'b.json'), reportBytes(report('b', [unit('a', 1), unit('b', 3)])));
     await writeFile(path.join(dir, 'rollback-before.json'), reportBytes(report('rollback-before', [])));
     return dir;
@@ -350,9 +341,57 @@ describe('writeArchive and main', () => {
     const target = path.join(await tempDir(), 'archive');
     await mkdir(target);
     await writeFile(path.join(target, 'stale.json'), '{}\n');
-    const plan = await writeArchive(source, target, PIN_SHA);
+    const plan = await writeArchive(source, target, PIN_SHA, []);
     expect((await readdir(target)).sort()).toEqual(['a.json', 'b.json']);
-    expect(plan).toEqual({ baseline: 'a', bases: { b: 'a' } });
+    expect(plan).toEqual({ baseline: 'a', redactions: {} });
+  });
+
+  it('writes the kept reports and summary.md beside the archive and removes the archived points there', async () => {
+    const source = await sourceDir({ fault: { name: 'f', reportPath: '/w/opt2/reports/reconciliation/b.json' } });
+    const parent = await tempDir();
+    await writeFile(path.join(parent, 'b.json'), '{}\n');
+    await writeFile(path.join(parent, 'rollback-before.json'), '{}\n');
+    await writeArchive(source, path.join(parent, ARCHIVE_DIR), PIN_SHA, []);
+    expect((await readdir(parent)).sort()).toEqual([ARCHIVE_DIR, 'rollback-before.json', 'summary.md']);
+    expect(await readFile(path.join(parent, 'rollback-before.json'), 'utf8')).toBe(await readFile(path.join(source, 'rollback-before.json'), 'utf8'));
+    expect((await readFile(path.join(parent, 'summary.md'), 'utf8')).split('\n')).toEqual([
+      '# Reconciliation summary',
+      '',
+      `Source SHA: ${PIN_SHA}`,
+      'Status: generated',
+      'Generated by: migration/src/reconcile/',
+      '',
+      'Zero difference at every point: yes',
+      '',
+      `Archive: [\`archive/\`](archive/) holds every point but \`rollback-before\` as one full baseline report (\`a.json\`) plus difference records that \`${ARCHIVE_GENERATED_BY}\` reconstructs. The baseline's redactions: \`["fault","reportPath"]\` (${REDACTION_RULE}).`,
+      '',
+      '| Point | Report | Table version | Units | Differences | Orphans | Result |',
+      '|---|---|---|---|---|---|---|',
+      '| rollback-before | [rollback-before.json](rollback-before.json) | v0001 | 0 | none | none | zero-difference |',
+      '| a | [archive/a.json](archive/a.json) | v0001 | 2 | none | none | zero-difference |',
+      '| b | [archive/b.json](archive/b.json) | v0001 | 2 | none | none | zero-difference |',
+      '',
+    ]);
+  });
+
+  it('rejects a source directory without the reports kept in place', async () => {
+    const source = await sourceDir();
+    await rm(path.join(source, 'rollback-before.json'));
+    await expect(writeArchive(source, path.join(await tempDir(), ARCHIVE_DIR), PIN_SHA, [])).rejects.toThrow(/has no rollback-before\.json/);
+  });
+
+  it.each<[string, string, JsonObject, string]>([
+    ['a kept report with a foreign sourceSha', 'rollback-before', { sourceSha: 'f'.repeat(40) }, `rollback-before: sourceSha is not ${PIN_SHA}`],
+    ['a kept report naming another point', 'rollback-before', { point: 'rollback-after' }, 'rollback-before: report records point "rollback-after"'],
+    ['an archived report with a foreign sourceSha', 'b', { sourceSha: 'f'.repeat(40) }, `b: sourceSha is not ${PIN_SHA}`],
+  ])('rejects %s before writing anything', async (_name, point, over, message) => {
+    const source = await sourceDir();
+    await writeFile(path.join(source, `${point}.json`), reportBytes(report(point, [], over)));
+    const parent = await tempDir();
+    const error: unknown = await writeArchive(source, path.join(parent, ARCHIVE_DIR), PIN_SHA, []).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(ArchiveError);
+    expect((error as ArchiveError).message).toBe(message);
+    expect(await readdir(parent)).toEqual([]);
   });
 
   it('builds, verifies and shows through the CLI', async () => {
@@ -365,7 +404,7 @@ describe('writeArchive and main', () => {
     expect(await main(['build', source, target], out)).toBe(0);
     expect(await main(['verify', target], out)).toBe(0);
     expect(await main(['show', 'b', target], out)).toBe(0);
-    expect(JSON.parse(lines[0] ?? '')).toEqual({ baseline: 'a', bases: { b: 'a' } });
+    expect(JSON.parse(lines[0] ?? '')).toEqual({ baseline: 'a', redactions: {} });
     expect(JSON.parse(lines[1] ?? '')).toMatchObject({ baseline: 'a', points: [{ point: 'a', base: null }, { point: 'b', base: 'a' }] });
     expect(lines[2]).toBe(await readFile(path.join(source, 'b.json'), 'utf8'));
   });
