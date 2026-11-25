@@ -235,7 +235,7 @@ describe('committed inputs', () => {
 describe.runIf(VERSION_IDS.every((id) => existsSync(join(committed.versionsDir, `${id}.json`))))('committed versions', () => {
   it('equal the build, so the default CLI mode reports no difference', async () => {
     const stderr: string[] = [];
-    const code = await main(['--fixtures', 'available'], { paths: committed, stdout: () => undefined, stderr: (text) => stderr.push(text) });
+    const code = await main([], { paths: committed, stdout: () => undefined, stderr: (text) => stderr.push(text) });
     expect({ code, stderr }).toEqual({ code: 0, stderr: [] });
   });
 });
@@ -535,7 +535,7 @@ describe('main', () => {
 
   it('reports missing version files as differences', async () => {
     const paths = await casePaths();
-    expect(await run(paths, ['--fixtures', 'available'])).toEqual({
+    expect(await run(paths, [])).toEqual({
       code: 1,
       stdout: [],
       stderr: VERSION_IDS.map((id) => `build-versions: ${fileOf(paths, id)} does not exist; run with --write`),
@@ -544,23 +544,12 @@ describe('main', () => {
 
   it('writes with --write (repeatable) and then reports no difference', async () => {
     const paths = await casePaths();
-    const written = await run(paths, ['--write', '--write', '--fixtures', 'available']);
+    const written = await run(paths, ['--write', '--write']);
     expect(written).toEqual({ code: 0, stdout: VERSION_IDS.map((id) => `build-versions: wrote ${fileOf(paths, id)}`), stderr: [] });
     const built = buildVersions(await loadValidationContext(paths, 'ci'));
     for (const table of built) expect(await readFile(fileOf(paths, table.tableVersion), 'utf8')).toBe(`${JSON.stringify(table)}\n`);
     for (const id of VERSION_IDS) expect(await readFile(fileOf(paths, id), 'utf8'), id).toBe(await committedBytes(id));
     expect(await run(paths, [])).toEqual({ code: 0, stdout: VERSION_IDS.map((id) => `build-versions: ${fileOf(paths, id)} is up to date`), stderr: [] });
-  });
-
-  it('builds the same files under every --fixtures mode', async () => {
-    const paths = await casePaths(VERSION_IDS);
-    for (const mode of ['available', 'unavailable', 'auto']) {
-      expect(await run(paths, ['--fixtures', mode])).toEqual({
-        code: 0,
-        stdout: VERSION_IDS.map((id) => `build-versions: ${fileOf(paths, id)} is up to date`),
-        stderr: [],
-      });
-    }
   });
 
   it('prints a line diff when a version differs', async () => {
@@ -600,12 +589,12 @@ describe('main', () => {
     });
   });
 
-  it.each([[['--check']], [['--fixtures']], [['--fixtures', 'maybe']], [['--fixtures', 'auto', '--fixtures', 'auto']]])(
+  it.each([[['--check']], [['--fixtures', 'available']]])(
     'exits 2 on usage error %j',
     async (argv) => {
       const { code, stderr } = await run(await casePaths(), argv);
       expect(code).toBe(2);
-      expect(stderr[0]).toMatch(/^build-versions: /);
+      expect(stderr[0]).toMatch(/^build-versions: unknown argument /);
       expect(stderr[0]).toMatch(/usage: build-versions\.ts/);
     },
   );
@@ -615,7 +604,7 @@ describe('main', () => {
     const other = join(paths.cutoverDir, 'other-pin.json');
     const pin = JSON.parse(await readFile(committed.exceptionsListFile, 'utf8')) as { sourceSha: string };
     await writeFile(other, JSON.stringify({ ...pin, sourceSha: '0'.repeat(40) }));
-    const { code, stderr } = await run({ ...paths, exceptionsListFile: other }, ['--fixtures', 'available']);
+    const { code, stderr } = await run({ ...paths, exceptionsListFile: other }, []);
     expect({ code, stderr }).toEqual({
       code: 1,
       stderr: [`build-versions: ${other} does not match its cut-over schema: /sourceSha must equal the pinned sha ${SHA}`],

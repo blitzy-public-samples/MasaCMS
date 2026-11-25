@@ -49,7 +49,7 @@ The gateway is the strangler-fig front door of OPT-2. Every browser and API requ
   - no `target`-authoritative unit keeps an unprevented non-gateway writer [`unprevented-writer`];
   - a group returns from `target` to `legacy` only with a `rollbackRefs` entry naming a zero-difference `rollback-before.json` of the pinned `sourceSha`, taken at the version rolled back from, that compares every unit of the returning groups it names with zero difference and skips or halts none; `build-versions.ts` checks generated versions for the reference alone [`rollback-evidence`];
   - plus schema, pinned `sourceSha`, `previous` chain, group and variant references [`schema`, `source-sha`, `previous-chain`, `group-unknown`, `group-authority`, `variant-undeclared`, `route-not-inventoried`].
-- **Regeneration.** `npm run cutover:groups` and `npm run cutover:versions` rewrite the generated files. Run without `--write` (for example `npx tsx src/cutover/build-groups.ts`), each script only diffs and exits 1 on a difference. `build-versions.ts` accepts `--fixtures available|unavailable|auto`, which `harness/repro/up.sh` passes; no version depends on fixture availability, so every mode builds the same files.
+- **Regeneration.** `npm run cutover:groups` and `npm run cutover:versions` rewrite the generated files. Run without `--write` (for example `npx tsx src/cutover/build-groups.ts`), each script only diffs and exits 1 on a difference.
 
 ## Activation, freeze and in-flight writes
 

@@ -388,10 +388,3 @@ export interface SourcePin {
   readonly confirmedAt: string;
   readonly confirmCommand: string;
 }
-
-/** `${OPT2_STATE_DIR}/fixtures.json`, written by `legacy-fixtures/load-fixtures.sh`. */
-export interface FixtureStatus {
-  readonly available: boolean;
-  readonly reason?: string;
-  readonly checkedAt?: string;
-}

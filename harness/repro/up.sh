@@ -17,10 +17,9 @@ case $# in
 usage: harness/repro/up.sh
 
 Boots legacy Masa (CommandBox server opt2-legacy) and the OPT-2 target stack, activates cut-over version v0001,
-seeds both sides and records the stack in ${OPT2_STATE_DIR:-$HOME/.opt2/state}/up.json. When the legacy fixtures are
-unavailable, every process reads the cut-over versions built for that case in ${OPT2_STATE_DIR}/cutover. Takes no
-arguments; it is configured through the environment below. harness/repro/down.sh stops the stack and releases the
-run lock.
+seeds both sides and records the stack in ${OPT2_STATE_DIR:-$HOME/.opt2/state}/up.json. Every process reads the
+committed cut-over versions in gateway/cutover. Takes no arguments; it is configured through the environment below.
+harness/repro/down.sh stops the stack and releases the run lock.
 
 Environment (* = secret):
   required
@@ -81,8 +80,8 @@ NATIVE_TASKS_FILE="$OPT2_PRISTINE_DIR/native-tasks.json"
 ENVIRONMENT_FILE="$OPT2_STATE_DIR/baseline/environment.json"
 FIXTURES_FILE="$OPT2_STATE_DIR/fixtures.json"
 COMMITTED_CUTOVER_DIR="$REPO/gateway/cutover"
-# The fixtures-unavailable cut-over directory, rebuilt on every run that needs it.
-UNAVAILABLE_CUTOVER_DIR="$OPT2_STATE_DIR/cutover"
+# Every process and CLI reads the committed versions, whatever the caller exports.
+unset OPT2_CUTOVER_DIR
 SERVICES=(identity people programs-sites strategies-content stub)
 # Setup §3's packages, plus scheduler for the bridge's cfschedule.
 CFPM_REQUIRED=(sqlserver image mail zip feed caching orm ajax scheduler)
@@ -221,31 +220,6 @@ ensure_cfpm_packages() {
 # Runs legacy-fixtures/load-fixtures.sh with its arguments.
 load_fixtures() {
   "$REPO/legacy-fixtures/load-fixtures.sh" "$@" >&2
-}
-
-# select_cutover_versions <available>: exports OPT2_CUTOVER_DIR at the validated fixtures-unavailable build when
-# fixtures are unavailable, else unsets it so the committed versions apply; a stale build is removed either way.
-select_cutover_versions() {
-  local file
-  rm -rf -- "$UNAVAILABLE_CUTOVER_DIR"
-  if [[ $1 == true ]]; then
-    unset OPT2_CUTOVER_DIR
-    printf 'opt2: fixtures available; cut-over versions from %s\n' "$COMMITTED_CUTOVER_DIR" >&2
-    return 0
-  fi
-  mkdir -p -- "$UNAVAILABLE_CUTOVER_DIR"
-  for file in cutover-table.schema.json variants.json groups.json; do
-    cp -- "$COMMITTED_CUTOVER_DIR/$file" "$UNAVAILABLE_CUTOVER_DIR/$file" || die "cannot copy $file to $UNAVAILABLE_CUTOVER_DIR"
-  done
-  OPT2_CUTOVER_DIR="$UNAVAILABLE_CUTOVER_DIR" npm --prefix "$REPO/gateway" run --silent cutover:versions -- \
-    --fixtures unavailable >&2 || die "cannot build the fixtures-unavailable cut-over versions in $UNAVAILABLE_CUTOVER_DIR"
-  OPT2_CUTOVER_DIR="$UNAVAILABLE_CUTOVER_DIR" npm --prefix "$REPO/gateway" run --silent cutover:validate >&2 ||
-    die "the fixtures-unavailable cut-over versions in $UNAVAILABLE_CUTOVER_DIR fail validation (findings above)"
-  # v0001 is activated before seeding, so both builds must share it byte for byte.
-  cmp -s -- "$COMMITTED_CUTOVER_DIR/versions/v0001.json" "$UNAVAILABLE_CUTOVER_DIR/versions/v0001.json" ||
-    die "the fixtures-unavailable v0001 differs from $COMMITTED_CUTOVER_DIR/versions/v0001.json"
-  export OPT2_CUTOVER_DIR="$UNAVAILABLE_CUTOVER_DIR"
-  printf 'opt2: fixtures unavailable; cut-over versions from %s\n' "$OPT2_CUTOVER_DIR" >&2
 }
 
 # Merges the JSON patch on stdin into up.json through a mode-0600 file, since process entries carry role passwords.
@@ -421,10 +395,6 @@ if [[ -e $OPT2_PRISTINE_DIR/pristine.json ]]; then
 else
   pristine_take
 fi
-# Selected before any target process or CLI starts, so none reads or caches versions of the other capability.
-load_fixtures --check-only || die "legacy-fixtures/load-fixtures.sh --check-only failed unexpectedly"
-FIXTURES_AVAILABLE="$(json_get "$FIXTURES_FILE" available)" || die "$FIXTURES_FILE records no availability"
-select_cutover_versions "$FIXTURES_AVAILABLE"
 
 step 6 "databases"
 summary="$(OPT2_ENV=local "$OPT2_DB" bootstrap --target local)" || die "opt2-db bootstrap --target local failed: $summary"
@@ -493,8 +463,6 @@ step 12 "seed and backfill"
 npm --prefix "$REPO/legacy-fixtures/seed" run --silent generate >&2 || die "seed generation failed"
 load_fixtures || die "legacy-fixtures/load-fixtures.sh failed unexpectedly"
 available="$(json_get "$FIXTURES_FILE" available)" || die "$FIXTURES_FILE records no availability"
-[[ $available == "$FIXTURES_AVAILABLE" ]] ||
-  die "fixtures available=$available, but step 5 found available=$FIXTURES_AVAILABLE and selected cut-over versions for it: rerun up.sh"
 if [[ $available != true ]]; then
   printf 'opt2: legacy fixtures unavailable (%s); seeding the fixture tables directly\n' \
     "$(json_get "$FIXTURES_FILE" reason 2>/dev/null || printf 'no reason recorded')" >&2

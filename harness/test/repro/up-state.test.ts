@@ -562,7 +562,7 @@ describe('redactUpState', () => {
       { processes: {}, snapshot: { seq: null, kind: ['S'], name: { label: 'S0' }, key: 'synthetic-snapshot-key' } },
       { processes: {}, snapshot: {} },
     ],
-    ['a selected cut-over directory', { processes: {}, cutoverDir: '/x/state/cutover' }, { processes: {}, cutoverDir: '/x/state/cutover' }],
+    ['an absolute cut-over directory', { processes: {}, cutoverDir: '/x/state/cutover' }, { processes: {}, cutoverDir: '/x/state/cutover' }],
     ['a null cut-over directory', { processes: {}, cutoverDir: null }, { processes: {}, cutoverDir: null }],
   ])('projects %s onto its allowlisted fields without changing it', (_label, input, expected) => {
     const state = deepFreeze(input);
@@ -675,7 +675,7 @@ describe('repro:up-state CLI', () => {
   });
 
   it.each<[string, string | null]>([
-    ['the fixtures-unavailable build', '/x/state/cutover'],
+    ['an absolute cut-over directory', '/x/state/cutover'],
     ['null for the committed versions', null],
   ])('write --patch records cutoverDir as %s, and read --field cutoverDir prints it', async (_label, cutoverDir) => {
     expect((await cli(['write', '--patch', JSON.stringify({ cutoverDir })])).code).toBe(0);

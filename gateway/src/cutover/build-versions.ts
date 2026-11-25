@@ -395,29 +395,14 @@ async function readIfPresent(file: string): Promise<string | undefined> {
   }
 }
 
-const USAGE = 'usage: build-versions.ts [--write] [--fixtures available|unavailable|auto]';
-const FIXTURES_MODES: readonly string[] = ['available', 'unavailable', 'auto'];
+const USAGE = 'usage: build-versions.ts [--write]';
 
-/**
- * Parsed options, or the usage error; `--write` may repeat, since the `cutover:versions` script already passes it. `--fixtures`
- * is accepted for callers that pass it; no version depends on fixture availability.
- */
+/** Parsed options, or the usage error; `--write` may repeat, since the `cutover:versions` script already passes it. */
 function parseArgs(argv: readonly string[]): { write: boolean } | string {
   let write = false;
-  let fixtures: string | undefined;
-  for (let i = 0; i < argv.length; i += 1) {
-    const arg = argv[i];
-    if (arg === '--write') {
-      write = true;
-    } else if (arg === '--fixtures') {
-      const value = argv[i + 1];
-      if (fixtures !== undefined) return '--fixtures given twice';
-      if (value === undefined || !FIXTURES_MODES.includes(value)) return '--fixtures needs available, unavailable or auto';
-      fixtures = value;
-      i += 1;
-    } else {
-      return `unknown argument ${String(arg)}`;
-    }
+  for (const arg of argv) {
+    if (arg !== '--write') return `unknown argument ${arg}`;
+    write = true;
   }
   return { write };
 }

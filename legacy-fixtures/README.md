@@ -36,7 +36,7 @@ These fixtures are a synthetic legacy oracle for the people archive, which has n
 
 ## Loading
 
-`harness/repro/up.sh` runs `load-fixtures.sh --check-only` before any target process starts, to select the cut-over versions, and `load-fixtures.sh` (no arguments, `-h` for help) at seeding. It then loads the dataset that `seed/` generated through `cfml/seed.cfm`. `--check-only` runs step 1 and writes `fixtures.json` (step 3) without loading anything.
+`harness/repro/up.sh` runs `load-fixtures.sh` (no arguments, `-h` for help) at seeding. It then loads the dataset that `seed/` generated through `cfml/seed.cfm`. `--check-only` runs step 1 and writes `fixtures.json` (step 3) without loading anything.
 
 `load-fixtures.sh` steps:
 
@@ -58,7 +58,7 @@ Exit status: 0 once `fixtures.json` is written (whether available or not), 1 on 
 | Step | Effect |
 |---|---|
 | `up.sh` seed | Masa seed only; the empty `synthetic.person_archive` goes to `services/people` through `seed --direct` |
-| Cut-over versions | Fixture routes are absent from legacy |
+| Cut-over versions | The committed versions apply; their fixture routes are absent from legacy |
 | `test-all.sh` stage 7 | The people archive step is reported `skipped: fixtures unavailable` |
 | Stage 8 rollback | Rehearsed with create and edit only; the archive leg is reported unmet |
 | Reports and exit | `test-all.sh` exits 2 |

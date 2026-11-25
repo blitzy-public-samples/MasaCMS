@@ -176,7 +176,7 @@ process_env() {
       # legacy-start.sh, run by migration as OPT2_LEGACY_RESTART_CMD, inherits PORT=<migration port>.
       _opt2_env_line OPT2_LEGACY_PORT "$LEGACY_PORT"
       _opt2_env_line OPT2_BRIDGE_HMAC_KEY "$bridge_key"
-      # The versions up.sh selected for the fixture capability; both must read the same files.
+      # The cut-over versions the gateway serves; gateway and migration must read the same files.
       _opt2_env_line OPT2_CUTOVER_DIR "${OPT2_CUTOVER_DIR:-$REPO/gateway/cutover}"
       # The reports migration writes and the gateway's activation reads; a relative value resolves against the
       # checkout, as in test-all.sh and harness/src/lib/paths.ts.
