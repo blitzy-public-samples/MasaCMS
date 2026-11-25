@@ -1,9 +1,7 @@
 /** In-process authorisation matrix of every programs-sites route: admitted subjects, tenant and transport boundaries, deny by default. */
 import { randomUUID } from 'node:crypto';
 import { readFileSync, readdirSync } from 'node:fs';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import path from 'node:path';
+import { rm } from 'node:fs/promises';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
   INVOCATION_HEADER,
@@ -19,19 +17,25 @@ import { buildPushBody, encodeEnvelope, type EventEnvelope } from '@opt2/platfor
 import { loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
 import { SITEMONITOR_QUEUE, outboxSweepQueue } from '@opt2/platform/tasks';
 import {
+  MINIMUM_SUBJECTS,
   ROLE_SET,
   TENANT_A,
   TENANT_B,
   TENANT_LIST,
   TEST_PUSH_KEY,
   createCapturingPublisher,
+  createCredentialCache,
+  createTestStateDir,
   mintServiceToken,
   mintTasksInvokerToken,
   mintUserToken,
+  parsedJson,
   pushTo,
+  roleSubjectNamed,
+  routeDeclaration,
+  routeTableCoverage,
   testEnvelope,
   testVerifier,
-  writeTestSecrets,
   type InjectResponse,
   type RoleSubject,
   type TenantFixture,
@@ -53,21 +57,8 @@ const SITE_A = TENANT_A.siteId;
 const SITE_B = TENANT_B.siteId;
 
 // Subject names of ROLE_SET, written out so every expectation below is literal.
-const SYNTHETIC = [
-  'timesheets.employee',
-  'timesheets.primary-approver',
-  'timesheets.secondary-approver',
-  'finance.preparer',
-  'finance.approver',
-  'esignature.signer',
-  'esignature.auditor',
-  'reporting.exporter',
-  'surveys.manager',
-  'communications.sender',
-] as const;
-
 /** User subjects holding `system-user` on tenant-a, the site under test: its private-pool admin users. */
-const TENANT_A_PRIVATE_USERS = ['system-user', 'editor', 'site-admin', 's2', ...SYNTHETIC] as const;
+const TENANT_A_PRIVATE_USERS = ['system-user', 'editor', 'site-admin', 's2'] as const;
 
 const USERS = ['member', ...TENANT_A_PRIVATE_USERS, 'other-tenant'] as const;
 
@@ -76,12 +67,6 @@ const WORKLOADS = [
   'service:people',
   'service:programs-sites',
   'service:strategies-content',
-  'service:communications',
-  'service:reporting',
-  'service:surveys',
-  'service:timesheets',
-  'service:finance',
-  'service:e-signature',
   'service:stub',
   'service:gateway',
   'service:web',
@@ -92,8 +77,6 @@ const WORKLOADS = [
 ] as const;
 
 const EVERYONE: readonly string[] = ['anonymous', ...USERS, ...WORKLOADS];
-
-const MINIMUM_SUBJECTS = ['anonymous', 'member', 'system-user', 'editor', 'site-admin', 's2', 'other-tenant'] as const;
 
 /** EVERYONE without `excluded`. */
 function everyoneBut(...excluded: string[]): string[] {
@@ -295,25 +278,10 @@ function effectsAfter(tolerated: readonly string[] = []): Effects {
 
 const NO_EFFECTS: Effects = { statements: 0, writes: 0, published: 0, tasks: 0, taskCalls: 0, calls: 0 };
 
-const credentialCache = new Map<string, { mintedAt: number; headers: Promise<Record<string, string>> }>();
-
-// Tokens live 300 s; re-minting after 120 s keeps a slow run from presenting an expired one.
-const CREDENTIAL_REUSE_MS = 120_000;
+const credentialCache = createCredentialCache<Record<string, string>>();
 
 /** `headersFor(subject)`, reused across probes while its tokens are fresh. */
-function credentialsOf(subject: RoleSubject): Promise<Record<string, string>> {
-  const cached = credentialCache.get(subject.name);
-  if (cached !== undefined && Date.now() - cached.mintedAt < CREDENTIAL_REUSE_MS) return cached.headers;
-  const headers = headersFor(subject);
-  credentialCache.set(subject.name, { mintedAt: Date.now(), headers });
-  return headers;
-}
-
-function subjectNamed(name: string): RoleSubject {
-  const subject = ROLE_SET.find((candidate) => candidate.name === name);
-  if (subject === undefined) throw new TypeError(`ROLE_SET has no subject named ${name}`);
-  return subject;
-}
+const credentialsOf = (subject: RoleSubject): Promise<Record<string, string>> => credentialCache(subject.name, () => headersFor(subject));
 
 /** Credentials of a user token minted for `fixture`'s site and presented through the gateway. */
 async function userCredentials(fixture: TenantFixture, roles: readonly string[]): Promise<Record<string, string>> {
@@ -705,24 +673,7 @@ function keyOf(route: Pick<RouteMatrixEntry, 'method' | 'url'>): string {
 }
 
 /** A declaration in comparable form: `requires` sorted, defaults dropped. */
-function comparable(declared: Declared | RouteMatrixEntry): Record<string, unknown> {
-  return {
-    transport: declared.transport,
-    ...(declared.requires === undefined ? {} : { requires: [...declared.requires].sort() }),
-    ...(declared.public === true ? { public: true } : {}),
-    ...(declared.invocationOptional === true ? { invocationOptional: true } : {}),
-    ...(declared.siteCheck === false ? { siteCheck: false } : {}),
-    ...('edge' in declared && declared.edge === true ? { edge: true } : {}),
-  };
-}
-
-function parsedBody(res: InjectResponse): unknown {
-  try {
-    return JSON.parse(res.body) as unknown;
-  } catch {
-    return undefined;
-  }
-}
+const comparable = (declared: Declared | RouteMatrixEntry) => routeDeclaration(declared, ['transport', 'requires', 'public', 'invocationOptional', 'siteCheck', 'edge']);
 
 /** Whether `body` is a legacy JSON API error envelope. */
 function isErrorEnvelope(body: unknown): body is { error: { code: string; message: string } } {
@@ -748,7 +699,7 @@ async function mismatchesOf(item: Probe, subject: RoleSubject): Promise<string[]
   if (admitted) return [];
 
   const problems: string[] = [];
-  const body = parsedBody(res);
+  const body = parsedJson(res.body);
   // A JSON API HEAD denial carries the error envelope's headers alone; other HEAD routes leave the body to Node, which never sends it.
   const head = item.request.method === 'HEAD' && /^(?:\/index\.cfm)?\/_api\/(?:json|ajax|rest)\/v1/i.test(item.request.url);
   if (head && res.body !== '') problems.push(`${at}: a HEAD denial has a body: ${res.body.slice(0, 160)}`);
@@ -804,13 +755,7 @@ beforeEach(() => {
 
 describe('route declarations', () => {
   it('lists every registered route exactly once in the expectations', () => {
-    const registered = matrix.routes.map(keyOf);
-    const expected = Object.keys(EXPECTED);
-    expect({
-      missing: registered.filter((key) => !expected.includes(key)),
-      extra: expected.filter((key) => !registered.includes(key)),
-      duplicated: registered.filter((key, index) => registered.indexOf(key) !== index),
-    }).toEqual({ missing: [], extra: [], duplicated: [] });
+    expect(routeTableCoverage(matrix.routes.map(keyOf), Object.keys(EXPECTED))).toEqual({ missing: [], extra: [], duplicated: [] });
   });
 
   it('declares each route with its expected transport, roles, public flag, optional invocation credential and site check', () => {
@@ -838,7 +783,7 @@ describe('route admission', () => {
     it(`admits exactly the expected subjects on ${key}, and denials leave no handler effect`, { timeout: 120_000 }, async () => {
       const mismatches: string[] = [];
       for (const item of entry.probes) {
-        const subjects = item.subjects === undefined ? ROLE_SET : item.subjects.map(subjectNamed);
+        const subjects = item.subjects === undefined ? ROLE_SET : item.subjects.map((name) => roleSubjectNamed(name));
         for (const subject of subjects) mismatches.push(...(await mismatchesOf(item, subject)));
       }
       expect(mismatches).toEqual([]);
@@ -888,7 +833,7 @@ describe('transport separation', () => {
   const withPushKey = (request: ProbeRequest): ProbeRequest => ({ ...request, url: `${request.url}?key=${TEST_PUSH_KEY}` });
 
   it('refuses a user token on the push and task routes', async () => {
-    const credentials = await credentialsOf(subjectNamed('s2'));
+    const credentials = await credentialsOf(roleSubjectNamed('s2'));
     for (const request of [pushWithoutKey(), sitemonitorTask, sweepTask]) {
       expect({ url: request.url, ...(await outcomeOf(request, credentials)) }).toEqual({ url: request.url, status: 401, effects: QUIET });
     }
@@ -945,7 +890,7 @@ describe('invocation credential on public routes', () => {
     const res = await inject(request, credentials);
     // A JSON API HEAD denial carries the error envelope's headers alone.
     const headersOnly = request.method === 'HEAD' && /^(?:\/index\.cfm)?\/_api\/(?:json|ajax|rest)\/v1/i.test(request.url);
-    expect({ status: res.statusCode, body: headersOnly ? res.body : parsedBody(res), effects: effectsAfter() }).toEqual({
+    expect({ status: res.statusCode, body: headersOnly ? res.body : parsedJson(res.body), effects: effectsAfter() }).toEqual({
       status: 401,
       body: headersOnly ? '' : MISSING_CREDENTIAL,
       effects: NO_EFFECTS,
@@ -955,10 +900,9 @@ describe('invocation credential on public routes', () => {
 
 describe('deny by default at start-up', () => {
   it('fails start-up of the buildApp instance when a route declares no config.opt2', async () => {
-    const stateDir = await mkdtemp(path.join(tmpdir(), 'opt2-programs-sites-authz-'));
+    const stateDir = await createTestStateDir('opt2-programs-sites-authz-');
     let app: FastifyInstance | undefined;
     try {
-      await writeTestSecrets(stateDir);
       app = await buildApp({
         env: loadEnv(programsSitesEnvSchema, testEnv({ OPT2_STATE_DIR: stateDir })),
         clock: TEST_CLOCK,

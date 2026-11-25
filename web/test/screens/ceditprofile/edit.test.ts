@@ -1,4 +1,4 @@
-// cEditProfile.edit (GS-PE-04) for the tenant-a system user, over the recorded profile, address and interest fixtures.
+// cEditProfile.edit for the tenant-a system user, over the recorded profile, address and interest fixtures.
 import * as cheerio from 'cheerio';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { secure } from '@/lib/access-gate';
@@ -108,7 +108,7 @@ const interestGroupsRoute: FakeRoute = ({ query }) => {
 const interestCalls = (ctx: ScreenContext & { gateway: FakeGatewayClient }) =>
   ctx.gateway.calls.filter(({ service, path }) => service === 'strategies-content' && path === INTEREST_GROUPS_PATH);
 
-/** GS-PE-04's user: the tenant-a system user, its session on tenant-a, whose pools are siteTenantA's. */
+/** The edit-profile user: the tenant-a system user, its session on tenant-a, whose pools are siteTenantA's. */
 const systemUserRequest = (): AdminRequest =>
   makeAdminRequest(
     {

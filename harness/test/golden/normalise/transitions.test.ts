@@ -22,7 +22,7 @@ const B = '3C4D5E6F-7A8B-4C9D-8E0F1A2B3C4D5E6F';
 const STEPS = ['submit', 'approve'] as const;
 const JSON_TYPE = 'application/json';
 const AGGREGATE_PATH = `${SIDE_EFFECTS_STEP}.transitions.<id:1>`;
-const NO_EFFECTS: SideEffects = { mail: [], rows: {}, tasks: [], files: [] };
+const NO_EFFECTS: SideEffects = { mail: [], rows: {}, files: [] };
 
 type StepName = (typeof STEPS)[number];
 
@@ -32,19 +32,19 @@ beforeAll(() => {
   rules = loadRules(undefined, { PORT: '8500' });
 });
 
-/** A finance scenario of the `STEPS`; `stepCompare` sets a step's own `compare`. */
+/** A record lifecycle scenario of the `STEPS`; `stepCompare` sets a step's own `compare`. */
 function scenario(compare: CompareKind[], stepCompare: Partial<Record<StepName, CompareKind[]>> = {}): Scenario {
   return {
-    id: 'GS-FI-01',
-    title: 'finance lifecycle',
-    service: 'finance',
+    id: 'GS-CO-73',
+    title: 'record lifecycle',
+    service: 'strategies-content',
     role: 'admin',
     sessions: {},
     seedRefs: [],
     steps: STEPS.map((name) => ({
       name,
       method: 'POST',
-      route: `/finance/records/x/${name}`,
+      route: `/records/x/${name}`,
       csrf: 'none',
       ...(stepCompare[name] === undefined ? {} : { compare: stepCompare[name] }),
     })),
@@ -60,8 +60,8 @@ function record(index: number, text: string, contentType = JSON_TYPE): StepRecor
   return {
     name,
     index,
-    routeKey: `finance:records.${name}`,
-    request: { method: 'POST', url: `/finance/records/x/${name}`, headers: {}, body: { kind: 'none' } },
+    routeKey: `api:records.${name}`,
+    request: { method: 'POST', url: `/records/x/${name}`, headers: {}, body: { kind: 'none' } },
     response: {
       status: 200,
       headers: { 'content-type': contentType },

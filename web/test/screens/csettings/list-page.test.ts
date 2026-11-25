@@ -304,7 +304,7 @@ describe('csettings.list', () => {
       expect(model.tables[1]).toEqual({
         headers: ['', 'Name', 'Directory', 'Category', 'Version', 'Provider', 'Plugin ID'],
         rows: [
-          ['Edit Delete', 'GS-PS-10 Plugin', '1', 'Utility', '1.0.0', 'OPT-2 golden harness', '1'],
+          ['Edit Delete', 'OPT-2 Utility Plugin', '1', 'Utility', '1.0.0', 'OPT-2 golden harness', '1'],
           ['Edit Delete', "O'Brien & <Co>", 'obrien', '', '2.0', 'A & B', '12'],
         ],
       });
@@ -312,9 +312,9 @@ describe('csettings.list', () => {
         `<li class="edit"><a href="./?muraAction=cSettings.editPlugin&moduleID=${golden.moduleId}"><i class="mi-pencil"></i>Edit</a></li>`,
       );
       expect(markup).toContain(
-        `<li class="delete"><a href="#" onclick="confirmDialog('Delete \\x27GS\\x2DPS\\x2D10\\x20PLUGIN\\x27?',function(){actionModal('./?muraAction=cSettings.deletePlugin&moduleID=${golden.moduleId}&csrf_token=T-${golden.moduleId}&csrf_token_expires=${EXPIRES}')});return false;"><i class="mi-trash"></i>Delete</a></li>`,
+        `<li class="delete"><a href="#" onclick="confirmDialog('Delete \\x27OPT\\x2D2\\x20UTILITY\\x20PLUGIN\\x27?',function(){actionModal('./?muraAction=cSettings.deletePlugin&moduleID=${golden.moduleId}&csrf_token=T-${golden.moduleId}&csrf_token_expires=${EXPIRES}')});return false;"><i class="mi-trash"></i>Delete</a></li>`,
       );
-      expect(markup).toContain('<td class="var-width"><a class="alt" title="view" href="/plugins/1/">GS-PS-10 Plugin</a></td>');
+      expect(markup).toContain('<td class="var-width"><a class="alt" title="view" href="/plugins/1/">OPT-2 Utility Plugin</a></td>');
       expect(markup).toContain(
         '<td><a class="alt" href="https%3A%2F%2Fopt2.invalid%2Fgolden-plugin" target="_blank">OPT-2 golden harness</a></td>',
       );

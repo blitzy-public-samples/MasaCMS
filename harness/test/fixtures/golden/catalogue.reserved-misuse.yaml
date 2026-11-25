@@ -136,32 +136,31 @@ scenarios:
     normalisationOverrides: []
     covers:
       - "admin:cusers.edituser"
-  - id: GS-FI-RH-01
+  - id: GS-CO-RH-01
     title: Unlisted rehearsal-form id naming a reserved username
-    service: finance
-    role: finance.preparer
+    service: strategies-content
+    role: system-user
     sessions:
-      preparer:
-        login: "seed:tenant-a:finance.preparer"
+      editor:
+        login: "seed:tenant-a:system-user"
         via: jsonapi
     seedRefs: []
     steps:
       - name: create
         method: POST
-        route: /legacy-fixtures/cfml/api.cfm/finance/records?siteid=tenant-a
-        as: preparer
+        route: /_api/json/v1/tenant-a/content/
+        as: editor
         csrf: "json-api:"
         body:
-          title: Expenses of rehearsal-04
-          amount: "10.0000"
-          period: 2026-06
+          title: Notes of rehearsal-04
+          type: Page
     compare:
       - status
       - envelope
     normalisationOverrides: []
     covers:
-      - "fixture:finance/records@post"
-  - id: GS-ID-05
+      - "api:content.save"
+  - id: GS-ID-75
     title: User search naming a reserved username in upper case
     service: identity
     role: admin
@@ -181,20 +180,20 @@ scenarios:
     normalisationOverrides: []
     covers:
       - "admin:cusers.search"
-  - id: GS-TS-01
-    title: Timesheet list selecting a reserved person through the dataset
-    service: timesheets
-    role: timesheets.primary-approver
+  - id: GS-PE-74
+    title: User search selecting a reserved person through the dataset
+    service: people
+    role: approver
     sessions:
       approver:
-        login: "seed:tenant-a:timesheets.primary-approver"
-        via: jsonapi
+        login: "seed:tenant-a:approver"
+        via: admin
     seedRefs:
       - as: membership
         source: dataset
         path: masa.memberships
         where:
-          groupname: timesheets.employee
+          groupname: Editors
           groupSiteID: tenant-a
         index: 0
       - as: employee
@@ -203,14 +202,14 @@ scenarios:
         where:
           userID: "${seed.membership.userID}"
     steps:
-      - name: sheets
+      - name: search
         method: GET
-        route: "/legacy-fixtures/cfml/api.cfm/timesheets/sheets?siteid=tenant-a&person=${seed.employee.username}"
+        route: "/admin/?muraAction=cUsers.search&siteid=tenant-a&ispublic=0&search=${seed.employee.username}"
         as: approver
     compare:
       - status
-      - envelope
+      - dom
     normalisationOverrides: []
     covers:
-      - "fixture:timesheets/sheets@get"
+      - "admin:cusers.search"
 

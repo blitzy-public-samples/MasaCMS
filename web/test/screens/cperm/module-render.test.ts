@@ -86,7 +86,7 @@ const categoriesRoutes = (): Record<string, FakeRoute> => ({
   [CSRF_ROUTE]: csrfReply,
   [grantsRoute(CATEGORIES_MODULE)]: grants(
     CATEGORIES_MODULE,
-    [grant(defaultEditorGroup, true), grant(groupsById[GROUP_IDS.financeApprover]!, false)],
+    [grant(defaultEditorGroup, true), grant(groupsById[GROUP_IDS.libraryApprover]!, false)],
     [grant(umbrellaMembersGroup, true)],
   ),
   [crumbsRoute(CATEGORIES_MODULE)]: crumbs('Categories'),
@@ -217,13 +217,13 @@ describe('cpermModule', () => {
       expect.arrayContaining(['Categories Permissions', 'System Groups', 'Member Groups']),
     );
     expect(model.tables).toEqual([
-      { headers: ['Allow', 'Group'], rows: [['', 'Editor'], ['', 'finance.approver']] },
+      { headers: ['Allow', 'Group'], rows: [['', 'Editor'], ['', 'library.approver']] },
       { headers: ['Allow', 'Group'], rows: [['', 'Umbrella Members']] },
     ]);
     const checkboxes = model.controls.filter((control) => control.name === 'groupid');
     expect(checkboxes.map((control) => [control.type, control.value, control.checked])).toEqual([
       ['checkbox', GROUP_IDS.defaultEditor, true],
-      ['checkbox', GROUP_IDS.financeApprover, false],
+      ['checkbox', GROUP_IDS.libraryApprover, false],
       ['checkbox', GROUP_IDS.umbrellaMembers, true],
     ]);
     expect(model.buttons).toEqual(expect.arrayContaining([{ text: 'Update', type: 'submit', hasOnclick: true }]));
@@ -247,7 +247,7 @@ describe('cpermModule', () => {
   it('writes checked straight after the value quote', async () => {
     const markup = await markupOf(fakeGatewayClient(categoriesRoutes()), CATEGORIES_MODULE);
     expect(markup).toContain(`name="groupid" value="${GROUP_IDS.defaultEditor}"checked></td>`);
-    expect(markup).toContain(`name="groupid" value="${GROUP_IDS.financeApprover}"></td>`);
+    expect(markup).toContain(`name="groupid" value="${GROUP_IDS.libraryApprover}"></td>`);
     expect(markup).toContain(`name="groupid" value="${GROUP_IDS.umbrellaMembers}"checked></td>`);
   });
 

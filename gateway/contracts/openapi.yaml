@@ -12,12 +12,6 @@ x-opt2-calls:
   - people
   - programs-sites
   - strategies-content
-  - communications
-  - reporting
-  - surveys
-  - timesheets
-  - finance
-  - e-signature
   - web
   - migration
   - stub
@@ -393,12 +387,6 @@ paths:
             - people
             - programs-sites
             - strategies-content
-            - communications
-            - reporting
-            - surveys
-            - timesheets
-            - finance
-            - e-signature
       - name: path
         in: path
         required: true
@@ -662,10 +650,7 @@ paths:
 components:
   securitySchemes:
     invocationCredential:
-      type: apiKey
-      in: header
-      name: X-Serverless-Authorization
-      description: Caller's invocation credential; a Google-signed ID token in the cloud, a local service token locally.
+      $ref: '../../platform/contracts/openapi-components.v1.yaml#/components/securitySchemes/invocationCredential'
     userToken:
       type: http
       scheme: bearer

@@ -27,7 +27,7 @@ import {
 } from '@opt2/platform/tenancy';
 import { createIdentityRepository, type IdentityRepository } from '../repo/repository.js';
 import type { GroupAccountRow, LoginSnapshot } from '../repo/tables.js';
-import { loadRoleMap, tokenRolesFor, type ModuleGroupGrant } from './roles.js';
+import { tokenRolesFor, type ModuleGroupGrant } from './roles.js';
 import { locateSession } from './sessions.js';
 
 /** A JSON Web Key Set, as `/.well-known/jwks.json` publishes it. */
@@ -367,7 +367,7 @@ export function createTokenService(options: TokenServiceOptions): TokenService {
   /** Token roles of the snapshot on the registered site `entry`. */
   async function rolesOn(snapshot: LoginSnapshot, entry: TenantRegistryEntry): Promise<string[]> {
     const moduleGrants = await moduleGrantsFor(db, repo, snapshot, entry);
-    return tokenRolesFor(snapshot, entry, { moduleGrants, roleMap: await loadRoleMap() }).roles;
+    return tokenRolesFor(snapshot, entry, { moduleGrants }).roles;
   }
 
   return {

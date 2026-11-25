@@ -69,12 +69,12 @@ import {
   type RetryPolicy,
 } from '../../src/tasks/queues.js';
 
-const SURVEY_ID = 'A1B2C3D4-E5F6-A7B8-C9D0E1F2A3B4C5D6';
+const FEED_ID = 'A1B2C3D4-E5F6-A7B8-C9D0E1F2A3B4C5D6';
 
 const SERVICE_URLS: Readonly<Record<string, string>> = {
-  surveys: 'http://127.0.0.1:8117',
+  'strategies-content': 'http://127.0.0.1:8114',
   people: 'http://127.0.0.1:8112/',
-  reporting: 'https://reporting-abc.a.run.app//',
+  'programs-sites': 'https://programs-sites-abc.a.run.app//',
 };
 
 const ONE_OFF_RETRY: RetryPolicy = { maxAttempts: 100, minBackoffS: 1, maxBackoffS: 300, maxDoublings: 5 };
@@ -95,22 +95,6 @@ function sweep(service: string): QueueTopologyEntry {
 
 const CLOUD_TOPOLOGY: readonly QueueTopologyEntry[] = [
   {
-    name: 'surveys-launch',
-    targetService: 'surveys',
-    targetPath: '/internal/v1/tasks/surveys/launch',
-    creators: ['communications'],
-    deadlineS: 60,
-    retry: ONE_OFF_RETRY,
-  },
-  {
-    name: 'communications-reminders',
-    targetService: 'communications',
-    targetPath: '/internal/v1/tasks/reminders',
-    creators: ['communications'],
-    deadlineS: 60,
-    retry: ONE_OFF_RETRY,
-  },
-  {
     name: 'content-scheduled-publish',
     targetService: 'strategies-content',
     targetPath: '/internal/v1/jobs/publish-scheduled-changesets',
@@ -127,14 +111,6 @@ const CLOUD_TOPOLOGY: readonly QueueTopologyEntry[] = [
     retry: ONE_OFF_RETRY,
   },
   {
-    name: 'reporting-export-run',
-    targetService: 'reporting',
-    targetPath: '/internal/v1/tasks/exports/run',
-    creators: ['reporting'],
-    deadlineS: 1800,
-    retry: ONE_OFF_RETRY,
-  },
-  {
     name: 'programs-sites-sitemonitor',
     targetService: 'programs-sites',
     targetPath: '/internal/v1/jobs/sitemonitor',
@@ -146,16 +122,12 @@ const CLOUD_TOPOLOGY: readonly QueueTopologyEntry[] = [
   sweep('identity'),
   sweep('people'),
   sweep('programs-sites'),
-  sweep('surveys'),
-  sweep('communications'),
 ];
 
 const DEPLOYED_SWEEPS = [
   'identity-outbox-sweep',
   'people-outbox-sweep',
   'programs-sites-outbox-sweep',
-  'surveys-outbox-sweep',
-  'communications-outbox-sweep',
 ];
 
 /** Returns what `fn` throws, failing the test when it returns normally. */
@@ -241,14 +213,14 @@ describe('QUEUES', () => {
 });
 
 describe('isQueueName', () => {
-  it.each(['surveys-launch', 'programs-sites-sitemonitor', 'communications-outbox-sweep', 'stub-outbox-sweep'])(
+  it.each(['content-feed-import', 'programs-sites-sitemonitor', 'identity-outbox-sweep', 'stub-outbox-sweep'])(
     'accepts %s',
     (name) => {
       expect(isQueueName(name)).toBe(true);
     },
   );
 
-  it.each(['', 'SURVEYS-LAUNCH', ' surveys-launch', 'finance-outbox-sweep', 'toString', '__proto__', 'hasOwnProperty'])(
+  it.each(['', 'CONTENT-FEED-IMPORT', ' content-feed-import', 'strategies-content-outbox-sweep', 'toString', '__proto__', 'hasOwnProperty'])(
     'rejects %j',
     (name) => {
       expect(isQueueName(name)).toBe(false);
@@ -258,8 +230,8 @@ describe('isQueueName', () => {
 
 describe('queueDefinition', () => {
   it('returns the registry entry', () => {
-    expect(queueDefinition('surveys-launch')).toBe(QUEUES['surveys-launch']);
-    expect(queueDefinition('surveys-launch').targetPath).toBe('/internal/v1/tasks/surveys/launch');
+    expect(queueDefinition('content-feed-import')).toBe(QUEUES['content-feed-import']);
+    expect(queueDefinition('content-feed-import').targetPath).toBe('/internal/v1/jobs/feed-auto-import');
   });
 
   it.each(['unknown-queue', 'toString', ''])('throws UnknownQueueError for %j', (name) => {
@@ -292,18 +264,15 @@ describe('recurringQueues', () => {
 
 describe('queuesCreatedBy', () => {
   it.each([
-    ['communications', ['surveys-launch', 'communications-reminders', 'communications-outbox-sweep']],
     [
       'programs-sites',
       ['content-scheduled-publish', 'content-feed-import', 'programs-sites-sitemonitor', 'programs-sites-outbox-sweep'],
     ],
     ['strategies-content', ['content-scheduled-publish']],
-    ['reporting', ['reporting-export-run']],
-    ['surveys', ['surveys-outbox-sweep']],
     ['identity', ['identity-outbox-sweep']],
     ['people', ['people-outbox-sweep']],
     ['stub', ['stub-outbox-sweep']],
-    ['finance', []],
+    ['gateway', []],
     ['', []],
   ])('lists the queues %j creates tasks on', (service, expected) => {
     expect(queuesCreatedBy(service).map((def) => def.name)).toStrictEqual(expected);
@@ -312,21 +281,21 @@ describe('queuesCreatedBy', () => {
 
 describe('targetUrl', () => {
   /** A parameterised definition, which no registry queue is, for the template filling of `targetUrl`. */
-  const TEMPLATE_QUEUE: QueueDefinition = { ...QUEUES['surveys-launch'], name: 'items-run', targetPath: '/internal/v1/tasks/items/{itemId}/run' };
+  const TEMPLATE_QUEUE: QueueDefinition = { ...QUEUES['content-feed-import'], name: 'items-run', targetPath: '/internal/v1/tasks/items/{itemId}/run' };
 
   it.each([
-    ['fills a path parameter', { itemId: SURVEY_ID }, `http://127.0.0.1:8117/internal/v1/tasks/items/${SURVEY_ID}/run`],
-    ['URI-encodes parameter values', { itemId: 'a/b c?d#é' }, 'http://127.0.0.1:8117/internal/v1/tasks/items/a%2Fb%20c%3Fd%23%C3%A9/run'],
+    ['fills a path parameter', { itemId: FEED_ID }, `http://127.0.0.1:8114/internal/v1/tasks/items/${FEED_ID}/run`],
+    ['URI-encodes parameter values', { itemId: 'a/b c?d#é' }, 'http://127.0.0.1:8114/internal/v1/tasks/items/a%2Fb%20c%3Fd%23%C3%A9/run'],
   ])('%s of a parameterised definition', (_label, params, expected) => {
     expect(targetUrl(TEMPLATE_QUEUE, SERVICE_URLS, params)).toBe(expected);
   });
 
   it.each([
     [
-      'keeps the fixed survey launch path',
-      'surveys-launch',
-      { surveyId: SURVEY_ID },
-      'http://127.0.0.1:8117/internal/v1/tasks/surveys/launch',
+      'keeps the fixed feed import path',
+      'content-feed-import',
+      { feedId: FEED_ID },
+      'http://127.0.0.1:8114/internal/v1/jobs/feed-auto-import',
     ],
     [
       'strips one trailing slash from the base URL',
@@ -336,14 +305,14 @@ describe('targetUrl', () => {
     ],
     [
       'strips repeated trailing slashes from the base URL',
-      'reporting-export-run',
-      { exportId: 'E1' },
-      'https://reporting-abc.a.run.app/internal/v1/tasks/exports/run',
+      'programs-sites-sitemonitor',
+      { siteId: 'S1' },
+      'https://programs-sites-abc.a.run.app/internal/v1/jobs/sitemonitor',
     ],
     [
       'ignores parameters the route does not name',
       'people-outbox-sweep',
-      { surveyId: SURVEY_ID },
+      { feedId: FEED_ID },
       'http://127.0.0.1:8112/internal/v1/outbox/sweep',
     ],
   ])('%s', (_label, queue, params, expected) => {
@@ -352,14 +321,14 @@ describe('targetUrl', () => {
 
   it.each([
     ['absent', {}],
-    ['empty', { surveys: '' }],
+    ['empty', { 'strategies-content': '' }],
   ])('throws UnknownTaskTargetError when the target base URL is %s', (_label, serviceUrls) => {
-    const error = thrownBy(() => targetUrl(QUEUES['surveys-launch'], serviceUrls, { surveyId: SURVEY_ID }));
+    const error = thrownBy(() => targetUrl(QUEUES['content-feed-import'], serviceUrls, { feedId: FEED_ID }));
     expect(error).toBeInstanceOf(UnknownTaskTargetError);
     expect(error).toMatchObject({
       name: 'UnknownTaskTargetError',
-      service: 'surveys',
-      message: 'OPT2_SERVICE_URLS has no URL for task target: surveys',
+      service: 'strategies-content',
+      message: 'OPT2_SERVICE_URLS has no URL for task target: strategies-content',
     });
   });
 
@@ -422,7 +391,7 @@ describe('queueTopology', () => {
 
   it('returns copies that leave the registry unchanged when mutated', () => {
     for (const entry of queueTopology({ target: 'cloud' })) {
-      entry.creators.push('finance');
+      entry.creators.push('gateway');
       entry.retry.maxAttempts = 0;
     }
     expect(queueTopology({ target: 'cloud' })).toStrictEqual(CLOUD_TOPOLOGY);
@@ -433,12 +402,12 @@ describe('queueTopology', () => {
 
 describe('parseTaskWireBody', () => {
   const tenantInput: CreateTaskInput = {
-    queue: 'surveys-launch',
-    name: 'surveys-launch-A1B2',
+    queue: 'content-feed-import',
+    name: 'content-feed-import-A1B2',
     scheduleTime: new Date('2026-06-30T12:00:00Z'),
-    url: 'http://127.0.0.1:8117/internal/v1/tasks/surveys/launch',
+    url: 'http://127.0.0.1:8114/internal/v1/jobs/feed-auto-import',
     deadlineS: 60,
-    body: { surveyId: SURVEY_ID },
+    body: { feedId: FEED_ID },
     tenantId: TENANT_A.tenantId,
   };
   const { tenantId: _tenantId, body: _body, ...systemInput } = tenantInput;
@@ -447,9 +416,9 @@ describe('parseTaskWireBody', () => {
     [
       'a tenant task',
       tenantInput,
-      { queue: 'surveys-launch', name: 'surveys-launch-A1B2', tenantId: TENANT_A.tenantId, payload: { surveyId: SURVEY_ID } },
+      { queue: 'content-feed-import', name: 'content-feed-import-A1B2', tenantId: TENANT_A.tenantId, payload: { feedId: FEED_ID } },
     ],
-    ['a system task without a body', systemInput, { queue: 'surveys-launch', name: 'surveys-launch-A1B2', tenantId: null, payload: null }],
+    ['a system task without a body', systemInput, { queue: 'content-feed-import', name: 'content-feed-import-A1B2', tenantId: null, payload: null }],
   ])('reads back the wire body the adapters send for %s', (_label, input, expected) => {
     const sent = taskWireBody(input);
     expect(sent).toStrictEqual(expected);
@@ -458,10 +427,10 @@ describe('parseTaskWireBody', () => {
 
   it.each([
     ['null', null],
-    ['an array', [SURVEY_ID]],
-    ['a body without a queue', { name: 'surveys-launch-A1B2', tenantId: null, payload: null }],
-    ['a numeric task name', { queue: 'surveys-launch', name: 42, tenantId: null, payload: null }],
-    ['a numeric tenantId', { queue: 'surveys-launch', name: 'surveys-launch-A1B2', tenantId: 1, payload: null }],
+    ['an array', [FEED_ID]],
+    ['a body without a queue', { name: 'content-feed-import-A1B2', tenantId: null, payload: null }],
+    ['a numeric task name', { queue: 'content-feed-import', name: 42, tenantId: null, payload: null }],
+    ['a numeric tenantId', { queue: 'content-feed-import', name: 'content-feed-import-A1B2', tenantId: 1, payload: null }],
   ])('throws a ZodError for %s', (_label, raw) => {
     expect(() => parseTaskWireBody(raw)).toThrow(z.ZodError);
   });
@@ -480,11 +449,11 @@ describe('assertTaskName', () => {
   it.each([
     ['an empty name', ''],
     ['501 characters', 'x'.repeat(501)],
-    ['a space', 'surveys launch'],
-    ['a slash', 'surveys-launch/A1B2'],
-    ['a dot', 'surveys.launch'],
-    ['a non-ASCII letter', 'surveys-lünch'],
-    ['a trailing newline', 'surveys-launch\n'],
+    ['a space', 'feed import'],
+    ['a slash', 'content-feed-import/A1B2'],
+    ['a dot', 'feed.import'],
+    ['a non-ASCII letter', 'feed-impört'],
+    ['a trailing newline', 'content-feed-import\n'],
   ])('throws InvalidTaskNameError for %s', (_label, name) => {
     expect(TASK_NAME_PATTERN.test(name)).toBe(false);
     const error = thrownBy(() => assertTaskName(name));
@@ -510,13 +479,11 @@ const TASK_SERVICE_URLS: Readonly<Record<string, string>> = {
   identity: 'http://127.0.0.1:8111',
   people: 'http://127.0.0.1:8112',
   'programs-sites': 'http://127.0.0.1:8113',
-  communications: 'http://127.0.0.1:8115',
-  surveys: 'http://127.0.0.1:8117',
   stub: 'http://127.0.0.1:8199',
 };
 
 const SWEEP_PATH = '/internal/v1/outbox/sweep';
-const LAUNCH_PATH = '/internal/v1/tasks/surveys/launch';
+const IMPORT_PATH = '/internal/v1/jobs/feed-auto-import';
 
 const SWEEP_BODY = taskWireBody({
   queue: 'people-outbox-sweep',
@@ -530,9 +497,9 @@ const SWEEP_BODY = taskWireBody({
 const INVALID_PARAMETERS = { message: 'Invalid parameters', code: 'invalid_request' };
 const BAD_REQUEST = { message: 'Bad Request', code: 'invalid_request' };
 
-/** Wire body of the survey launch task, as the communications consumer creates it. */
-function launchBody(tenantId: string | null): unknown {
-  return { queue: 'surveys-launch', name: 'surveys-launch-A1B2', tenantId, payload: { surveyId: SURVEY_ID } };
+/** Wire body of the feed import task, as programs-sites creates it. */
+function importBody(tenantId: string | null): unknown {
+  return { queue: 'content-feed-import', name: 'content-feed-import-A1B2', tenantId, payload: { feedId: FEED_ID } };
 }
 
 /** In-memory task port with Cloud Tasks name semantics: a live or tombstoned name answers `created: false`. */
@@ -590,31 +557,31 @@ class MemoryTaskPort implements TaskPort {
   }
 }
 
-interface StoredSurvey {
+interface StoredFeed {
   tenantId: string;
-  surveyId: string;
+  feedId: string;
 }
 
-const STORED_SURVEYS: readonly StoredSurvey[] = [{ tenantId: TENANT_A.tenantId, surveyId: SURVEY_ID }];
+const STORED_FEEDS: readonly StoredFeed[] = [{ tenantId: TENANT_A.tenantId, feedId: FEED_ID }];
 
-/** The stored survey the payload names, visible only under the tenant that stores it. */
-async function findSurvey(tx: TenantTx, payload: unknown): Promise<StoredSurvey | null> {
-  const surveyId = (payload as { surveyId?: unknown } | null)?.surveyId;
-  return STORED_SURVEYS.find((row) => row.tenantId === tx.tenantId && row.surveyId === surveyId) ?? null;
+/** The stored feed the payload names, visible only under the tenant that stores it. */
+async function findFeed(tx: TenantTx, payload: unknown): Promise<StoredFeed | null> {
+  const feedId = (payload as { feedId?: unknown } | null)?.feedId;
+  return STORED_FEEDS.find((row) => row.tenantId === tx.tenantId && row.feedId === feedId) ?? null;
 }
 
 /** TenantDb fake recording the tenant of every transaction it opens; it runs no SQL. */
 function memoryTenantDb(): TenantDb & { readonly tenants: string[] } {
   const tenants: string[] = [];
   return {
-    schema: 'surveys',
+    schema: 'content',
     tenants,
     withTenant: async (tenantId, fn) => {
       tenants.push(tenantId);
       return fn({
         kind: 'tenant',
         tenantId,
-        schema: 'surveys',
+        schema: 'content',
         query: () => Promise.reject(new Error('task route tests run no SQL')),
         onCommit: () => undefined,
       });
@@ -666,14 +633,14 @@ function errorOf(response: { json: () => unknown }): unknown {
 
 describe('TaskTenantMismatchError', () => {
   it('is the legacy badRequest naming the tenant and the task', () => {
-    const error = new TaskTenantMismatchError(TENANT_B.tenantId, 'surveys-launch-A1B2');
+    const error = new TaskTenantMismatchError(TENANT_B.tenantId, 'content-feed-import-A1B2');
     expect(error).toBeInstanceOf(LegacyApiError);
     expect(error).toMatchObject({
       name: 'TaskTenantMismatchError',
       type: 'badRequest',
       message: 'badRequest: Bad Request',
       tenantId: TENANT_B.tenantId,
-      taskName: 'surveys-launch-A1B2',
+      taskName: 'content-feed-import-A1B2',
     });
   });
 });
@@ -685,12 +652,12 @@ describe('registerTaskRoute', () => {
   const NOT_FIXED = 'must be a fixed path: Cloud Run admits only exact OIDC audiences';
 
   it.each([
-    { route: '/internal/v1/task-queues/surveys-launch/pause', why: 'is outside the managed task families', reason: OUTSIDE },
+    { route: '/internal/v1/task-queues/content-feed-import/pause', why: 'is outside the managed task families', reason: OUTSIDE },
     { route: '/internal/v1/events/people-person-archived', why: 'is outside the managed task families', reason: OUTSIDE },
     { route: '/internal/v1/outbox/sweep/now', why: 'is outside the managed task families', reason: OUTSIDE },
     { route: '/tasks/feed', why: 'is outside the managed task families', reason: OUTSIDE },
-    { route: '/internal/v1/tasks/surveys/:surveyId/launch', why: 'carries a route parameter', reason: NOT_FIXED },
-    { route: '/internal/v1/tasks/exports/{exportId}/run', why: 'carries a template parameter', reason: NOT_FIXED },
+    { route: '/internal/v1/tasks/feeds/:feedId/import', why: 'carries a route parameter', reason: NOT_FIXED },
+    { route: '/internal/v1/tasks/imports/{importId}/run', why: 'carries a template parameter', reason: NOT_FIXED },
     { route: '/internal/v1/jobs/*', why: 'carries a wildcard', reason: NOT_FIXED },
   ])('refuses $route, which $why', async ({ route, reason }) => {
     const app = await taskServiceApp('people');
@@ -712,7 +679,7 @@ describe('registerTaskRoute', () => {
     ['no credential', async (): Promise<Record<string, string>> => ({})],
     [
       'a tasks-invoker token addressed to another service',
-      async () => ({ authorization: `Bearer ${await mintTasksInvokerToken({ audience: 'surveys' })}` }),
+      async () => ({ authorization: `Bearer ${await mintTasksInvokerToken({ audience: 'strategies-content' })}` }),
     ],
     [
       'a user token',
@@ -884,60 +851,60 @@ describe('registerTaskRoute', () => {
   });
 
   it('re-checks a tenant task against its stored row and runs it under that tenant', async () => {
-    const app = await taskServiceApp('surveys');
+    const app = await taskServiceApp('strategies-content');
     const db = memoryTenantDb();
-    const findStored = vi.fn(findSurvey);
-    const seen: Array<{ ctx: TaskContext<StoredSurvey>; contextTenant: string | undefined }> = [];
-    registerTaskRoute<StoredSurvey>(app, LAUNCH_PATH, {
+    const findStored = vi.fn(findFeed);
+    const seen: Array<{ ctx: TaskContext<StoredFeed>; contextTenant: string | undefined }> = [];
+    registerTaskRoute<StoredFeed>(app, IMPORT_PATH, {
       scope: 'tenant',
       db,
       findStored,
       handler: async (ctx) => {
         seen.push({ ctx, contextTenant: currentRequestContext()?.tenantId });
-        return { launched: ctx.stored?.surveyId };
+        return { imported: ctx.stored?.feedId };
       },
     });
-    const response = await postTask(app, LAUNCH_PATH, launchBody(TENANT_A.tenantId.toUpperCase()), {
-      [CLOUD_TASKS_HEADERS.taskName]: 'surveys-launch-A1B2',
+    const response = await postTask(app, IMPORT_PATH, importBody(TENANT_A.tenantId.toUpperCase()), {
+      [CLOUD_TASKS_HEADERS.taskName]: 'content-feed-import-A1B2',
     });
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toStrictEqual({ launched: SURVEY_ID });
+    expect(response.json()).toStrictEqual({ imported: FEED_ID });
     expect(db.tenants).toStrictEqual([TENANT_A.tenantId]);
     expect(findStored).toHaveBeenCalledOnce();
     expect(findStored).toHaveBeenCalledWith(
       expect.objectContaining({ kind: 'tenant', tenantId: TENANT_A.tenantId }),
-      { surveyId: SURVEY_ID },
-      { taskName: 'surveys-launch-A1B2', queue: 'surveys-launch' },
+      { feedId: FEED_ID },
+      { taskName: 'content-feed-import-A1B2', queue: 'content-feed-import' },
     );
     expect(seen).toHaveLength(1);
     expect(seen[0]?.ctx.tenantId).toBe(TENANT_A.tenantId);
-    expect(seen[0]?.ctx.stored).toBe(STORED_SURVEYS[0]);
+    expect(seen[0]?.ctx.stored).toBe(STORED_FEEDS[0]);
     expect(seen[0]?.contextTenant).toBe(TENANT_A.tenantId);
   });
 
   /** A tenant handler refusing every task it runs as a tenant mismatch, as a route refuses a payload its stored row contradicts. */
   const refusingHandler = () =>
-    vi.fn(async (ctx: TaskContext<StoredSurvey>) => {
+    vi.fn(async (ctx: TaskContext<StoredFeed>) => {
       throw new TaskTenantMismatchError(ctx.tenantId, ctx.taskName);
     });
 
-  const LAUNCH_HEADERS = { [CLOUD_TASKS_HEADERS.taskName]: 'surveys-launch-A1B2', [CLOUD_TASKS_HEADERS.queueName]: 'surveys-launch' };
+  const IMPORT_HEADERS = { [CLOUD_TASKS_HEADERS.taskName]: 'content-feed-import-A1B2', [CLOUD_TASKS_HEADERS.queueName]: 'content-feed-import' };
 
   const PERMANENT_REFUSALS = [
-    ['names no tenant', launchBody(null), 'no-tenant', [], undefined, 0, BAD_REQUEST],
-    ['names a tenant that cannot see the stored row', launchBody(TENANT_B.tenantId), 'not-visible', [TENANT_B.tenantId], TENANT_B.tenantId, 0, BAD_REQUEST],
-    ['is malformed', { ...(launchBody(TENANT_A.tenantId) as object), name: '' }, 'malformed-body', [], undefined, 0, INVALID_PARAMETERS],
-    ['is refused by its handler as a tenant mismatch', launchBody(TENANT_A.tenantId), 'mismatch', [TENANT_A.tenantId], TENANT_A.tenantId, 1, BAD_REQUEST],
+    ['names no tenant', importBody(null), 'no-tenant', [], undefined, 0, BAD_REQUEST],
+    ['names a tenant that cannot see the stored row', importBody(TENANT_B.tenantId), 'not-visible', [TENANT_B.tenantId], TENANT_B.tenantId, 0, BAD_REQUEST],
+    ['is malformed', { ...(importBody(TENANT_A.tenantId) as object), name: '' }, 'malformed-body', [], undefined, 0, INVALID_PARAMETERS],
+    ['is refused by its handler as a tenant mismatch', importBody(TENANT_A.tenantId), 'mismatch', [TENANT_A.tenantId], TENANT_A.tenantId, 1, BAD_REQUEST],
   ] as const;
 
   it.each(PERMANENT_REFUSALS)(
     'keeps the legacy 400 for a tenant task that %s when the route sets no ignored body',
     async (_label, body, _reason, tenants, _tenant, handlerCalls, error) => {
-      const app = await taskServiceApp('surveys');
+      const app = await taskServiceApp('strategies-content');
       const db = memoryTenantDb();
       const handler = refusingHandler();
-      registerTaskRoute<StoredSurvey>(app, LAUNCH_PATH, { scope: 'tenant', db, findStored: findSurvey, handler });
-      const response = await postTask(app, LAUNCH_PATH, body, LAUNCH_HEADERS);
+      registerTaskRoute<StoredFeed>(app, IMPORT_PATH, { scope: 'tenant', db, findStored: findFeed, handler });
+      const response = await postTask(app, IMPORT_PATH, body, IMPORT_HEADERS);
       expect(response.statusCode).toBe(400);
       expect(errorOf(response)).toStrictEqual(error);
       expect(db.tenants).toStrictEqual(tenants);
@@ -949,12 +916,12 @@ describe('registerTaskRoute', () => {
     'acknowledges a tenant task that %s with the route ignored body and a warning naming it',
     async (_label, body, reason, tenants, tenantId, handlerCalls) => {
       const lines: string[] = [];
-      const app = await taskServiceApp('surveys', lines);
+      const app = await taskServiceApp('strategies-content', lines);
       const db = memoryTenantDb();
       const handler = refusingHandler();
       const ignored = vi.fn((why: string) => ({ ignored: why }));
-      registerTaskRoute<StoredSurvey>(app, LAUNCH_PATH, { scope: 'tenant', db, findStored: findSurvey, handler, ignored });
-      const response = await postTask(app, LAUNCH_PATH, body, LAUNCH_HEADERS);
+      registerTaskRoute<StoredFeed>(app, IMPORT_PATH, { scope: 'tenant', db, findStored: findFeed, handler, ignored });
+      const response = await postTask(app, IMPORT_PATH, body, IMPORT_HEADERS);
       expect(response.statusCode).toBe(200);
       expect(response.json()).toStrictEqual({ ignored: reason });
       expect(ignored).toHaveBeenCalledExactlyOnceWith(reason);
@@ -964,7 +931,7 @@ describe('registerTaskRoute', () => {
         .map((line) => JSON.parse(line) as Record<string, unknown>)
         .filter((line) => line.severity === 'WARNING')
         .map(({ message, tenantId: logged }) => ({ message, tenantId: logged }));
-      expect(warnings).toStrictEqual([{ message: `Task surveys-launch/surveys-launch-A1B2 ignored: ${reason}`, tenantId }]);
+      expect(warnings).toStrictEqual([{ message: `Task content-feed-import/content-feed-import-A1B2 ignored: ${reason}`, tenantId }]);
     },
   );
 
@@ -972,19 +939,19 @@ describe('registerTaskRoute', () => {
     ['no credential', async (): Promise<Record<string, string>> => ({}), 401, 0],
     [
       'a handler failure the queue must retry',
-      async () => ({ authorization: `Bearer ${await mintTasksInvokerToken({ audience: 'surveys' })}` }),
+      async () => ({ authorization: `Bearer ${await mintTasksInvokerToken({ audience: 'strategies-content' })}` }),
       503,
       1,
     ],
   ])('keeps answering %s with %i on a route that sets an ignored body', async (_label, headersOf, status, handlerCalls) => {
-    const app = await taskServiceApp('surveys');
+    const app = await taskServiceApp('strategies-content');
     const db = memoryTenantDb();
     const handler = vi.fn(async () => {
-      throw new LegacyServiceUnavailableError('surveys gate closed', 'auto', 'gate-closed');
+      throw new LegacyServiceUnavailableError('content gate closed', 'auto', 'gate-closed');
     });
     const ignored = vi.fn((why: string) => ({ ignored: why }));
-    registerTaskRoute<StoredSurvey>(app, LAUNCH_PATH, { scope: 'tenant', db, findStored: findSurvey, handler, ignored });
-    const response = await app.inject({ method: 'POST', url: LAUNCH_PATH, headers: await headersOf(), payload: launchBody(TENANT_A.tenantId) as object });
+    registerTaskRoute<StoredFeed>(app, IMPORT_PATH, { scope: 'tenant', db, findStored: findFeed, handler, ignored });
+    const response = await app.inject({ method: 'POST', url: IMPORT_PATH, headers: await headersOf(), payload: importBody(TENANT_A.tenantId) as object });
     expect(response.statusCode).toBe(status);
     expect(handler).toHaveBeenCalledTimes(handlerCalls);
     expect(ignored).not.toHaveBeenCalled();
@@ -1058,7 +1025,7 @@ describe('registerQueueControl', () => {
   }
 
   it('declares pause, resume and ensure on the service transport for migration and the operator', async () => {
-    const { app } = await controlApp('communications');
+    const { app } = await controlApp('programs-sites');
     expect(QUEUE_CONTROL_PREFIX).toBe('/internal/v1/task-queues');
     expect(QUEUE_CONTROL_ROLES).toStrictEqual(['platform.migration', 'platform.operator']);
     expect(recordedRoutes(app).filter((route) => route.url.startsWith(QUEUE_CONTROL_PREFIX))).toStrictEqual(
@@ -1071,22 +1038,22 @@ describe('registerQueueControl', () => {
   });
 
   it.each(['migration', 'operator'])('pauses and resumes a queue the service creates for %s', async (caller) => {
-    const { app, port } = await controlApp('communications');
-    const paused = await postControl(app, 'surveys-launch', 'pause', caller);
+    const { app, port } = await controlApp('programs-sites');
+    const paused = await postControl(app, 'content-feed-import', 'pause', caller);
     expect(paused.statusCode).toBe(200);
-    expect(paused.json()).toStrictEqual({ queue: 'surveys-launch', service: 'communications', paused: true, running: 0 });
-    expect([...port.paused]).toStrictEqual(['surveys-launch']);
+    expect(paused.json()).toStrictEqual({ queue: 'content-feed-import', service: 'programs-sites', paused: true, running: 0 });
+    expect([...port.paused]).toStrictEqual(['content-feed-import']);
 
-    const resumed = await postControl(app, 'surveys-launch', 'resume', caller);
+    const resumed = await postControl(app, 'content-feed-import', 'resume', caller);
     expect(resumed.statusCode).toBe(200);
-    expect(resumed.json()).toStrictEqual({ queue: 'surveys-launch', service: 'communications', paused: false });
+    expect(resumed.json()).toStrictEqual({ queue: 'content-feed-import', service: 'programs-sites', paused: false });
     expect(port.paused.size).toBe(0);
   });
 
   it('answers pause with the running tasks of every page of the queue', async () => {
-    const { app, port } = await controlApp('communications');
+    const { app, port } = await controlApp('programs-sites');
     const task = (name: string, status: TaskInfo['status']): TaskInfo => ({
-      queue: 'surveys-launch',
+      queue: 'content-feed-import',
       name,
       scheduleTime: new Date(SWEEP_SLOT_S * 1000),
       status,
@@ -1094,25 +1061,25 @@ describe('registerQueueControl', () => {
     });
     const list = vi
       .spyOn(port, 'list')
-      .mockResolvedValueOnce({ tasks: [task('launch-a', 'running'), task('launch-b', 'pending')], nextPageToken: 'page-2' })
-      .mockResolvedValueOnce({ tasks: [task('launch-c', 'running')] });
+      .mockResolvedValueOnce({ tasks: [task('import-a', 'running'), task('import-b', 'pending')], nextPageToken: 'page-2' })
+      .mockResolvedValueOnce({ tasks: [task('import-c', 'running')] });
 
-    const paused = await postControl(app, 'surveys-launch', 'pause');
+    const paused = await postControl(app, 'content-feed-import', 'pause');
 
-    expect(paused.json()).toStrictEqual({ queue: 'surveys-launch', service: 'communications', paused: true, running: 2 });
+    expect(paused.json()).toStrictEqual({ queue: 'content-feed-import', service: 'programs-sites', paused: true, running: 2 });
     expect(list.mock.calls).toStrictEqual([
-      ['surveys-launch', { pageSize: MAX_TASK_PAGE_SIZE }],
-      ['surveys-launch', { pageSize: MAX_TASK_PAGE_SIZE, pageToken: 'page-2' }],
+      ['content-feed-import', { pageSize: MAX_TASK_PAGE_SIZE }],
+      ['content-feed-import', { pageSize: MAX_TASK_PAGE_SIZE, pageToken: 'page-2' }],
     ]);
   });
 
   it.each([
     ['no credential', 401, null],
     ['the gateway', 403, 'gateway'],
-    ['a creating service', 403, 'communications'],
+    ['a creating service', 403, 'programs-sites'],
   ])('answers %s with %i and leaves the queue running', async (_label, status, caller) => {
-    const { app, port } = await controlApp('communications');
-    const response = await postControl(app, 'surveys-launch', 'pause', caller);
+    const { app, port } = await controlApp('programs-sites');
+    const response = await postControl(app, 'content-feed-import', 'pause', caller);
     expect(response.statusCode).toBe(status);
     expect(port.paused.size).toBe(0);
   });
@@ -1121,10 +1088,10 @@ describe('registerQueueControl', () => {
     ['pause', 'an unknown queue', 'unknown-queue'],
     ['resume', 'a queue another service creates', 'people-outbox-sweep'],
     ['pause', 'a prototype key', 'toString'],
-    ['ensure', 'a queue that is not recurring', 'surveys-launch'],
+    ['ensure', 'a queue that is not recurring', 'content-feed-import'],
     ['ensure', 'a chain another service creates', 'people-outbox-sweep'],
   ])('answers 400 invalidParameters to %s of %s', async (op, _label, queue) => {
-    const { app, port } = await controlApp('communications');
+    const { app, port } = await controlApp('programs-sites');
     const response = await postControl(app, queue, op);
     expect(response.statusCode).toBe(400);
     expect(errorOf(response)).toStrictEqual(INVALID_PARAMETERS);
@@ -1133,44 +1100,44 @@ describe('registerQueueControl', () => {
   });
 
   it('ensures the current slot task of an own chain once, then reports it live', async () => {
-    const { app, port } = await controlApp('communications');
-    const first = await postControl(app, 'communications-outbox-sweep', 'ensure');
+    const { app, port } = await controlApp('programs-sites');
+    const first = await postControl(app, 'programs-sites-outbox-sweep', 'ensure');
     expect(first.statusCode).toBe(200);
     expect(first.json()).toStrictEqual({
-      queue: 'communications-outbox-sweep',
-      service: 'communications',
+      queue: 'programs-sites-outbox-sweep',
+      service: 'programs-sites',
       ensured: {
-        queue: 'communications-outbox-sweep',
-        name: 'communications-outbox-sweep-1782821220',
+        queue: 'programs-sites-outbox-sweep',
+        name: 'programs-sites-outbox-sweep-1782821220',
         created: true,
         reason: 'created-current',
       },
     });
     expect([...port.live.values()]).toStrictEqual([
       {
-        queue: 'communications-outbox-sweep',
-        name: 'communications-outbox-sweep-1782821220',
+        queue: 'programs-sites-outbox-sweep',
+        name: 'programs-sites-outbox-sweep-1782821220',
         scheduleTime: new Date(SWEEP_SLOT_S * 1000),
-        url: 'http://127.0.0.1:8115/internal/v1/outbox/sweep',
+        url: 'http://127.0.0.1:8113/internal/v1/outbox/sweep',
         deadlineS: 60,
         body: { slotStartS: SWEEP_SLOT_S },
       },
     ]);
 
-    const second = await postControl(app, 'communications-outbox-sweep', 'ensure', 'operator');
+    const second = await postControl(app, 'programs-sites-outbox-sweep', 'ensure', 'operator');
     expect(second.statusCode).toBe(200);
     expect(second.json()).toMatchObject({
-      ensured: { name: 'communications-outbox-sweep-1782821220', created: false, reason: 'live' },
+      ensured: { name: 'programs-sites-outbox-sweep-1782821220', created: false, reason: 'live' },
     });
     expect(port.live.size).toBe(1);
   });
 
   it('answers 503 to ensure when every probed slot name of the chain is a tombstone', async () => {
-    const { app, port } = await controlApp('communications');
+    const { app, port } = await controlApp('programs-sites');
     for (let probe = 0; probe < MAX_SLOT_PROBES; probe += 1) {
-      port.tombstones.add(`communications-outbox-sweep/communications-outbox-sweep-${String(SWEEP_SLOT_S + probe * 60)}`);
+      port.tombstones.add(`programs-sites-outbox-sweep/programs-sites-outbox-sweep-${String(SWEEP_SLOT_S + probe * 60)}`);
     }
-    const response = await postControl(app, 'communications-outbox-sweep', 'ensure');
+    const response = await postControl(app, 'programs-sites-outbox-sweep', 'ensure');
     expect(response.statusCode).toBe(503);
     expect(errorOf(response)).toMatchObject({ code: 'server_error' });
     expect(port.live.size).toBe(0);
@@ -1186,7 +1153,7 @@ function scriptedClient(status: number, body: unknown = {}): { client: ServiceCl
 describe('callQueueControl', () => {
   it.each([
     ['ensure', 'people-outbox-sweep', '/internal/v1/task-queues/people-outbox-sweep/ensure'],
-    ['pause', 'surveys-launch', '/internal/v1/task-queues/surveys-launch/pause'],
+    ['pause', 'content-feed-import', '/internal/v1/task-queues/content-feed-import/pause'],
     ['resume', 'a/b c', '/internal/v1/task-queues/a%2Fb%20c/resume'],
   ] as const)('POSTs %s of %j as the calling workload, with no user token', async (op, queue, expectedPath) => {
     const answer = { queue, service: 'people', paused: false };
@@ -1197,9 +1164,9 @@ describe('callQueueControl', () => {
   });
 
   it.each([204, 299])('returns the body of an HTTP %i answer', async (status) => {
-    const answer = { queue: 'surveys-launch', service: 'communications', paused: true };
+    const answer = { queue: 'content-feed-import', service: 'programs-sites', paused: true };
     const { client } = scriptedClient(status, answer);
-    await expect(callQueueControl(client, { service: 'communications', queue: 'surveys-launch', op: 'pause' })).resolves.toBe(
+    await expect(callQueueControl(client, { service: 'programs-sites', queue: 'content-feed-import', op: 'pause' })).resolves.toBe(
       answer,
     );
   });
@@ -1207,15 +1174,15 @@ describe('callQueueControl', () => {
   it.each([199, 300, 403, 503])('throws naming the service, queue, op and status of an HTTP %i answer', async (status) => {
     const { client } = scriptedClient(status);
     await expect(
-      callQueueControl(client, { service: 'communications', queue: 'surveys-launch', op: 'pause' }),
-    ).rejects.toThrow(new Error(`Queue control pause of surveys-launch on communications answered HTTP ${String(status)}`));
+      callQueueControl(client, { service: 'programs-sites', queue: 'content-feed-import', op: 'pause' }),
+    ).rejects.toThrow(new Error(`Queue control pause of content-feed-import on programs-sites answered HTTP ${String(status)}`));
   });
 });
 
 describe('reconcileRecurringQueues', () => {
   afterEach(closeApps);
 
-  const CREATORS = ['identity', 'people', 'programs-sites', 'surveys', 'communications', 'stub'];
+  const CREATORS = ['identity', 'people', 'programs-sites', 'stub'];
 
   /** Every recurring-queue creator's app and task port, behind a client that injects into them as `migration`. */
   async function creatorFleet(): Promise<{ client: ServiceClient; calls: ServiceRequest[]; ports: Map<string, MemoryTaskPort> }> {
@@ -1300,15 +1267,15 @@ describe('reconcileRecurringQueues', () => {
 
   it('skips a creator without a service URL when reconciling every queue', async () => {
     const { client, calls } = await creatorFleet();
-    const results = await reconcileRecurringQueues(client, { serviceUrls: urlsWithout('surveys') });
+    const results = await reconcileRecurringQueues(client, { serviceUrls: urlsWithout('programs-sites') });
     expect(results).toStrictEqual(
       DEPLOYED_SWEEPS.map((queue) =>
-        queue === 'surveys-outbox-sweep'
-          ? { queue, service: 'surveys', ok: true, skipped: 'not deployed' }
+        queue === 'programs-sites-outbox-sweep'
+          ? { queue, service: 'programs-sites', ok: true, skipped: 'not deployed' }
           : sweepEnsured(queue),
       ),
     );
-    expect(calls.map((call) => call.service)).not.toContain('surveys');
+    expect(calls.map((call) => call.service)).not.toContain('programs-sites');
   });
 
   it('reconciles named queues once each in registry order and fails a named creator without a service URL', async () => {
@@ -1337,8 +1304,8 @@ describe('reconcileRecurringQueues', () => {
   });
 
   it.each([
-    ['a queue that is not recurring', 'surveys-launch', 'Not a recurring task queue: surveys-launch'],
-    ['an unknown queue', 'finance-outbox-sweep', 'Not a recurring task queue: finance-outbox-sweep'],
+    ['a queue that is not recurring', 'content-feed-import', 'Not a recurring task queue: content-feed-import'],
+    ['an unknown queue', 'strategies-content-outbox-sweep', 'Not a recurring task queue: strategies-content-outbox-sweep'],
     ['a prototype key', 'constructor', 'Not a recurring task queue: constructor'],
     [
       'the site monitor without withSiteMonitor',
@@ -1359,16 +1326,17 @@ describe('reconcileRecurringQueues', () => {
   it('reports each failing creator and still reconciles the rest', async () => {
     const { client: fleetClient, ports } = await creatorFleet();
     ports.get('people')!.listFailure = new Error('list failed');
-    const refused = Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:8117'), { code: 'ECONNREFUSED' });
+    const refused = Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:8113'), { code: 'ECONNREFUSED' });
     const client: ServiceClient = {
       request: <T>(req: ServiceRequest): Promise<ServiceResponse<T>> => {
         if (req.service === 'identity') return Promise.reject('socket hang up');
-        if (req.service === 'surveys') return Promise.reject(new ServiceUnavailableError('surveys', refused));
+        if (req.service === 'programs-sites') return Promise.reject(new ServiceUnavailableError('programs-sites', refused));
         return fleetClient.request<T>(req);
       },
       close: fleetClient.close,
     };
-    await expect(reconcileRecurringQueues(client, { serviceUrls: { ...TASK_SERVICE_URLS } })).resolves.toStrictEqual([
+    const opts = { serviceUrls: { ...TASK_SERVICE_URLS }, includeLocalOnly: true };
+    await expect(reconcileRecurringQueues(client, opts)).resolves.toStrictEqual([
       { queue: 'identity-outbox-sweep', service: 'identity', ok: false, error: 'socket hang up' },
       {
         queue: 'people-outbox-sweep',
@@ -1376,9 +1344,13 @@ describe('reconcileRecurringQueues', () => {
         ok: false,
         error: 'Queue control ensure of people-outbox-sweep on people answered HTTP 500',
       },
-      sweepEnsured('programs-sites-outbox-sweep'),
-      { queue: 'surveys-outbox-sweep', service: 'surveys', ok: false, error: 'Service surveys unavailable (ECONNREFUSED)' },
-      sweepEnsured('communications-outbox-sweep'),
+      {
+        queue: 'programs-sites-outbox-sweep',
+        service: 'programs-sites',
+        ok: false,
+        error: 'Service programs-sites unavailable (ECONNREFUSED)',
+      },
+      sweepEnsured('stub-outbox-sweep'),
     ]);
   });
 });

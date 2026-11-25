@@ -172,9 +172,9 @@ function bodyOf({ form, multipart, parts, json }: AdminRequestOptions): { body?:
 }
 
 /**
- * A request for web `path` (`/admin/<circuit>/<action>`, `/admin-actions/…`, `/admin-raw/…`, `/opt2/admin/…`,
- * `/opt2/admin-actions/…`, optionally with a query), carrying the gateway's invocation credential, the user token,
- * the original-URL header on legacy admin paths, `x-request-id`, `traceparent` and the forwarding headers.
+ * A request for web `path` (`/admin/<circuit>/<action>`, `/admin-actions/…`, `/admin-raw/…`, optionally with a
+ * query), carrying the gateway's invocation credential, the user token, the original-URL header on legacy admin paths,
+ * `x-request-id`, `traceparent` and the forwarding headers.
  */
 export async function adminRequest(path: string, opts: AdminRequestOptions = {}): Promise<Request> {
   const queryAt = path.indexOf('?');

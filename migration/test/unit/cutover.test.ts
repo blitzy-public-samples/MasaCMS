@@ -141,7 +141,7 @@ describe('unitAuthority', () => {
     const authority = unitAuthority(V0002, groups);
     const targetUnits = unitsOf(groupsWith(V0002, 'target'));
 
-    expect(groupsWith(V0002, 'legacy')).toEqual([FIXTURE_GROUP_IDS.communications]);
+    expect(groupsWith(V0002, 'legacy')).toEqual([FIXTURE_GROUP_IDS.enrolment, FIXTURE_GROUP_IDS.mailingLists]);
     expect([...authority.keys()]).toEqual(allUnits);
     for (const unit of allUnits) expect(authority.get(unit)).toBe(targetUnits.includes(unit) ? 'target' : 'legacy');
     expect(authority.get(UNITS.mailingList)).toBe('legacy');
@@ -181,7 +181,7 @@ describe('diffVersions', () => {
 
   it('returns only the roster rollback groups to legacy from V0002 to V0003', () => {
     const diff = diffVersions(V0002, V0003, groups);
-    const returned = sorted([UNITS.credential, UNITS.userAccount, UNITS.person, UNITS.personArchive, UNITS.blackout]);
+    const returned = sorted([UNITS.credential, UNITS.userAccount, UNITS.person, UNITS.personArchive]);
 
     expect(unitsOf(ROLLBACK_GROUPS)).toEqual(returned);
     expect([...diff.changedUnits]).toEqual(returned);
@@ -229,7 +229,6 @@ describe('entry selections', () => {
 
   it.each([
     { name: 'the person archive', units: [UNITS.personArchive], routes: [FIXTURE_ROUTES.archive, FIXTURE_ROUTES.archiveRead] },
-    { name: 'the blackouts', units: [UNITS.blackout], routes: [FIXTURE_ROUTES.archive] },
     { name: 'a set of mailing-list members', units: new Set([UNITS.mailingListMember]), routes: [FIXTURE_ROUTES.mailingLists, FIXTURE_ROUTES.siteDelete] },
     { name: 'no units', units: [], routes: [] },
   ])('selects only entries whose units intersect $name', ({ units, routes }) => {

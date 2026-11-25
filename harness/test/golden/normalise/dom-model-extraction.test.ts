@@ -24,12 +24,12 @@ const LIFTED_DATE = maskedTextPlaceholder('date-mask');
 
 let rules: NormaliseRules;
 let sortingRules: NormaliseRules;
-let userCrud: Scenario;
+let rosterCreate: Scenario;
 
 beforeAll(async () => {
   rules = loadRules(undefined, { PORT: '8500' });
   sortingRules = { ...rules, dom: { ...rules.dom, actionUrl: { ...rules.dom.actionUrl, keepParamOrder: false } } };
-  userCrud = scenarioById(await loadCatalogue(), 'GS-ID-05');
+  rosterCreate = scenarioById(await loadCatalogue(), 'GS-PE-01');
 });
 
 const model = (html: string, r: NormaliseRules = rules, masks?: KnownIssueMask[]): DomModelResult =>
@@ -48,11 +48,11 @@ const mask = (
   ...(compareKinds === undefined ? {} : { compareKinds }),
 });
 
-// The GS-ID-05 create-form step (cUsers.editUser) answered with `html`.
+// The GS-PE-01 create-form step (cUsers.editUser) answered with `html`.
 function userFormRecord(html: string): StepRecord {
   return {
     name: 'create-form',
-    index: userCrud.steps.findIndex((step) => step.name === 'create-form'),
+    index: rosterCreate.steps.findIndex((step) => step.name === 'create-form'),
     routeKey: 'admin:cusers.edituser',
     request: { method: 'GET', url: '/admin/?muraAction=cUsers.editUser', headers: {}, body: { kind: 'none' } },
     response: {
@@ -70,10 +70,10 @@ function userFormRecord(html: string): StepRecord {
 // Golden and replay renders of that step, normalised and compared as the parity replay does.
 async function compareUserForm(golden: string, replay: string, r: NormaliseRules = rules): Promise<Difference[]> {
   const run = async (html: string) => ({
-    steps: [await normaliseStep(userFormRecord(html), { state: createNormaliseState(), rules: r, scenario: userCrud })],
+    steps: [await normaliseStep(userFormRecord(html), { state: createNormaliseState(), rules: r, scenario: rosterCreate })],
     sideEffects: {},
   });
-  return compareNormalised(await run(golden), await run(replay), { rules: r, scenario: userCrud });
+  return compareNormalised(await run(golden), await run(replay), { rules: r, scenario: rosterCreate });
 }
 
 type Classified = [path: string, classification: Difference['classification'], maskId: Difference['maskId']];
@@ -243,7 +243,7 @@ describe('domModel', () => {
   });
 
   it('resolves the edit-user known-issue masks to model paths, lifting the cell date into maskedText', () => {
-    const { model: m, maskedPaths } = model(userPage(CAPTURE), rules, masksFor('GS-ID-05', 'admin:cusers.edituser', rules));
+    const { model: m, maskedPaths } = model(userPage(CAPTURE), rules, masksFor('GS-PE-01', 'admin:cusers.edituser', rules));
     expect(maskedPaths).toStrictEqual({
       'controls[5].value': 'date-mask',
       'forms[0].action': 'header-search-404',
@@ -354,7 +354,7 @@ describe('domModel', () => {
   it.each(['10/<span>302</span>/2026 Alice', '<b>10/</b>302/2026 Alice', '1<i>0</i>/302/<b>2026</b> Alice'])(
     'lifts the date of %s as it lifts the unsplit date',
     (cell) => {
-      const masks = masksFor('GS-ID-05', 'admin:cusers.edituser', rules);
+      const masks = masksFor('GS-PE-01', 'admin:cusers.edituser', rules);
       const page = (text: string) => `<table><tr><td>${text}</td></tr></table>`;
       const plain = model(page('10/302/2026 Alice'), rules, masks);
       expect(plain.model.tables[0]?.rows).toStrictEqual([[`${LIFTED_DATE} Alice`]]);
@@ -369,7 +369,7 @@ describe('domModel', () => {
     const { model: m, maskedPaths } = model(
       '<table><tr><td>On 1<a href="#a">0</a>/302/<a href="#b">2026 by</a> Alice</td></tr></table>',
       rules,
-      masksFor('GS-ID-05', 'admin:cusers.edituser', rules),
+      masksFor('GS-PE-01', 'admin:cusers.edituser', rules),
     );
     expect(m.tables[0]?.rows).toStrictEqual([[`On ${LIFTED_DATE} by Alice`]]);
     expect(m.links).toStrictEqual([
@@ -606,14 +606,26 @@ describe('canonicalAdminUrl', () => {
   });
 });
 
-describe('comment anchors on the GS-CO-11 moderation list', () => {
+describe('comment anchors on the comment moderation list', () => {
   const C = '4D5E6F7A-8B9C-4DAE-9F0A1B2C3D4E5F6A';
   const D = '5E6F7A8B-9C0D-4EBF-8A1B2C3D4E5F6A7B';
-  let comments: Scenario;
-
-  beforeAll(async () => {
-    comments = scenarioById(await loadCatalogue(), 'GS-CO-11');
-  });
+  /** A comment save, then the moderation list, compared by status, DOM and envelope with the stack-trace rule. */
+  const comments: Scenario = {
+    id: 'GS-CO-81',
+    title: 'Comment moderation list',
+    service: 'strategies-content',
+    role: 'admin',
+    sessions: { admin: { login: 'admin', via: 'admin' } },
+    seedRefs: [],
+    steps: [
+      { name: 'comment', method: 'POST', route: '/_api/json/v1/tenant-a/comment/', csrf: 'none' },
+      { name: 'load', method: 'GET', route: '/admin/?muraAction=cComments.loadComments', csrf: 'none' },
+    ],
+    compare: ['status', 'dom', 'envelope'],
+    normalisationOverrides: { applyRules: ['error-stacktrace'] },
+    covers: ['api:comment.save', 'admin:ccomments.loadcomments'],
+    tableVersion: 'v0002',
+  };
 
   // One row per comment id, with the anchors ccomments/loadcomments.cfm:246-296 renders.
   const listing = (ids: readonly string[], anchorOf: (id: string) => string = (id) => id): string =>

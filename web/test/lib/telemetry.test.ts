@@ -268,14 +268,14 @@ describe('withRequestSpan', () => {
     let outer: ReturnType<typeof activeSpanIds>;
     let inside: ReturnType<typeof activeSpanIds>;
 
-    await startSpan('GET /opt2/admin/[module]/[screen]', SpanKind.SERVER, () => {
+    await startSpan('GET /admin/[circuit]/[action]', SpanKind.SERVER, () => {
       outer = activeSpanIds();
-      return withRequestSpan('GET', 'opt2:finance.records', { traceparent: TRACEPARENT }, async () => {
+      return withRequestSpan('GET', 'page:carch.list', { traceparent: TRACEPARENT }, async () => {
         inside = activeSpanIds();
       });
     });
 
-    const [span] = await finishedSpans('GET opt2:finance.records');
+    const [span] = await finishedSpans('GET page:carch.list');
     expect(span?.kind).toBe(SpanKind.INTERNAL);
     expect(span?.spanContext()).toMatchObject({ traceId: outer?.traceId, spanId: inside?.spanId });
     expect(span?.parentSpanContext?.spanId).toBe(outer?.spanId);
@@ -287,14 +287,14 @@ describe('withRequestSpan', () => {
     [404, SpanStatusCode.UNSET],
     [503, SpanStatusCode.ERROR],
   ])('records the http attributes of a request answered %i', async (status, code) => {
-    await withRequestSpan('GET', 'opt2:finance.records', { traceparent: TRACEPARENT }, async (recordStatus) => {
+    await withRequestSpan('GET', 'page:carch.list', { traceparent: TRACEPARENT }, async (recordStatus) => {
       recordStatus(status);
     });
 
-    const [span] = await finishedSpans('GET opt2:finance.records');
+    const [span] = await finishedSpans('GET page:carch.list');
     expect(span?.attributes).toEqual({
       'http.request.method': 'GET',
-      'http.route': 'opt2:finance.records',
+      'http.route': 'page:carch.list',
       'http.response.status_code': status,
     });
     expect(span?.status.code).toBe(code);

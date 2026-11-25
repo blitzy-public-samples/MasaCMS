@@ -1,8 +1,8 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { readFixtureStatus, stepSchema, type SessionSpec, type Step } from '../../src/golden/catalogue.js';
+import { stepSchema, type SessionSpec, type Step } from '../../src/golden/catalogue.js';
 import { createScenarioContext } from '../../src/golden/session.js';
 import { runScenarioSteps } from '../../src/golden/steps.js';
 import {
@@ -23,9 +23,6 @@ const GATEWAY = 'http://127.0.0.1:8100';
 const LEGACY_PORT = '8080';
 const LEGACY = `http://127.0.0.1:${LEGACY_PORT}`;
 const ADMIN_PASSWORD = 'FIXTURE-ADMIN-PASSWORD';
-const ROLE_PASSWORD = 'FIXTURE-ROLE-PASSWORD';
-const EMPLOYEE = 'fixture.tenant-a.timesheets.employee';
-const PREPARER = 'fixture.tenant-a.finance.preparer';
 /** CSRF token `admin-login.html` carries. */
 const LOGIN_TOKEN = 'FIXTURECSRFTOKEN0000000000000001';
 const EXPIRES = '260630120000000';
@@ -33,14 +30,8 @@ const EXPIRES = '260630120000000';
 const CATEGORY_FIELD = 'categoryAssignFIXTURECATEGORY0001';
 const CLOCK = new Date('2026-06-30T12:00:00.000Z');
 const HOME_ID = '00000000000000000000000000000000001';
-const FIXTURE_API = '/legacy-fixtures/cfml/api.cfm/';
 const JSON_API = /^\/_api\/json\/v1\/([^/]+)\/(.*)$/;
 const LOGIN_HTML = readFileSync(new URL('../fixtures/html/admin-login.html', import.meta.url), 'utf8');
-const FIXTURES_UNAVAILABLE = readFileSync(
-  new URL('../fixtures/reporting/fixtures-unavailable.json', import.meta.url),
-  'utf8',
-);
-const FIXTURES_AVAILABLE = JSON.stringify({ available: true, reason: null, checkedAt: '2026-06-30T00:00:00Z' });
 /** Admin form pages the workload reads before each save. */
 const FORM_ACTIONS: ReadonlySet<string> = new Set([
   'carch.edit',
@@ -56,7 +47,6 @@ const CONFIG = workloadSeedConfigSchema.parse(
 const { persons: RESERVED_PERSONS, usernames: RESERVED_USERNAMES } = CONFIG.reserved.rehearsal;
 /** Two reserved persons and one reserved username, each held by a dataset user. */
 const RESERVED_HELD = [...RESERVED_PERSONS.slice(0, 2), ...RESERVED_USERNAMES.slice(0, 1)];
-const RESERVED_SHEET = 'FIXTURE-SHEET-A-0090';
 
 function user(userID: string, username: string, overrides: Partial<WorkloadUser> = {}): WorkloadUser {
   return {
@@ -92,40 +82,12 @@ const ELIGIBLE_GROUPS = [
   { groupID: 'FIXTURE-GROUP-A-0002', siteID: 'tenant-a', groupname: 'Fixture Reviewers' },
 ];
 const ELIGIBLE_PAGES = [1, 2, 3, 4, 5, 6].map((n) => page(`FIXTURE-PAGE-A-000${n}`, 'tenant-a'));
-const SHEETS = [
-  { timesheet_id: 'FIXTURE-SHEET-A-0001', person_id: 'FIXTURE-USER-A-0001', siteID: 'tenant-a' },
-  { timesheet_id: 'FIXTURE-SHEET-A-0002', person_id: 'FIXTURE-USER-A-0002', siteID: 'tenant-a' },
-  { timesheet_id: RESERVED_SHEET, person_id: RESERVED_PERSONS[0] as string, siteID: 'tenant-a' },
-];
-const DAYS = [
-  ...[1, 2, 3, 4].map((n) => ({
-    day_id: `FIXTURE-DAY-A-000${n}`,
-    timesheet_id: `FIXTURE-SHEET-A-000${(n % 2) + 1}`,
-    state: 'DRAFT',
-  })),
-  { day_id: 'FIXTURE-DAY-A-0005', timesheet_id: 'FIXTURE-SHEET-A-0001', state: 'SUBMITTED' },
-  { day_id: 'FIXTURE-DAY-A-0090', timesheet_id: RESERVED_SHEET, state: 'DRAFT' },
-  { day_id: 'FIXTURE-DAY-A-0091', timesheet_id: RESERVED_SHEET, state: 'DRAFT' },
-  { day_id: 'FIXTURE-DAY-A-0092', timesheet_id: RESERVED_SHEET, state: 'DRAFT' },
-];
-const RECORDS = [
-  ...[1, 2, 3].map((n) => ({ record_id: `FIXTURE-RECORD-A-000${n}`, state: 'IN-PROGRESS' })),
-  { record_id: 'FIXTURE-RECORD-A-0004', state: 'APPROVED' },
-].map((row, i) => ({
-  ...row,
-  siteID: 'tenant-a',
-  title: `Fixture Record ${i + 1}`,
-  amount: '100.0000',
-  period: '2026-06',
-}));
-
-// The fields of the generated `dataset.json` the workload reads; Program_1 is tenant-a's fixture schema.
+// The fields of the generated `dataset.json` the workload reads.
 const DATASET: WorkloadDataset = {
   masa: {
     users: [...ELIGIBLE_USERS, ...RESERVED_USERS, ...OTHER_USERS],
     groups: [
       ...ELIGIBLE_GROUPS,
-      { groupID: 'FIXTURE-GROUP-A-0003', siteID: 'tenant-a', groupname: 'timesheets.employee' },
       { groupID: 'FIXTURE-GROUP-B-0001', siteID: 'tenant-b', groupname: 'Fixture Tenant B' },
     ],
     memberships: [{ userID: MEMBER.userID, groupname: 'Fixture Editors', groupSiteID: 'tenant-a' }],
@@ -135,9 +97,8 @@ const DATASET: WorkloadDataset = {
       page('FIXTURE-PAGE-B-0001', 'tenant-b'),
     ],
   },
-  fixtures: { 'Program_1.timesheet': SHEETS, 'Program_1.timesheet_day': DAYS, 'Program_1.finance_record': RECORDS },
 };
-const OPTIONS = { fixturesAvailable: true } as const;
+const OPTIONS = {} as const;
 
 /** One request a fake origin received. */
 interface Call {
@@ -167,12 +128,6 @@ let env: EnvLike = {};
 
 beforeEach(() => {
   dir = mkdtempSync(path.join(os.tmpdir(), 'opt2-workload-'));
-  mkdirSync(path.join(dir, 'secrets'), { recursive: true, mode: 0o700 });
-  const credentials = {
-    roles: { 'tenant-a': { 'timesheets.employee': EMPLOYEE, 'finance.preparer': PREPARER } },
-    users: { 'tenant-a': { [EMPLOYEE]: ROLE_PASSWORD, [PREPARER]: ROLE_PASSWORD } },
-  };
-  writeFileSync(path.join(dir, 'secrets', 'seed-credentials.json'), JSON.stringify(credentials), { mode: 0o600 });
   // No OPT2_GATEWAY_URL, so requests take the gateway's ports.env origin; PORT names the legacy ColdFusion port.
   env = { OPT2_STATE_DIR: dir, MURA_ADMIN_PASSWORD: ADMIN_PASSWORD, PORT: LEGACY_PORT };
 });
@@ -193,11 +148,6 @@ function json(body: unknown): Response {
   return new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json; charset=utf-8' } });
 }
 
-/** Token `generateCSRFTokens` mints for `context`. */
-function jsonToken(context: string): string {
-  return `FIXTURE-JSON-TOKEN-${context}`;
-}
-
 /** One admin form page serving every probed field empty, so no write reads as applied, and a category input. */
 function formPage(token: string): Response {
   const inputs = ['jobtitle', 'email', 'contact'].map((name) => `<input name="${name}" type="text" value="">`);
@@ -211,13 +161,9 @@ function formPage(token: string): Response {
   return html(`<!DOCTYPE html><html><body>${form}</body></html>`);
 }
 
-/** JSON API: CSRF tokens, role logins, and empty listings for every probe. */
+/** JSON API: empty listings for every probe. */
 function jsonApi(call: Call, rest: string): Response | undefined {
-  if (rest === 'generateCSRFTokens') {
-    const context = call.url.searchParams.get('context') ?? '';
-    return json({ data: { csrf_token: jsonToken(context), csrf_token_expires: EXPIRES } });
-  }
-  if (call.method === 'POST') return rest === 'login' ? json({ data: { status: 'success' } }) : undefined;
+  if (call.method === 'POST') return undefined;
   if (/^content\/[^/]+\/history$/.test(rest) || rest === 'content/' || rest === 'address/') {
     return json({ data: { items: [] } });
   }
@@ -225,18 +171,7 @@ function jsonApi(call: Call, rest: string): Response | undefined {
   return id === undefined ? undefined : json({ data: { contentid: id, contenthistid: `FIXTURE-HIST-${id}` } });
 }
 
-/** Fixture API: sheet and record reads from the dataset, and day submits and record edits. */
-function fixtureApi(call: Call, rest: string): Response | undefined {
-  if (call.method === 'POST') return /\/(?:submit|edit)$/.test(rest) ? json({ data: { ok: true } }) : undefined;
-  const sheet = /^timesheets\/sheets\/([^/]+)$/.exec(rest)?.[1];
-  if (sheet !== undefined) {
-    const days = DAYS.filter((day) => day.timesheet_id === sheet).map(({ day_id, state }) => ({ day_id, state }));
-    return json({ data: { days } });
-  }
-  return /^finance\/records\/[^/]+$/.test(rest) ? json({ data: { title: 'Fixture Record' } }) : undefined;
-}
-
-/** Answer to `call`: admin login and forms, FW/1 post-action redirects, JSON API and fixture API. */
+/** Answer to `call`: admin login and forms, FW/1 post-action redirects and JSON API. */
 function answer(call: Call, mint: () => string): Response | undefined {
   const { method, url } = call;
   const action = (url.searchParams.get('muraAction') ?? '').toLowerCase();
@@ -255,8 +190,7 @@ function answer(call: Call, mint: () => string): Response | undefined {
     return new Response(null, { status: 302, headers: { location: './' } });
   }
   const api = JSON_API.exec(url.pathname);
-  if (api !== null) return jsonApi(call, api[2] ?? '');
-  return url.pathname.startsWith(FIXTURE_API) ? fixtureApi(call, url.pathname.slice(FIXTURE_API.length)) : undefined;
+  return api === null ? undefined : jsonApi(call, api[2] ?? '');
 }
 
 function fakeOrigin(origin: string): FakeOrigin {
@@ -389,13 +323,13 @@ describe('buildWorkloadPlan', () => {
     expect(itemOf(plan, 'site-edit-save').form).toMatchObject({ siteid: 'tenant-b', action: 'Update' });
   });
 
-  it("names no reserved rehearsal identity, nor a reserved person's timesheet, though the dataset holds them", () => {
+  it('names no reserved rehearsal identity, though the dataset holds them', () => {
     const plan = buildWorkloadPlan(CONFIG, DATASET, OPTIONS);
     const datasetText = JSON.stringify(DATASET);
     const planText = JSON.stringify(plan);
 
-    for (const held of [...RESERVED_HELD, RESERVED_SHEET]) expect(datasetText).toContain(held);
-    for (const reserved of [...RESERVED_PERSONS, ...RESERVED_USERNAMES, RESERVED_SHEET]) {
+    for (const held of RESERVED_HELD) expect(datasetText).toContain(held);
+    for (const reserved of [...RESERVED_PERSONS, ...RESERVED_USERNAMES]) {
       expect(planText).not.toContain(reserved);
     }
   });
@@ -406,18 +340,6 @@ describe('buildWorkloadPlan', () => {
       { ...DATASET, masa: { ...DATASET.masa, users: [...RESERVED_USERS, ...OTHER_USERS] } },
       `workload needs ${WORKLOAD_COUNTS.userEdits} user-edit rows; the dataset has 0 eligible`,
       RESERVED_HELD,
-    ],
-    [
-      'timesheets',
-      {
-        ...DATASET,
-        fixtures: {
-          ...DATASET.fixtures,
-          'Program_1.timesheet': SHEETS.filter((row) => row.timesheet_id === RESERVED_SHEET),
-        },
-      },
-      `workload needs ${WORKLOAD_COUNTS.timesheetSubmits} timesheet-submit rows; the dataset has 0 eligible`,
-      [RESERVED_SHEET],
     ],
   ])(
     'refuses to plan when only reserved %s are eligible, and plans them once unreserved',
@@ -430,16 +352,6 @@ describe('buildWorkloadPlan', () => {
       for (const identity of held) expect(planText).toContain(identity);
     },
   );
-
-  it.each<[string, number, string]>([
-    ['unavailable', 0, FIXTURES_UNAVAILABLE],
-    ['available', 2 * (WORKLOAD_COUNTS.timesheetSubmits + WORKLOAD_COUNTS.financeEdits), FIXTURES_AVAILABLE],
-  ])('with the fixtures %s per fixtures.json, plans %i fixture API steps', (_case, count, status) => {
-    writeFileSync(path.join(dir, 'fixtures.json'), status);
-    const plan = buildWorkloadPlan(CONFIG, DATASET, { fixturesAvailable: readFixtureStatus(env).available });
-
-    expect(plan.items.filter((item) => item.route.startsWith(FIXTURE_API))).toHaveLength(count);
-  });
 });
 
 describe('runWorkload', () => {
@@ -461,9 +373,7 @@ describe('runWorkload', () => {
     );
 
     const names = plan.items.map((item) => item.name);
-    expect(new Set(plan.items.map((item) => item.csrf.split(':')[0]))).toStrictEqual(
-      new Set(['none', 'fetch-form', 'json-api']),
-    );
+    expect(new Set(plan.items.map((item) => item.csrf.split(':')[0]))).toStrictEqual(new Set(['none', 'fetch-form']));
     for (const [index, item] of plan.items.entries()) {
       const call = calls[index] as Call;
       if (item.csrf === 'fetch-form') {
@@ -471,8 +381,6 @@ describe('runWorkload', () => {
         expect(source?.served).toBeDefined();
         const form = new URLSearchParams(call.body);
         expect([form.get('csrf_token'), form.get('csrf_token_expires')]).toStrictEqual([source?.served, EXPIRES]);
-      } else if (item.csrf.startsWith('json-api:')) {
-        expect(call.headers['x-csrf_token']).toBe(jsonToken(item.csrf.slice('json-api:'.length)));
       }
     }
     expect(new URLSearchParams(calls[names.indexOf('admin-login')]?.body).get('csrf_token')).toBe(LOGIN_TOKEN);

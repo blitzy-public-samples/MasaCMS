@@ -20,7 +20,6 @@ import {
   LOCAL_USER_TOKEN,
   MANAGED_INVOKER_NAMES,
   Roles,
-  SYNTHETIC_ROLES,
   createLocalCloudTasksTransport,
   createLocalInvocationMinter,
   createLocalInvocationVerifier,
@@ -258,12 +257,6 @@ export const SERVICE_CALLERS: readonly string[] = Object.freeze([
   'people',
   'programs-sites',
   'strategies-content',
-  'communications',
-  'reporting',
-  'surveys',
-  'timesheets',
-  'finance',
-  'e-signature',
   'stub',
   GATEWAY_CALLER,
   'web',
@@ -295,7 +288,6 @@ export const ROLE_SET: readonly RoleSubject[] = Object.freeze([
   userSubject(Roles.siteAdmin, [Roles.systemUser, Roles.siteAdmin]),
   userSubject(Roles.s2, [Roles.systemUser, Roles.s2], { s2: true }),
   userSubject('other-tenant', [Roles.systemUser, Roles.siteAdmin], { crossTenant: true }),
-  ...SYNTHETIC_ROLES.map((role) => userSubject(role, [Roles.systemUser, role])),
   ...SERVICE_CALLERS.map(serviceSubject),
 ] satisfies RoleSubject[]);
 

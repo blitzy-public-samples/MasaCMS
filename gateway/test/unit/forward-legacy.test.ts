@@ -246,7 +246,7 @@ describe('legacy forwarding under v0001', () => {
     '/default/%2E%2E/x',
     '/a//b/../c',
     '/a%2F..%2Fb',
-    '/legacy-fixtures/cfml/api.cfm/finance/x/%2e%2e/records',
+    '/legacy-fixtures/cfml/api.cfm/people/x/%2e%2e/persons',
     '/default/?q=%E0%A4%A',
     '/default/?',
   ])("%s reaches legacy as the raw request target, and the client gets legacy's answer", async (target) => {
@@ -352,28 +352,27 @@ describe('legacy forwarding under v0001', () => {
 
 describe('legacy forwarding under v0002', () => {
   const FIXTURE = '/legacy-fixtures/cfml/api.cfm';
-  it.each([
-    `${FIXTURE}/finance/records/..%5C..%5Cweb.config`,
-    `${FIXTURE}/finance/records/..%5C..%5Cweb.config/versions`,
-    `${FIXTURE}/surveys/surveys/..%5C..%5Cweb.config/responses`,
-    `${FIXTURE}/esignature/requests/..%5C..%5Cweb.config/audit`,
-  ])("%s, whose fixture entry is target, reaches legacy as the raw request target, and the client gets legacy's answer", async (target) => {
-    gateway = await buildTestGateway({ version: 'v0002' });
-    await gateway.app.listen({ host: '127.0.0.1', port: 0 });
-    gateway.legacy.setResponse({ status: 404, headers: { 'content-type': 'text/html' }, body: '<h1>404 - Not Found</h1>' });
+  const PERSON_ID = '00532E14-B51F-226C-36938FA3E4A6396C';
+  it.each([`${FIXTURE}/people/persons/..%5C..%5Cweb.config`, `${FIXTURE}/people/persons/..%5C..%5Cweb.config/archive`])(
+    "a POST to %s, whose fixture entry is target, reaches legacy as the raw request target, and the client gets legacy's answer",
+    async (target) => {
+      gateway = await buildTestGateway({ version: 'v0002' });
+      await gateway.app.listen({ host: '127.0.0.1', port: 0 });
+      gateway.legacy.setResponse({ status: 404, headers: { 'content-type': 'text/html' }, body: '<h1>404 - Not Found</h1>' });
 
-    const res = await rawGet(gateway, target);
+      const res = await rawSend(gateway, 'POST', target, {}, Buffer.alloc(0));
 
-    expect(onlyPage(gateway).url).toBe(target);
-    expect(res.status).toBe(404);
-    expect(res.body.toString()).toBe('<h1>404 - Not Found</h1>');
-    expect(Object.values(gateway.targets).flatMap((double) => double.requests)).toEqual([]);
-  });
+      expect(onlyPage(gateway).url).toBe(target);
+      expect(res.status).toBe(404);
+      expect(res.body.toString()).toBe('<h1>404 - Not Found</h1>');
+      expect(Object.values(gateway.targets).flatMap((double) => double.requests)).toEqual([]);
+    },
+  );
 
   it.each(NO_MEDIA_TYPES)(
-    "a POST to the target finance records entry under Content-Type %j reaches legacy as sent, never a service, and the client gets legacy's 500",
+    "a POST to the target person archive entry under Content-Type %j reaches legacy as sent, never a service, and the client gets legacy's 500",
     async (contentType) => {
-      const target = `${FIXTURE}/finance/records`;
+      const target = `${FIXTURE}/people/persons/${PERSON_ID}/archive`;
       gateway = await buildTestGateway({ version: 'v0002' });
       await gateway.app.listen({ host: '127.0.0.1', port: 0 });
       gateway.legacy.setResponse(CONTAINER_500);
@@ -391,16 +390,16 @@ describe('legacy forwarding under v0002', () => {
     },
   );
 
-  it('sends a fixture path reply-from cannot parse, whose entry is target, to finance as the raw request target, never to legacy', async () => {
-    const target = `${FIXTURE}/finance/records/x%5C../versions`;
+  it('sends a fixture path reply-from cannot parse, whose entry is target, to people as the raw request target, never to legacy', async () => {
+    const target = `${FIXTURE}/people/persons/x%5C../archive`;
     const notFound = '{"apiversion":"v1","error":{"code":"invalid_request","message":"Not Found"}}';
     gateway = await buildTestGateway({ version: 'v0002' });
     await gateway.app.listen({ host: '127.0.0.1', port: 0 });
-    gateway.targets.finance?.setResponse({ status: 404, headers: { 'content-type': 'application/json' }, body: notFound });
+    gateway.targets.people?.setResponse({ status: 404, headers: { 'content-type': 'application/json' }, body: notFound });
 
-    const res = await rawGet(gateway, target);
+    const res = await rawSend(gateway, 'POST', target, {}, Buffer.alloc(0));
 
-    expect(gateway.targets.finance?.requests.map((req) => req.url)).toEqual([target]);
+    expect(gateway.targets.people?.requests.map((req) => req.url)).toEqual([target]);
     expect(res.status).toBe(404);
     expect(res.body.toString()).toBe(notFound);
     expect(pages(gateway)).toEqual([]);

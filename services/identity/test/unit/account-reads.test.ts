@@ -822,12 +822,12 @@ describe.skipIf(!available)('identity account reads against PostgreSQL', () => {
     const O_DANGLING_ONLY = id(63, 'G');
     const G_TIE_LOW = id(70, 'H');
     const G_TIE_HIGH = id(71, 'H');
-    const G_REPORTING = id(72, 'H');
+    const G_PRESS = id(72, 'H');
     const G_CLOTHING = id(73, 'H');
     const G_BEAUTY = id(74, 'H');
     const G_UNNAMED = id(75, 'H');
     const G_DANGLING = id(76, 'H');
-    const HELD_GROUPS = [G_TIE_HIGH, G_TIE_LOW, G_REPORTING, G_CLOTHING, G_BEAUTY, G_UNNAMED, G_DANGLING];
+    const HELD_GROUPS = [G_TIE_HIGH, G_TIE_LOW, G_PRESS, G_CLOTHING, G_BEAUTY, G_UNNAMED, G_DANGLING];
 
     const reads = (deps: { repo: IdentityRepository } = { repo }): ReturnType<typeof createAccountReads> =>
       createAccountReads({ ...deps, closedUserWaitMs: SHORT_MS, gateWaitMs: SHORT_MS });
@@ -837,11 +837,11 @@ describe.skipIf(!available)('identity account reads against PostgreSQL', () => {
       await registerSite('order-pool', 'order-pool', 'order-pool');
       const named = (userid: string, groupname: string, siteid: string, ispublic = 0): GroupInput => groupInput({ userid, groupname, siteid, ispublic });
       await gated('order-site', async (tx) => {
-        await repo.insertGroup(tx, named(G_REPORTING, 'reporting.exporter', 'order-site'), null);
+        await repo.insertGroup(tx, named(G_PRESS, 'press.office', 'order-site'), null);
         await repo.insertGroup(tx, named(G_BEAUTY, 'Beauty Team', 'order-site'), null);
         await repo.insertGroup(tx, named(G_TIE_LOW, 'SAME', 'order-site'), null);
         await repo.insertGroup(tx, named(G_UNNAMED, '', 'order-site'), null);
-        for (const groupId of [G_REPORTING, G_DANGLING, G_TIE_HIGH, G_BEAUTY]) await repo.addMembership(tx, O_FIRST, groupId);
+        for (const groupId of [G_PRESS, G_DANGLING, G_TIE_HIGH, G_BEAUTY]) await repo.addMembership(tx, O_FIRST, groupId);
         await repo.addMembership(tx, O_DANGLING_ONLY, G_DANGLING);
       });
       // Rows of members stored elsewhere: one repeats an order-site row in other case.
@@ -849,7 +849,7 @@ describe.skipIf(!available)('identity account reads against PostgreSQL', () => {
         await repo.insertGroup(tx, named(G_CLOTHING, 'Clothing Team', 'order-pool', 1), null);
         await repo.insertGroup(tx, named(G_TIE_HIGH, 'same', 'order-pool', 1), null);
         for (const groupId of [G_CLOTHING, G_BEAUTY.toLowerCase(), G_UNNAMED, G_TIE_LOW]) await repo.addMembership(tx, O_FIRST, groupId);
-        for (const groupId of [G_REPORTING, G_CLOTHING]) await repo.addMembership(tx, O_SECOND, groupId);
+        for (const groupId of [G_PRESS, G_CLOTHING]) await repo.addMembership(tx, O_SECOND, groupId);
       });
     });
 
@@ -858,8 +858,8 @@ describe.skipIf(!available)('identity account reads against PostgreSQL', () => {
       const items = await reads().lookupMemberships(handle.app, userIds, { byGroupName: true });
 
       expect(items).toEqual([
-        { userId: O_FIRST, groupIds: [G_UNNAMED, G_BEAUTY, G_CLOTHING, G_REPORTING, G_TIE_LOW, G_TIE_HIGH] },
-        { userId: O_SECOND.toLowerCase(), groupIds: [G_CLOTHING, G_REPORTING] },
+        { userId: O_FIRST, groupIds: [G_UNNAMED, G_BEAUTY, G_CLOTHING, G_PRESS, G_TIE_LOW, G_TIE_HIGH] },
+        { userId: O_SECOND.toLowerCase(), groupIds: [G_CLOTHING, G_PRESS] },
         { userId: O_DANGLING_ONLY, groupIds: [] },
         { userId: MISSING, groupIds: [] },
       ]);

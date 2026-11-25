@@ -1,6 +1,6 @@
 // Test subjects of the web suites, with their platform-minted user tokens and invocation credentials.
 import { createHash } from 'node:crypto';
-import { Roles, SYNTHETIC_ROLES, moduleRole, type Role } from '@opt2/platform/auth';
+import { Roles, moduleRole, type Role } from '@opt2/platform/auth';
 import { tenantIdForSite } from '@opt2/platform/tenancy';
 import {
   TENANT_A,
@@ -23,15 +23,15 @@ const DEFAULT_SITE = 'default';
 /** Masa's Site Manager (content) module. */
 const CONTENT_MODULE_ID = '00000000000000000000000000000000000';
 
-type RoleValue = (typeof Roles)[keyof typeof Roles];
-
-/** A synthetic-module role; it is also the key of that role's subject. */
-export type SyntheticRoleKey = Exclude<Extract<RoleValue, `${string}.${string}`>, `platform.${string}`>;
-
-type BaseSubjectKey = 'admin' | 'qaEditor' | 'siteAdmin' | 'systemUser' | 'member' | 'otherTenant' | 'anonymous';
-
 /** Key of a SUBJECTS entry. */
-export type WebTestSubjectKey = BaseSubjectKey | SyntheticRoleKey;
+export type WebTestSubjectKey =
+  | 'admin'
+  | 'qaEditor'
+  | 'siteAdmin'
+  | 'systemUser'
+  | 'member'
+  | 'otherTenant'
+  | 'anonymous';
 
 /** A user the gateway may forward to web, described by the claims of its token. */
 export interface WebTestSubject {
@@ -48,11 +48,6 @@ export interface WebTestSubject {
   readonly s2: boolean;
   /** Set on the subject no token is ever minted for. */
   readonly anonymous?: boolean;
-}
-
-/** Whether `role` is one of the platform's synthetic-module roles. */
-function isSyntheticRole(role: string): role is SyntheticRoleKey {
-  return SYNTHETIC_ROLES.includes(role);
 }
 
 // The admin gets one too: Masa's installed admin UserID is a createUUID() value, while legacy-compat's
@@ -86,16 +81,7 @@ function defineSubject(
 // The testing fixtures cover tenant-a, tenant-b and umbrella only, so `default` takes the tenancy rule itself.
 const DEFAULT_TENANT_ID = tenantIdForSite(DEFAULT_SITE);
 
-/** One subject per synthetic role on `tenant-a`, holding that role beside `system-user`. */
-function syntheticSubjects(): Record<SyntheticRoleKey, WebTestSubject> {
-  const entries = SYNTHETIC_ROLES.filter(isSyntheticRole).map(
-    (role) => [role, defineSubject(role, TENANT_A.siteId, TENANT_A.tenantId, [Roles.systemUser, role])] as const,
-  );
-  // Object.fromEntries widens keys to string; the entries cover every synthetic role, so the record is complete.
-  return Object.fromEntries(entries) as Record<SyntheticRoleKey, WebTestSubject>;
-}
-
-/** Every test subject by key: the installed admin and editor, tenant-a and tenant-b users, anonymous, and the synthetic roles. */
+/** Every test subject by key: the installed admin and editor, tenant-a and tenant-b users, and anonymous. */
 export const SUBJECTS: Readonly<Record<WebTestSubjectKey, WebTestSubject>> = Object.freeze({
   admin: defineSubject('admin', DEFAULT_SITE, DEFAULT_TENANT_ID, [Roles.s2, Roles.systemUser]),
   qaEditor: defineSubject('qaEditor', DEFAULT_SITE, DEFAULT_TENANT_ID, [
@@ -107,16 +93,7 @@ export const SUBJECTS: Readonly<Record<WebTestSubjectKey, WebTestSubject>> = Obj
   member: defineSubject('member', TENANT_A.siteId, TENANT_A.tenantId, [Roles.member]),
   otherTenant: defineSubject('otherTenant', TENANT_B.siteId, TENANT_B.tenantId, [Roles.siteAdmin, Roles.systemUser]),
   anonymous: defineSubject('anonymous', DEFAULT_SITE, DEFAULT_TENANT_ID, [], true),
-  ...syntheticSubjects(),
 });
-
-/** The subject of a synthetic-module role; throws `TypeError` for any other role. */
-export function syntheticSubject(role: Role): WebTestSubject {
-  if (!isSyntheticRole(role)) {
-    throw new TypeError(`Not a synthetic role: ${role}`);
-  }
-  return SUBJECTS[role];
-}
 
 /** The subject itself, or the SUBJECTS entry of a key. */
 function resolveSubject(subject: WebTestSubject | WebTestSubjectKey): WebTestSubject {

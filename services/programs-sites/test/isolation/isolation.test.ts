@@ -1,6 +1,5 @@
 /** Tenant isolation of the programs-sites schema, its site routes and its site registry consumer against PostgreSQL. */
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
@@ -18,6 +17,7 @@ import {
   defineIsolationSuite,
   expectPlatformTables,
   fixtureForTenant,
+  loadOpenApiDocument,
   pgAvailable,
   pushTo,
   registryPayloads,
@@ -47,7 +47,7 @@ const FORM = { 'content-type': 'application/x-www-form-urlencoded' };
 const ALL_PLATFORM_GROUPS = Object.keys(PLATFORM_TABLE_GROUPS) as PlatformTableGroup[];
 const DEFINITIONS = new Map([...OWNED_TABLES, SITE_MONITOR_STATE].map((definition) => [definition.table, definition]));
 const MONITOR = SITE_MONITOR_STATE.table;
-const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
+const OPENAPI = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as object;
 
 const REQUIRED_COLUMNS_SQL = `
 SELECT c.relname::text AS table, a.attname::text AS column,

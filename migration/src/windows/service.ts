@@ -377,12 +377,8 @@ function fencedOwners(owners: OwnersClient): OwnersClient {
     putObject: (...args) => fenced(() => owners.putObject(...args)),
     getObject: (...args) => fenced(() => owners.getObject(...args)),
     deleteObject: (...args) => fenced(() => owners.deleteObject(...args)),
-    getAttachmentObject: (...args) => fenced(() => owners.getAttachmentObject(...args)),
-    getExportObject: (...args) => fenced(() => owners.getExportObject(...args)),
     siteMonitorState: () => fenced(() => owners.siteMonitorState()),
     putSiteMonitorState: (...args) => fenced(() => owners.putSiteMonitorState(...args)),
-    adoptScheduledTasks: (...args) => fenced(() => owners.adoptScheduledTasks(...args)),
-    cancelAdoptedScheduledTasks: (...args) => fenced(() => owners.cancelAdoptedScheduledTasks(...args)),
     queueControl: (...args) => fenced(() => owners.queueControl(...args)),
   };
 }

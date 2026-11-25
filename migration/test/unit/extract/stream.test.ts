@@ -333,10 +333,10 @@ describe('describeStream', () => {
   });
 
   it('selects requested columns plus key columns, resolving names case-insensitively, and binds scope parameters', async () => {
-    const { legacy } = fakeLegacy({ 'program_1.timesheet': TFILES }, { rows: [] });
+    const { legacy } = fakeLegacy({ 'program_1.enrolment': TFILES }, { rows: [] });
     const shape = await describeStream({
       legacy,
-      table: { schema: 'Program_1', table: 'timesheet', qualified: 'Program_1.timesheet' },
+      table: { schema: 'Program_1', table: 'enrolment', qualified: 'Program_1.enrolment' },
       columns: ['HITS', 'siteid'],
       keyColumns: ['FILEID'],
       scope: { siteid: ['tenant-a', 'tenant-b'] },
@@ -345,7 +345,7 @@ describe('describeStream', () => {
     expect(shape.keyColumns).toEqual(['fileID']);
     expect(shape.columns.map((column) => column.name)).toEqual(['siteID', 'hits']);
     expect(shape.selectSql).toBe(
-      'SELECT [fileID], [siteID], [hits] FROM [Program_1].[timesheet] WHERE ([siteID] IN (@p0, @p1)) ' +
+      'SELECT [fileID], [siteID], [hits] FROM [Program_1].[enrolment] WHERE ([siteID] IN (@p0, @p1)) ' +
         'ORDER BY [fileID] COLLATE Latin1_General_BIN2 ASC',
     );
   });

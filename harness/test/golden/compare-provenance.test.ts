@@ -26,7 +26,7 @@ import { pinnedSha } from '../../src/lib/pin.js';
 const CATALOGUE_FIXTURE = fileURLToPath(new URL('../fixtures/golden/catalogue.valid.yaml', import.meta.url));
 const SHA = pinnedSha();
 const OTHER_SHA = 'f'.repeat(40);
-const ID = 'GS-CO-05';
+const ID = 'GS-CO-75';
 const ROUTE_KEY = 'api:content.findone';
 const WITHHELD_KEY = 'admin:cusers.update{type=2,action=add}';
 const NO_DECISIONS: DecisionList = { actionVariants: [], tables: [] };
@@ -72,7 +72,7 @@ function goldenOf(scenario: Scenario): GoldenSet {
     tableVersion: null,
     fixtures: { available: true, reason: null },
     steps: scenario.steps.map((step, i) => exchange(step.name, i, scenario.covers[i] ?? ROUTE_KEY)),
-    sideEffects: { mail: [], rows: {}, tasks: [], files: [] },
+    sideEffects: { mail: [], rows: {}, files: [] },
   };
 }
 
@@ -321,7 +321,7 @@ describe('main on HTTP evidence provenance', () => {
   }
 
   it('fails every scenario whose committed capture or replay output is stale', async () => {
-    const scenarios = [5, 6, 7, 8].map((n) => ({ ...co05, id: `GS-CO-0${n}` }));
+    const scenarios = [5, 6, 7, 8].map((n) => ({ ...co05, id: `GS-CO-7${n}` }));
     const catalogue = path.join(root, 'catalogue.yaml');
     const exceptions = path.join(root, 'exceptions-list.json');
     const decisions = path.join(root, 'decision-list.json');
@@ -335,16 +335,16 @@ describe('main on HTTP evidence provenance', () => {
       return set;
     };
     const replays: Record<string, ReplayOutput> = {
-      'GS-CO-05': replayOf(golden('GS-CO-05')),
-      'GS-CO-06': { ...replayOf(golden('GS-CO-06')), sourceSha: OTHER_SHA },
-      'GS-CO-07': replayOf(golden('GS-CO-07'), 'v0003'),
-      'GS-CO-08': replayOf(golden('GS-CO-08')),
+      'GS-CO-75': replayOf(golden('GS-CO-75')),
+      'GS-CO-76': { ...replayOf(golden('GS-CO-76')), sourceSha: OTHER_SHA },
+      'GS-CO-77': replayOf(golden('GS-CO-77'), 'v0003'),
+      'GS-CO-78': replayOf(golden('GS-CO-78')),
     };
     for (const [id, replay] of Object.entries(replays)) {
       await writeJson(path.join(root, 'state', 'golden', 'replay', `${id}.json`), replay);
     }
     const readGolden = async (id: string): Promise<GoldenSet> =>
-      id === 'GS-CO-08' ? { ...golden(id), sourceSha: OTHER_SHA } : golden(id);
+      id === 'GS-CO-78' ? { ...golden(id), sourceSha: OTHER_SHA } : golden(id);
     const destination = new Writable({ write: (_chunk, _encoding, done) => done() });
     const logger = createLogger({ service: 'test', version: '1', env: 'local', destination });
     const flags = ['--catalogue', catalogue, '--exceptions', exceptions, '--decision-list', decisions];
@@ -355,16 +355,16 @@ describe('main on HTTP evidence provenance', () => {
     const written = await readFile(path.join(root, 'reports', 'parity.json'), 'utf8');
     const report = parityReportSchema.parse(JSON.parse(written));
     expect(Object.fromEntries(report.scenarios.map((s) => [s.id, [s.result, s.reason]]))).toEqual({
-      'GS-CO-05': ['pass', null],
-      'GS-CO-06': ['fail', STALE_REPLAY],
-      'GS-CO-07': ['fail', 'replay output was replayed under v0003, not v0002'],
-      'GS-CO-08': ['fail', `capture was taken at ${OTHER_SHA}, not the pinned ${SHA}`],
+      'GS-CO-75': ['pass', null],
+      'GS-CO-76': ['fail', STALE_REPLAY],
+      'GS-CO-77': ['fail', 'replay output was replayed under v0003, not v0002'],
+      'GS-CO-78': ['fail', `capture was taken at ${OTHER_SHA}, not the pinned ${SHA}`],
     });
   });
 
   it('reports each rehearsal crossing apart under v0003, outside the summary, leaving the v0002 rows as they stand', async () => {
     const across = [{ before: 'findone', from: 'v0001', to: 'v0002' }];
-    const scenarios = [5, 6, 7].map((n) => ({ ...co05, id: `GS-CO-0${n}`, acrossTransition: across }));
+    const scenarios = [5, 6, 7].map((n) => ({ ...co05, id: `GS-CO-7${n}`, acrossTransition: across }));
     const catalogue = path.join(root, 'catalogue.yaml');
     const exceptions = path.join(root, 'exceptions-list.json');
     const decisions = path.join(root, 'decision-list.json');
@@ -395,8 +395,8 @@ describe('main on HTTP evidence provenance', () => {
       if (golden === undefined) throw new Error(`no golden ${id}`);
       return writeJson(path.join(replayDir, 'rehearsal', `${id}.json`), replayOf(golden, tableVersion));
     };
-    await rehearsed('GS-CO-05', 'v0003');
-    await rehearsed('GS-CO-06', 'v0002');
+    await rehearsed('GS-CO-75', 'v0003');
+    await rehearsed('GS-CO-76', 'v0002');
     const after = await main(flags, env, { readGolden, logger });
     const stage8 = await readReport();
 
@@ -410,26 +410,26 @@ describe('main on HTTP evidence provenance', () => {
     expect(stage8.scenarios).toEqual(stage7.scenarios);
     expect(stage8.summary).toEqual(stage7.summary);
     expect(read.filter(([, crossing]) => crossing)).toEqual([
-      ['GS-CO-05', true],
-      ['GS-CO-06', true],
+      ['GS-CO-75', true],
+      ['GS-CO-76', true],
     ]);
     const crossing = (id: string): string => `\${OPT2_STATE_DIR}/golden/replay/rehearsal/${id}.json`;
     const crossingSet = (id: string): string => `harness/golden/sets/rehearsal/${id}.json`;
     expect(stage8.rehearsalCrossings?.map((c) => [c.id, c.tableVersion, c.result, c.reason, c.evidence])).toEqual([
-      ['GS-CO-05', 'v0003', 'pass', null, { golden: crossingSet('GS-CO-05'), replay: crossing('GS-CO-05') }],
+      ['GS-CO-75', 'v0003', 'pass', null, { golden: crossingSet('GS-CO-75'), replay: crossing('GS-CO-75') }],
       [
-        'GS-CO-06',
+        'GS-CO-76',
         'v0003',
         'fail',
         'replay output was replayed under v0002, not v0003',
-        { golden: crossingSet('GS-CO-06'), replay: crossing('GS-CO-06') },
+        { golden: crossingSet('GS-CO-76'), replay: crossing('GS-CO-76') },
       ],
     ]);
     const markdown = (await readFile(path.join(reports, 'parity.md'), 'utf8')).split('\n');
     const section = markdown.slice(markdown.indexOf('## Rehearsal crossings'), markdown.indexOf('## Unmet (withheld)'));
     expect(section.filter((line) => line.startsWith('| <a id='))).toEqual([
-      `| <a id="GS-CO-05-rehearsal"></a>GS-CO-05 | strategies-content | \`pass\` | 0 | golden \`${crossingSet('GS-CO-05')}\`, replay \`${crossing('GS-CO-05')}\` |`,
-      `| <a id="GS-CO-06-rehearsal"></a>GS-CO-06 | strategies-content | \`fail\`: replay output was replayed under v0002, not v0003 | 0 | golden \`${crossingSet('GS-CO-06')}\`, replay \`${crossing('GS-CO-06')}\` |`,
+      `| <a id="GS-CO-75-rehearsal"></a>GS-CO-75 | strategies-content | \`pass\` | 0 | golden \`${crossingSet('GS-CO-75')}\`, replay \`${crossing('GS-CO-75')}\` |`,
+      `| <a id="GS-CO-76-rehearsal"></a>GS-CO-76 | strategies-content | \`fail\`: replay output was replayed under v0002, not v0003 | 0 | golden \`${crossingSet('GS-CO-76')}\`, replay \`${crossing('GS-CO-76')}\` |`,
     ]);
   });
 });

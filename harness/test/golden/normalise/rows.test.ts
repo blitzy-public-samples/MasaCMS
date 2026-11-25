@@ -234,12 +234,11 @@ describe('normaliseRows masking', () => {
     ['an RFC 4122 uuid takes its own ordinal', 'tusers', { name: 'remoteID', type: 's' }, randomUUID(), '<uuid:1>'],
     [
       'a date-only timestamp column stays literal',
-      'Program_1.blackout',
+      'synthetic.person_archive',
       { name: 'effective_from', type: 't' },
       '2026-06-30 00:00:00',
       '2026-06-30T00:00:00.000',
     ],
-    ['a four-decimal money string stays literal', 'Program_1.finance_record', { name: 'amount', type: 's' }, '1250.5000', '1250.5000'],
     ['an integer stays literal', 'tusers', { name: 'InActive', type: 'i' }, 1, '1'],
     ['a null stays null', 'tusers', { name: 'Fname', type: 's' }, null, null],
   ])('%s', (_title, legacyTable, column, value, expected) => {
@@ -438,8 +437,8 @@ describe('normaliseRows volatile columns', () => {
   });
 
   it.each<[first: string, second: string]>([
-    ['generated:gs-id-05', CREATED],
-    [CREATED, 'generated:gs-id-05'],
+    ['generated:gs-id-75', CREATED],
+    [CREATED, 'generated:gs-id-75'],
   ])('names %s, the first of two secrets with one value in resolution order', (first, second) => {
     const secrets = new Map([
       ['admin', OTHER],

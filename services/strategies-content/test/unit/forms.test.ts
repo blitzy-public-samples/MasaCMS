@@ -1,4 +1,4 @@
-/** Form responses, the data manager and the cform dialog inputs (GS-CO-14) over a throwaway `content` schema and local storage. */
+/** Form responses, the data manager and the cform dialog inputs over a throwaway `content` schema and local storage. */
 import type { PassThrough } from 'node:stream';
 import { text } from 'node:stream/consumers';
 import { setTimeout } from 'node:timers/promises';
@@ -311,7 +311,7 @@ describe.skipIf(!(await pgAvailable()))('domain/forms', () => {
   it.each([
     ['the seed dataset ISO text', '2026-03-05T17:04:00.000', 20],
     ['the edit form CF text', '2026-03-05 17:04:00.0', 21],
-  ] as const)('updates a seeded response from the GS-CO-14 edit post with entered as %s, writing the packet legacy wrote', async (_label, entered, n) => {
+  ] as const)('updates a seeded response from the data manager edit post with entered as %s, writing the packet legacy wrote', async (_label, entered, n) => {
     const formId = cfId('F', n);
     await insertForm(fx, formId, n, MY_FORM);
     const seeded = await updateResponse(fx.deps, ADMIN, {
@@ -324,7 +324,7 @@ describe.skipIf(!(await pgAvailable()))('domain/forms', () => {
       fx.deps,
       ADMIN,
       {
-        fullname: 'Trenton Kuhn-Rice', email: 'trenton.kuhnrice@seed.opt2.test', message: 'GS-CO-14 updated message',
+        fullname: 'Trenton Kuhn-Rice', email: 'trenton.kuhnrice@seed.opt2.test', message: 'Data manager updated message',
         formid: formId, contentid: formId, siteid: SITE_ID, muraAction: 'cArch.datamanager', responseID: seeded.responseId,
         hour1: '0', hour2: '23', minute1: '0', minute2: '59', date1: '', date2: '', fieldlist: 'email,fullname,message',
         sortBy: 'Entered', sortDirection: 'asc', filterBy: '', keywords: '', entered, moduleid: '00000000000000000000000000000000004', action: 'update',
@@ -332,11 +332,11 @@ describe.skipIf(!(await pgAvailable()))('domain/forms', () => {
       { validateCsrfTokens: async (c: string) => (validated.push(c), true) },
     );
     expect([result.outcome, validated]).toEqual(['updated', [seeded.responseId]]);
-    // tformresponsepackets.Data of the response GS-CO-14 updated on legacy.
+    // tformresponsepackets.Data legacy wrote for the same edit post.
     const legacyPacket =
       "<wddxPacket version='1.0'><header/><data><struct>" +
       `<var name='responseid'><string>${seeded.responseId}</string></var>` +
-      "<var name='message'><string>GS-CO-14 updated message</string></var>" +
+      "<var name='message'><string>Data manager updated message</string></var>" +
       "<var name='fieldnames'><string>email,fullname,message</string></var>" +
       "<var name='email'><string>trenton.kuhnrice@seed.opt2.test</string></var>" +
       "<var name='fullname'><string>Trenton Kuhn-Rice</string></var>" +
@@ -347,7 +347,7 @@ describe.skipIf(!(await pgAvailable()))('domain/forms', () => {
     expect(questions.map((q) => [q.formfield, q.formvalue, q.pollvalue])).toEqual([
       ['email', 'trenton.kuhnrice@seed.opt2.test', 'trenton.kuhnrice@seed.opt2.test'],
       ['fullname', 'Trenton Kuhn-Rice', 'Trenton Kuhn-Rice'],
-      ['message', 'GS-CO-14 updated message', 'GS-CO-14 updated message'],
+      ['message', 'Data manager updated message', 'Data manager updated message'],
     ]);
   });
 

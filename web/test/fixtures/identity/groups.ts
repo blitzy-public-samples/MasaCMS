@@ -9,16 +9,16 @@ export const GROUP_IDS = Object.freeze({
   defaultEditor: '6A000000-0000-0000-0000000000000002',
   tenantAAdmin: '6A000000-0000-0000-0000000000000003',
   umbrellaMembers: '6A000000-0000-0000-0000000000000004',
-  timesheetsEmployee: '6A000000-0000-0000-0000000000000005',
-  timesheetsPrimaryApprover: '6A000000-0000-0000-0000000000000006',
-  timesheetsSecondaryApprover: '6A000000-0000-0000-0000000000000007',
-  financePreparer: '6A000000-0000-0000-0000000000000008',
-  financeApprover: '6A000000-0000-0000-0000000000000009',
-  esignatureSigner: '6A000000-0000-0000-000000000000000A',
-  esignatureAuditor: '6A000000-0000-0000-000000000000000B',
-  reportingExporter: '6A000000-0000-0000-000000000000000C',
-  surveysManager: '6A000000-0000-0000-000000000000000D',
-  communicationsSender: '6A000000-0000-0000-000000000000000E',
+  teamMember: '6A000000-0000-0000-0000000000000005',
+  teamPrimaryLead: '6A000000-0000-0000-0000000000000006',
+  teamSecondaryLead: '6A000000-0000-0000-0000000000000007',
+  libraryWriter: '6A000000-0000-0000-0000000000000008',
+  libraryApprover: '6A000000-0000-0000-0000000000000009',
+  galleryUploader: '6A000000-0000-0000-000000000000000A',
+  galleryCurator: '6A000000-0000-0000-000000000000000B',
+  recordsClerk: '6A000000-0000-0000-000000000000000C',
+  studioManager: '6A000000-0000-0000-000000000000000D',
+  archiveViewer: '6A000000-0000-0000-000000000000000E',
 } as const);
 
 export const MEMBER_USER_IDS = Object.freeze({
@@ -125,77 +125,77 @@ const ROLE_GROUP_COLUMNS = {
   remoteID: null,
 } as const;
 
-const timesheetsEmployeeGroup: GroupAccount = Object.freeze({
+const teamMemberGroup: GroupAccount = Object.freeze({
   ...ROLE_GROUP_COLUMNS,
-  UserID: GROUP_IDS.timesheetsEmployee,
-  GroupName: 'timesheets.employee',
+  UserID: GROUP_IDS.teamMember,
+  GroupName: 'team.member',
 });
 
-const timesheetsPrimaryApproverGroup: GroupAccount = Object.freeze({
+const teamPrimaryLeadGroup: GroupAccount = Object.freeze({
   ...ROLE_GROUP_COLUMNS,
-  UserID: GROUP_IDS.timesheetsPrimaryApprover,
-  GroupName: 'timesheets.primary-approver',
+  UserID: GROUP_IDS.teamPrimaryLead,
+  GroupName: 'team.primary-lead',
 });
 
-const timesheetsSecondaryApproverGroup: GroupAccount = Object.freeze({
+const teamSecondaryLeadGroup: GroupAccount = Object.freeze({
   ...ROLE_GROUP_COLUMNS,
-  UserID: GROUP_IDS.timesheetsSecondaryApprover,
-  GroupName: 'timesheets.secondary-approver',
+  UserID: GROUP_IDS.teamSecondaryLead,
+  GroupName: 'team.secondary-lead',
 });
 
-const financePreparerGroup: GroupAccount = Object.freeze({
+const libraryWriterGroup: GroupAccount = Object.freeze({
   ...ROLE_GROUP_COLUMNS,
-  UserID: GROUP_IDS.financePreparer,
-  GroupName: 'finance.preparer',
+  UserID: GROUP_IDS.libraryWriter,
+  GroupName: 'library.writer',
 });
 
-const financeApproverGroup: GroupAccount = Object.freeze({
+const libraryApproverGroup: GroupAccount = Object.freeze({
   ...ROLE_GROUP_COLUMNS,
-  UserID: GROUP_IDS.financeApprover,
-  GroupName: 'finance.approver',
+  UserID: GROUP_IDS.libraryApprover,
+  GroupName: 'library.approver',
 });
 
-const esignatureSignerGroup: GroupAccount = Object.freeze({
+const galleryUploaderGroup: GroupAccount = Object.freeze({
   ...ROLE_GROUP_COLUMNS,
-  UserID: GROUP_IDS.esignatureSigner,
-  GroupName: 'esignature.signer',
+  UserID: GROUP_IDS.galleryUploader,
+  GroupName: 'gallery.uploader',
 });
 
-const esignatureAuditorGroup: GroupAccount = Object.freeze({
+const galleryCuratorGroup: GroupAccount = Object.freeze({
   ...ROLE_GROUP_COLUMNS,
-  UserID: GROUP_IDS.esignatureAuditor,
-  GroupName: 'esignature.auditor',
+  UserID: GROUP_IDS.galleryCurator,
+  GroupName: 'gallery.curator',
 });
 
-const reportingExporterGroup: GroupAccount = Object.freeze({
+const recordsClerkGroup: GroupAccount = Object.freeze({
   ...ROLE_GROUP_COLUMNS,
-  UserID: GROUP_IDS.reportingExporter,
-  GroupName: 'reporting.exporter',
+  UserID: GROUP_IDS.recordsClerk,
+  GroupName: 'records.clerk',
 });
 
-const surveysManagerGroup: GroupAccount = Object.freeze({
+const studioManagerGroup: GroupAccount = Object.freeze({
   ...ROLE_GROUP_COLUMNS,
-  UserID: GROUP_IDS.surveysManager,
-  GroupName: 'surveys.manager',
+  UserID: GROUP_IDS.studioManager,
+  GroupName: 'studio.manager',
 });
 
-const communicationsSenderGroup: GroupAccount = Object.freeze({
+const archiveViewerGroup: GroupAccount = Object.freeze({
   ...ROLE_GROUP_COLUMNS,
-  UserID: GROUP_IDS.communicationsSender,
-  GroupName: 'communications.sender',
+  UserID: GROUP_IDS.archiveViewer,
+  GroupName: 'archive.viewer',
 });
 
 export const roleGroups: readonly GroupAccount[] = Object.freeze([
-  timesheetsEmployeeGroup,
-  timesheetsPrimaryApproverGroup,
-  timesheetsSecondaryApproverGroup,
-  financePreparerGroup,
-  financeApproverGroup,
-  esignatureSignerGroup,
-  esignatureAuditorGroup,
-  reportingExporterGroup,
-  surveysManagerGroup,
-  communicationsSenderGroup,
+  teamMemberGroup,
+  teamPrimaryLeadGroup,
+  teamSecondaryLeadGroup,
+  libraryWriterGroup,
+  libraryApproverGroup,
+  galleryUploaderGroup,
+  galleryCuratorGroup,
+  recordsClerkGroup,
+  studioManagerGroup,
+  archiveViewerGroup,
 ]);
 
 export const groups: readonly GroupAccount[] = Object.freeze([
@@ -211,16 +211,16 @@ export const groupsById: Readonly<Record<string, GroupAccount>> = Object.freeze(
   [GROUP_IDS.defaultEditor]: defaultEditorGroup,
   [GROUP_IDS.tenantAAdmin]: tenantAAdminGroup,
   [GROUP_IDS.umbrellaMembers]: umbrellaMembersGroup,
-  [GROUP_IDS.timesheetsEmployee]: timesheetsEmployeeGroup,
-  [GROUP_IDS.timesheetsPrimaryApprover]: timesheetsPrimaryApproverGroup,
-  [GROUP_IDS.timesheetsSecondaryApprover]: timesheetsSecondaryApproverGroup,
-  [GROUP_IDS.financePreparer]: financePreparerGroup,
-  [GROUP_IDS.financeApprover]: financeApproverGroup,
-  [GROUP_IDS.esignatureSigner]: esignatureSignerGroup,
-  [GROUP_IDS.esignatureAuditor]: esignatureAuditorGroup,
-  [GROUP_IDS.reportingExporter]: reportingExporterGroup,
-  [GROUP_IDS.surveysManager]: surveysManagerGroup,
-  [GROUP_IDS.communicationsSender]: communicationsSenderGroup,
+  [GROUP_IDS.teamMember]: teamMemberGroup,
+  [GROUP_IDS.teamPrimaryLead]: teamPrimaryLeadGroup,
+  [GROUP_IDS.teamSecondaryLead]: teamSecondaryLeadGroup,
+  [GROUP_IDS.libraryWriter]: libraryWriterGroup,
+  [GROUP_IDS.libraryApprover]: libraryApproverGroup,
+  [GROUP_IDS.galleryUploader]: galleryUploaderGroup,
+  [GROUP_IDS.galleryCurator]: galleryCuratorGroup,
+  [GROUP_IDS.recordsClerk]: recordsClerkGroup,
+  [GROUP_IDS.studioManager]: studioManagerGroup,
+  [GROUP_IDS.archiveViewer]: archiveViewerGroup,
 });
 
 export const newGroup: GroupAccount = Object.freeze({

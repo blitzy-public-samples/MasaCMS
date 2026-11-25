@@ -1,4 +1,5 @@
-// Unit suite for the OPT2_CLONE_PARENT preconditions of clean-checkout-proof.sh, run from a sandbox copy with a stub down.sh.
+// Unit suite for the OPT2_CLONE_PARENT preconditions and the report of clean-checkout-proof.sh, run from a sandbox copy
+// with stub up.sh, test-all.sh and down.sh.
 import { spawnSync } from 'node:child_process';
 import {
   chmodSync,
@@ -7,6 +8,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readdirSync,
+  readFileSync,
   realpathSync,
   rmSync,
   writeFileSync,
@@ -118,5 +120,64 @@ describe('clean-checkout-proof.sh OPT2_CLONE_PARENT preconditions', () => {
     const result = prove(path.join(root, 'proofs', 'new'));
     expect(result.stderr).toMatch(/step 1: harness\/repro\/down\.sh in the working checkout/);
     expect(existsSync(marker())).toBe(true);
+  });
+});
+
+/** Writes an executable script at `rel` under the sandbox checkout. */
+function script(rel: string, body: string): void {
+  const file = path.join(checkout, rel);
+  writeFileSync(file, `#!/usr/bin/env bash\n${body}`);
+  chmodSync(file, 0o755);
+}
+
+/** Runs git in the sandbox checkout with a fixed identity and no repository above the sandbox. */
+function git(...args: string[]): string {
+  const result = spawnSync('git', ['-c', 'user.name=opt2-test', '-c', 'user.email=opt2-test@example.invalid', ...args], {
+    cwd: checkout,
+    env: { ...process.env, HOME: path.join(root, 'home'), GIT_CEILING_DIRECTORIES: root },
+    encoding: 'utf8',
+  });
+  expect(result.status, result.stderr).toBe(0);
+  return result.stdout.trim();
+}
+
+describe('clean-checkout-proof.sh report', () => {
+  it('records the clone, its state and the pristine directory as labels, never as host paths', () => {
+    // The clone's stub up.sh reports fixtures unavailable and its test-all.sh exits 2, which is a passing proof.
+    script(
+      'harness/repro/up.sh',
+      `mkdir -p "$OPT2_STATE_DIR"\nprintf '{"available":false,"reason":"stub"}\\n' >"$OPT2_STATE_DIR/fixtures.json"\n`,
+    );
+    script('harness/repro/test-all.sh', `printf '{"exitCode":2}\\n' >opt2/reports/test-all.json\nexit 2\n`);
+    mkdirSync(path.join(checkout, 'opt2/reports'));
+    writeFileSync(path.join(checkout, 'opt2/reports/test-all.json'), '{}\n');
+    git('init', '--quiet');
+    git('add', '--all');
+    git('commit', '--quiet', '--no-gpg-sign', '-m', 'sandbox');
+    const commit = git('rev-parse', 'HEAD');
+
+    const result = prove(path.join(root, 'proofs'));
+
+    expect(result.status, result.stderr).toBe(0);
+    const report = readFileSync(path.join(checkout, 'opt2/reports/reproducibility.md'), 'utf8');
+    const table = report.slice(report.indexOf('## Result'), report.indexOf('## Procedure'));
+    // `| <field> | <value> |` rows of the Result table, by field.
+    const values = new Map(
+      table
+        .split('\n')
+        .filter((line) => line.startsWith('| ') && !line.startsWith('| Field '))
+        .map((line) => line.slice(2, -2).split(' | ') as [string, string]),
+    );
+    const value = (prefix: string): string | undefined =>
+      [...values].find(([field]) => field.startsWith(prefix))?.[1];
+    const clone = value('Clone path');
+    expect(clone).toMatch(/^`\$OPT2_CLONE_PARENT\/opt2-clean-\d{8}T\d{6}Z`$/);
+    expect(value('`OPT2_STATE_DIR`')).toBe(`${clone?.slice(0, -1) ?? ''}.state\``);
+    expect(value('`OPT2_PRISTINE_DIR`')).toBe('`$OPT2_PRISTINE_DIR`');
+    expect(value('Commit')).toBe(`\`${commit}\``);
+    expect(value('`sha256`')).toMatch(/^`[0-9a-f]{64}`$/);
+    expect([...values.values()].filter((cell) => cell.startsWith('`/'))).toStrictEqual([]);
+    expect(report).toContain('Status: pass');
+    expect(report).not.toContain(root);
   });
 });

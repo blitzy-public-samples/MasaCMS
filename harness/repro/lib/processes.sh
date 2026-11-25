@@ -10,16 +10,14 @@ fi
 
 # Services first, then web and the migration service; the gateway last, since it answers 503 until a version is active.
 # shellcheck disable=SC2034 # used by the scripts that source this file
-TARGET_START_ORDER=(identity people programs-sites strategies-content communications reporting surveys timesheets finance
-  e-signature stub web migration gateway)
+TARGET_START_ORDER=(identity people programs-sites strategies-content stub web migration gateway)
 
 # Prints the package directory of target process <name>.
 process_dir() {
   local name=${1:?process_dir needs a process name}
   case $name in
     gateway | web | migration) printf '%s\n' "$REPO/$name" ;;
-    identity | people | programs-sites | strategies-content | communications | reporting | surveys | timesheets | finance | \
-      e-signature | stub) printf '%s\n' "$REPO/services/$name" ;;
+    identity | people | programs-sites | strategies-content | stub) printf '%s\n' "$REPO/services/$name" ;;
     *) die "unknown target process '$name'" ;;
   esac
 }
@@ -30,9 +28,7 @@ process_schema() {
   case $name in
     programs-sites) printf 'programs_sites\n' ;;
     strategies-content) printf 'content\n' ;;
-    e-signature) printf 'esignature\n' ;;
-    identity | people | communications | reporting | surveys | timesheets | finance | stub | gateway | migration)
-      printf '%s\n' "$name" ;;
+    identity | people | stub | gateway | migration) printf '%s\n' "$name" ;;
     web) ;;
     *) die "unknown target process '$name'" ;;
   esac
@@ -210,11 +206,6 @@ process_env() {
       for key in OPT2_PORTS_FILE OPT2_CF_SERVER_NAME OPT2_LOCK_DIR; do
         if [[ -n ${!key:-} ]]; then _opt2_env_line "$key" "${!key}"; fi
       done
-      ;;
-    communications)
-      _opt2_env_line SMTP_HOST 127.0.0.1
-      _opt2_env_line SMTP_PORT "$OPT2_TOOL_PORT_MAILPIT_SMTP"
-      _opt2_env_line MAILPIT_API_URL "$MAILPIT_API_LOCAL"
       ;;
     strategies-content)
       # The database name alone, which the SQL Server messages of its legacy error pages qualify a table with.

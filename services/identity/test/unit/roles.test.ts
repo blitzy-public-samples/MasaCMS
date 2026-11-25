@@ -1,6 +1,6 @@
 /** Legacy role list, `session.mura` user struct, login snapshot, role map, site-scoped token roles and module checks of `src/domain/roles.ts`. */
 import { describe, expect, it } from 'vitest';
-import { Roles, SYNTHETIC_ROLES, moduleRole } from '@opt2/platform/auth';
+import { Roles, moduleRole } from '@opt2/platform/auth';
 import { TENANT_A, TENANT_B, TENANT_UMBRELLA, registryPayloads } from '@opt2/platform/testing';
 import {
   ANONYMOUS_USER_STRUCT,
@@ -19,7 +19,6 @@ import {
   type LoginRows,
   type MembershipGroup,
   type ModuleGroupGrant,
-  type RoleMap,
   type TokenRoleSite,
   type TokenRoles,
 } from '../../src/domain/roles.js';
@@ -30,10 +29,8 @@ import {
   MEMBER_B,
   POOLED_MEMBER,
   SITE_ADMIN_A,
-  SYNTHETIC_MEMBERS,
   accountRow,
   credentialRow,
-  groupRow,
   loginSnapshotFixture,
   loginStateRow,
   membershipGroupOf,
@@ -47,8 +44,6 @@ const ADMIN_GROUP_ID = 'B2C3D4E5-F6A7-4B8C-9D0E1F2A3B4C5D6E';
 const EDITORS_GROUP_ID = 'C3D4E5F6-A7B8-4C9D-0E1F2A3B4C5D6E7F';
 const STAFF_GROUP_ID = 'D4E5F6A7-B8C9-4D0E-1F2A3B4C5D6E7F80';
 const SUBSCRIBERS_GROUP_ID = 'E5F6A7B8-C9D0-4E1F-2A3B4C5D6E7F8091';
-const TIMESHEETS_GROUP_ID = 'F6A7B8C9-D0E1-4F2A-3B4C5D6E7F809102';
-const FINANCE_GROUP_ID = 'A7B8C9D0-E1F2-4A3B-4C5D6E7F80910213';
 const USERS_MODULE = `${'0'.repeat(32)}008`;
 const CONTENT_MODULE = `${'0'.repeat(32)}003`;
 const PLUGIN_MODULE = 'B8C9D0E1-F2A3-4B4C-5D6E7F8091021324';
@@ -72,8 +67,6 @@ const ADMIN_A = group(ADMIN_GROUP_ID, 'Admin', TENANT_A.siteId, 0);
 const EDITORS_A = group(EDITORS_GROUP_ID, 'Editors', TENANT_A.siteId, 0);
 const STAFF_A = group(STAFF_GROUP_ID, 'Program Staff', TENANT_A.siteId, 0);
 const SUBSCRIBERS_UMBRELLA = group(SUBSCRIBERS_GROUP_ID, 'Subscribers', TENANT_UMBRELLA.siteId, 1);
-const TIMESHEETS_A = group(TIMESHEETS_GROUP_ID, Roles.timesheetsEmployee, TENANT_A.siteId, 0);
-const FINANCE_A = group(FINANCE_GROUP_ID, Roles.financeApprover, TENANT_A.siteId, 0);
 
 function loginRows(overrides: Partial<LoginRows> = {}): LoginRows {
   return {
@@ -115,18 +108,11 @@ function loginRowsOf(actor: TestActor): LoginRows {
   return { account, credential, loginState, contact, groups: actor.groups.map(membershipGroupOf) };
 }
 
-/** The seeded tenant-a member of `role`'s role-map group. */
-function syntheticMember(role: string): TestActor {
-  const actor = SYNTHETIC_MEMBERS[role];
-  if (actor === undefined) throw new Error(`The row helpers seed no member for ${role}`);
-  return actor;
-}
-
 function grant(moduleId: string, memberGroup: MembershipGroup): ModuleGroupGrant {
   return { moduleId, groupName: memberGroup.groupName, isPublic: memberGroup.isPublic };
 }
 
-const NO_GRANTS = { moduleGrants: [], roleMap: ROLE_MAP };
+const NO_GRANTS = { moduleGrants: [] };
 const NO_ACCESS: TokenRoles = { roles: [], hasSiteAccess: false };
 
 function access(...roles: string[]): TokenRoles {
@@ -331,21 +317,13 @@ describe('roleListHas and snapshotIsS2 [legacy: core/mura/permission.cfc:312,676
 });
 
 describe('loadRoleMap and parseRoleMap', () => {
-  it('loads config/role-map.json once per process: ten private-pool groups named after the ten synthetic roles', () => {
-    expect(ROLE_MAP.sourceSha).toBe(PIN_SHA);
-    expect(ROLE_MAP.scope).toBe('privateUserPool');
-    expect(ROLE_MAP.groups.map(({ role }) => role)).toEqual([
-      'timesheets.employee', 'timesheets.primary-approver', 'timesheets.secondary-approver', 'finance.preparer', 'finance.approver',
-      'esignature.signer', 'esignature.auditor', 'reporting.exporter', 'surveys.manager', 'communications.sender',
-    ]);
-    expect(ROLE_MAP.groups.map(({ role }) => role)).toEqual([...SYNTHETIC_ROLES]);
-    expect(ROLE_MAP.groups.map(({ groupName }) => groupName)).toEqual([...SYNTHETIC_ROLES]);
+  it('loads config/role-map.json once per process: the private-pool scope with no group grants', () => {
+    expect(ROLE_MAP).toEqual(roleMapWith([]));
     expect(loadRoleMap()).toBe(loadRoleMap());
   });
 
-  it('keeps only the sourceSha, scope and each group\'s groupName and role', () => {
-    const parsed = parseRoleMap({ ...roleMapWith([{ groupName: 'Payroll Clerks', role: Roles.financePreparer, note: 'seeded' }]), extra: true });
-    expect(parsed).toEqual(roleMapWith([{ groupName: 'Payroll Clerks', role: Roles.financePreparer }]));
+  it('keeps only the sourceSha, scope and groups', () => {
+    expect(parseRoleMap({ ...roleMapWith([]), extra: true })).toEqual(roleMapWith([]));
   });
 
   it.each([
@@ -355,9 +333,9 @@ describe('loadRoleMap and parseRoleMap', () => {
     { when: 'a map scoped to another pool', value: { ...roleMapWith([]), scope: 'publicUserPool' } },
     { when: 'a map whose groups is not an array', value: { ...roleMapWith([]), groups: {} } },
     { when: 'a null group', value: roleMapWith([null]) },
-    { when: 'a group with an empty name', value: roleMapWith([{ groupName: '', role: Roles.financePreparer }]) },
+    { when: 'a group with an empty name', value: roleMapWith([{ groupName: '', role: Roles.systemUser }]) },
     { when: 'a group without a role', value: roleMapWith([{ groupName: 'Payroll Clerks' }]) },
-    { when: 'a group mapped to a non-synthetic role', value: roleMapWith([{ groupName: 'Admin', role: Roles.s2 }]) },
+    { when: 'a group granting a role', value: roleMapWith([{ groupName: 'Admin', role: Roles.s2 }]) },
   ])('rejects $when with a TypeError', ({ value }) => {
     expect(() => parseRoleMap(value)).toThrow(TypeError);
   });
@@ -385,7 +363,7 @@ describe('tokenRolesFor [legacy: core/mura/permission.cfc:312,338-344,676,689-69
     const moduleGrants = [
       grant(USERS_MODULE, EDITORS_A), grant(PLUGIN_MODULE, EDITORS_A), grant(CONTENT_MODULE, EDITORS_A), grant(USERS_MODULE, STAFF_A),
     ];
-    const result = tokenRolesFor(snapshotFor(PRIVATE_A_ACCOUNT, [EDITORS_A, STAFF_A]), SITE_A, { moduleGrants, roleMap: ROLE_MAP });
+    const result = tokenRolesFor(snapshotFor(PRIVATE_A_ACCOUNT, [EDITORS_A, STAFF_A]), SITE_A, { moduleGrants });
     expect(result).toEqual(access(moduleRole(CONTENT_MODULE), moduleRole(USERS_MODULE), Roles.systemUser));
     expect(moduleRole(USERS_MODULE)).toBe('m:008');
   });
@@ -412,7 +390,7 @@ describe('tokenRolesFor [legacy: core/mura/permission.cfc:312,338-344,676,689-69
       expected: access(Roles.member),
     },
   ])('grants module roles on tenant-a only when $when', ({ account, groups, moduleGrant, expected }) => {
-    expect(tokenRolesFor(snapshotFor(account, groups), SITE_A, { moduleGrants: [moduleGrant], roleMap: ROLE_MAP })).toEqual(expected);
+    expect(tokenRolesFor(snapshotFor(account, groups), SITE_A, { moduleGrants: [moduleGrant] })).toEqual(expected);
   });
 
   it.each([
@@ -437,41 +415,6 @@ describe('tokenRolesFor [legacy: core/mura/permission.cfc:312,338-344,676,689-69
     expect(tokenRolesFor(snapshot, site, NO_GRANTS)).toEqual(expected);
   });
 
-  it.each(ROLE_MAP.groups.map(({ groupName, role }) => ({ groupName, role, actor: syntheticMember(role) })))(
-    'grants $role to the member of group $groupName only where that group is in the site private pool',
-    ({ groupName, role, actor }) => {
-      expect(tokenRolesFor(loginSnapshotFixture({ actor }), SITE_A, NO_GRANTS)).toEqual(access(Roles.systemUser, role));
-      expect(tokenRolesFor(loginSnapshotFixture({ actor }), SITE_B, NO_GRANTS)).toEqual(NO_ACCESS);
-      const tenantBGroup = groupRow({ tenant_id: TENANT_B.tenantId, siteid: TENANT_B.siteId, groupname: groupName });
-      expect(tokenRolesFor(loginSnapshotFixture({ actor, groups: [tenantBGroup] }), SITE_A, NO_GRANTS)).toEqual(access(Roles.systemUser));
-    },
-  );
-
-  it.each([
-    {
-      when: 'role-map groups in the site\'s private pool grant their roles in role-map order',
-      account: PRIVATE_A_ACCOUNT, groups: [FINANCE_A, TIMESHEETS_A],
-      expected: access(Roles.systemUser, Roles.timesheetsEmployee, Roles.financeApprover),
-    },
-    {
-      when: 'a role-map group name matches without regard to case',
-      account: PRIVATE_A_ACCOUNT, groups: [group(TIMESHEETS_GROUP_ID, 'Timesheets.Employee', TENANT_A.siteId, 0)],
-      expected: access(Roles.systemUser, Roles.timesheetsEmployee),
-    },
-    {
-      when: 'a role-map group of another site\'s private pool grants nothing',
-      account: PRIVATE_B_ACCOUNT, groups: [group(TIMESHEETS_GROUP_ID, Roles.timesheetsEmployee, TENANT_B.siteId, 0)],
-      expected: NO_ACCESS,
-    },
-    {
-      when: 'a public group named after a synthetic role grants nothing beyond member',
-      account: PUBLIC_UMBRELLA_ACCOUNT, groups: [group(TIMESHEETS_GROUP_ID, Roles.timesheetsEmployee, TENANT_UMBRELLA.siteId, 1)],
-      expected: access(Roles.member),
-    },
-  ])('$when', ({ account, groups, expected }) => {
-    expect(tokenRolesFor(snapshotFor(account, groups), SITE_A, NO_GRANTS)).toEqual(expected);
-  });
-
   it('never carries group memberships as token roles', () => {
     const result = tokenRolesFor(snapshotFor(PRIVATE_A_ACCOUNT, [EDITORS_A, STAFF_A, SUBSCRIBERS_UMBRELLA]), SITE_A, NO_GRANTS);
     expect(result).toEqual(access(Roles.systemUser));
@@ -480,16 +423,15 @@ describe('tokenRolesFor [legacy: core/mura/permission.cfc:312,338-344,676,689-69
   it('gives site access through a private-pool group alone, with only the roles its grants carry', () => {
     const snapshot = snapshotFor({ username: 'outside_editor', siteid: 'default' }, [EDITORS_A]);
     expect(tokenRolesFor(snapshot, SITE_A, NO_GRANTS)).toEqual(access());
-    expect(tokenRolesFor(snapshot, SITE_A, { moduleGrants: [grant(USERS_MODULE, EDITORS_A)], roleMap: ROLE_MAP })).toEqual(access(moduleRole(USERS_MODULE)));
+    expect(tokenRolesFor(snapshot, SITE_A, { moduleGrants: [grant(USERS_MODULE, EDITORS_A)] })).toEqual(access(moduleRole(USERS_MODULE)));
   });
 
-  it('orders roles s2, site-admin, module roles, system-user, then role-map roles, each once', () => {
-    const roleMap: RoleMap = parseRoleMap(roleMapWith([{ groupName: 'Editors', role: Roles.timesheetsEmployee }, ...ROLE_MAP.groups]));
-    const options = { moduleGrants: [grant(USERS_MODULE, EDITORS_A), grant(USERS_MODULE, ADMIN_A)], roleMap };
-    const s2Snapshot = snapshotFor(S2_ACCOUNT, [ADMIN_A, EDITORS_A, EDITORS_A, TIMESHEETS_A]);
-    expect(tokenRolesFor(s2Snapshot, SITE_A, options)).toEqual(access('s2', 'site-admin', 'm:008', 'timesheets.employee'));
-    const privateS2Snapshot = snapshotFor({ ...S2_ACCOUNT, siteid: TENANT_A.siteId }, [ADMIN_A, TIMESHEETS_A]);
-    expect(tokenRolesFor(privateS2Snapshot, SITE_A, options)).toEqual(access('s2', 'site-admin', 'm:008', 'system-user', 'timesheets.employee'));
+  it('orders roles s2, site-admin, module roles, then system-user, each once', () => {
+    const options = { moduleGrants: [grant(USERS_MODULE, EDITORS_A), grant(USERS_MODULE, ADMIN_A)] };
+    const s2Snapshot = snapshotFor(S2_ACCOUNT, [ADMIN_A, EDITORS_A, EDITORS_A]);
+    expect(tokenRolesFor(s2Snapshot, SITE_A, options)).toEqual(access('s2', 'site-admin', 'm:008'));
+    const privateS2Snapshot = snapshotFor({ ...S2_ACCOUNT, siteid: TENANT_A.siteId }, [ADMIN_A]);
+    expect(tokenRolesFor(privateS2Snapshot, SITE_A, options)).toEqual(access('s2', 'site-admin', 'm:008', 'system-user'));
   });
 
   it.each([
@@ -501,11 +443,11 @@ describe('tokenRolesFor [legacy: core/mura/permission.cfc:312,338-344,676,689-69
   });
 
   it.each([
-    { when: 'a private-pool Admin member', account: PRIVATE_A_ACCOUNT, groups: [ADMIN_A, TIMESHEETS_A] },
+    { when: 'a private-pool Admin member', account: PRIVATE_A_ACCOUNT, groups: [ADMIN_A] },
     { when: 'a public-pool user', account: PUBLIC_UMBRELLA_ACCOUNT, groups: [SUBSCRIBERS_UMBRELLA] },
   ])('grants no roles on a site outside the registry to $when', ({ account, groups }) => {
     const moduleGrants = groups.map((memberGroup) => grant(USERS_MODULE, memberGroup));
-    expect(tokenRolesFor(snapshotFor(account, groups), UNREGISTERED_SITE, { moduleGrants, roleMap: ROLE_MAP })).toEqual(NO_ACCESS);
+    expect(tokenRolesFor(snapshotFor(account, groups), UNREGISTERED_SITE, { moduleGrants })).toEqual(NO_ACCESS);
   });
 });
 

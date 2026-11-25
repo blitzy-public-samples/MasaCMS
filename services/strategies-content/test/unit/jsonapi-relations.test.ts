@@ -1,12 +1,11 @@
 // JSON API related-entity reads through the composition root over a throwaway `content` schema: expandEntity's
 // relations (jsonApiUtility.cfc:2424-2497) and the `<entity>/<id>/<relation>` paths (1086-1150). Expected shapes follow
 // Masa 7.6.1 on ACF 2023; `site` values come from a programs-sites double.
-import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import { LEGACY_ERROR_MAP, type LegacyApiErrorType } from '@opt2/platform/legacy-compat';
 import { withTenant, type TenantDb } from '@opt2/platform/tenancy';
-import { TENANT_A, assertResponseMatchesOpenApi, pgAvailable } from '@opt2/platform/testing';
+import { TENANT_A, assertResponseMatchesOpenApi, loadOpenApiDocument, pgAvailable } from '@opt2/platform/testing';
 import { createCategory } from '../../src/domain/categories.js';
 import { saveContent } from '../../src/domain/content.js';
 import { UndefinedLegacyMethodError } from '../../src/domain/context.js';
@@ -22,7 +21,7 @@ import { contentHeaders, type ContentSubject } from '../helpers/tokens.js';
 
 type Struct = Record<string, unknown>;
 
-const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
+const OPENAPI = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as object;
 const API = `/_api/json/v1/${SITE_ID}`;
 const SITES_SERVICE = 'programs-sites';
 const SITE_VALUES_PATH = '/internal/v1/sites/json-api-values:lookup';

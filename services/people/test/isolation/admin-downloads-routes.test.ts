@@ -16,6 +16,7 @@ import {
   TENANT_UMBRELLA,
   createThrowawaySchema,
   fixedClock,
+  loadOpenApiDocument,
   mintServiceToken,
   mintUserToken,
   pgAvailable,
@@ -41,7 +42,7 @@ import { PEOPLE_UNITS } from '../../src/repo/tables.js';
 import { registerAdminDownloadRoutes, type SearchCriteriaSession } from '../../src/routes/admin-downloads.js';
 import { accountListed, ilikeC } from '../helpers/search-doubles.js';
 
-const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
+const OPENAPI = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as object;
 const ADMIN = 'A0000000-0000-0000-0000000000000001';
 const USERS_MODULE = moduleRole('00000000000000000000000000000000008');
 const SITE_ADMIN = [Roles.siteAdmin, Roles.systemUser];

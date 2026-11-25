@@ -132,7 +132,7 @@ describe('csettings.list page', () => {
     expect(valuesOf(model, 'csrf_token')).toEqual(['<token>', '<token>', '<token>']);
   });
 
-  it("lists a deployed plugin as legacy's page does after cSettings.updatePlugin (GS-PS-10)", async () => {
+  it("lists a deployed plugin as legacy's page does after cSettings.updatePlugin", async () => {
     const golden = LEGACY_PLUGINS.slice(0, 1);
 
     const { model, $ } = await renderPage(listRequest(), golden);
@@ -140,7 +140,7 @@ describe('csettings.list page', () => {
     expect(model.headings.at(-1)).toBe('Current Plugins');
     expect(model.tables[1]).toEqual({
       headers: ['', 'Name', 'Directory', 'Category', 'Version', 'Provider', 'Plugin ID'],
-      rows: [['Edit Delete', 'GS-PS-10 Plugin', '1', 'Utility', '1.0.0', 'OPT-2 golden harness', '1']],
+      rows: [['Edit Delete', 'OPT-2 Utility Plugin', '1', 'Utility', '1.0.0', 'OPT-2 golden harness', '1']],
     });
     const links = $('#tabPlugins table a')
       .toArray()
@@ -149,7 +149,7 @@ describe('csettings.list page', () => {
       { href: 'javascript:;', text: '' },
       { href: `./?muraAction=csettings.editplugin&moduleID=${golden[0]?.moduleId ?? ''}`, text: 'Edit' },
       { href: '#', text: 'Delete' },
-      { href: '/plugins/1/', text: 'GS-PS-10 Plugin' },
+      { href: '/plugins/1/', text: 'OPT-2 Utility Plugin' },
       { href: 'https%3A%2F%2Fopt2.invalid%2Fgolden-plugin', text: 'OPT-2 golden harness' },
     ]);
   });

@@ -363,8 +363,8 @@ describe('extractTables', () => {
 
   it('keys table names case-insensitively without the dbo schema and folds program schemas', () => {
     expect(tableKey('dbo.TFixture')).toBe('tfixture');
-    expect(tableKey('Program_2.Blackout')).toBe('program_n.blackout');
-    expect(tableKey('synthetic.Survey')).toBe('synthetic.survey');
+    expect(tableKey('Program_2.Item')).toBe('program_n.item');
+    expect(tableKey('synthetic.Sample')).toBe('synthetic.sample');
   });
 });
 

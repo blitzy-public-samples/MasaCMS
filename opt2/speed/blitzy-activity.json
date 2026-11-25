@@ -25,36 +25,6 @@
       "start": null,
       "end": null,
       "folder": "services/strategies-content"
-    },
-    "communications": {
-      "start": null,
-      "end": null,
-      "folder": "services/communications"
-    },
-    "reporting": {
-      "start": null,
-      "end": null,
-      "folder": "services/reporting"
-    },
-    "surveys": {
-      "start": null,
-      "end": null,
-      "folder": "services/surveys"
-    },
-    "timesheets": {
-      "start": null,
-      "end": null,
-      "folder": "services/timesheets"
-    },
-    "finance": {
-      "start": null,
-      "end": null,
-      "folder": "services/finance"
-    },
-    "e-signature": {
-      "start": null,
-      "end": null,
-      "folder": "services/e-signature"
     }
   }
 }

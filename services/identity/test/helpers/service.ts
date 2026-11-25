@@ -57,7 +57,6 @@ import {
   MEMBER_B,
   POOLED_MEMBER,
   SITE_ADMIN_A,
-  SYNTHETIC_MEMBERS,
   loginSnapshotFixture,
   sessionRow,
   type TestActor,
@@ -109,7 +108,7 @@ function actorOf(subject: RoleSubject): TestActor {
   if (subject.name === 'member') return POOLED_MEMBER;
   if (subject.name === 'site-admin') return SITE_ADMIN_A;
   if (subject.name === 'other-tenant') return MEMBER_B;
-  return SYNTHETIC_MEMBERS[subject.name] ?? EDITOR;
+  return EDITOR;
 }
 
 /** A 35-character CF UUID numbered `n` under the hex digit `prefix`. */

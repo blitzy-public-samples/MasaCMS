@@ -3,7 +3,6 @@ import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'n
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { SYNTHETIC_ROLES } from '@opt2/platform/auth';
 import { beforeAll, describe, expect, it, onTestFinished } from 'vitest';
 import { loadConfig, SITE_ORDER, type SeedConfig } from '../../src/config.js';
 import { generateCredentials, readCredentials, writeCredentials, type SeedCredentials } from '../../src/credentials.js';
@@ -15,7 +14,7 @@ const CONFIG_PATH = fileURLToPath(new URL('../../seed.config.json', import.meta.
 const SHA = '696383140578f8dea3ece26f80cd7bfb370ddf0f';
 const PASSWORD = /^[A-Za-z0-9_-]{24}a1A$/;
 const CLIENT_SECRET = /^[A-Za-z0-9_-]{43}$/;
-const ROLE_SUBJECTS = [...SYNTHETIC_ROLES, 'site-admin', 'system-user'];
+const ROLE_SUBJECTS = ['site-admin', 'system-user'] as const;
 const PROTOTYPE_KEYS = ['__proto__', 'constructor', 'toString'];
 const SENTINEL = 'zelda.sentinel';
 

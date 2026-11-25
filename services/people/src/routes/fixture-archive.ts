@@ -1,4 +1,4 @@
-// The people fixture's archive route (legacy-fixtures/cfml/modules/people.cfc), answered in the fixture envelope; seam 1's producer.
+// The people fixture's archive route (legacy-fixtures/cfml/modules/people.cfc), answered in the fixture envelope; the producer of people.person.archived.v1.
 import {
   AuthDenial,
   Roles,

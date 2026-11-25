@@ -12,8 +12,6 @@ COPY migration/package.json migration/package-lock.json migration/.npmrc migrati
 RUN npm ci
 COPY gateway/contracts/openapi.yaml /app/gateway/contracts/
 COPY services/strategies-content/contracts/openapi.yaml /app/services/strategies-content/contracts/
-COPY services/finance/contracts/openapi.yaml /app/services/finance/contracts/
-COPY services/reporting/contracts/openapi.yaml /app/services/reporting/contracts/
 COPY migration/contracts/ ./contracts/
 COPY migration/src/ ./src/
 RUN npm run build \
@@ -41,23 +39,11 @@ COPY services/identity/db/migrations/ /app/services/identity/db/migrations/
 COPY services/people/db/migrations/ /app/services/people/db/migrations/
 COPY services/programs-sites/db/migrations/ /app/services/programs-sites/db/migrations/
 COPY services/strategies-content/db/migrations/ /app/services/strategies-content/db/migrations/
-COPY services/communications/db/migrations/ /app/services/communications/db/migrations/
-COPY services/reporting/db/migrations/ /app/services/reporting/db/migrations/
-COPY services/surveys/db/migrations/ /app/services/surveys/db/migrations/
-COPY services/timesheets/db/migrations/ /app/services/timesheets/db/migrations/
-COPY services/finance/db/migrations/ /app/services/finance/db/migrations/
-COPY services/e-signature/db/migrations/ /app/services/e-signature/db/migrations/
 COPY services/stub/db/migrations/ /app/services/stub/db/migrations/
 COPY services/identity/contracts/openapi.yaml /app/services/identity/contracts/
 COPY services/people/contracts/openapi.yaml /app/services/people/contracts/
 COPY services/programs-sites/contracts/openapi.yaml /app/services/programs-sites/contracts/
 COPY services/strategies-content/contracts/openapi.yaml /app/services/strategies-content/contracts/
-COPY services/communications/contracts/openapi.yaml /app/services/communications/contracts/
-COPY services/reporting/contracts/openapi.yaml /app/services/reporting/contracts/
-COPY services/surveys/contracts/openapi.yaml /app/services/surveys/contracts/
-COPY services/timesheets/contracts/openapi.yaml /app/services/timesheets/contracts/
-COPY services/finance/contracts/openapi.yaml /app/services/finance/contracts/
-COPY services/e-signature/contracts/openapi.yaml /app/services/e-signature/contracts/
 COPY gateway/cutover/ /app/gateway/cutover/
 COPY opt2/source-pin.json opt2/table-ownership.json /app/opt2/
 COPY opt2/inventory/legacy-inventory.json /app/opt2/inventory/

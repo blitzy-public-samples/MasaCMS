@@ -27,7 +27,7 @@ export interface ThrowawayRoles {
 
 /** Settings of createThrowawaySchema. */
 export interface ThrowawaySchemaOptions {
-  /** Package name, e.g. `e-signature`; it prefixes the generated schema and role names. */
+  /** Package name, e.g. `programs-sites`; it prefixes the generated schema and role names. */
   service: string;
   /** Folder of `NNNN_<name>.sql` migrations, applied in file-name order. */
   migrationsDir?: string;

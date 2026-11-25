@@ -68,7 +68,7 @@
 	var sessionTimeout=10800;
 	var activepanel=0;
 	var activetab=0;
-	var webroot='\x2Ftmp\x2Fblitzy\x2FMasaCMS\x2Fblitzy\x2D48d51ddc\x2D539f\x2D48aa\x2D8086\x2D5041e07a1be6\x2Dw\x2D032_81a5aa';
+	var webroot='\x2Fsrv\x2Fmasacms';
 	var fileDelim='\x2F';
 	</script>
 

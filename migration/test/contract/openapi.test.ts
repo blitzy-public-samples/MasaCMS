@@ -10,10 +10,19 @@ import { tenantIdForSite } from '@opt2/platform/tenancy';
 import {
   assertRequestMatchesOpenApi,
   assertResponseMatchesOpenApi,
+  contractOperations,
   createThrowawaySchema,
   findOperation,
+  injectedResponse,
+  loadOpenApiDocument,
   mintServiceToken,
+  operationAuthProblems,
+  operationDeclaration,
+  operationIdProblems,
   pgAvailable,
+  routeDeclaration,
+  toContractPath,
+  type ContractOperation,
 } from '@opt2/platform/testing';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { parse } from 'yaml';
@@ -67,7 +76,7 @@ type Json = Record<string, unknown>;
 type Schemas = components['schemas'];
 type Method = 'GET' | 'POST' | 'PUT' | 'DELETE';
 
-const DOC = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as OpenApiDoc;
+const DOC = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as unknown as OpenApiDoc;
 const PIN = JSON.parse(readFileSync(new URL('../../../opt2/source-pin.json', import.meta.url), 'utf8')) as { sha: string };
 const GROUPS = JSON.parse(readFileSync(new URL('../../../gateway/cutover/groups.json', import.meta.url), 'utf8')) as {
   groups: { id: string; units: string[] }[];
@@ -78,71 +87,14 @@ const V0002 = JSON.parse(readFileSync(new URL('../../../gateway/cutover/versions
 const MIGRATIONS_DIR = fileURLToPath(new URL('../../db/migrations', import.meta.url));
 
 const HTTP_METHODS = ['get', 'post', 'put', 'patch', 'delete'] as const;
+const MIGRATION_FIELDS = ['transport', 'requires', 'public', 'siteCheck'] as const;
 
-/** One contract operation with its auth declaration. */
-interface ContractOperation {
-  operationId: string;
-  method: Method;
-  path: string;
-  operation: Json;
-}
-
-const OPERATIONS: readonly ContractOperation[] = Object.entries(DOC.paths).flatMap(([path, item]) =>
-  HTTP_METHODS.flatMap((verb) => {
-    const operation = item[verb];
-    if (typeof operation !== 'object' || operation === null) return [];
-    const op = operation as Json;
-    return [{ operationId: String(op.operationId), method: verb.toUpperCase() as Method, path, operation: op }];
-  }),
-);
+const OPERATIONS = contractOperations(DOC, { methods: HTTP_METHODS }) as ReadonlyArray<ContractOperation & { method: Method }>;
 const SERVED = OPERATIONS.filter(({ operationId }) => !(ABSENT_OPERATIONS as readonly string[]).includes(operationId));
 
 /** The Fastify url of a contract path: a literal colon is written `::`, a `{param}` segment `:param`. */
 function fastifyUrl(path: string): string {
   return path.replace(/:(?=[a-z])/g, '::').replace(/\{(\w+)\}/g, ':$1');
-}
-
-/** The contract path of a registered url without path parameters: `::` is a literal colon. */
-function contractPathOf(url: string): string {
-  return url.replace(/::/g, ':');
-}
-
-/** The contract template of any registered url: `::` is a literal colon, and `:name` or `:name(<pattern>)` is `{name}`. */
-function toOpenApiTemplate(url: string): string {
-  let template = '';
-  let i = 0;
-  while (i < url.length) {
-    if (url.startsWith('::', i)) {
-      template += ':';
-      i += 2;
-      continue;
-    }
-    const param = /^:(\w+)/.exec(url.slice(i));
-    if (param === null) {
-      template += url.charAt(i);
-      i += 1;
-      continue;
-    }
-    i += param[0].length;
-    // A pattern runs to its balanced close; escapes and character classes may hold parentheses, colons and slashes.
-    if (url[i] === '(') {
-      let depth = 0;
-      let inClass = false;
-      for (; i < url.length; i += 1) {
-        const char = url.charAt(i);
-        if (char === '\\') i += 1;
-        else if (inClass) inClass = char !== ']';
-        else if (char === '[') inClass = true;
-        else if (char === '(') depth += 1;
-        else if (char === ')' && --depth === 0) {
-          i += 1;
-          break;
-        }
-      }
-    }
-    template += `{${param[1] ?? ''}}`;
-  }
-  return template;
 }
 
 /** Authority of `unit` under v0002, read from the committed groups and version files. */
@@ -202,8 +154,7 @@ async function sendCase(app: RouteApp['app'], c: Pick<ResponseCase, 'method' | '
   const { method, url, as, payload } = c;
   const headers = { ...(await headersOf(as)), ...(payload === undefined ? {} : { 'content-type': 'application/json' }) };
   const res = await app.inject({ method, url, headers, ...(payload === undefined ? {} : { payload: JSON.stringify(payload) }) });
-  const path = url.split('?')[0] ?? url;
-  const body = assertResponseMatchesOpenApi(DOC, { method, path, status: res.statusCode, contentType: res.headers['content-type'], body: res.body });
+  const body = assertResponseMatchesOpenApi(DOC, injectedResponse({ method, url }, res));
   return { status: res.statusCode, body: body as Json };
 }
 
@@ -243,14 +194,14 @@ const CASES: readonly ResponseCase[] = [
     status: 200,
     title: 'with the committed v0002 authority of each unit',
     method: 'GET',
-    url: `${AUTHORITY_URL}?units=people.person_archive,timesheets.blackout,people.person`,
+    url: `${AUTHORITY_URL}?units=people.person_archive,programs_sites.site,people.person`,
     as: GATEWAY,
     outbound: ['gateway cutoverStatus'],
     verify: (body) =>
       expect(body).toEqual({
         tableVersion: 'v0002',
-        units: Object.fromEntries(['people.person_archive', 'timesheets.blackout', 'people.person'].map((unit) => [unit, v0002Authority(unit)])),
-        allTarget: ['people.person_archive', 'timesheets.blackout', 'people.person'].every((unit) => v0002Authority(unit) === 'target'),
+        units: Object.fromEntries(['people.person_archive', 'programs_sites.site', 'people.person'].map((unit) => [unit, v0002Authority(unit)])),
+        allTarget: ['people.person_archive', 'programs_sites.site', 'people.person'].every((unit) => v0002Authority(unit) === 'target'),
       }),
   },
   {
@@ -297,10 +248,14 @@ const CASES: readonly ResponseCase[] = [
     method: 'POST',
     url: LEGACY_STEPS_URL,
     as: PROGRAMS_SITES,
-    payload: { step: 'trackBounces', siteId: 'tenant-a', ...STEP_RUN },
+    payload: { step: 'feedAutoImport', siteId: 'tenant-a', ...STEP_RUN },
+    // v0001 keeps the feed import's content and identity units legacy-authoritative.
+    arrange: (t) => {
+      t.state.tableVersion = 'v0001';
+    },
     outbound: ['gateway cutoverStatus'],
     verify: (body, t) => {
-      expect(body).toEqual({ step: 'trackBounces', completed: true, serverTime: STEP_SERVER_TIME, siteId: 'tenant-a' });
+      expect(body).toEqual({ step: 'feedAutoImport', completed: true, serverTime: STEP_SERVER_TIME, siteId: 'tenant-a' });
       expect(t.effects().bridgeCalls).toBe(1);
     },
   },
@@ -445,7 +400,7 @@ const CASES: readonly ResponseCase[] = [
     as: OPERATOR,
     outbound: [],
     verify: (body, t) => {
-      expect(body).toEqual({ ping: null, nativeTaskExisted: false, siteMonitor: { state: 'none' }, tasks: [], fixtureTasks: [], background: { suspended: false } });
+      expect(body).toEqual({ ping: null, nativeTaskExisted: false, siteMonitor: { state: 'none' }, tasks: [], background: { suspended: false } });
       expect(t.effects().bridgeCalls).toBe(1);
     },
   },
@@ -566,21 +521,8 @@ const CASES: readonly ResponseCase[] = [
   { operationId: 'faultClear', status: 404, title: 'for a fault the registry does not know', method: 'DELETE', url: UNKNOWN_FAULT_URL, as: OPERATOR },
 ];
 
-/** One route declaration in comparable form, `requires` sorted. */
-function declaration(operationId: unknown, transport: unknown, requires: unknown, isPublic: boolean, siteCheck: boolean) {
-  return {
-    operationId: String(operationId),
-    transport,
-    requires: Array.isArray(requires) ? [...(requires as string[])].sort() : requires,
-    public: isPublic,
-    siteCheck,
-  };
-}
-
-/** The declaration a contract operation requires of its route. */
-function contractDeclaration({ operationId, operation }: ContractOperation): ReturnType<typeof declaration> {
-  return declaration(operationId, operation['x-opt2-transport'], operation['x-opt2-requires'], operation['x-opt2-public'] === true, operation['x-opt2-site-check'] !== false);
-}
+/** The declaration a contract operation requires of its route, with its operationId. */
+const contractDeclaration = (op: ContractOperation) => ({ operationId: op.operationId, ...operationDeclaration(op, MIGRATION_FIELDS) });
 
 const byId = (a: { operationId: string }, b: { operationId: string }): number => a.operationId.localeCompare(b.operationId);
 
@@ -597,18 +539,8 @@ describe('document', () => {
   });
 
   it('gives every operation a unique id, the service transport on a path outside every managed prefix and exactly one of x-opt2-requires and x-opt2-public', () => {
-    const ids = OPERATIONS.map(({ operationId }) => operationId);
-    expect(new Set(ids).size).toBe(ids.length);
-    for (const { operationId, path, operation } of OPERATIONS) {
-      const requires = operation['x-opt2-requires'];
-      const declaresRoles = Array.isArray(requires) && requires.length > 0;
-      expect({
-        operationId,
-        transport: operation['x-opt2-transport'],
-        pathTransport: transportForPath(path),
-        declaresOne: declaresRoles !== (operation['x-opt2-public'] === true),
-      }).toEqual({ operationId, transport: 'service', pathTransport: 'service', declaresOne: true });
-    }
+    expect(operationIdProblems(OPERATIONS)).toEqual({ missing: [], duplicated: [] });
+    expect(operationAuthProblems(OPERATIONS, { transports: ['service'], transportForPath })).toEqual([]);
   });
 });
 
@@ -624,14 +556,15 @@ describe('served operations', () => {
   });
 
   it('registers exactly the contract operations outside the absent set, each with its declared transport, roles and site check', () => {
-    const registered = collectRouteMatrix(t.app).routes.map((route) =>
-      declaration(findOperation(DOC, route.method, contractPathOf(route.url)).operation.operationId, route.transport, route.requires, route.public === true, route.siteCheck),
-    );
+    const registered = collectRouteMatrix(t.app).routes.map((route) => ({
+      operationId: String(findOperation(DOC, route.method, toContractPath(route.url)).operation.operationId),
+      ...routeDeclaration(route, MIGRATION_FIELDS),
+    }));
     expect(registered.sort(byId)).toEqual(SERVED.map(contractDeclaration).sort(byId));
   });
 
   it('leaves exactly the absent set unserved', () => {
-    const served = new Set(collectRouteMatrix(t.app).routes.map((route) => findOperation(DOC, route.method, contractPathOf(route.url)).operation.operationId));
+    const served = new Set(collectRouteMatrix(t.app).routes.map((route) => findOperation(DOC, route.method, toContractPath(route.url)).operation.operationId));
     expect(OPERATIONS.map(({ operationId }) => operationId).filter((id) => !served.has(id)).sort()).toEqual([...ABSENT_OPERATIONS]);
   });
 
@@ -721,7 +654,7 @@ const AT = '2026-06-30T12:00:00.000Z';
 
 const OPEN_REQUEST: Schemas['WindowOpenRequest'] = {
   routeKey: 'fixture:people/persons/{id}/archive@post',
-  units: ['people.person_archive', 'timesheets.blackout'],
+  units: ['people.person_archive', 'programs_sites.site'],
   scope: { keys: { userid: 'A1B2C3D4-E5F6-4789-ABCDEF0123456789' } },
   requestId: 'contract-suite-request',
 };
@@ -951,7 +884,7 @@ const STUBBED_CASES: readonly StubbedCase[] = [
       );
     },
     verify: (body, s) => {
-      const [archive, blackout] = OPEN_REQUEST.units.map((unit) => CATALOG.unit(unit));
+      const [archive, site] = OPEN_REQUEST.units.map((unit) => CATALOG.unit(unit));
       expect(body).toEqual({
         units: [
           {
@@ -960,14 +893,14 @@ const STUBBED_CASES: readonly StubbedCase[] = [
             lease: { holderId: WINDOW_ID, kind: 'window', acquiredAt: AT },
             gate: { state: 'closed', holderId: WINDOW_ID, phase: 'executing' },
           },
-          { unit: 'timesheets.blackout', owner: blackout?.owner, gate: { state: 'open', holderId: null, phase: 'quiet' } },
+          { unit: 'programs_sites.site', owner: site?.owner, gate: { state: 'open', holderId: null, phase: 'quiet' } },
         ],
       });
       expect(s.leases.mock.calls).toEqual([[OPEN_REQUEST.units]]);
       expect(s.ownerGates.mock.calls.sort()).toEqual(
         [
           [archive?.owner, ['people.person_archive']],
-          [blackout?.owner, ['timesheets.blackout']],
+          [site?.owner, ['programs_sites.site']],
         ].sort(),
       );
     },
@@ -1009,7 +942,7 @@ const STUBBED_CASES: readonly StubbedCase[] = [
     status: 400,
     title: 'for a cursor that names no unit of the selection',
     method: 'GET',
-    url: `${GATES_URL}?units=people.person_archive&cursor=timesheets.blackout`,
+    url: `${GATES_URL}?units=people.person_archive&cursor=programs_sites.site`,
     as: OPERATOR,
   },
   { operationId: 'gatesList', status: 401, title: 'without a credential', method: 'GET', url: GATES_URL, as: 'none' },
@@ -1084,9 +1017,9 @@ describe('declared answers over stubbed window, gate and transition services', (
 
   it('serves every contract operation, each with its declared transport, roles and site check, once the stubbed registrars join the composition', () => {
     const registered = collectRouteMatrix(t.app).routes.map((route) => {
-      const template = toOpenApiTemplate(route.url);
+      const template = toContractPath(route.url);
       const match = OPERATIONS.find(({ method, path }) => method === route.method && path === template);
-      return declaration(match?.operationId ?? `${route.method} ${template}`, route.transport, route.requires, route.public === true, route.siteCheck);
+      return { operationId: match?.operationId ?? `${route.method} ${template}`, ...routeDeclaration(route, MIGRATION_FIELDS) };
     });
     expect(registered.sort(byId)).toEqual(OPERATIONS.map(contractDeclaration).sort(byId));
   });
@@ -1096,7 +1029,7 @@ describe('declared answers over stubbed window, gate and transition services', (
     expect(stubbed.map(({ operationId }) => operationId).sort()).toEqual([...ABSENT_OPERATIONS]);
     for (const entry of stubbed) {
       expect(MIGRATION_ROUTES).toContain(entry);
-      expect({ operationId: findOperation(DOC, entry.method, entry.path).operation.operationId, template: toOpenApiTemplate(entry.url) }).toEqual({
+      expect({ operationId: findOperation(DOC, entry.method, entry.path).operation.operationId, template: toContractPath(entry.url) }).toEqual({
         operationId: entry.operationId,
         template: entry.path,
       });

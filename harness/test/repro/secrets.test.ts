@@ -187,18 +187,12 @@ async function runSecretsCli(argv: string[]): Promise<{ code: number; stdout: st
 }
 
 describe('secret file catalogue', () => {
-  it('lists the thirteen schemas that receive database role passwords', () => {
+  it('lists the seven schemas that receive database role passwords', () => {
     expect(DB_SCHEMAS).toEqual([
       'identity',
       'people',
       'programs_sites',
       'content',
-      'communications',
-      'reporting',
-      'surveys',
-      'timesheets',
-      'finance',
-      'esignature',
       'stub',
       'gateway',
       'migration',
@@ -215,7 +209,7 @@ describe('secret file catalogue', () => {
       ...DB_SCHEMAS.flatMap((schema) => [`db-${schema}-app`, `db-${schema}-migrator`]),
     ].sort();
     expect(SECRET_FILES).toEqual(expected);
-    expect(SECRET_FILES).toHaveLength(32);
+    expect(SECRET_FILES).toHaveLength(20);
     expect(new Set(SECRET_FILES).size).toBe(SECRET_FILES.length);
     expect(Object.isFrozen(SECRET_FILES)).toBe(true);
   });

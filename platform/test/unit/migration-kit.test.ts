@@ -592,7 +592,7 @@ describe('hasWritePositionHeader', () => {
 describe('requestMigrationAuthority', () => {
   it.each<[string, ServiceIdentity | null, boolean]>([
     ['outside a request', null, false],
-    ['for a calling service without platform.migration', { name: 'surveys', roles: ['service:surveys'] }, false],
+    ['for a calling service without platform.migration', { name: 'people', roles: ['service:people'] }, false],
     ['for a platform.migration caller', { name: 'migration', roles: ['service:migration', Roles.platformMigration] }, true],
   ])('issues an authority only to a verified migration caller: %s', (_label, service, issued) => {
     const authority =

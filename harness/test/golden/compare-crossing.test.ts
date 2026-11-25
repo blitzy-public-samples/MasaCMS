@@ -86,7 +86,7 @@ function goldenOf(nav: readonly string[]): GoldenSet {
     tableVersion: null,
     fixtures: { available: true, reason: null },
     steps,
-    sideEffects: { mail: [], rows: {}, tasks: [], files: [] },
+    sideEffects: { mail: [], rows: {}, files: [] },
   };
 }
 
@@ -175,7 +175,7 @@ describe('classifyScenario on a rehearsal crossing', () => {
     },
     {
       title: 'renders site navigation the capture did not see on a withheld step',
-      edit: rendering([...NAV, 'gs-ui-03.pdf']),
+      edit: rendering([...NAV, 'sample.pdf']),
       result: 'fail',
       reason: '1 unlisted difference',
       exceptionId: null,
@@ -235,7 +235,7 @@ describe('main on a rehearsal crossing', () => {
     // Captured at its catalogue position, before later scenarios added content to the site navigation.
     const own = goldenOf(NAV);
     // Captured again just before the GS-PE-RH sets, as the stage 8 crossing sees legacy.
-    const crossingSet = goldenOf([...NAV, 'gs-ui-03.pdf', 'gs-ui-03.png']);
+    const crossingSet = goldenOf([...NAV, 'sample.pdf', 'sample.png']);
     const read: [string, boolean][] = [];
     const readGolden = async (id: string, crossing: boolean): Promise<GoldenSet> => {
       read.push([id, crossing]);

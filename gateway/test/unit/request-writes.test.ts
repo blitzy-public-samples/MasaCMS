@@ -209,21 +209,21 @@ describe('asyncDoactionRoutes', () => {
 
 describe('createRequestWrites over the committed inventory', () => {
   it.each<[string, string, FactsInit, string[]]>([
-    ['an anonymous page render', 'page:render', {}, ['reporting.session_tracking']],
-    ['a lockdown login', 'page:render', { params: { locks: 'true' } }, ['identity.login_state', 'identity.user_strike', 'reporting.session_tracking']],
+    ['an anonymous page render', 'page:render', {}, []],
+    ['a lockdown login', 'page:render', { params: { locks: 'true' } }, ['identity.login_state', 'identity.user_strike']],
     [
       'a magic-link login',
       'page:render',
       { params: { returnid: 'R1', returnuserid: 'U1' } },
-      ['identity.group_account', 'identity.login_state', 'reporting.session_tracking'],
+      ['identity.group_account', 'identity.login_state'],
     ],
-    ['an image rendition', 'page:render', { params: { size: 'small' } }, ['content.file', 'reporting.session_tracking']],
-    ['an unprobed 404 render', 'page:render', { path: '/missing/' }, ['reporting.session_tracking']],
+    ['an image rendition', 'page:render', { params: { size: 'small' } }, ['content.file']],
+    ['an unprobed 404 render', 'page:render', { path: '/missing/' }, []],
     [
       'a 404 render reaching an orphan archive row',
       'page:render',
       { path: '/missing/', probes: { orphanArchive: true } },
-      ['content.filename_archive', 'reporting.session_tracking'],
+      ['content.filename_archive'],
     ],
     ['a display object render', 'api:processasyncobject', { params: { object: 'search' } }, []],
     ['a REST display object render', 'rest:processasyncobject', { method: 'POST', params: { object: 'search' } }, []],

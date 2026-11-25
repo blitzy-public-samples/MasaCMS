@@ -1,7 +1,9 @@
-/** Push delivery of the stub's consumers against PostgreSQL: one effect per event, stale state versions, registry upserts, the note re-check and dead letters. */
+/** Push delivery of the stub's consumers against PostgreSQL: one effect per event and destination, stale state versions, registry upserts, the note re-check and dead letters. */
 import { fileURLToPath } from 'node:url';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { INVOCATION_HEADER, Roles } from '@opt2/platform/auth';
 import { DEAD_LETTER_REASON_ATTRIBUTE, dlqTopicName, type EventEnvelope } from '@opt2/platform/events';
+import { GATE_WAIT_MS, closeGates, decodeRow, openGates, type ExportResponse } from '@opt2/platform/migration-kit';
 import {
   SITE_CHANGED_TOPIC,
   tenantIdForSite,
@@ -13,10 +15,13 @@ import {
 import {
   TENANT_A,
   TENANT_B,
+  TENANT_UMBRELLA,
   createCapturingPublisher,
   createThrowawaySchema,
   deliverDuplicate,
   deliverOutOfOrder,
+  isAck,
+  mintServiceToken,
   pgAvailable,
   pushTo,
   registryPayloads,
@@ -26,8 +31,15 @@ import {
   withoutTenant,
   type ThrowawaySchema,
 } from '@opt2/platform/testing';
+import { newComment, noteCommentedPayload, type NoteCommentedPayload } from '../../src/domain/comment.js';
 import { newNote, noteCreatedPayload, noteToRow, type Note } from '../../src/domain/note.js';
-import { NOTE_CREATED_SUBSCRIPTION, NOTE_CREATED_TOPIC, SITE_CHANGED_SUBSCRIPTION } from '../../src/events/topics.js';
+import {
+  NOTE_COMMENTED_SUBSCRIPTION,
+  NOTE_COMMENTED_TOPIC,
+  NOTE_CREATED_SUBSCRIPTION,
+  NOTE_CREATED_TOPIC,
+  SITE_CHANGED_SUBSCRIPTION,
+} from '../../src/events/topics.js';
 import { createStubRepository, type StubRepository } from '../../src/repo/repository.js';
 import { TEST_CLOCK, buildDbApp, createFakeTaskPort, type TestApp } from '../helpers/app.js';
 
@@ -36,6 +48,7 @@ type StubApp = TestApp<TenantDb>['app'];
 // Type aliases, not interfaces, so they satisfy pg's QueryResultRow index signature.
 type ProjectionRow = { title: string; aggregate_version: number; apply_count: number; last_event_id: string };
 type InboxRow = { event_id: string; status: string };
+type ActivityRow = { event_id: string; comment_id: string; aggregate_version: number };
 type RegistryRow = {
   site_id: string;
   tenant_id: string;
@@ -147,6 +160,48 @@ function noteEnvelope(note: Note, tenantId: string, version = 1): EventEnvelope<
   });
 }
 
+/** A `stub.note.commented.v1` envelope of a new comment on `note` at `version`, shaped as the stub's outbox writes it. */
+function commentEnvelope(note: Note, tenantId: string, version: number): EventEnvelope<NoteCommentedPayload> {
+  return testEnvelope({
+    topic: NOTE_COMMENTED_TOPIC,
+    tenantId,
+    aggregateType: 'note',
+    aggregateId: note.noteId,
+    aggregateVersion: version,
+    payload: noteCommentedPayload(newComment(note.noteId, TENANT_A.siteId, 'Delivered comment', TEST_CLOCK)),
+  });
+}
+
+/** The note's `note_activity` rows visible under `tenantId`, by event id. */
+async function activity(tenantId: string, noteId: string): Promise<ActivityRow[]> {
+  const { rows } = await withTenant(built().schema.app, tenantId, (tx) =>
+    tx.query<ActivityRow>(
+      'SELECT event_id, comment_id, aggregate_version::integer AS aggregate_version' +
+        ` FROM ${table('note_activity')} WHERE note_id = $1 ORDER BY event_id`,
+      [noteId],
+    ),
+  );
+  return rows;
+}
+
+/** Tenant-a rows of `unit` for `noteId` from the stub's migration export, decoded with each value as text. */
+async function exportedRows(unit: string, noteId: string): Promise<Record<string, string | null>[]> {
+  const token = await mintServiceToken({ caller: 'migration', audience: 'stub', roles: [Roles.platformMigration] });
+  const res = await built().app.inject({
+    method: 'GET',
+    url: `/internal/v1/migration/export?unit=${unit}&tenantId=${TENANT_A.tenantId}`,
+    headers: { [INVOCATION_HEADER]: `Bearer ${token}` },
+  });
+  expect(res.statusCode, res.body).toBe(200);
+  const page = res.json<ExportResponse>();
+  expect(page.next).toBeNull();
+  return page.tables
+    .filter((exported) => exported.unit === unit)
+    .flatMap((exported) => exported.rows.map((entry) => decodeRow(exported.columns, entry.row)))
+    .map((row) => Object.fromEntries(Object.entries(row).map(([name, value]) => [name, value === null ? null : String(value)])))
+    .filter((row) => row.note_id === noteId);
+}
+
 /** A `site.changed` payload of `siteId` owning every one of its pools. */
 function selfPooledSite(siteId: string): SiteChangedPayload {
   return {
@@ -217,6 +272,58 @@ describe.skipIf(!pg)('outbox-pubsub-idempotent-consumer', () => {
     expect(receipts.map((rows) => rows.map(({ status }) => status))).toEqual([['stale'], ['stale'], ['applied']]);
   });
 
+  it('duplicate comment delivery records one activity', async () => {
+    const note = await storedNote(TENANT_A.tenantId, 'duplicate comment');
+    const env = commentEnvelope(note, TENANT_A.tenantId, 2);
+
+    expect(statusCodes(await deliverDuplicate(built().app, NOTE_COMMENTED_SUBSCRIPTION, env))).toEqual([204, 204]);
+
+    expect(await activity(TENANT_A.tenantId, note.noteId)).toEqual([{ event_id: env.eventId, comment_id: env.payload.commentId, aggregate_version: 2 }]);
+    expect(await inboxRows(TENANT_A.tenantId, env.eventId)).toEqual([{ event_id: env.eventId, status: 'applied' }]);
+  });
+
+  it('out-of-order comment versions each record their activity once', async () => {
+    const note = await storedNote(TENANT_A.tenantId, 'out-of-order comments');
+    const sequence = versionedSequence(commentEnvelope(note, TENANT_A.tenantId, 2), [2, 3, 4], () =>
+      noteCommentedPayload(newComment(note.noteId, TENANT_A.siteId, 'Late or early', TEST_CLOCK)),
+    );
+
+    expect(statusCodes(await deliverOutOfOrder(built().app, NOTE_COMMENTED_SUBSCRIPTION, sequence, [2, 0, 1]))).toEqual([204, 204, 204]);
+
+    const expected = sequence
+      .map(({ eventId, aggregateVersion, payload }) => ({ event_id: eventId, comment_id: payload.commentId, aggregate_version: aggregateVersion }))
+      .sort((a, b) => (a.event_id < b.event_id ? -1 : 1));
+    expect(await activity(TENANT_A.tenantId, note.noteId)).toEqual(expected);
+    for (const { eventId } of sequence) expect(await inboxRows(TENANT_A.tenantId, eventId)).toEqual([{ event_id: eventId, status: 'applied' }]);
+  });
+
+  it('exports the applied comment activity and note projection over their own columns', async () => {
+    const note = await storedNote(TENANT_A.tenantId, 'exported');
+    const created = noteEnvelope(note, TENANT_A.tenantId);
+    const commented = commentEnvelope(note, TENANT_A.tenantId, 2);
+    expect((await pushTo(built().app, NOTE_CREATED_SUBSCRIPTION, created)).statusCode).toBe(204);
+    expect((await pushTo(built().app, NOTE_COMMENTED_SUBSCRIPTION, commented)).statusCode).toBe(204);
+
+    const activityRows = await exportedRows('stub.note_activity', note.noteId);
+    const projectionRows = await exportedRows('stub.note_projection', note.noteId);
+
+    expect(activityRows).toEqual([
+      expect.objectContaining({ event_id: commented.eventId, comment_id: commented.payload.commentId, aggregate_version: '2' }),
+    ]);
+    expect(projectionRows).toEqual([expect.objectContaining({ last_event_id: created.eventId, apply_count: '1', aggregate_version: '1' })]);
+  });
+
+  it('comment on a note not stored under the envelope tenant is dead-lettered tenant-mismatch', async () => {
+    const note = await storedNote(TENANT_A.tenantId, 'foreign comment');
+    const env = commentEnvelope(note, TENANT_B.tenantId, 2);
+
+    expect((await pushTo(built().app, NOTE_COMMENTED_SUBSCRIPTION, env)).statusCode).toBe(204);
+
+    expect(publisher.deadLetters(NOTE_COMMENTED_SUBSCRIPTION).map(({ reason }) => reason)).toEqual(['tenant-mismatch']);
+    expect(await activity(TENANT_B.tenantId, note.noteId)).toEqual([]);
+    expect(await activity(TENANT_A.tenantId, note.noteId)).toEqual([]);
+  });
+
   it('site.changed upserts tenant_registry', async () => {
     const site = 'tenant-c';
     const tenantId = tenantIdForSite(site);
@@ -246,6 +353,47 @@ describe.skipIf(!pg)('outbox-pubsub-idempotent-consumer', () => {
     const update = siteEnvelope({ ...seeded, domains }, version);
     expect((await pushTo(built().app, SITE_CHANGED_SUBSCRIPTION, update)).statusCode).toBe(204);
     expect(await registryRow(TENANT_A.siteId)).toEqual({ ...before, domains, aggregate_version: version });
+  });
+});
+
+describe.skipIf(!pg)('user-pool fan-out', () => {
+  it('a fan-out interrupted after tenant A applied while umbrella note reads were blocked is redelivered and applies once per destination [events:fanoutRedelivery]', async () => {
+    const { app, schema: db } = built();
+    const note = await storedNote(TENANT_UMBRELLA.tenantId, 'pooled');
+    const env = noteEnvelope(note, TENANT_UMBRELLA.tenantId);
+    const applied = [{ title: 'pooled', aggregate_version: 1, apply_count: 1, last_event_id: env.eventId }];
+    const receipt = [{ event_id: env.eventId, status: 'applied' }];
+    const holderId = `delivery-test-${env.eventId}`;
+    // A legacy write window's executing phase blocks reads of stub.note, which only the envelope tenant's re-check makes.
+    await closeGates(db.app, { units: ['stub.note'], holderId, phase: 'executing' });
+    const realNow = Date.now.bind(Date);
+    let skewMs = 0;
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => realNow() + skewMs);
+    let first: { statusCode: number };
+    try {
+      const delivery = pushTo(app, NOTE_CREATED_SUBSCRIPTION, env);
+      await vi.waitFor(async () => expect(await projection(TENANT_A.tenantId, note.noteId)).toEqual(applied), { timeout: 10_000, interval: 50 });
+      expect(await projection(TENANT_UMBRELLA.tenantId, note.noteId)).toEqual([]);
+      // Moves the clock past the delivery's gate budget, so the blocked read gives up instead of waiting it out.
+      skewMs = GATE_WAIT_MS;
+      first = await delivery;
+    } finally {
+      clock.mockRestore();
+      await openGates(db.app, { units: ['stub.note'], holderId });
+    }
+    expect(isAck(first)).toBe(false);
+    expect(await inboxRows(TENANT_A.tenantId, env.eventId)).toEqual(receipt);
+    expect(await inboxRows(TENANT_UMBRELLA.tenantId, env.eventId)).toEqual([]);
+
+    expect(statusCodes(await deliverDuplicate(app, NOTE_CREATED_SUBSCRIPTION, env))).toEqual([204, 204]);
+
+    for (const tenant of [TENANT_A, TENANT_UMBRELLA]) {
+      expect(await projection(tenant.tenantId, note.noteId), tenant.siteId).toEqual(applied);
+      expect(await inboxRows(tenant.tenantId, env.eventId), tenant.siteId).toEqual(receipt);
+    }
+    expect(await projection(TENANT_B.tenantId, note.noteId)).toEqual([]);
+    expect(await inboxRows(TENANT_B.tenantId, env.eventId)).toEqual([]);
+    expect(noteDeadLetterReasons()).toEqual([]);
   });
 });
 

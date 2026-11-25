@@ -1,6 +1,6 @@
 // Unit tests for the forward change feed: real diffing, batching and encoding over scripted snapshots, legacy reads and recording owners.
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -105,9 +105,9 @@ const SPECS = {
   tcontent: { columns: text('ContentID', 'SiteID', 'Title'), keyColumns: ['ContentID'] },
   tfiles: { columns: text('fileID', 'siteID', 'filename'), keyColumns: ['fileID'] },
   temailstats: { columns: text('EmailID', 'Email', 'sent'), keyColumns: [] },
-  'Program_N.blackout': {
-    columns: [...text('blackout_id', 'reason'), { name: LEGACY_PROGRAM_ID_COLUMN, type: 'i' }],
-    keyColumns: ['blackout_id', LEGACY_PROGRAM_ID_COLUMN],
+  'Program_N.enrolment': {
+    columns: [...text('enrolment_id', 'status'), { name: LEGACY_PROGRAM_ID_COLUMN, type: 'i' }],
+    keyColumns: ['enrolment_id', LEGACY_PROGRAM_ID_COLUMN],
     programIds: [1, 2],
   },
   tredirects: { columns: text('redirectID', 'URL'), keyColumns: ['redirectID'] },
@@ -115,9 +115,9 @@ const SPECS = {
   tusersmemb: { columns: text('UserID', 'GroupID'), keyColumns: ['UserID', 'GroupID'] },
   tuseraddresses: { columns: text('addressID', 'userID', 'siteID', 'addressName'), keyColumns: ['addressID'] },
   temails: { columns: text('EmailID', 'siteid', 'Subject'), keyColumns: ['EmailID'] },
-  'Program_N.finance_attachment': {
-    columns: [...text('attachment_id', 'sha256'), { name: 'content', type: 'b' }, { name: LEGACY_PROGRAM_ID_COLUMN, type: 'i' }],
-    keyColumns: ['attachment_id', LEGACY_PROGRAM_ID_COLUMN],
+  'Program_N.document': {
+    columns: [...text('document_id', 'sha256'), { name: 'content', type: 'b' }, { name: LEGACY_PROGRAM_ID_COLUMN, type: 'i' }],
+    keyColumns: ['document_id', LEGACY_PROGRAM_ID_COLUMN],
     programIds: [1, 2],
   },
 } satisfies Record<string, TableSpec>;
@@ -176,8 +176,8 @@ const OWNERSHIP: Ownership = {
     { unit: 'people.person', owner: 'people', legacyTables: ['tusers'] },
     { unit: 'content.content', owner: 'strategies-content', legacyTables: ['tcontent'] },
     { unit: 'content.file', owner: 'strategies-content', legacyTables: ['tfiles'] },
-    { unit: 'communications.email_stat', owner: 'communications', legacyTables: ['temailstats'] },
-    { unit: 'timesheets.blackout', owner: 'timesheets', legacyTables: ['Program_N.blackout'] },
+    { unit: 'programs_sites.email_stat', owner: 'programs-sites', legacyTables: ['temailstats'] },
+    { unit: 'programs_sites.enrolment', owner: 'programs-sites', legacyTables: ['Program_N.enrolment'] },
   ],
   tables: [
     {
@@ -209,13 +209,13 @@ const OWNERSHIP: Ownership = {
       tenantResolution: 'siteID-or-umbrella',
       targets: [whole('content.file', 'strategies-content', ['fileID'])],
     },
-    { table: 'temailstats', owner: 'communications', primaryKey: [], targets: [whole('communications.email_stat', 'communications', [])] },
+    { table: 'temailstats', owner: 'programs-sites', primaryKey: [], targets: [whole('programs_sites.email_stat', 'programs-sites', [])] },
     {
-      table: 'Program_N.blackout',
-      owner: 'timesheets',
-      primaryKey: ['blackout_id'],
+      table: 'Program_N.enrolment',
+      owner: 'programs-sites',
+      primaryKey: ['enrolment_id'],
       programFold: true,
-      targets: [whole('timesheets.blackout', 'timesheets', ['blackout_id'])],
+      targets: [whole('programs_sites.enrolment', 'programs-sites', ['enrolment_id'])],
     },
     { table: 'tredirects', owner: 'retired', primaryKey: ['redirectID'], targets: [] },
   ],
@@ -231,36 +231,36 @@ function withPersonPredicate(predicate: string): Ownership {
   return ownership;
 }
 
-/** OWNERSHIP with `temailstats` split between two communications units told apart by class-map discriminators. */
+/** OWNERSHIP with `temailstats` split between two programs-sites units told apart by class-map discriminators. */
 function withEmailStatsByClass(): Ownership {
   const ownership = structuredClone(OWNERSHIP);
-  ownership.units.push({ unit: 'communications.email_stat_alt', owner: 'communications', legacyTables: ['temailstats'] });
+  ownership.units.push({ unit: 'programs_sites.email_stat_alt', owner: 'programs-sites', legacyTables: ['temailstats'] });
   const stats = ownership.tables.find((table) => table.table === 'temailstats');
   if (stats === undefined) throw new Error('OWNERSHIP has no temailstats entry');
   stats.targets = [
-    whole('communications.email_stat', 'communications', [], 'classMap owner = a'),
-    whole('communications.email_stat_alt', 'communications', [], 'classMap owner = b'),
+    whole('programs_sites.email_stat', 'programs-sites', [], 'classMap owner = a'),
+    whole('programs_sites.email_stat_alt', 'programs-sites', [], 'classMap owner = b'),
   ];
   return ownership;
 }
 
-/** OWNERSHIP with the folded `finance.attachment` unit, whose `content` bytes finance stores as objects. */
-function withAttachments(): Ownership {
+/** OWNERSHIP with the folded `people.document` unit, whose `content` bytes people stores as objects. */
+function withDocuments(): Ownership {
   const ownership = structuredClone(OWNERSHIP);
-  ownership.units.push({ unit: 'finance.attachment', owner: 'finance', legacyTables: ['Program_N.finance_attachment'] });
+  ownership.units.push({ unit: 'people.document', owner: 'people', legacyTables: ['Program_N.document'] });
   ownership.tables.push({
-    table: 'Program_N.finance_attachment',
-    owner: 'finance',
-    primaryKey: ['attachment_id'],
+    table: 'Program_N.document',
+    owner: 'people',
+    primaryKey: ['document_id'],
     programFold: true,
-    targets: [{ ...whole('finance.attachment', 'finance', ['attachment_id']), objectColumns: { content: 'finance-attachments' } }],
+    targets: [{ ...whole('people.document', 'people', ['document_id']), objectColumns: { content: 'people-documents' } }],
   });
   return ownership;
 }
 
 /**
- * OWNERSHIP plus the tusers children and temails with their shipped targets, whose tenant and row rules the shipped ownership
- * file decides; `personAddresses` gives the Type 2 addresses to identity instead of people.
+ * OWNERSHIP plus the tusers children with their shipped targets, whose tenant and row rules the shipped ownership file decides,
+ * and temails; `personAddresses` gives the Type 2 addresses to identity instead of people.
  */
 function withUserChildren(personAddresses: 'people' | 'identity' = 'people'): Ownership {
   const ownership = structuredClone(OWNERSHIP);
@@ -270,7 +270,7 @@ function withUserChildren(personAddresses: 'people' | 'identity' = 'people'): Ow
     { unit: 'identity.membership', owner: 'identity', legacyTables: ['tusersmemb'] },
     { unit: 'identity.user_address', owner: 'identity', legacyTables: ['tuseraddresses'] },
     { unit: personAddress, owner: personAddresses, legacyTables: ['tuseraddresses'] },
-    { unit: 'communications.email', owner: 'communications', legacyTables: ['temails'] },
+    { unit: 'programs_sites.email', owner: 'programs-sites', legacyTables: ['temails'] },
   );
   ownership.tables.push(
     { table: 'tuserstrikes', owner: 'identity', primaryKey: ['username'], targets: [whole('identity.user_strike', 'identity', ['username'])] },
@@ -284,7 +284,7 @@ function withUserChildren(personAddresses: 'people' | 'identity' = 'people'): Ow
         whole(personAddress, personAddresses, ['addressID'], 'owner Type = 2'),
       ],
     },
-    { table: 'temails', owner: 'communications', primaryKey: ['EmailID'], targets: [whole('communications.email', 'communications', ['EmailID'])] },
+    { table: 'temails', owner: 'programs-sites', primaryKey: ['EmailID'], targets: [whole('programs_sites.email', 'programs-sites', ['EmailID'])] },
   );
   return ownership;
 }
@@ -312,7 +312,7 @@ const user = (id: string, site: string, type: '1' | '2', changes: Row = {}): Row
 const content = (id: string, site: string, title: string): Row => ({ ContentID: id, SiteID: site, Title: title });
 const file = (id: string, site: string): Row => ({ fileID: id, siteID: site, filename: `${id}.pdf` });
 const stat = (id: string, email: string): Row => ({ EmailID: id, Email: email, sent: '1' });
-const blackout = (id: string, programId: number, reason: string): Row => ({ blackout_id: id, reason, [LEGACY_PROGRAM_ID_COLUMN]: String(programId) });
+const enrolment = (id: string, programId: number, status: string): Row => ({ enrolment_id: id, status, [LEGACY_PROGRAM_ID_COLUMN]: String(programId) });
 const strike = (username: string): Row => ({ username, strikes: '1', lastAttempt: '2026-06-30T12:00:00.000' });
 const membership = (userId: string, groupId: string): Row => ({ UserID: userId, GroupID: groupId });
 const address = (id: string, userId: string, site: string): Row => ({ addressID: id, userID: userId, siteID: site, addressName: `Home ${id}` });
@@ -351,7 +351,7 @@ function createWorld(): World {
     targetUnits: new Set(),
     readers: { opened: 0, disposed: 0 },
     nextSnapshot: {},
-    order: ['tusers', 'tcontent', 'tfiles', 'temailstats', 'Program_1.blackout', 'Program_2.blackout'],
+    order: ['tusers', 'tcontent', 'tfiles', 'temailstats', 'Program_1.enrolment', 'Program_2.enrolment'],
     reconcileResult: 'zero-difference',
     activeVersion: 'v0002',
     measuredVersion: 'v0002',
@@ -788,7 +788,7 @@ describe('runFeed', () => {
 
     const result = await runFeed(contextFor());
 
-    const sent = requests('communications');
+    const sent = requests('programs-sites');
     const rows = sent.flatMap((request) => request.rows);
     expect(rows.filter((change) => change.op === 'delete')).toEqual([{ op: 'delete', row: encode('temailstats', kept) }]);
     expect(rows.filter((change) => change.op === 'insert')).toEqual([{ op: 'insert', row: encode('temailstats', added) }]);
@@ -950,22 +950,22 @@ describe('runFeed', () => {
   });
 
   it('feeds tables in dependency order, folds Program_<id> parts once and appends tables the order omits by name', async () => {
-    world.order = ['tcontent', 'Program_2.blackout', 'Program_1.blackout', 'tusers', 'tmissing'];
+    world.order = ['tcontent', 'Program_2.enrolment', 'Program_1.enrolment', 'tusers', 'tmissing'];
     const unchanged = { tusers: [], tcontent: [], temailstats: [], tredirects: [] };
     seed(
-      { ...unchanged, 'Program_N.blackout': [blackout('B1', 1, 'leave')] },
-      { ...unchanged, 'Program_N.blackout': [blackout('B1', 1, 'sick'), blackout('B2', 2, 'leave')] },
+      { ...unchanged, 'Program_N.enrolment': [enrolment('B1', 1, 'enrolled')] },
+      { ...unchanged, 'Program_N.enrolment': [enrolment('B1', 1, 'withdrawn'), enrolment('B2', 2, 'enrolled')] },
     );
 
     const result = await runFeed(contextFor());
 
-    expect(result.tables.map((table) => table.table)).toEqual(['tcontent', 'Program_N.blackout', 'tusers', 'temailstats']);
+    expect(result.tables.map((table) => table.table)).toEqual(['tcontent', 'Program_N.enrolment', 'tusers', 'temailstats']);
     expect(computeDependencyOrder).toHaveBeenCalledWith({ inventory: CONFIG.paths.inventory, catalog, programIds: [1, 2] });
-    expect(requests('timesheets').map((request) => [request.legacyTable, request.legacyProgramId, request.rows.map((change) => change.op)])).toEqual([
-      ['Program_1.blackout', 1, ['upsert']],
-      ['Program_2.blackout', 2, ['upsert']],
+    expect(requests('programs-sites').map((request) => [request.legacyTable, request.legacyProgramId, request.rows.map((change) => change.op)])).toEqual([
+      ['Program_1.enrolment', 1, ['upsert']],
+      ['Program_2.enrolment', 2, ['upsert']],
     ]);
-    expect(world.puts).toContainEqual({ owner: 'timesheets', record: forward('Program_N.blackout', 1) });
+    expect(world.puts).toContainEqual({ owner: 'programs-sites', record: forward('Program_N.enrolment', 1) });
     expect(vi.mocked(createTenantResolver).mock.calls.map(([, options]) => options.database)).toEqual(['snap_0', 'snap_1']);
   });
 
@@ -990,7 +990,7 @@ describe('runFeed', () => {
     catalog = await catalogFrom(withEmailStatsByClass());
     seed({ temailstats: [] }, { temailstats: [stat('E1', 'one@example.test')] });
 
-    await expect(runFeed(contextFor())).rejects.toThrow('a keyless temailstats row is taken by communications targets with different discriminators');
+    await expect(runFeed(contextFor())).rejects.toThrow('a keyless temailstats row is taken by programs-sites targets with different discriminators');
   });
 
   it.each([
@@ -1012,13 +1012,13 @@ describe('runFeed', () => {
     expect(reconcileUnits).toHaveBeenCalledWith(expect.anything(), {
       point: 'after-feed-1',
       units: [
-        'communications.email_stat',
         'content.content',
         'content.file',
         'identity.group_account',
         'identity.user_account',
         'people.person',
-        'timesheets.blackout',
+        'programs_sites.email_stat',
+        'programs_sites.enrolment',
       ],
       database: 'snap_1',
       snapshotSeq: 1,
@@ -1165,10 +1165,15 @@ describe('runFeed re-placement of rows other rows place', () => {
       { temails: [email('E1', 'tenant-a'), email('E2', 'tenant-b')], temailstats: [kept, kept, other] },
       { temails: [email('E2', 'tenant-b')], temailstats: [kept, kept, kept, other] },
     );
+    // The shipped file leaves the mail tables on legacy without a tenant rule; this ownership gives them Masa's site and parent rules.
+    const shipped = JSON.parse(await readFile(CONFIG.paths.tableOwnership, 'utf8')) as { tables: Record<string, unknown>[] };
+    const rules: Record<string, Record<string, unknown>> = { temails: { tenantResolution: 'siteID-or-umbrella' }, temailstats: { tenantResolution: 'parent:temails' } };
+    const tableOwnership = path.join(dir, `${randomUUID()}.json`);
+    await writeFile(tableOwnership, JSON.stringify({ ...shipped, tables: shipped.tables.map((entry) => ({ ...entry, ...rules[String(entry.table)] })) }));
 
-    const result = await runFeed(contextFor());
+    const result = await runFeed({ ...contextFor(), config: { ...CONFIG, paths: { ...CONFIG.paths, tableOwnership } } });
 
-    expect(sent('communications', 'temailstats')).toEqual(
+    expect(sent('programs-sites', 'temailstats')).toEqual(
       rowsOf('temailstats', [
         ['delete', TENANT_A_ID, kept],
         ['delete', TENANT_A_ID, kept],
@@ -1177,8 +1182,8 @@ describe('runFeed re-placement of rows other rows place', () => {
         ['insert', UMBRELLA_ID, kept],
       ]),
     );
-    expect(counts(result, 'temailstats')).toEqual([['communications', 'applied', 3, 0, 2, 3, 0]]);
-    expect(sent('communications', 'temails')).toEqual(rowsOf('temails', [['delete', TENANT_A_ID, email('E1', 'tenant-a')]]));
+    expect(counts(result, 'temailstats')).toEqual([['programs-sites', 'applied', 3, 0, 2, 3, 0]]);
+    expect(sent('programs-sites', 'temails')).toEqual(rowsOf('temails', [['delete', TENANT_A_ID, email('E1', 'tenant-a')]]));
   });
 
   it("moves a row whose tenant column changed outside the writable units' columns", async () => {
@@ -1500,42 +1505,42 @@ describe('restartFeedFor', () => {
   });
 
   it('re-baselines an object-column unit, sending the bytes of each row the target lacks or whose stored object is missing or differs', async () => {
-    catalog = await catalogFrom(withAttachments());
-    const attachment = (id: string, programId: number, bytes: Buffer): Row => ({
-      attachment_id: id,
+    catalog = await catalogFrom(withDocuments());
+    const document = (id: string, programId: number, bytes: Buffer): Row => ({
+      document_id: id,
       sha256: sha256Hex(bytes),
       content: `\\x${bytes.toString('hex')}`,
       [LEGACY_PROGRAM_ID_COLUMN]: String(programId),
     });
     const stored = (id: string, programId: number, bytes: Buffer): ObjectEntry => ({
-      key: `Program_${String(programId)}.finance_attachment/${id}`,
+      key: `Program_${String(programId)}.document/${id}`,
       size: bytes.length,
       sha256: sha256Hex(bytes),
     });
-    const bytesOf = (name: string): Buffer => Buffer.from(`attachment ${name}`);
+    const bytesOf = (name: string): Buffer => Buffer.from(`document ${name}`);
     const [added, kept, corrupted, lost, removed] = [bytesOf('added'), bytesOf('kept'), bytesOf('corrupted'), bytesOf('lost'), bytesOf('removed')];
-    const table = 'Program_N.finance_attachment';
-    seed({ [table]: [] }, { [table]: [attachment('AT1', 1, added), attachment('AT2', 1, kept), attachment('AT3', 2, corrupted), attachment('AT4', 1, lost)] });
-    const exported = `finance.attachment|${UMBRELLA_ID}`;
-    world.target.set(exported, [attachment('AT2', 1, kept), attachment('AT3', 2, corrupted), attachment('AT4', 1, lost), attachment('AT5', 2, removed)]);
+    const table = 'Program_N.document';
+    seed({ [table]: [] }, { [table]: [document('AT1', 1, added), document('AT2', 1, kept), document('AT3', 2, corrupted), document('AT4', 1, lost)] });
+    const exported = `people.document|${UMBRELLA_ID}`;
+    world.target.set(exported, [document('AT2', 1, kept), document('AT3', 2, corrupted), document('AT4', 1, lost), document('AT5', 2, removed)]);
     world.targetObjects.set(exported, [stored('AT2', 1, kept), { ...stored('AT3', 2, corrupted), sha256: sha256Hex(removed) }, stored('AT5', 2, removed)]);
 
-    const result = await restartFeedFor(contextFor(), { units: ['finance.attachment'] });
+    const result = await restartFeedFor(contextFor(), { units: ['people.document'] });
 
     expect(result.tables).toEqual([
-      { table, owner: 'finance', catchUp: null, rebaseline: { units: ['finance.attachment'], inserts: 1, updates: 2, deletes: 1, batches: 2 } },
+      { table, owner: 'people', catchUp: null, rebaseline: { units: ['people.document'], inserts: 1, updates: 2, deletes: 1, batches: 2 } },
     ]);
-    const sent = requests('finance');
-    expect(sent.map((request) => request.columns.map((column) => column.name))).toEqual(sent.map(() => ['attachment_id', 'sha256', LEGACY_PROGRAM_ID_COLUMN, 'content']));
+    const sent = requests('people');
+    expect(sent.map((request) => request.columns.map((column) => column.name))).toEqual(sent.map(() => ['document_id', 'sha256', LEGACY_PROGRAM_ID_COLUMN, 'content']));
     const rows = sent.flatMap((request) => request.rows.map((change) => [change.op, decodeRow(request.columns, change.row)]));
     const program = (id: number): Record<string, string> => ({ [LEGACY_PROGRAM_ID_COLUMN]: String(id) });
     expect(rows).toHaveLength(4);
     expect(rows).toEqual(
       expect.arrayContaining([
-        ['upsert', { attachment_id: 'AT1', sha256: sha256Hex(added), ...program(1), content: added }],
-        ['upsert', { attachment_id: 'AT3', sha256: sha256Hex(corrupted), ...program(2), content: corrupted }],
-        ['upsert', { attachment_id: 'AT4', sha256: sha256Hex(lost), ...program(1), content: lost }],
-        ['delete', { attachment_id: 'AT5', sha256: sha256Hex(removed), ...program(2), content: null }],
+        ['upsert', { document_id: 'AT1', sha256: sha256Hex(added), ...program(1), content: added }],
+        ['upsert', { document_id: 'AT3', sha256: sha256Hex(corrupted), ...program(2), content: corrupted }],
+        ['upsert', { document_id: 'AT4', sha256: sha256Hex(lost), ...program(1), content: lost }],
+        ['delete', { document_id: 'AT5', sha256: sha256Hex(removed), ...program(2), content: null }],
       ]),
     );
     expect(world.readers.disposed).toBe(world.readers.opened);
@@ -1546,14 +1551,14 @@ describe('restartFeedFor', () => {
     const other = stat('E2', 'other@example.test');
     const missing = stat('E3', 'missing@example.test');
     seed({ temailstats: [], tusers: [] }, { temailstats: [kept, other, missing], tusers: [user('U1', 'tenant-a', '2')] });
-    world.target.set(`communications.email_stat|${UMBRELLA_ID}`, [kept, kept, other]);
+    world.target.set(`programs_sites.email_stat|${UMBRELLA_ID}`, [kept, kept, other]);
 
-    const result = await restartFeedFor(contextFor(), { units: ['communications.email_stat'] });
+    const result = await restartFeedFor(contextFor(), { units: ['programs_sites.email_stat'] });
 
     expect(result.tables).toEqual([
-      { table: 'temailstats', owner: 'communications', catchUp: null, rebaseline: { units: ['communications.email_stat'], inserts: 1, updates: 0, deletes: 1, batches: 1 } },
+      { table: 'temailstats', owner: 'programs-sites', catchUp: null, rebaseline: { units: ['programs_sites.email_stat'], inserts: 1, updates: 0, deletes: 1, batches: 1 } },
     ]);
-    const rows = requests('communications').flatMap((request) => request.rows);
+    const rows = requests('programs-sites').flatMap((request) => request.rows);
     expect(rows).toHaveLength(2);
     expect(rows).toEqual(
       expect.arrayContaining([
@@ -1561,6 +1566,6 @@ describe('restartFeedFor', () => {
         { op: 'insert', row: encode('temailstats', missing) },
       ]),
     );
-    expect(world.applies.map((apply) => apply.owner)).toEqual(['communications']);
+    expect(world.applies.map((apply) => apply.owner)).toEqual(['programs-sites']);
   });
 });

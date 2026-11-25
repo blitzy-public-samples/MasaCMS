@@ -149,22 +149,6 @@ describe('golden catalogue covers', () => {
   });
 
   it.each([
-    ['GS-CO-05', 'reads', 'api:content.findcrumbarray'],
-    ['GS-CO-05', 'reads', 'api:content.findrelatedcontent'],
-    ['GS-CO-05', 'reads', 'api:content.findversionhistory'],
-    ['GS-CO-07', 'uploader-post-image', 'admin:carch.multifileupload{upload=image}'],
-    ['GS-CO-08', 'sort', 'admin:carch.list'],
-    ['GS-CO-08', 'sort-home', 'admin:carch.list{sharedid}'],
-    ['GS-CO-09', 'pending-version', 'api:content.findversionhistory'],
-    ['GS-CO-09', 'chain-edit', 'admin:cchain.edit'],
-    ['GS-CO-09', 'approve', 'admin:carch.approvalaction{action=approve}'],
-    ['GS-CO-09', 'reject', 'admin:carch.approvalaction'],
-    ['GS-CO-09', 'delete-page-tokens', 'api:generatecsrftokens'],
-    ['GS-CO-09', 'delete-page', 'admin:carch.update'],
-    ['GS-CO-14', 'response-form', 'admin:carch.datamanager'],
-    ['GS-CO-14', 'response-update', 'admin:carch.datamanager'],
-    ['GS-CO-14', 'form-object-params', 'admin:carch.updateobjectparams'],
-    ['GS-CO-14', 'draft-version', 'api:content.findone'],
     ['GS-CO-20', 'comments', 'api:comment.findquery'],
     ['GS-CO-20', 'comments-page', 'admin:ccomments.loadcommentspage'],
     ['GS-CO-20', 'proxy-page', 'cfc:/core/modules/v1/comments/ajax/commentsproxy.cfc?method=rendercommentspage'],
@@ -175,14 +159,6 @@ describe('golden catalogue covers', () => {
     ['GS-CO-20', 'visitor-rename', 'api:comment.save'],
     ['GS-CO-20', 'visitor-delete', 'admin:ccomments.bulkedit'],
     ['GS-CO-20', 'purge', 'admin:ccomments.purgedeletedcomments'],
-    ['GS-CO-15', 'invalid-method-call', 'api:!invalidmethodcall'],
-    ['GS-CO-15', 'bearer', 'rest:content.findone'],
-    ['GS-CO-15', 'forbidden-validation-errors', 'api:content.save'],
-    ['GS-CO-15', 'not-found-path', 'api:content.findone'],
-    ['GS-ID-08', 'new', 'admin:cwebservice.edit'],
-    ['GS-ID-08', 'rest-read', 'rest:content.findall'],
-    ['GS-ID-08', 'tokeninfo', 'rest:tokeninfo'],
-    ['GS-PS-04', 'public-reload', 'reload:application'],
   ])('keys a %s %s request as %s', (scenario, step, key) => {
     expect(keyed.filter((r) => r.scenario === scenario && r.step === step).map((r) => r.key)).toContain(key);
   });

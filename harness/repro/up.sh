@@ -83,9 +83,9 @@ FIXTURES_FILE="$OPT2_STATE_DIR/fixtures.json"
 COMMITTED_CUTOVER_DIR="$REPO/gateway/cutover"
 # The fixtures-unavailable cut-over directory, rebuilt on every run that needs it.
 UNAVAILABLE_CUTOVER_DIR="$OPT2_STATE_DIR/cutover"
-SERVICES=(identity people programs-sites strategies-content communications reporting surveys timesheets finance e-signature stub)
-# Setup §3's packages, plus those cfspreadsheet, cfdocument and the bridge's cfschedule need.
-CFPM_REQUIRED=(sqlserver image mail zip feed caching orm ajax document spreadsheet scheduler)
+SERVICES=(identity people programs-sites strategies-content stub)
+# Setup §3's packages, plus scheduler for the bridge's cfschedule.
+CFPM_REQUIRED=(sqlserver image mail zip feed caching orm ajax scheduler)
 
 CURRENT_STEP="0 (preconditions)"
 STARTED_ANYTHING=false
@@ -218,12 +218,9 @@ ensure_cfpm_packages() {
   printf 'opt2: installed cfpm packages: %s\n' "$list" >&2
 }
 
-# Runs legacy-fixtures/load-fixtures.sh with its arguments; both runs list cfpm packages from the same server home,
-# since opt2-legacy is registered only at step 9.
+# Runs legacy-fixtures/load-fixtures.sh with its arguments.
 load_fixtures() {
-  MAILPIT_API_URL="${MAILPIT_API_URL:-$MAILPIT_API_LOCAL}" CFPM_CMD="${CFPM_CMD:-$(cfpm_bin)}" \
-    SMTP_HOST="${SMTP_HOST:-127.0.0.1}" SMTP_PORT="${SMTP_PORT:-$OPT2_TOOL_PORT_MAILPIT_SMTP}" \
-    "$REPO/legacy-fixtures/load-fixtures.sh" "$@" >&2
+  "$REPO/legacy-fixtures/load-fixtures.sh" "$@" >&2
 }
 
 # select_cutover_versions <available>: exports OPT2_CUTOVER_DIR at the validated fixtures-unavailable build when
@@ -499,12 +496,14 @@ available="$(json_get "$FIXTURES_FILE" available)" || die "$FIXTURES_FILE record
 [[ $available == "$FIXTURES_AVAILABLE" ]] ||
   die "fixtures available=$available, but step 5 found available=$FIXTURES_AVAILABLE and selected cut-over versions for it: rerun up.sh"
 if [[ $available != true ]]; then
-  printf 'opt2: legacy fixtures unavailable (%s); seeding the synthetic services directly\n' \
+  printf 'opt2: legacy fixtures unavailable (%s); seeding the fixture tables directly\n' \
     "$(json_get "$FIXTURES_FILE" reason 2>/dev/null || printf 'no reason recorded')" >&2
-  npm --prefix "$REPO/legacy-fixtures/seed" run --silent generate:direct >&2 || die "direct seeding of the synthetic services failed"
+  npm --prefix "$REPO/legacy-fixtures/seed" run --silent generate:direct >&2 || die "direct seeding of the fixture tables failed"
 fi
 node "$LIB_DIR/seed-legacy.mjs" --origin "$(legacy_origin)" --seed-dir "$OPT2_STATE_DIR/seed" --fixtures "$available" >&2 ||
   die "loading the seed into legacy failed"
+LEGACY_ORIGIN="$(legacy_origin)" harness_run inventory:assumptions -- --live >&2 ||
+  die "cannot regenerate opt2/reports/assumptions.md live"
 if [[ -z $LEGACY_DEVIATION ]]; then
   summary="$("$MIGRATE" snapshot --kind seed)" || die "opt2-migrate snapshot --kind seed failed: $summary"
   printf '%s\n' "$summary" >&2

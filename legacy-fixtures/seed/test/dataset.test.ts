@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { beforeAll, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { loadConfig, parseConfig, type SeedConfig } from '../src/config.js';
 import { buildDataset, canonicalJson, datasetDigest, type Dataset } from '../src/dataset.js';
-import { fixtureKeys, specForKey, type FixtureTables } from '../src/fixture-tables.js';
+import { fixtureKeys, type FixtureTables } from '../src/fixture-tables.js';
 
 const CONFIG_PATH = fileURLToPath(new URL('../seed.config.json', import.meta.url));
 const SHA = '696383140578f8dea3ece26f80cd7bfb370ddf0f';
@@ -13,10 +13,18 @@ const SHA = '696383140578f8dea3ece26f80cd7bfb370ddf0f';
 let config: SeedConfig;
 let dataset: Dataset;
 
+/** Committed configuration edited by `edit`, then parsed. */
+async function editedConfig(edit: (raw: Record<string, unknown>) => void): Promise<SeedConfig> {
+  const raw = JSON.parse(await readFile(CONFIG_PATH, 'utf8')) as Record<string, unknown>;
+  edit(raw);
+  return parseConfig(raw);
+}
+
 /** Committed configuration with its seed replaced. */
-async function withSeed(seed: number): Promise<SeedConfig> {
-  const raw = JSON.parse(await readFile(CONFIG_PATH, 'utf8')) as { seed: number };
-  return parseConfig({ ...raw, seed });
+function withSeed(seed: number): Promise<SeedConfig> {
+  return editedConfig((raw) => {
+    raw.seed = seed;
+  });
 }
 
 beforeAll(async () => {
@@ -69,8 +77,7 @@ describe('buildDataset', () => {
   });
 
   it('keys fixtures in fixtureKeys order', () => {
-    expect(Object.keys(dataset.fixtures)).toEqual(fixtureKeys(config));
-    expect(dataset.fixtures['Program_1.timesheet_day']).toHaveLength(20000);
+    expect(Object.keys(dataset.fixtures)).toEqual(fixtureKeys());
     expect(dataset.fixtures['synthetic.person_archive']).toEqual([]);
   });
 
@@ -83,6 +90,19 @@ describe('buildDataset', () => {
   it('digest depends on the seed, not on the source SHA', async () => {
     expect(buildDataset(config, 'f'.repeat(40)).digest).toBe(dataset.digest);
     expect(buildDataset(await withSeed(20260602), SHA).digest).not.toBe(dataset.digest);
+  });
+
+  it('ignores the retired module keys and scenario password names seed.config.json carries', async () => {
+    const trimmed = await editedConfig((raw) => {
+      delete raw.roleGroups;
+      raw.scenarioPasswords = config.scenarioPasswords;
+      for (const site of Object.values(raw.sites as Record<string, { programId?: unknown; counts: Record<string, unknown> }>)) {
+        delete site.programId;
+        for (const key of Object.keys(site.counts)) if (!Object.hasOwn(config.sites['tenant-a'].counts, key)) delete site.counts[key];
+      }
+    });
+    expect(trimmed).toEqual(config);
+    expect(buildDataset(trimmed, SHA).digest).toBe(dataset.digest);
   });
 });
 
@@ -105,34 +125,25 @@ describe('datasetDigest', () => {
 });
 
 describe('buildDataset merge', () => {
-  it.each([
-    ['an unknown key', { 'Program_9.finance_record': [] }, new RangeError('fixtures/finance returned unknown fixture key "Program_9.finance_record"')],
-    ['a key already filled', { 'Program_1.timesheet': [] }, new Error('fixtures/finance returned fixture key "Program_1.timesheet" already filled')],
-  ])('rejects %s', async (_label, tables: FixtureTables, error) => {
+  /** `buildDataset` with the people builder returning `tables`. */
+  async function buildWith(tables: FixtureTables): Promise<typeof buildDataset> {
     onTestFinished(() => {
-      vi.doUnmock('../src/fixtures/finance.js');
+      vi.doUnmock('../src/fixtures/people.js');
       vi.resetModules();
     });
-    vi.doMock('../src/fixtures/finance.js', () => ({ buildFinanceFixtures: (): FixtureTables => tables }));
+    vi.doMock('../src/fixtures/people.js', () => ({ buildPeopleFixtures: (): FixtureTables => tables }));
     vi.resetModules();
-    const { buildDataset: build } = await import('../src/dataset.js');
-    expect(() => build(config, SHA)).toThrow(error);
+    return (await import('../src/dataset.js')).buildDataset;
+  }
+
+  it('rejects an unknown key', async () => {
+    const build = await buildWith({ 'synthetic.person': [] });
+    expect(() => build(config, SHA)).toThrow(new RangeError('fixtures/people returned unknown fixture key "synthetic.person"'));
   });
 
   it('keeps every key, in order, when a builder omits some', async () => {
-    onTestFinished(() => {
-      vi.doUnmock('../src/fixtures/finance.js');
-      vi.resetModules();
-    });
-    const row = { record_id: 'X' };
-    vi.doMock('../src/fixtures/finance.js', () => ({ buildFinanceFixtures: (): FixtureTables => ({ 'Program_2.finance_record': [row] }) }));
-    vi.resetModules();
-    const { buildDataset: build } = await import('../src/dataset.js');
-    const { fixtures } = build(config, SHA);
-    expect(Object.keys(fixtures)).toEqual(fixtureKeys(config));
-    expect(fixtures['Program_2.finance_record']).toEqual([row]);
-    for (const key of Object.keys(fixtures).filter((k) => specForKey(k).spec.module === 'finance' && k !== 'Program_2.finance_record')) {
-      expect(fixtures[key]).toEqual([]);
-    }
+    const { fixtures } = (await buildWith({}))(config, SHA);
+    expect(Object.keys(fixtures)).toEqual(fixtureKeys());
+    expect(fixtures['synthetic.person_archive']).toEqual([]);
   });
 });

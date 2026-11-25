@@ -45,12 +45,8 @@ export function guardOwners(owners: OwnersClient, unavailable: UnavailableOwners
     putObject: (...args) => guarded(ENDPOINT_OWNERS.putObject, () => owners.putObject(...args)),
     getObject: (...args) => guarded(ENDPOINT_OWNERS.getObject, () => owners.getObject(...args)),
     deleteObject: (...args) => guarded(ENDPOINT_OWNERS.deleteObject, () => owners.deleteObject(...args)),
-    getAttachmentObject: (...args) => guarded(ENDPOINT_OWNERS.getAttachmentObject, () => owners.getAttachmentObject(...args)),
-    getExportObject: (...args) => guarded(ENDPOINT_OWNERS.getExportObject, () => owners.getExportObject(...args)),
     siteMonitorState: () => guarded(ENDPOINT_OWNERS.siteMonitorState, () => owners.siteMonitorState()),
     putSiteMonitorState: (...args) => guarded(ENDPOINT_OWNERS.putSiteMonitorState, () => owners.putSiteMonitorState(...args)),
-    adoptScheduledTasks: (...args) => guarded(ENDPOINT_OWNERS.adoptScheduledTasks, () => owners.adoptScheduledTasks(...args)),
-    cancelAdoptedScheduledTasks: (...args) => guarded(ENDPOINT_OWNERS.cancelAdoptedScheduledTasks, () => owners.cancelAdoptedScheduledTasks(...args)),
     queueControl: (...args) => guarded(args[0], () => owners.queueControl(...args)),
   };
 }

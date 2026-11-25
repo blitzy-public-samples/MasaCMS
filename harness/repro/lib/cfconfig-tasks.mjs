@@ -14,8 +14,6 @@ Commands:
       interrupted after its copy was written when the export is unchanged.
   pause-all --in <file> --out <file>
       Marks every task Paused (--out may equal --in).
-  drop-prefix --prefix <p> --in <file> --out <file>
-      Removes every task whose name starts with <p>.
   unpaused --in <file> [--json] [--at <iso>]
       Prints the names of the tasks that are not paused, one per line or as a JSON array. With --at, leaves out
       ONCE tasks whose start, in this process's time zone, is not after <iso>: their one run had fallen due by then.
@@ -31,7 +29,6 @@ Exit status: 0 done, 1 failure, 2 usage.
 const COMMANDS = {
   capture: { run: capture, required: ['export', 'ping', 'webroot', 'out-native', 'out-cfconfig'], optional: ['captured-at'] },
   'pause-all': { run: pauseAll, required: ['in', 'out'] },
-  'drop-prefix': { run: dropPrefix, required: ['prefix', 'in', 'out'] },
   unpaused: { run: unpaused, required: ['in'], optional: ['at'], flags: ['json'] },
   names: { run: names, required: ['in'], optional: ['prefix'], flags: ['json'] },
 };
@@ -329,12 +326,6 @@ function pauseAll(opts) {
     return { ...task, entry };
   });
   writeReplace(opts.out, withTasks(doc, paused));
-}
-
-/** `drop-prefix`: every task except those whose name starts with the prefix. */
-function dropPrefix(opts) {
-  const { doc, tasks } = readCfconfig(opts.in);
-  writeReplace(opts.out, withTasks(doc, tasks.filter((task) => !task.name.startsWith(opts.prefix))));
 }
 
 /** Start of a ONCE task in this process's time zone, or undefined for any other interval. @throws InputError when unreadable */

@@ -64,7 +64,7 @@ const SERVICE_BY_ORIGIN = new Map(Object.entries(SERVICE_URLS).map(([service, ur
 
 const INVOCATION_HEADER = 'x-serverless-authorization';
 const INVOCATION_CREDENTIAL = 'Bearer FIXTURE-invocation-credential';
-const ARCHIVE_SUBSCRIPTION = 'timesheets.people.person.archived.v1';
+const PERSON_SUBSCRIPTION = 'identity.people.person.changed.v1';
 const SITE_UNIT = 'programs_sites.site';
 const DRAIN: Required<DrainBounds> = { timeoutMs: 10_000, intervalMs: 1_000, stablePolls: 2 };
 
@@ -384,10 +384,10 @@ describe('snapshotConsumers', () => {
     await writeTestSecrets(stateRoot);
     const { deps, requests } = await setup();
 
-    await snapshotConsumers({ ...deps, invoker: undefined, consumers: ['timesheets'] });
+    await snapshotConsumers({ ...deps, invoker: undefined, consumers: ['stub'] });
 
     expect(requests.map((request) => request.service).toSorted()).toEqual(
-      ['timesheets', ...SITES.map(() => 'programs-sites'), ...SITES.map(() => 'timesheets')].toSorted(),
+      ['stub', ...SITES.map(() => 'programs-sites'), ...(CONSUMER_EFFECT_UNITS.stub ?? []).flatMap(() => SITES.map(() => 'stub'))].toSorted(),
     );
     for (const { service, headers } of requests) {
       const claims = tokenClaims(headers.get(INVOCATION_HEADER));
@@ -396,11 +396,11 @@ describe('snapshotConsumers', () => {
   });
 
   it.each([
-    { endpoint: 'position', service: 'timesheets', message: 'timesheets migration position answered 503: unit gate closed' },
+    { endpoint: 'position', service: 'identity', message: 'identity migration position answered 503: unit gate closed' },
     {
       endpoint: 'export',
-      service: 'communications',
-      message: 'communications export of communications.message answered 503: unit gate closed',
+      service: 'stub',
+      message: 'stub export of stub.note_projection answered 503: unit gate closed',
     },
   ])('rejects when a consumer $endpoint answers non-2xx', async ({ endpoint, service, message }) => {
     const { state, deps } = await setup();
@@ -414,15 +414,15 @@ describe('snapshotConsumers', () => {
 
     const snapshot = await snapshotConsumers({
       ...deps,
-      consumers: ['identity', 'timesheets', 'identity'],
-      units: { timesheets: [] },
+      consumers: ['identity', 'stub', 'identity'],
+      units: { stub: [] },
     });
 
     expect(requests.map(({ service, url }) => `${service} ${url.pathname}`)).toEqual([
       `identity ${MIGRATION_PATH_PREFIX}/position`,
-      `timesheets ${MIGRATION_PATH_PREFIX}/position`,
+      `stub ${MIGRATION_PATH_PREFIX}/position`,
     ]);
-    expect(Object.keys(snapshot.inboxCounts).every((key) => /^(identity|timesheets)\//.test(key))).toBe(true);
+    expect(Object.keys(snapshot.inboxCounts).every((key) => /^(identity|stub)\//.test(key))).toBe(true);
     expect(snapshot.aggregateChecksums).toEqual({});
   });
 
@@ -465,20 +465,20 @@ describe('waitForQuiescence', () => {
       title: 'names producers whose outbox stays unpublished or held',
       drain: { timeoutMs: 3_000, intervalMs: 1_000, stablePolls: 2 },
       prepare: (state: FakeState) => {
-        state.outbox.surveys = { unpublished: 4, held: 0 };
+        state.outbox.people = { unpublished: 4, held: 0 };
         state.outbox.stub = { unpublished: 0, held: 2 };
       },
       onSleep: undefined,
-      pending: () => ['surveys outbox unpublished=4 held=0', 'stub outbox unpublished=0 held=2'],
+      pending: () => ['people outbox unpublished=4 held=0', 'stub outbox unpublished=0 held=2'],
     },
     {
       title: 'names an inbox count that keeps changing',
       drain: { timeoutMs: 3_000, intervalMs: 1_000, stablePolls: 2 },
       prepare: undefined,
-      onSleep: (state: FakeState) => bumpInbox(state, 'timesheets', ARCHIVE_SUBSCRIPTION),
+      onSleep: (state: FakeState) => bumpInbox(state, 'identity', PERSON_SUBSCRIPTION),
       pending: (seed: FakeState) => {
-        const count = inboxCount(seed, 'timesheets', ARCHIVE_SUBSCRIPTION);
-        return [`timesheets/${ARCHIVE_SUBSCRIPTION} inbox ${count + 2} -> ${count + 3}`];
+        const count = inboxCount(seed, 'identity', PERSON_SUBSCRIPTION);
+        return [`identity/${PERSON_SUBSCRIPTION} inbox ${count + 2} -> ${count + 3}`];
       },
     },
     {
@@ -567,33 +567,33 @@ describe('runOutboxReplay', () => {
     {
       title: 'names the consumer subscription whose inbox count grew',
       producer: 'people',
-      mutate: (state: FakeState) => bumpInbox(state, 'timesheets', ARCHIVE_SUBSCRIPTION),
+      mutate: (state: FakeState) => bumpInbox(state, 'identity', PERSON_SUBSCRIPTION),
       expected: (seed: FakeState): SnapshotDifference[] => {
-        const count = inboxCount(seed, 'timesheets', ARCHIVE_SUBSCRIPTION);
-        return [{ key: `timesheets/${ARCHIVE_SUBSCRIPTION}`, before: count, after: count + 1 }];
+        const count = inboxCount(seed, 'identity', PERSON_SUBSCRIPTION);
+        return [{ key: `identity/${PERSON_SUBSCRIPTION}`, before: count, after: count + 1 }];
       },
     },
     {
       title: 'names a subscription counted only after the replay',
-      producer: 'surveys',
-      mutate: (state: FakeState) => bumpInbox(state, 'identity', 'identity.surveys.survey.scheduled.v1'),
-      expected: (): SnapshotDifference[] => [{ key: 'identity/identity.surveys.survey.scheduled.v1', before: null, after: 1 }],
+      producer: 'stub',
+      mutate: (state: FakeState) => bumpInbox(state, 'identity', 'identity.stub.note.created.v1'),
+      expected: (): SnapshotDifference[] => [{ key: 'identity/identity.stub.note.created.v1', before: null, after: 1 }],
     },
     {
       title: 'names the unit and tenant whose export changed',
-      producer: 'communications',
+      producer: 'stub',
       mutate: (state: FakeState) => {
-        state.effects[effectKey('communications', 'communications.message', TENANT_A.tenantId)] = [
-          effectRow('FIXTURE-communications.message-1-0', 'effect 0 resent', 2),
+        state.effects[effectKey('stub', 'stub.note_projection', TENANT_A.tenantId)] = [
+          effectRow('FIXTURE-stub.note_projection-1-0', 'effect 0 resent', 2),
         ];
       },
       expected: (seed: FakeState): SnapshotDifference[] => {
-        const key = effectKey('communications', 'communications.message', TENANT_A.tenantId);
+        const key = effectKey('stub', 'stub.note_projection', TENANT_A.tenantId);
         return [
           {
             key,
             before: unitChecksum(seed.effects[key]),
-            after: unitChecksum([effectRow('FIXTURE-communications.message-1-0', 'effect 0 resent', 2)]),
+            after: unitChecksum([effectRow('FIXTURE-stub.note_projection-1-0', 'effect 0 resent', 2)]),
           },
         ];
       },
@@ -664,13 +664,13 @@ describe('runOutboxReplay', () => {
   it.each([
     {
       gap: 'process',
-      entries: () => processes(PRODUCERS.filter((service) => service !== 'surveys')),
+      entries: () => processes(PRODUCERS.filter((service) => service !== 'programs-sites')),
     },
     {
       gap: 'environment',
       entries: () => ({
         ...processes(PRODUCERS),
-        surveys: Object.fromEntries(Object.entries(processEntry('surveys')).filter(([name]) => name !== 'env')) as UpProcessEntry,
+        'programs-sites': Object.fromEntries(Object.entries(processEntry('programs-sites')).filter(([name]) => name !== 'env')) as UpProcessEntry,
       }),
     },
   ])('fails before any call when up.json records no $gap for a producer', async ({ gap, entries }) => {
@@ -679,7 +679,7 @@ describe('runOutboxReplay', () => {
     const { exec, calls } = recordingExec();
 
     await expect(runOutboxReplay({ ...deps, since: SINCE, exec })).rejects.toThrow(
-      `up.json records no ${gap} for producer surveys; its replay runs only with the producer's own role`,
+      `up.json records no ${gap} for producer programs-sites; its replay runs only with the producer's own role`,
     );
     expect(calls).toEqual([]);
     expect(requests).toEqual([]);

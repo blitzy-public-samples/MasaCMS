@@ -1,13 +1,12 @@
 // The gateway's own answers web reads, as the test fixtures stand in for them, against the gateway contract.
-import { readFileSync } from 'node:fs';
-import { assertResponseMatchesOpenApi } from '@opt2/platform/testing';
+import { assertResponseMatchesOpenApi, loadOpenApiDocument } from '@opt2/platform/testing';
 import { describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import { LEGACY_PLUGINS_PATH, LEGACY_VERSION_MENU_PATH } from '@/lib/gateway-client';
 import { LEGACY_PLUGINS } from '../fixtures/gateway/plugins';
 import { LEGACY_VERSION_MENU } from '../fixtures/gateway/version-menu';
 
-const GATEWAY_CONTRACT = parse(readFileSync(new URL('../../../gateway/contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
+const GATEWAY_CONTRACT = loadOpenApiDocument(new URL('../../../gateway/contracts/openapi.yaml', import.meta.url), parse) as object;
 
 describe('getLegacyVersionMenu against the gateway contract', () => {
   it.each([

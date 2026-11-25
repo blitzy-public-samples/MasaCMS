@@ -193,7 +193,7 @@ const FIXTURE = cutoverTable({
       units: ['people.person_archive'],
       group: ROSTER_GROUP,
     }),
-    entry({ route: 'admin:cdashboard.main', kind: 'read', state: 'legacy', owningService: 'reporting', disposition: 'legacy-served' }),
+    entry({ route: 'admin:cdashboard.main', kind: 'read', state: 'legacy', owningService: 'none', disposition: 'legacy-served' }),
   ],
 });
 

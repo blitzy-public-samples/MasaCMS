@@ -7,7 +7,7 @@ import { loadConfig, ownerByName, type MigrationConfig } from '../config.js';
 export type DataOwner = MigrationConfig['dataOwners'][number];
 
 /** Owner the ownership file records for a legacy table. */
-export type LegacyTableOwner = DataOwner | 'split' | 'decision-list' | 'retired';
+export type LegacyTableOwner = DataOwner | 'split' | 'decision-list' | 'retired' | 'legacy';
 
 /** A unit of write authority: one target table and the legacy tables that feed it. */
 export interface Unit {
@@ -60,7 +60,7 @@ export interface UnitCatalog {
   legacyTableOwner(table: string): LegacyTableOwner;
   /** Targets of the table; empty for a table that does not migrate. @throws UnknownLegacyTableError */
   unitsForLegacyTable(table: string): readonly LegacyTableTarget[];
-  /** True when the table has targets, never for decision-list or retired tables. @throws UnknownLegacyTableError */
+  /** True when the table has targets, never for decision-list, retired or legacy tables. @throws UnknownLegacyTableError */
   isMigratable(table: string): boolean;
   /** @throws UnknownLegacyTableError */
   isSplit(table: string): boolean;
@@ -106,7 +106,8 @@ export class UnknownLegacyTableError extends Error {
 }
 
 const SPLIT = 'split';
-const UNMIGRATED_OWNERS: ReadonlySet<string> = new Set(['decision-list', 'retired']);
+// `legacy`: a live table no target service owns, left on legacy like a retired one.
+const UNMIGRATED_OWNERS: ReadonlySet<string> = new Set(['decision-list', 'retired', 'legacy']);
 
 const name = () => z.string().min(1);
 const names = () => z.array(name());
@@ -332,7 +333,7 @@ export function loadUnitCatalog(tableOwnershipPath: string, options: LoadUnitCat
     unitsOfOwner: (owner: string) => byOwner.get(owner) ?? EMPTY_UNITS,
     legacyTablesOf: (unitId: string) => unit(unitId).legacyTables,
     foldProgramTable,
-    // The load rejects any owner outside data owners, coordination owners, split, decision-list and retired.
+    // The load rejects any owner outside data owners, coordination owners, split, decision-list, retired and legacy.
     legacyTableOwner: (table: string) => resolve(table).owner as LegacyTableOwner,
     unitsForLegacyTable: (table: string) => resolve(table).targets,
     isMigratable: (table: string) => resolve(table).targets.length > 0,

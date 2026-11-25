@@ -88,7 +88,7 @@ function sampleState(): UpState {
 const processControlShaped = {
   processes: {
     people: { pid: 4112, cwd: '/x/services/people', command: 'node dist/main.js' },
-    timesheets: { pid: 4118, cwd: '/x/services/timesheets', command: ['node', 'dist/main.js'] },
+    identity: { pid: 4111, cwd: '/x/services/identity', command: ['node', 'dist/main.js'] },
   },
   restartedBy: 'migration-faults',
 };

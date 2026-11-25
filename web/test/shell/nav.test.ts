@@ -3,12 +3,12 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import * as cheerio from 'cheerio';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { Roles, SYNTHETIC_ROLES, moduleRole } from '@opt2/platform/auth';
+import { Roles, moduleRole } from '@opt2/platform/auth';
 import { resetLegacySettingsForTests } from '@/lib/env';
 import { isSafeHtml, raw, toString } from '@/lib/html';
 import { ORIGINAL_URL_HEADER, type AdminRequest } from '@/lib/request-context';
 import { rbFor, type RbLookup } from '@/lib/resource-bundles/rb';
-import { MODULE_IDS, OPT2_NAV_MODULES, renderNav } from '@/shell/nav';
+import { MODULE_IDS, renderNav } from '@/shell/nav';
 import type { LegacyServerInfo, ShellContext, ShellData, ShellView } from '@/shell/types';
 import {
   adminS2Request,
@@ -16,7 +16,6 @@ import {
   editorRequest,
   makeAdminRequest,
   noSitesRequest,
-  opt2RoleRequest,
   siteAdminRequest,
   type AdminRequestPartial,
 } from '../helpers/admin-request';
@@ -153,19 +152,6 @@ describe('exports', () => {
       m099: `${Z}099`,
     });
     expect(Object.isFrozen(MODULE_IDS)).toBe(true);
-  });
-
-  it('lists the OPT-2 screens in nav order, one per synthetic module, covering every synthetic role', () => {
-    expect(OPT2_NAV_MODULES.map((entry) => `${entry.module}/${entry.screen}`)).toEqual([
-      'timesheets/sheets',
-      'finance/records',
-      'e-signature/requests',
-      'reporting/exports',
-      'surveys/surveys',
-      'communications/templates',
-    ]);
-    expect(OPT2_NAV_MODULES.flatMap((entry) => entry.roles).sort()).toEqual([...SYNTHETIC_ROLES].sort());
-    expect(Object.isFrozen(OPT2_NAV_MODULES)).toBe(true);
   });
 });
 
@@ -475,78 +461,6 @@ describe('visibility', () => {
   ])('shows Copy Site for %j: %s', (vars, shown) => {
     for (const [key, value] of Object.entries(vars)) vi.stubEnv(key, value);
     expect(linksTo(render(shell(adminOn({ circuit: 'cArch', item: 'list' }))), 'cSettings.sitecopyselect')).toBe(shown);
-  });
-});
-
-describe('OPT-2 group', () => {
-  it.each<[string, () => AdminRequest]>([
-    ['an S2 admin', () => adminOn({ circuit: 'cArch', item: 'list' })],
-    ['a site admin', () => siteAdminRequest('tenant-a', { circuit: 'cArch', item: 'list' })],
-  ])('is absent for %s without a synthetic-module role', (_, request) => {
-    expect(render(shell(request()))).not.toContain('admin-nav-opt2');
-  });
-
-  it('is one group built from legacy nav classes only', () => {
-    const ctx = opt2RoleRequest(Roles.financeApprover, {
-      user: { roles: [Roles.systemUser, ...OPT2_NAV_MODULES.flatMap((entry) => entry.roles)] },
-    });
-    const $ = cheerio.load(render(shell(ctx, {}, { opt2Module: 'surveys' })), null, false);
-    expect($('#admin-nav-opt2').length).toBe(1);
-    expect($('#admin-nav-opt2 > ul > li > a').toArray().map((el) => $(el).attr('href'))).toEqual(
-      OPT2_NAV_MODULES.map((entry) => `/opt2/admin/${entry.module}/${entry.screen}?siteid=tenant-a`),
-    );
-    const classes = $('#admin-nav-opt2, #admin-nav-opt2 [class]')
-      .toArray()
-      .flatMap((el) => ($(el).attr('class') ?? '').split(/\s+/).filter(Boolean));
-    expect([...new Set(classes.filter((name) => !name.startsWith('mi-')))].sort()).toEqual([
-      'active',
-      'nav-submenu',
-      'open',
-      'sidebar-mini-hide',
-    ]);
-  });
-
-  it('adds nothing outside li#admin-nav-opt2, the element the golden DOM comparison excludes', () => {
-    const navFor = (roles: string[]): cheerio.CheerioAPI =>
-      cheerio.load(render(shell(makeAdminRequest({ circuit: 'cArch', item: 'list', user: { roles } }, 'qaEditor'))), null, false);
-    const withGroup = navFor([Roles.systemUser, Roles.communicationsSender]);
-    expect(withGroup('li#admin-nav-opt2').length).toBe(1);
-    withGroup('li#admin-nav-opt2').remove();
-    expect(squash(withGroup.html())).toBe(squash(navFor([Roles.systemUser]).html()));
-  });
-
-  it.each(OPT2_NAV_MODULES.flatMap((entry) => entry.roles.map((role) => [role, entry] as const)))(
-    'gives %s one item, before Help',
-    (role, entry) => {
-      const markup = render(shell(opt2RoleRequest(role)));
-      const $ = cheerio.load(markup, null, false);
-      const items = $('#admin-nav-opt2 > ul > li > a');
-      expect(items.toArray().map((el) => $(el).attr('href'))).toEqual([`/opt2/admin/${entry.module}/${entry.screen}?siteid=tenant-a`]);
-      expect(items.find('i').attr('class')).toBe(entry.icon);
-      expect(items.text()).toBe(entry.label);
-      expect($('#admin-nav-opt2').next().attr('id')).toBe('admin-nav-help');
-      expect(marks(markup)).toEqual([]);
-    },
-  );
-
-  it('lists every reachable module in nav order and marks the current one', () => {
-    const ctx = opt2RoleRequest(Roles.financeApprover, {
-      user: { roles: [Roles.systemUser, Roles.surveysManager, Roles.financeApprover, Roles.timesheetsEmployee] },
-      session: { siteid: 'tenant a&b' },
-    });
-    const markup = render(shell(ctx, {}, { opt2Module: 'finance' }));
-    const $ = cheerio.load(markup, null, false);
-    expect($('#admin-nav-opt2 > ul > li > a').toArray().map((el) => $(el).attr('href'))).toEqual([
-      '/opt2/admin/timesheets/sheets?siteid=tenant+a%26b',
-      '/opt2/admin/finance/records?siteid=tenant+a%26b',
-      '/opt2/admin/surveys/surveys?siteid=tenant+a%26b',
-    ]);
-    expect(marks(markup)).toEqual([
-      'li#admin-nav-opt2.open',
-      'a.nav-submenu.active #',
-      'a.active /opt2/admin/finance/records?siteid=tenant+a%26b',
-    ]);
-    expect(marks(render(shell(ctx, {}, { opt2Module: '' })))).toEqual([]);
   });
 });
 

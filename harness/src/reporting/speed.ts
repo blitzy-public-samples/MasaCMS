@@ -14,8 +14,7 @@ import { readPin, type Pin } from '../lib/pin.js';
 import { readJson, writeJsonReport, writeMarkdown } from '../lib/report.js';
 import {
   INVENTORY_PATH,
-  SYNTHETIC_SERVICES,
-  TEN_SERVICES,
+  SERVICES,
   inventorySchema,
   traceabilityRowCount,
   type Inventory,
@@ -73,15 +72,7 @@ const VITEST_DIR_LABEL = '${OPT2_STATE_DIR}/test-all/vitest';
 export const GENERATED_NOT_MATCH_D = String.raw`^(\./)?generated(/|$)`;
 
 /** Fixture module of each service with a legacy fixture. */
-export const FIXTURE_MODULE: Readonly<Partial<Record<ServiceName, string>>> = Object.freeze({
-  people: 'people',
-  communications: 'communications',
-  reporting: 'reporting',
-  surveys: 'surveys',
-  timesheets: 'timesheets',
-  finance: 'finance',
-  'e-signature': 'esignature',
-});
+export const FIXTURE_MODULE: Readonly<Partial<Record<ServiceName, string>>> = Object.freeze({ people: 'people' });
 
 /** Every expansion of `pattern`'s `{a,b,…}` groups, left to right; a pattern without braces is returned alone. */
 export function expandBraces(pattern: string): string[] {
@@ -109,7 +100,7 @@ function fixtureModuleFile(service: ServiceName): string[] {
 
 const CONTENT_CIRCUITS = '{carch,cchangesets,ccomments,ccategory,cfeed,cchain,cform,cnav}';
 
-/** Source File column of the AAP file-by-file plan, per service; synthetic services have only their fixture CFML. */
+/** Source File column of the AAP file-by-file plan, per service. */
 export const SERVICE_REFERENCE_SOURCES: Readonly<Record<ServiceName, ReferenceSources>> = Object.freeze({
   identity: sources([
     'admin/core/controllers/{clogin,cperm,cwebservice,cusers,home,cmessage}.cfc',
@@ -147,18 +138,7 @@ export const SERVICE_REFERENCE_SOURCES: Readonly<Record<ServiceName, ReferenceSo
     'core/mura/client/api/json/v1/jsonApiUtility.cfc',
     'core/modules/v1/comments/ajax/commentsProxy.cfc',
   ]),
-  communications: sources([], fixtureModuleFile('communications')),
-  reporting: sources([], fixtureModuleFile('reporting')),
-  surveys: sources([], fixtureModuleFile('surveys')),
-  timesheets: sources([], fixtureModuleFile('timesheets')),
-  finance: sources([], fixtureModuleFile('finance')),
-  'e-signature': sources([], fixtureModuleFile('e-signature')),
 });
-
-/** Whether `service` is one of the synthetic services. */
-export function isSynthetic(service: ServiceName): boolean {
-  return (SYNTHETIC_SERVICES as readonly string[]).includes(service);
-}
 
 /** `pkg` (a repository-relative folder such as `services/identity`) as a file-name slug, `services-identity`. */
 export function packageSlug(pkg: string): string {
@@ -213,7 +193,6 @@ export interface ServiceMeasurements {
 export type SpeedRow = {
   service: ServiceName;
   folder: string;
-  synthetic: boolean;
   fixtureModule: string | null;
 } & Record<MetricKey, Metric>;
 
@@ -270,14 +249,14 @@ export function spanHours(bounds: { start?: string | null; end?: string | null }
 /**
  * Blitzy elapsed hours per service: measured from the service's recorded bounds; otherwise estimated as the run's
  * recorded hours (the `runTotal` span, else the sum of measured service spans) apportioned by the service's share of
- * the ten services' output TypeScript lines; otherwise unavailable. Commit timestamps are never consulted.
+ * the services' output TypeScript lines; otherwise unavailable. Commit timestamps are never consulted.
  */
 export function computeBlitzyHours(
   activity: Activity | null,
   tsLines: Readonly<Partial<Record<ServiceName, Metric>>>,
 ): Record<ServiceName, Metric> {
   const spans = new Map<ServiceName, Span>();
-  for (const service of TEN_SERVICES) {
+  for (const service of SERVICES) {
     const span = spanHours(activity?.services?.[service]);
     if (span !== null) spans.set(service, span);
   }
@@ -288,11 +267,11 @@ export function computeBlitzyHours(
       : spans.size > 0
         ? { hours: [...spans.values()].reduce((sum, span) => sum + span.hours, 0), source: 'sum of measured service spans' }
         : null;
-  const tsValues = TEN_SERVICES.map((service) => tsLines[service]?.value ?? null);
+  const tsValues = SERVICES.map((service) => tsLines[service]?.value ?? null);
   const tsTotal = tsValues.every((value) => value !== null) ? tsValues.reduce<number>((sum, v) => sum + (v ?? 0), 0) : null;
 
   const result = {} as Record<ServiceName, Metric>;
-  for (const service of TEN_SERVICES) {
+  for (const service of SERVICES) {
     const span = spans.get(service);
     const ts = tsLines[service]?.value ?? null;
     if (span !== undefined) {
@@ -312,7 +291,7 @@ export function computeBlitzyHours(
       );
     } else if (tsTotal === null || tsTotal === 0) {
       result[service] = unavailableMetric(
-        `no per-service bounds, and the ten services' output TypeScript total is ${tsTotal === null ? 'incomplete' : 'zero'}; rates not computed`,
+        `no per-service bounds, and the services' output TypeScript total is ${tsTotal === null ? 'incomplete' : 'zero'}; rates not computed`,
       );
     } else {
       result[service] = {
@@ -368,10 +347,10 @@ function unmeasured(service: ServiceName): ServiceMeasurements {
   };
 }
 
-/** The report body for `input`, one row per service in {@link TEN_SERVICES} order; pure. */
+/** The report body for `input`, one row per service in {@link SERVICES} order; pure. */
 export function buildSpeedReport(input: SpeedReportInput): SpeedReport {
   const byService = new Map(input.services.map((m) => [m.service, m]));
-  const measurements = TEN_SERVICES.map((service) => byService.get(service) ?? unmeasured(service));
+  const measurements = SERVICES.map((service) => byService.get(service) ?? unmeasured(service));
   const hours = computeBlitzyHours(
     input.activity,
     Object.fromEntries(measurements.map((m) => [m.service, m.typescriptLines])),
@@ -381,7 +360,6 @@ export function buildSpeedReport(input: SpeedReportInput): SpeedReport {
     return {
       service: m.service,
       folder: `services/${m.service}`,
-      synthetic: isSynthetic(m.service),
       fixtureModule: FIXTURE_MODULE[m.service] ?? null,
       blitzyElapsedHours,
       humanReviewHours: reviewHours(m.traceabilityRows),
@@ -416,10 +394,10 @@ function isMetric(value: unknown): value is Metric {
   return labelled && valued && typeof basis === 'string' && basis !== '';
 }
 
-/** `<service>.<metric>` for every service of {@link TEN_SERVICES} or metric that `report` lacks or holds malformed. */
+/** `<service>.<metric>` for every service of {@link SERVICES} or metric that `report` lacks or holds malformed. */
 export function missingMetrics(report: Pick<SpeedReport, 'services'>): string[] {
   const rows = new Map(report.services.map((row) => [row.service, row]));
-  return TEN_SERVICES.flatMap((service) => {
+  return SERVICES.flatMap((service) => {
     const row = rows.get(service) as Record<string, unknown> | undefined;
     return METRIC_KEYS.filter((key) => !isMetric(row?.[key])).map((key) => `${service}.${key}`);
   });
@@ -437,18 +415,13 @@ function ownersOf(entry: { owningService?: string | null; variants?: { owningSer
 }
 
 /**
- * Entities and endpoints `service` owns in the inventory, any disposition. Entities exclude `not-entity`; a synthetic
- * service owning none counts its fixture tables. An admin action without an owner of its own counts for each owner
- * of its variants.
+ * Entities and endpoints `service` owns in the inventory, any disposition. Entities exclude `not-entity`. An admin
+ * action without an owner of its own counts for each owner of its variants.
  */
 export function inventoryCounts(service: ServiceName, inventory: Inventory): { entities: Metric; endpoints: Metric } {
   const owned = (entry: { owningService?: string | null }): boolean => entry.owningService === service;
   const entityCount = inventory.entities.filter((e) => owned(e) && e.class !== 'not-entity').length;
-  let entities = measuredMetric(entityCount, `entities[] owned in ${INVENTORY_PATH}, class other than not-entity`);
-  if (entityCount === 0 && isSynthetic(service)) {
-    const tables = inventory.tables.filter((t) => owned(t) && t.origin === 'fixture').length;
-    entities = measuredMetric(tables, `no owned entities[]; owned fixture tables (tables[] origin fixture) in ${INVENTORY_PATH}`);
-  }
+  const entities = measuredMetric(entityCount, `entities[] owned in ${INVENTORY_PATH}, class other than not-entity`);
   const routes = inventory.routes.filter(owned).length;
   const actions = inventory.controllers
     .flatMap((c) => c.actions ?? [])
@@ -684,7 +657,7 @@ export async function collectSpeedInputs(opts: CollectOptions): Promise<Omit<Spe
       }
     }
     const noInventory = unavailableMetric(`${INVENTORY_PATH} ${inventory.record.present ? 'unreadable' : 'absent'}`);
-    for (const service of TEN_SERVICES) {
+    for (const service of SERVICES) {
       const counts =
         inventory.data === null ? { entities: noInventory, endpoints: noInventory } : inventoryCounts(service, inventory.data);
       const slug = packageSlug(`services/${service}`);

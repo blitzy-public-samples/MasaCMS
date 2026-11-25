@@ -11,7 +11,7 @@ import {
   type VariantDeclaration,
 } from '@opt2/platform/legacy-compat';
 import { routeKeyCaseOptions } from '@opt2/platform/testing';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   REHEARSAL_SCENARIO_IDS,
   isRehearsalScenario,
@@ -24,9 +24,12 @@ import {
   FINDING_KINDS,
   INVENTORY_PATH,
   NEUTRAL_ID,
+  RELINQUISHABLE_KINDS,
+  RELINQUISHED_PATH,
   carriedAdminActions,
   checkCoverage,
   countByKind,
+  coverageResult,
   coverageRouteKey,
   coverageRouteKeys,
   coverageRouteResults,
@@ -40,6 +43,7 @@ import {
   type CoverageScenario,
   type CutoverEntry,
   type InventoryItem,
+  type Relinquished,
 } from '../../src/golden/coverage.js';
 import { SEED_CREDENTIALS_FILE, basicAuth, loadSecretStore, loadSeedStore } from '../../src/golden/session.js';
 import type { SeedKeyStores } from '../../src/golden/workload.js';
@@ -66,6 +70,18 @@ const SAMPLE_VERSION = fileURLToPath(new URL('../fixtures/golden/version-v0002.s
 const MINI_INVENTORY = fileURLToPath(new URL('../fixtures/inventory/mini-inventory.json', import.meta.url));
 /** Covers of the valid sample catalogue's GS-ID-01, for which the sample version holds no entries. */
 const LOGIN_COVERS = ['admin:clogin.main', 'admin:clogin.login', 'admin:home.redirect', 'admin:clogin.logout'];
+const NOTHING_RELINQUISHED: Relinquished = {
+  'uncovered-target': [],
+  'uncovered-legacy-write': [],
+  'uncovered-admin-action': [],
+};
+
+/** Writes a relinquished-keys file holding `lists`, every other gap kind empty; returns its path. */
+async function writeRelinquished(file: string, lists: Partial<Relinquished> = {}): Promise<string> {
+  const doc = { sourceSha: PINNED_SHA, reason: 'sample', relinquished: { ...NOTHING_RELINQUISHED, ...lists } };
+  await writeFile(file, JSON.stringify(doc), 'utf8');
+  return file;
+}
 
 /** Reserved person `n` of the sample seed configuration. */
 function samplePerson(n: number): string {
@@ -95,6 +111,7 @@ interface Draft {
   entries: CutoverEntry[];
   controllers: Array<{ actions: Array<InventoryItem & { variants?: InventoryItem[] }> }>;
   reserved: { persons: string[]; usernames: string[] };
+  relinquished?: Relinquished;
 }
 
 /** A validated-shape step with the schema defaults applied. */
@@ -125,8 +142,8 @@ const BASE: Draft = {
       steps: [LIST_USERS, CREATE_PERSON],
       covers: ['admin:cusers.listusers', 'admin:cusers.update{type=2,action=add}'],
     },
-    { id: 'GS-CO-05', steps: [READ_CONTENT], covers: ['api:content.findone'] },
-    { id: 'GS-PUB-01', steps: [PUBLIC_LOGIN], covers: ['page:login'] },
+    { id: 'GS-CO-75', steps: [READ_CONTENT], covers: ['api:content.findone'] },
+    { id: 'GS-PUB-04', steps: [PUBLIC_LOGIN], covers: ['page:login'] },
   ],
   entries: [
     { route: 'admin:cusers.listusers', owningService: 'people', state: 'target', kind: 'read' },
@@ -184,7 +201,7 @@ describe('checkCoverage', () => {
   });
 
   it('reports a target entry no cover reaches, with its owning service', () => {
-    const found = checkCoverage(inputs((d) => without(d, 'GS-CO-05')));
+    const found = checkCoverage(inputs((d) => without(d, 'GS-CO-75')));
     expect(found).toEqual([
       { kind: 'uncovered-target', route: 'api:content.findone', owningService: 'strategies-content' },
     ]);
@@ -206,7 +223,7 @@ describe('checkCoverage', () => {
   );
 
   it('reports a legacy-write entry no cover reaches', () => {
-    expect(checkCoverage(inputs((d) => without(d, 'GS-PUB-01')))).toEqual([
+    expect(checkCoverage(inputs((d) => without(d, 'GS-PUB-04')))).toEqual([
       { kind: 'uncovered-legacy-write', route: 'page:login' },
     ]);
   });
@@ -258,10 +275,10 @@ describe('checkCoverage', () => {
   });
 
   it('reports a cover of an unknown route family as unknown', () => {
-    const found = checkCoverage(inputs((d) => scenario(d, 'GS-CO-05').covers.push('nosuch:content.findone')));
+    const found = checkCoverage(inputs((d) => scenario(d, 'GS-CO-75').covers.push('nosuch:content.findone')));
     expect(found).toEqual([
-      { kind: 'unknown-cover', scenario: 'GS-CO-05', cover: 'nosuch:content.findone' },
-      { kind: 'cover-not-exercised', scenario: 'GS-CO-05', cover: 'nosuch:content.findone' },
+      { kind: 'unknown-cover', scenario: 'GS-CO-75', cover: 'nosuch:content.findone' },
+      { kind: 'cover-not-exercised', scenario: 'GS-CO-75', cover: 'nosuch:content.findone' },
     ]);
   });
 
@@ -269,8 +286,8 @@ describe('checkCoverage', () => {
     const found = checkCoverage(
       inputs((d) =>
         d.scenarios.push({
-          id: 'GS-TS-01',
-          steps: [step({ name: 'missing', route: '/legacy-fixtures/cfml/api.cfm/timesheets' })],
+          id: 'GS-PE-74',
+          steps: [step({ name: 'missing', route: '/legacy-fixtures/cfml/api.cfm/nosuch' })],
           covers: ['fixture:!notfound@get'],
         }),
       ),
@@ -279,8 +296,8 @@ describe('checkCoverage', () => {
   });
 
   it('reports a cover no step of its scenario exercises', () => {
-    const found = checkCoverage(inputs((d) => scenario(d, 'GS-CO-05').covers.push('admin:cusers.listusers')));
-    expect(found).toEqual([{ kind: 'cover-not-exercised', scenario: 'GS-CO-05', cover: 'admin:cusers.listusers' }]);
+    const found = checkCoverage(inputs((d) => scenario(d, 'GS-CO-75').covers.push('admin:cusers.listusers')));
+    expect(found).toEqual([{ kind: 'cover-not-exercised', scenario: 'GS-CO-75', cover: 'admin:cusers.listusers' }]);
   });
 
   it.each<[string, (s: CoverageScenario) => void]>([
@@ -304,7 +321,7 @@ describe('checkCoverage', () => {
   ])('counts a cover as exercised through %s', (_title, edit) => {
     const found = checkCoverage(
       inputs((d) => {
-        const content = scenario(d, 'GS-CO-05');
+        const content = scenario(d, 'GS-CO-75');
         content.covers.push('admin:cusers.listusers');
         edit(content);
       }),
@@ -349,16 +366,108 @@ describe('checkCoverage', () => {
   it('reports every kind together, in FINDING_KINDS order', () => {
     const found = checkCoverage(
       inputs((d) => {
-        without(d, 'GS-PUB-01');
-        const content = scenario(d, 'GS-CO-05');
+        without(d, 'GS-PUB-04');
+        const content = scenario(d, 'GS-CO-75');
         content.covers = ['api:content.nosuch'];
         content.steps[0]!.form = { owner: RESERVED_USERNAME };
         content.seedRefs = [datasetRef('page', 'masa.content')];
         d.controllers.push({ actions: [{ routeKey: 'admin:cusers.editaddress', disposition: 'carry' }] });
+        d.relinquished = { ...NOTHING_RELINQUISHED, 'uncovered-admin-action': ['admin:cusers.listusers'] };
       }),
     );
     expect(found.map((f) => f.kind)).toEqual([...FINDING_KINDS]);
     expect(countByKind(found)).toEqual(Object.fromEntries(FINDING_KINDS.map((kind) => [kind, 1])));
+  });
+});
+
+describe('checkCoverage relinquished keys', () => {
+  const CARRIED_UPDATE = 'admin:cusers.update{type=2,action=update}';
+  const DECISION_DELETE = 'admin:cusers.update{type=2,action=delete}';
+
+  interface RelinquishCase {
+    title: string;
+    edit: (draft: Draft) => void;
+    lists: Partial<Relinquished>;
+    findings: CoverageFinding[];
+    relinquished: Partial<Relinquished>;
+  }
+
+  it.each<RelinquishCase>([
+    {
+      title: 'relinquishes a listed uncovered target entry',
+      edit: (d) => without(d, 'GS-CO-75'),
+      lists: { 'uncovered-target': ['api:content.findone'] },
+      findings: [],
+      relinquished: { 'uncovered-target': ['api:content.findone'] },
+    },
+    {
+      title: 'relinquishes a listed uncovered legacy-write entry',
+      edit: (d) => without(d, 'GS-PUB-04'),
+      lists: { 'uncovered-legacy-write': ['page:login'] },
+      findings: [],
+      relinquished: { 'uncovered-legacy-write': ['page:login'] },
+    },
+    {
+      title: 'relinquishes a listed uncovered carried admin action',
+      edit: (d) => d.controllers[0]?.actions[1]?.variants?.push({ routeKey: CARRIED_UPDATE, disposition: 'carry' }),
+      lists: { 'uncovered-admin-action': [CARRIED_UPDATE] },
+      findings: [],
+      relinquished: { 'uncovered-admin-action': [CARRIED_UPDATE] },
+    },
+    {
+      title: 'still reports an uncovered key beside a listed one',
+      edit: (d) => {
+        without(d, 'GS-CO-75');
+        without(d, 'GS-PUB-04');
+      },
+      lists: { 'uncovered-target': ['api:content.findone'] },
+      findings: [{ kind: 'uncovered-legacy-write', route: 'page:login' }],
+      relinquished: { 'uncovered-target': ['api:content.findone'] },
+    },
+    {
+      title: 'still reports an uncovered key listed under another gap kind',
+      edit: (d) => without(d, 'GS-CO-75'),
+      lists: { 'uncovered-legacy-write': ['api:content.findone'] },
+      findings: [
+        { kind: 'uncovered-target', route: 'api:content.findone', owningService: 'strategies-content' },
+        { kind: 'stale-relinquished', gap: 'uncovered-legacy-write', key: 'api:content.findone', reason: 'not-required' },
+      ],
+      relinquished: {},
+    },
+    {
+      title: 'flags a listed key a cover reaches',
+      edit: () => undefined,
+      lists: { 'uncovered-target': ['api:content.findone'], 'uncovered-admin-action': ['admin:cusers.listusers'] },
+      findings: [
+        { kind: 'stale-relinquished', gap: 'uncovered-target', key: 'api:content.findone', reason: 'covered' },
+        { kind: 'stale-relinquished', gap: 'uncovered-admin-action', key: 'admin:cusers.listusers', reason: 'covered' },
+      ],
+      relinquished: {},
+    },
+    {
+      title: 'flags a listed key that is no longer required',
+      edit: () => undefined,
+      lists: { 'uncovered-target': ['admin:carch.export'], 'uncovered-admin-action': [DECISION_DELETE] },
+      findings: [
+        { kind: 'stale-relinquished', gap: 'uncovered-target', key: 'admin:carch.export', reason: 'not-required' },
+        { kind: 'stale-relinquished', gap: 'uncovered-admin-action', key: DECISION_DELETE, reason: 'not-required' },
+      ],
+      relinquished: {},
+    },
+  ])('$title', ({ edit, lists, findings, relinquished }) => {
+    const listed = inputs((d) => {
+      edit(d);
+      d.relinquished = { ...NOTHING_RELINQUISHED, ...lists };
+    });
+    expect(coverageResult(listed)).toEqual({ findings, relinquished: { ...NOTHING_RELINQUISHED, ...relinquished } });
+    expect(checkCoverage(listed)).toEqual(findings);
+  });
+
+  it('relinquishes nothing without a list', () => {
+    expect(coverageResult(inputs((d) => without(d, 'GS-CO-75')))).toEqual({
+      findings: [{ kind: 'uncovered-target', route: 'api:content.findone', owningService: 'strategies-content' }],
+      relinquished: NOTHING_RELINQUISHED,
+    });
   });
 });
 
@@ -367,7 +476,7 @@ const REHEARSAL_CASES = [
   ['GS-PE-RH-02', true],
   ['GS-PE-RH-03', true],
   ['GS-PE-RH-04', false],
-  ['GS-FI-RH-01', false],
+  ['GS-CO-RH-01', false],
   ['GS-PE-01', false],
 ] as const;
 
@@ -423,13 +532,13 @@ describe('checkCoverage seed selections', () => {
         { userID: 'FIXTURE-USER-0001', siteID: 'tenant-a', isPublic: 0, username: 'plain.person' },
         { userID: RESERVED_PERSON, siteID: 'tenant-a', isPublic: 0, username: RESERVED_PERSON_USERNAME },
       ],
-      memberships: [{ userID: RESERVED_PERSON, groupname: 'timesheets.employee', groupSiteID: 'tenant-a' }],
+      memberships: [{ userID: RESERVED_PERSON, groupname: 'Editors', groupSiteID: 'tenant-a' }],
     },
   };
   const CREDENTIALS = {
-    roles: { 'tenant-a': { 'site-admin': 'plain.person', 'timesheets.employee': 'Reserved.Person' } },
+    roles: { 'tenant-a': { 'site-admin': 'plain.person', 'system-user': 'Reserved.Person' } },
   };
-  const EMPLOYEE = datasetRef('member', 'masa.memberships', { groupname: 'timesheets.employee' });
+  const EMPLOYEE = datasetRef('member', 'masa.memberships', { groupname: 'Editors' });
 
   let dir: string;
   let stores: Record<'seeded' | 'empty', SeedKeyStores>;
@@ -477,12 +586,12 @@ describe('checkCoverage seed selections', () => {
     ],
     [
       'a seeded role login',
-      (s) => (s.sessions = { employee: { login: 'seed:tenant-a:timesheets.employee', via: 'jsonapi' } }),
+      (s) => (s.sessions = { employee: { login: 'seed:tenant-a:system-user', via: 'jsonapi' } }),
       [RESERVED_PERSON],
     ],
     [
       'a seeded role placeholder',
-      (s) => (s.steps[1]!.form!.username = '${user:tenant-a:timesheets.employee}'),
+      (s) => (s.steps[1]!.form!.username = '${user:tenant-a:system-user}'),
       [RESERVED_PERSON],
     ],
     [
@@ -572,15 +681,15 @@ describe('checkCoverage seed selections', () => {
               { userID: 'FIXTURE-USER-0001', siteID: 'tenant-a', isPublic: 0, username: 'site.admin' },
               { userID: samplePerson(1), siteID: 'tenant-a', isPublic: 0, username: 'pat.rehearsal' },
             ],
-            memberships: [{ userID: samplePerson(1), groupname: 'timesheets.employee', groupSiteID: 'tenant-a' }],
+            memberships: [{ userID: samplePerson(1), groupname: 'Editors', groupSiteID: 'tenant-a' }],
           },
         },
         [CREDENTIALS_FILE]: {
           roles: {
             'tenant-a': {
               'site-admin': 'site.admin',
-              'finance.preparer': 'fin.preparer',
-              'timesheets.primary-approver': 'ts.approver',
+              'system-user': 'system.user',
+              approver: 'content.approver',
             },
           },
         },
@@ -589,9 +698,9 @@ describe('checkCoverage seed selections', () => {
         { kind: 'reserved-identity', scenario: 'GS-PE-02', value: samplePerson(2) },
         { kind: 'reserved-identity', scenario: 'GS-PE-RH-04', value: 'reserved.rehearsal.persons' },
         { kind: 'reserved-identity', scenario: 'GS-PE-RH-04', value: samplePerson(3) },
-        { kind: 'reserved-identity', scenario: 'GS-FI-RH-01', value: 'rehearsal-04' },
-        { kind: 'reserved-identity', scenario: 'GS-ID-05', value: 'rehearsal-05' },
-        { kind: 'reserved-identity', scenario: 'GS-TS-01', value: samplePerson(1) },
+        { kind: 'reserved-identity', scenario: 'GS-CO-RH-01', value: 'rehearsal-04' },
+        { kind: 'reserved-identity', scenario: 'GS-ID-75', value: 'rehearsal-05' },
+        { kind: 'reserved-identity', scenario: 'GS-PE-74', value: samplePerson(1) },
       ],
     ],
     [
@@ -603,15 +712,15 @@ describe('checkCoverage seed selections', () => {
         return [
           { kind: 'reserved-identity', scenario: 'GS-PE-02', value: samplePerson(2) },
           { kind: 'reserved-identity', scenario: 'GS-PE-RH-04', value: 'reserved.rehearsal.persons' },
-          { kind: 'reserved-identity', scenario: 'GS-FI-RH-01', value: 'rehearsal-04' },
-          { kind: 'reserved-identity', scenario: 'GS-ID-05', value: 'rehearsal-05' },
+          { kind: 'reserved-identity', scenario: 'GS-CO-RH-01', value: 'rehearsal-04' },
+          { kind: 'reserved-identity', scenario: 'GS-ID-75', value: 'rehearsal-05' },
           { kind: 'unresolved-seed-ref', scenario: 'GS-PE-02', message: noUsername('site-admin') },
           { kind: 'unresolved-seed-ref', scenario: 'GS-PE-RH-04', message: noUsername('site-admin') },
-          { kind: 'unresolved-seed-ref', scenario: 'GS-FI-RH-01', message: noUsername('finance.preparer') },
+          { kind: 'unresolved-seed-ref', scenario: 'GS-CO-RH-01', message: noUsername('system-user') },
           {
             kind: 'unresolved-seed-ref',
-            scenario: 'GS-TS-01',
-            message: `GS-TS-01: seed dataset ${path.join(state, DATASET_FILE)} does not exist`,
+            scenario: 'GS-PE-74',
+            message: `GS-PE-74: seed dataset ${path.join(state, DATASET_FILE)} does not exist`,
           },
         ];
       },
@@ -639,10 +748,16 @@ describe('checkCoverage on the sample fixtures', () => {
     await rm(state, { recursive: true, force: true });
   });
 
-  /** The sample catalogue, version, inventory and seed configuration, seed stores reading the temp state. */
-  function load(): Promise<CoverageInputs> {
+  /** The sample catalogue, version, inventory and seed configuration with `relinquished` (default an empty list). */
+  async function load(relinquished?: string): Promise<CoverageInputs> {
     return loadCoverageInputs(
-      { catalogue: VALID_CATALOGUE, version: SAMPLE_VERSION, inventory: MINI_INVENTORY, seedConfig: SAMPLE_SEED_CONFIG },
+      {
+        catalogue: VALID_CATALOGUE,
+        version: SAMPLE_VERSION,
+        inventory: MINI_INVENTORY,
+        seedConfig: SAMPLE_SEED_CONFIG,
+        relinquished: relinquished ?? (await writeRelinquished(path.join(state, 'relinquished.json'))),
+      },
       { OPT2_STATE_DIR: state },
     );
   }
@@ -655,8 +770,8 @@ describe('checkCoverage on the sample fixtures', () => {
       { kind: 'uncovered-admin-action', routeKey: 'admin:cusers.listusers' },
       {
         kind: 'unresolved-seed-ref',
-        scenario: 'GS-CO-05',
-        message: `GS-CO-05: seed dataset ${path.join(state, DATASET_FILE)} does not exist`,
+        scenario: 'GS-CO-75',
+        message: `GS-CO-75: seed dataset ${path.join(state, DATASET_FILE)} does not exist`,
       },
       {
         kind: 'unresolved-seed-ref',
@@ -679,28 +794,6 @@ describe('checkCoverage on the sample fixtures', () => {
     ]);
   });
 
-  it("asks no cover of a synthetic service's own /v1/ entry, which has no legacy oracle", async () => {
-    const loaded = await load();
-    const target = (route: string, owningService: string): CutoverEntry => ({ route, owningService, state: 'target', kind: 'write' });
-    const before = checkCoverage(loaded).map((finding) => JSON.stringify(finding));
-    const found = checkCoverage({
-      ...loaded,
-      entries: [
-        ...loaded.entries,
-        target('opt2:/v1/finance/**', 'finance'),
-        target('opt2:/v1/esignature/**', 'e-signature'),
-        target('opt2:/v1/messages/**', 'communications'),
-        target('opt2:/v1/templates/**', 'communications'),
-        target('opt2:/v1/people/**', 'people'),
-        target('opt2:/v2/finance/**', 'finance'),
-      ],
-    });
-    expect(found.filter((finding) => !before.includes(JSON.stringify(finding)))).toEqual([
-      { kind: 'uncovered-target', route: 'opt2:/v1/people/**', owningService: 'people' },
-      { kind: 'uncovered-target', route: 'opt2:/v2/finance/**', owningService: 'finance' },
-    ]);
-  });
-
   it('reads the default v0002 from OPT2_CUTOVER_DIR when it is set', async () => {
     const cutover = path.join(state, 'cutover');
     await mkdir(path.join(cutover, 'versions'), { recursive: true });
@@ -710,6 +803,29 @@ describe('checkCoverage on the sample fixtures', () => {
       { OPT2_STATE_DIR: state, OPT2_CUTOVER_DIR: cutover },
     );
     expect(relocated.entries).toEqual((await load()).entries);
+  });
+
+  it('reads the committed relinquished keys by default', async () => {
+    const committed = JSON.parse(readFileSync(RELINQUISHED_PATH, 'utf8')) as { relinquished: Relinquished };
+    const loaded = await loadCoverageInputs(
+      { catalogue: VALID_CATALOGUE, version: SAMPLE_VERSION, inventory: MINI_INVENTORY, seedConfig: SAMPLE_SEED_CONFIG },
+      { OPT2_STATE_DIR: state },
+    );
+    expect(loaded.relinquished).toEqual(committed.relinquished);
+  });
+
+  it.each<[string, (doc: Record<string, unknown>) => void, RegExp]>([
+    ['another source SHA', (doc) => (doc.sourceSha = '0'.repeat(40)), /sourceSha 0{40} is not the pinned source SHA/],
+    ['unsorted keys', (doc) => (doc.relinquished = { ...NOTHING_RELINQUISHED, 'uncovered-target': ['b:x', 'a:x'] }), /must be sorted and unique/],
+    ['a repeated key', (doc) => (doc.relinquished = { ...NOTHING_RELINQUISHED, 'uncovered-target': ['a:x', 'a:x'] }), /must be sorted and unique/],
+    ['a gap kind that is no uncovered key', (doc) => (doc.relinquished = { ...NOTHING_RELINQUISHED, 'unknown-cover': [] }), /unknown-cover/],
+    ['no reason', (doc) => delete doc.reason, /reason/],
+  ])('rejects a relinquished-keys file with %s', async (_title, edit, message) => {
+    const doc: Record<string, unknown> = { sourceSha: PINNED_SHA, reason: 'sample', relinquished: NOTHING_RELINQUISHED };
+    edit(doc);
+    const file = path.join(state, 'relinquished.json');
+    await writeFile(file, JSON.stringify(doc), 'utf8');
+    await expect(load(file)).rejects.toThrow(message);
   });
 
   it('reports nothing once steps cover every gap and the seed refs resolve', async () => {
@@ -742,7 +858,7 @@ describe('checkCoverage on the sample fixtures', () => {
           s.id === 'GS-PE-01' ? { ...s, steps: [...s.steps, LIST_USERS], covers: [...s.covers, 'admin:cusers.listusers'] } : s,
         ),
         { id: 'GS-PS-07', steps: [step({ name: 'monitor', route: '/index.cfm/_api/sitemonitor/' })], covers: ['sitemonitor:run'] },
-        { id: 'GS-CO-07', steps: [upload], covers: ['admin:carch.update{upload=image}'] },
+        { id: 'GS-CO-22', steps: [upload], covers: ['admin:carch.update{upload=image}'] },
       ],
     });
     expect(found).toEqual([]);
@@ -761,6 +877,7 @@ describe('countByKind', () => {
       'uncovered-target': 0,
       'uncovered-legacy-write': 1,
       'uncovered-admin-action': 0,
+      'stale-relinquished': 0,
       'cover-not-exercised': 0,
       'reserved-identity': 0,
       'unresolved-seed-ref': 0,
@@ -830,18 +947,8 @@ describe('coverageRouteKey', () => {
     ],
     [
       'a fixture body holding a NUL',
-      step({ name: 's', method: 'POST', route: '/legacy-fixtures/cfml/api.cfm/finance/records?siteid=tenant-a', body: { title: 'a\u0000b' } }),
-      'fixture:finance/records@post{text=nul}',
-    ],
-    [
-      'a fixture create whose title holds an unpaired surrogate',
-      step({ name: 's', method: 'POST', route: '/legacy-fixtures/cfml/api.cfm/finance/records?siteid=tenant-a', body: { title: '\ud800x' } }),
-      'fixture:finance/records@post{text=surrogate}',
-    ],
-    [
-      'a sign whose typed name holds an unpaired surrogate',
-      step({ name: 's', method: 'POST', route: '/legacy-fixtures/cfml/api.cfm/esignature/requests/abc/sign', body: { typedName: '\ud800' } }),
-      'fixture:esignature/requests/{id}/sign@post{text=surrogate}',
+      step({ name: 's', method: 'POST', route: '/legacy-fixtures/cfml/api.cfm/people/persons?siteid=tenant-a', body: { title: 'a\u0000b' } }),
+      'fixture:people/persons@post{text=nul}',
     ],
     [
       'an admin create whose path pair holds a NUL',
@@ -1093,6 +1200,52 @@ describe('coverageRouteResults', () => {
   });
 });
 
+describe('the committed relinquished keys', () => {
+  const GAPS: ReadonlySet<string> = new Set([...RELINQUISHABLE_KINDS, 'stale-relinquished']);
+  let committed: CoverageInputs;
+
+  beforeAll(async () => {
+    committed = { ...(await loadCoverageInputs({}, {})), seedStores: undefined };
+  });
+
+  function gaps(scenarios: readonly CoverageScenario[]): { findings: CoverageFinding[]; relinquished: Relinquished } {
+    const result = coverageResult({ ...committed, scenarios });
+    return { findings: result.findings.filter((finding) => GAPS.has(finding.kind)), relinquished: result.relinquished };
+  }
+
+  it('are exactly the required keys the committed catalogue leaves uncovered, under the pinned SHA', () => {
+    const text = readFileSync(RELINQUISHED_PATH, 'utf8');
+    const file = JSON.parse(text) as { sourceSha: string; relinquished: Relinquished };
+    expect(text.indexOf('\n')).toBe(text.length - 1);
+    expect(file.sourceSha).toBe(PINNED_SHA);
+    expect(gaps(committed.scenarios)).toEqual({ findings: [], relinquished: file.relinquished });
+  });
+
+  it.each<[string, CoverageFinding[]]>([
+    [
+      'GS-CO-04',
+      [
+        { kind: 'uncovered-admin-action', routeKey: 'admin:carch.audit' },
+        { kind: 'uncovered-admin-action', routeKey: 'admin:carch.getaudittrail' },
+      ],
+    ],
+    [
+      'GS-PUB-04',
+      [
+        {
+          kind: 'uncovered-target',
+          route: 'cfm:/core/modules/v1/rater/ajax/saverate.cfm',
+          owningService: 'strategies-content',
+        },
+        { kind: 'uncovered-legacy-write', route: 'page:saverate' },
+      ],
+    ],
+  ])('still report the keys only %s covers once its covers are gone', (id, expected) => {
+    const scenarios = committed.scenarios.map((s) => (s.id === id ? { ...s, covers: [] } : s));
+    expect(gaps(scenarios).findings).toEqual(expected);
+  });
+});
+
 describe('main', () => {
   let dir: string;
 
@@ -1126,10 +1279,14 @@ describe('main', () => {
     return { code, exits, line: JSON.parse(output) as Record<string, unknown> };
   }
 
-  /** Writes a cut-over version and a catalogue whose one browser scenario covers every committed carried action. */
+  /**
+   * Writes a cut-over version, a catalogue whose one browser scenario covers every committed carried action, and a
+   * relinquished-keys file holding `lists`.
+   */
   async function writeInputs(
     extraEntries: CutoverEntry[] = [],
-  ): Promise<{ version: string; catalogue: string; carried: string[] }> {
+    lists: Partial<Relinquished> = {},
+  ): Promise<{ version: string; catalogue: string; relinquished: string; carried: string[] }> {
     const inventory = JSON.parse(readFileSync(INVENTORY_PATH, 'utf8')) as { controllers: Draft['controllers'] };
     const carried = carriedAdminActions(inventory.controllers);
     const entries: CutoverEntry[] = [
@@ -1140,7 +1297,7 @@ describe('main', () => {
       sourceSha: PINNED_SHA,
       scenarios: [
         {
-          id: 'GS-UI-01',
+          id: 'GS-UI-04',
           title: 'Carried admin screens',
           service: 'strategies-content',
           role: 'admin',
@@ -1155,27 +1312,36 @@ describe('main', () => {
     const files = { version: path.join(dir, 'v0002.json'), catalogue: path.join(dir, 'catalogue.yaml') };
     await writeFile(files.version, JSON.stringify({ tableVersion: 'v0002', entries }), 'utf8');
     await writeFile(files.catalogue, JSON.stringify(catalogue), 'utf8');
-    return { ...files, carried };
+    const relinquished = await writeRelinquished(path.join(dir, 'relinquished.json'), lists);
+    return { ...files, relinquished, carried };
   }
 
   function reportPath(): string {
     return path.join(dir, 'state', 'golden', 'coverage.json');
   }
 
-  async function report(): Promise<{ findings: CoverageFinding[]; counts: Record<string, unknown> }> {
+  async function report(): Promise<{
+    findings: CoverageFinding[];
+    counts: Record<string, unknown>;
+    relinquished: Relinquished;
+  }> {
     return JSON.parse(await readFile(reportPath(), 'utf8')) as {
       findings: CoverageFinding[];
       counts: Record<string, unknown>;
+      relinquished: Relinquished;
     };
   }
 
+  const NONE_COUNTED = { 'uncovered-target': 0, 'uncovered-legacy-write': 0, 'uncovered-admin-action': 0 };
+  const EXTRA: CutoverEntry = { route: 'api:content.findone', owningService: 'strategies-content', state: 'target', kind: 'read' };
+
   it('exits 0 and writes an empty findings report when the inputs are fully covered', async () => {
-    const { version, catalogue, carried } = await writeInputs();
+    const { version, catalogue, relinquished, carried } = await writeInputs();
     expect(carried.length).toBeGreaterThan(0);
-    const run = await cli(['--version', version, '--catalogue', catalogue]);
+    const run = await cli(['--version', version, '--catalogue', catalogue, '--relinquished', relinquished]);
     expect(run.code).toBe(0);
     expect(run.exits).toEqual([0]);
-    expect(run.line).toMatchObject({ command: 'golden:coverage', ok: true, code: 0, findings: 0 });
+    expect(run.line).toMatchObject({ command: 'golden:coverage', ok: true, code: 0, findings: 0, relinquished: NONE_COUNTED });
     expect(await report()).toEqual({
       findings: [],
       counts: {
@@ -1185,21 +1351,36 @@ describe('main', () => {
         legacyWriteEntries: 0,
         carriedAdminActions: carried.length,
         findings: countByKind([]),
+        relinquished: NONE_COUNTED,
       },
+      relinquished: NOTHING_RELINQUISHED,
     });
     expect(stderr()).toEqual([]);
   });
 
+  it.each<[string, CutoverEntry[], number, string[]]>([
+    ['exits 0 and records a listed key no cover reaches', [EXTRA], 0, []],
+    [
+      'exits 1 on a listed key no entry requires',
+      [],
+      1,
+      [`stale-relinquished uncovered-target ${EXTRA.route} not-required\n`],
+    ],
+  ])('%s', async (_title, extra, code, errors) => {
+    const lists = { 'uncovered-target': [EXTRA.route] };
+    const { version, catalogue, relinquished } = await writeInputs(extra, lists);
+    const run = await cli(['--version', version, '--catalogue', catalogue, '--relinquished', relinquished]);
+    const applied = code === 0 ? lists : {};
+    expect(run.code).toBe(code);
+    expect(run.line).toMatchObject({ code, relinquished: { ...NONE_COUNTED, 'uncovered-target': code === 0 ? 1 : 0 } });
+    expect((await report()).relinquished).toEqual({ ...NOTHING_RELINQUISHED, ...applied });
+    expect(stderr()).toEqual(errors);
+  });
+
   it('exits 1, reports each finding on stderr and records it in the report', async () => {
-    const extra: CutoverEntry = {
-      route: 'api:content.findone',
-      owningService: 'strategies-content',
-      state: 'target',
-      kind: 'read',
-    };
-    const { version, catalogue } = await writeInputs([extra]);
-    const run = await cli([`--version=${version}`, `--catalogue=${catalogue}`]);
-    const finding = { kind: 'uncovered-target', route: extra.route, owningService: extra.owningService };
+    const { version, catalogue, relinquished } = await writeInputs([EXTRA]);
+    const run = await cli([`--version=${version}`, `--catalogue=${catalogue}`, `--relinquished=${relinquished}`]);
+    const finding = { kind: 'uncovered-target', route: EXTRA.route, owningService: EXTRA.owningService };
     expect(run.code).toBe(1);
     expect(run.line).toMatchObject({
       ok: false,
@@ -1212,7 +1393,17 @@ describe('main', () => {
   });
 
   it('exits 1 on the unedited sample version and catalogue, listing each finding', async () => {
-    const run = await cli(['--version', SAMPLE_VERSION, '--catalogue', VALID_CATALOGUE, '--seed-config', SAMPLE_SEED_CONFIG]);
+    const relinquished = await writeRelinquished(path.join(dir, 'relinquished.json'));
+    const run = await cli([
+      '--version',
+      SAMPLE_VERSION,
+      '--catalogue',
+      VALID_CATALOGUE,
+      '--seed-config',
+      SAMPLE_SEED_CONFIG,
+      '--relinquished',
+      relinquished,
+    ]);
     const { findings } = await report();
     expect(run.code).toBe(1);
     expect(run.exits).toEqual([1]);
@@ -1246,6 +1437,8 @@ describe('main', () => {
     [['--version=']],
     [['--catalogue=']],
     [['--seed-config=']],
+    [['--relinquished']],
+    [['--relinquished=']],
     [['--inventory', 'x.json']],
   ])(
     'exits 2 with the usage text and writes no report for %j',

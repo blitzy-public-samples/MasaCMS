@@ -1,4 +1,4 @@
-/** Collects a scenario's side effects (mail, stored rows, scheduled tasks, stored file variants) on its origin for the normaliser. */
+/** Collects a scenario's side effects (mail, stored rows, stored file variants) on its origin for the normaliser. */
 import { Buffer } from 'node:buffer';
 import { readFile } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -29,7 +29,6 @@ import {
   type SettleKind,
   type SettleSpec,
   type Step,
-  type TaskSpec,
 } from './catalogue.js';
 import { resolvePlaceholders, session, type Origin, type ScenarioContext } from './session.js';
 import { GoldenConfigError } from './errors.js';
@@ -38,8 +37,10 @@ import { createReadOnlyMssql, type ReadOnlyMssql } from '../lib/mssql.js';
 import { createHarnessInvoker, type HarnessInvoker } from '../lib/invocation.js';
 import { opt2Path, repoPath, type EnvLike } from '../lib/paths.js';
 import { CutoverRequestFailed, cutoverStatus } from '../repro/cutover.js';
+import { LEGACY_OWNER } from '../inventory/disposition.js';
+import { LEGACY_UNIT_PREFIX } from '../inventory/units.js';
 
-export type { RowSpec, TaskSpec } from './catalogue.js';
+export type { RowSpec } from './catalogue.js';
 
 /** Mailpit API base when `MAILPIT_API_URL` is unset. */
 export const DEFAULT_MAILPIT_URL = 'http://127.0.0.1:8025';
@@ -49,9 +50,6 @@ export const DEFAULT_SETTLE_TIMEOUT_MS = 60_000;
 
 /** Quiet period that ends a mail wait: one ColdFusion mail-spool interval (15 s default), so a later spool run is not missed. */
 export const MAIL_QUIET_MS = 15_000;
-
-/** Quiet period that ends a scheduled-task wait. */
-export const TASKS_QUIET_MS = 3_000;
 
 /** Interval between the reads of a settle wait. */
 export const SETTLE_POLL_MS = 1_000;
@@ -70,11 +68,7 @@ const MAILPIT_PAGE = 250;
 const RECEIPT_CHUNK = 100;
 const IN_LIST_CHUNK = 500;
 const PUSH_PATH_PREFIX = '/internal/v1/events/';
-const SURVEYS_PATH = '/legacy-fixtures/cfml/api.cfm/surveys/surveys/';
-const SCHEDULE_PATH = /^\/legacy-fixtures\/cfml\/api\.cfm\/surveys\/surveys\/([^/]+)\/schedule\/?$/;
-const LAUNCH_TEXT = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})$/;
 const MATRIX_PLACEHOLDER = /\$\{matrix\./;
-const PROGRAM_TABLE = /^\[?Program_(\d+)\]?\.\[?([A-Za-z_]\w*)\]?$/i;
 const FILE_ID_BINDING = 'fileid';
 const SITE_COLUMN = 'siteid';
 
@@ -93,22 +87,12 @@ export interface MailMessage {
 export interface RowSnapshot {
   unit: string;
   owner: string;
-  /** The legacy table as `opt2/table-ownership.json` names it, e.g. `tusers` or `Program_N.blackout`. */
+  /** The legacy table as `opt2/table-ownership.json` names it, e.g. `tusers` or `synthetic.person_archive`. */
   legacyTable: string;
   columns: CanonicalColumn[];
   keyColumns: string[];
   keyless: boolean;
   rows: string[];
-}
-
-/** One scheduled task; `scheduledAt` and `base` are zone-less wall-clock `YYYY-MM-DDTHH:MM:SS`. */
-export interface TaskRecord {
-  name: string;
-  kind: string;
-  target: string;
-  scheduledAt: string;
-  /** The scheduling request's launch time, which offsets are taken from. */
-  base: string;
 }
 
 /** One stored file variant that answered 200 on its render route. */
@@ -124,7 +108,6 @@ export interface FileVariant {
 export interface SideEffects {
   mail: MailMessage[];
   rows: Record<string, RowSnapshot>;
-  tasks: TaskRecord[];
   files: FileVariant[];
   /** Gateway origin only: every unit's legacy rows after replay. */
   legacyRows?: Record<string, RowSnapshot>;
@@ -220,6 +203,7 @@ export interface OwnershipTable {
   schema: string;
   owner: string;
   rowIdentity: 'key' | 'multiset' | null;
+  primaryKey?: string[];
   pattern?: boolean;
   split?: OwnershipSplit | null;
   targets: OwnershipTarget[];
@@ -460,11 +444,10 @@ export async function loadCutoverGroups(path: string = repoPath('gateway', 'cuto
   return parsed.data;
 }
 
-/** A legacy table as read: its physical schema and name, its `Program_<n>` id, and its ownership entry. */
+/** A legacy table as read: its physical schema and name, and its ownership entry. */
 interface LegacyTableRef {
   schema: string;
   table: string;
-  programId?: number;
   entry: OwnershipTable;
 }
 
@@ -472,21 +455,32 @@ function lower(text: string): string {
   return text.toLowerCase();
 }
 
-/** Ownership entry and physical location of `name` (`tusers`, `synthetic.survey`, `Program_1.blackout`). */
+/** Ownership entry and physical location of `name` (`tusers`, `synthetic.person_archive`). */
 function resolveLegacyTable(ownership: TableOwnership, name: string): LegacyTableRef {
-  const program = PROGRAM_TABLE.exec(name);
   const dot = name.indexOf('.');
-  const schema = program !== null ? `Program_${program[1]}` : dot < 0 ? 'dbo' : name.slice(0, dot);
-  const table = program !== null ? (program[2] as string) : name.slice(dot + 1);
-  const key = lower(program !== null ? `Program_N.${table}` : name);
+  const schema = dot < 0 ? 'dbo' : name.slice(0, dot);
+  const table = name.slice(dot + 1);
+  const key = lower(name);
   const entry = ownership.tables.find(
     (t) => t.pattern !== true && (lower(t.table) === key || (lower(t.schema) === lower(schema) && lower(t.table) === lower(table))),
   );
   if (entry === undefined) throw new GoldenConfigError(`rows: ${name} is not a table of opt2/table-ownership.json`);
-  if (entry.targets.length === 0) {
+  if (entry.targets.length === 0 && entry.owner !== LEGACY_OWNER) {
     throw new GoldenConfigError(`rows: ${name} maps to no target unit (owner ${entry.owner}), so its rows cannot be compared`);
   }
-  return program !== null ? { schema, table, programId: Number(program[1]), entry } : { schema, table, entry };
+  return { schema, table, entry };
+}
+
+/**
+ * Units `ref`'s rows are snapshotted under: its targets, else, for a legacy-only table, one `legacy:<table>` unit over
+ * every live column, as the inventory names the unit of a table no target service owns.
+ */
+function snapshotTargets(ref: LegacyTableRef, catalog: readonly CatalogColumn[]): OwnershipTarget[] {
+  if (ref.entry.targets.length > 0) return ref.entry.targets;
+  const keyColumns = [...(ref.entry.primaryKey ?? [])];
+  const keys = new Set(keyColumns.map(lower));
+  const ownedColumns = catalog.map((column) => column.name).filter((name) => !keys.has(lower(name)));
+  return [{ unit: `${LEGACY_UNIT_PREFIX}${ref.entry.table}`, owner: LEGACY_OWNER, rowPredicate: null, keyColumns, ownedColumns }];
 }
 
 /** Owner of `unit` from `units[]`, falling back to the target's own owner field. */
@@ -494,11 +488,9 @@ function unitOwner(ownership: TableOwnership, target: OwnershipTarget): string {
   return ownership.units.find((u) => u.unit === target.unit)?.owner ?? target.owner;
 }
 
-/** Ownership name without `dbo.` or a `Program_<n>.` schema, lower-cased, as export tables name folded mappings. */
+/** Ownership name without brackets or `dbo.`, lower-cased, as export tables name their mappings. */
 function legacyNameKey(name: string): string {
-  return lower(name.replaceAll(/[[\]]/g, ''))
-    .replace(/^dbo\./, '')
-    .replace(/^program_(?:\d+|n)\./, '');
+  return lower(name.replaceAll(/[[\]]/g, '')).replace(/^dbo\./, '');
 }
 
 // --- Legacy rows --------------------------------------------------------------------------------------------------
@@ -788,9 +780,9 @@ function snapshotOf(
 }
 
 /**
- * One snapshot per target unit of `spec.table`: a parameterised SELECT within `spec.where`, each unit's rows chosen
- * by its row predicate and encoded over its key and owned columns in catalog order, as its mapping encodes them.
- * `Program_<n>.<table>` reads that schema.
+ * One snapshot per target unit of `spec.table` (one `legacy:<table>` unit for a legacy-only table): a parameterised
+ * SELECT within `spec.where`, each unit's rows chosen by its row predicate and encoded over its key and owned columns
+ * in catalog order, as its mapping encodes them.
  */
 export async function legacyRows(
   spec: ResolvedRowSpec,
@@ -809,7 +801,7 @@ async function scanLegacyRows(
   const catalog = await readCatalog(mssql, ref.schema, ref.table);
   const label = `${ref.schema}.${ref.table}`;
   const terms = whereTerms(spec.where, catalog, label);
-  const plans = ref.entry.targets.map((target) => ({
+  const plans = snapshotTargets(ref, catalog).map((target) => ({
     target,
     owned: ownedColumns(catalog, target, label),
     predicate: parsePredicate(target.rowPredicate, target.unit),
@@ -839,7 +831,7 @@ async function scanLegacyRows(
 
 // --- Target rows --------------------------------------------------------------------------------------------------
 
-/** Collaborators of {@link targetRows}; the legacy client only reads the site registry and `synthetic.program_site`. */
+/** Collaborators of {@link targetRows}; the legacy client only reads the site registry. */
 export interface TargetRowDeps {
   env: EnvLike;
   /** Resolved configuration; else parsed from `env` once per call. */
@@ -906,17 +898,8 @@ function owns(target: OwnershipTarget, column: string): boolean {
   return encodedColumnNames(target).some((name) => lower(name) === lower(column));
 }
 
-/** Tenants a unit's export is read in: the program's site for `Program_<n>` tables, the `where` site, else every site. */
-async function exportSites(mssql: ReadOnlyMssql, ref: LegacyTableRef, terms: readonly WhereTerm[]): Promise<string[]> {
-  if (ref.programId !== undefined) {
-    const rows = await mssql.readOnlyQuery<{ siteId: unknown }>(
-      'SELECT [siteID] AS siteId FROM [synthetic].[program_site] WHERE [program_id] = @programId',
-      { programId: ref.programId },
-    );
-    const site = typeof rows[0]?.siteId === 'string' ? rows[0].siteId.trim() : '';
-    if (site === '') throw new GoldenConfigError(`rows: synthetic.program_site maps no site to program ${ref.programId}`);
-    return [site];
-  }
+/** Tenants a unit's export is read in: the `where` site, else every site. */
+async function exportSites(mssql: ReadOnlyMssql, terms: readonly WhereTerm[]): Promise<string[]> {
   const sites = (await mssql.readOnlyQuery<{ siteId: unknown }>('SELECT [SiteID] AS siteId FROM [dbo].[tsettings]'))
     .map((row) => String(row.siteId ?? '').trim())
     .filter((site) => site !== '');
@@ -943,7 +926,6 @@ async function fetchUnitExport(
     let after: string | null = null;
     do {
       const query: Record<string, string> = { unit: target.unit, siteId, limit: String(MAX_EXPORT_LIMIT) };
-      if (ref.programId !== undefined) query.programId = String(ref.programId);
       if (after !== null) query.after = after;
       const headers = await deps.invoker.headersFor({ callee: owner, url: base });
       const result = await s.get(`${MIGRATION_PATH_PREFIX}/export`, { query, headers });
@@ -969,7 +951,7 @@ export async function targetRows(spec: ResolvedRowSpec, deps: TargetRowDeps): Pr
   const config = deps.config ?? resolveSideEffectConfig(deps.env);
   const ref = resolveLegacyTable(deps.ownership, spec.table);
   const terms = scalarTerms(spec.where, ref.entry.table);
-  const sites = await exportSites(deps.mssql, ref, terms);
+  const sites = await exportSites(deps.mssql, terms);
   const exports = new Map<string, Promise<UnitExport>>();
   const exportOf = (target: OwnershipTarget): Promise<UnitExport> => {
     let pending = exports.get(target.unit);
@@ -1016,90 +998,12 @@ export async function targetRows(spec: ResolvedRowSpec, deps: TargetRowDeps): Pr
   return snapshots;
 }
 
-
-// --- Scheduled tasks ----------------------------------------------------------------------------------------------
-
-/** A survey the scenario scheduled through the fixture route: its last scheduling request's site, launch time and session. */
-export interface SurveySchedule {
-  surveyId: string;
-  siteId: string | undefined;
-  launchAt: string;
-  session: string | undefined;
-}
+// --- Stored files -------------------------------------------------------------------------------------------------
 
 /** The step's session name, or undefined (the scenario's default) when it is chosen per matrix value. */
 function stepSession(step: Step): string | undefined {
   return step.as === undefined || MATRIX_PLACEHOLDER.test(step.as) ? undefined : step.as;
 }
-
-function launchField(value: unknown, step: string): string {
-  const record = asRecord(value) ?? {};
-  const key = Object.keys(record).find((name) => lower(name) === 'launchat');
-  const text = key === undefined ? undefined : record[key];
-  if (typeof text !== 'string' || !LAUNCH_TEXT.test(text)) {
-    throw new GoldenConfigError(`step ${step} schedules a survey without a YYYY-MM-DDTHH:MM:SS launchAt`);
-  }
-  return text;
-}
-
-/** Surveys the steps schedule with `POST …/surveys/surveys/<id>/schedule`; a later request for a survey replaces an earlier one. */
-export function scheduledSurveys(steps: readonly Step[], ctx: ScenarioContext): SurveySchedule[] {
-  const byId = new Map<string, SurveySchedule>();
-  for (const step of steps) {
-    if (step.method !== 'POST' || !SCHEDULE_PATH.test(step.route.split('?')[0] as string)) continue;
-    if (step.matrix !== undefined) {
-      throw new GoldenConfigError(`${ctx.scenarioId}: step ${step.name} schedules surveys over a matrix, which tasks cannot follow`);
-    }
-    const url = new URL(String(resolvePlaceholders(step.route, ctx)), 'http://scenario.invalid');
-    const id = SCHEDULE_PATH.exec(url.pathname)?.[1];
-    if (id === undefined) continue;
-    const surveyId = decodeURIComponent(id);
-    byId.set(surveyId, {
-      surveyId,
-      siteId: [...url.searchParams].find(([name]) => lower(name) === SITE_COLUMN)?.[1],
-      launchAt: launchField(resolvePlaceholders(step.body ?? step.form, ctx), step.name),
-      session: stepSession(step),
-    });
-  }
-  return [...byId.values()];
-}
-
-/** `launchAt` plus `minutes`, in the same zone-less form. */
-function addMinutes(launchAt: string, minutes: number): string {
-  const m = LAUNCH_TEXT.exec(launchAt) as RegExpExecArray;
-  const start = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]), Number(m[6]));
-  return new Date(start + minutes * 60_000).toISOString().slice(0, 19);
-}
-
-/**
- * Tasks named `spec.prefix…` of every survey the steps schedule, read from `GET …/surveys/surveys/<id>/tasks` in the
- * scheduling session on the context's origin (the gateway serves it from surveys once cut over).
- */
-export async function collectTasks(spec: TaskSpec, ctx: ScenarioContext, steps: readonly Step[]): Promise<TaskRecord[]> {
-  const tasks: TaskRecord[] = [];
-  for (const survey of scheduledSurveys(steps, ctx)) {
-    const what = `tasks of survey ${survey.surveyId}`;
-    const path = `${SURVEYS_PATH}${encodeURIComponent(survey.surveyId)}/tasks`;
-    const query = survey.siteId === undefined ? {} : { query: { siteid: survey.siteId } };
-    const data = asRecord(asRecord(okJson<unknown>(await session(ctx, survey.session).get(path, query), what))?.data);
-    if (!Array.isArray(data?.items)) throw new SideEffectError(`${what} answered without data.items`);
-    if (typeof data.totalpages === 'number' && data.totalpages > 1) {
-      throw new SideEffectError(`${what} span ${data.totalpages} pages`);
-    }
-    for (const item of data.items as unknown[]) {
-      const { taskname, kind, route, offsetminutes } = asRecord(item) ?? {};
-      if (typeof taskname !== 'string' || typeof kind !== 'string' || typeof route !== 'string' || typeof offsetminutes !== 'number') {
-        throw new SideEffectError(`a task of survey ${survey.surveyId} lacks taskname, kind, route or offsetminutes`);
-      }
-      if (!taskname.startsWith(spec.prefix)) continue;
-      const scheduledAt = addMinutes(survey.launchAt, offsetminutes);
-      tasks.push({ name: taskname, kind, target: route, scheduledAt, base: survey.launchAt });
-    }
-  }
-  return tasks;
-}
-
-// --- Stored files -------------------------------------------------------------------------------------------------
 
 /** A file id a scenario bound, with the session of the step that bound it. */
 export interface FileRef {
@@ -1376,39 +1280,22 @@ function splitSettle(spec: string): [kind: SettleKind, target: string | undefine
   const kind = colon < 0 ? spec : spec.slice(0, colon);
   const target = colon < 0 ? undefined : spec.slice(colon + 1);
   if (!(SETTLE_KINDS as readonly string[]).includes(kind) || target === '') {
-    throw new GoldenConfigError(`unknown settle ${spec}; expected seam, projection, mail or tasks, optionally :<target>`);
+    throw new GoldenConfigError(`unknown settle ${spec}; expected seam, projection or mail, optionally :<target>`);
   }
   return [kind as SettleKind, target];
 }
 
 /**
- * The step runner's settle hook. `mail` waits until Mailpit's count stops growing; `tasks` until the scenario's task
- * list is non-empty and stable (it needs `scenario`); `seam[:<topic>]` and `projection[:<owner>]` wait for event
- * delivery and reverse projection on the gateway and are no-ops on legacy, which applies both inside its requests.
+ * The step runner's settle hook. `mail` waits until Mailpit's count stops growing; `seam[:<topic>]` and
+ * `projection[:<owner>]` wait for event delivery and reverse projection on the gateway and are no-ops on legacy, which
+ * applies both inside its requests.
  */
-export function settleHook(
-  ctx: ScenarioContext,
-  scenario?: Pick<Scenario, 'steps' | 'tasks'>,
-  deps: SideEffectDeps = {},
-): SettleHook {
+export function settleHook(ctx: ScenarioContext, deps: SideEffectDeps = {}): SettleHook {
   const config = deps.config ?? resolveSideEffectConfig(ctx.env);
   return async (spec, timeoutMs) => {
     const [kind, target] = splitSettle(spec);
     if (kind === 'mail') {
       await waitForMail(ctx.env, timeoutMs, { ...deps, config });
-      return;
-    }
-    if (kind === 'tasks') {
-      const tasks = scenario?.tasks;
-      if (tasks === undefined) throw new GoldenConfigError(`${ctx.scenarioId}: settle tasks needs the scenario and its tasks declaration`);
-      const steps = scenario?.steps ?? [];
-      await waitUntilQuiet(() => collectTasks(tasks, ctx, steps), {
-        timeoutMs,
-        quietMs: TASKS_QUIET_MS,
-        ready: (list) => list.length > 0,
-        key: (list) => JSON.stringify(list),
-        clock: clockOf(deps),
-      });
       return;
     }
     if (ctx.origin === 'legacy') return;
@@ -1452,7 +1339,7 @@ function mergeSnapshots(snapshots: readonly RowSnapshot[]): Record<string, RowSn
  */
 export async function collectSideEffects(
   ctx: ScenarioContext,
-  scenario: Pick<Scenario, 'compare' | 'rows' | 'tasks' | 'steps'>,
+  scenario: Pick<Scenario, 'compare' | 'rows' | 'steps'>,
   origin: Origin = ctx.origin,
   deps: SideEffectDeps = {},
 ): Promise<SideEffects> {
@@ -1460,7 +1347,7 @@ export async function collectSideEffects(
     throw new GoldenConfigError(`${ctx.scenarioId}: side effects of origin ${origin} asked of a ${ctx.origin} context`);
   }
   const kinds = new Set<string>(scenario.compare);
-  const effects: SideEffects = { mail: [], rows: {}, tasks: [], files: [] };
+  const effects: SideEffects = { mail: [], rows: {}, files: [] };
   const config = deps.config ?? resolveSideEffectConfig(ctx.env);
   const rt = runtime(ctx.env, config, deps);
   try {
@@ -1504,10 +1391,6 @@ export async function collectSideEffects(
         effects.rows = mergeSnapshots(rows);
         effects.legacyRows = mergeSnapshots(legacy);
       }
-    }
-    if (kinds.has('tasks')) {
-      if (scenario.tasks === undefined) throw new GoldenConfigError(`${ctx.scenarioId}: compare tasks needs a tasks declaration`);
-      effects.tasks = await collectTasks(scenario.tasks, ctx, scenario.steps);
     }
     if (kinds.has('files')) effects.files = await collectFiles(writtenFiles(scenario.steps, ctx), ctx);
   } finally {

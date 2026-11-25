@@ -1,4 +1,3 @@
-import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
 import { parse } from 'yaml';
 import {
@@ -9,12 +8,10 @@ import {
   type ServiceRequest,
   type ServiceResponse,
 } from '@opt2/platform/service-kit';
-import { assertResponseMatchesOpenApi, findOperation } from '@opt2/platform/testing';
+import { assertResponseMatchesOpenApi, findOperation, loadOpenApiDocument } from '@opt2/platform/testing';
 import { createContentClient, type ContentClient } from '../../src/legacy/content-client.js';
 
-const CONTENT_CONTRACT = parse(
-  readFileSync(new URL('../../../strategies-content/contracts/openapi.yaml', import.meta.url), 'utf8'),
-) as object;
+const CONTENT_CONTRACT = loadOpenApiDocument(new URL('../../../strategies-content/contracts/openapi.yaml', import.meta.url), parse) as object;
 
 const LOOKUP_PATH = '/internal/v1/files:lookup';
 const PHOTO_ID = 'A1B2C3D4-E5F6-A7B8-C9D0E1F2A3B4C5D6';

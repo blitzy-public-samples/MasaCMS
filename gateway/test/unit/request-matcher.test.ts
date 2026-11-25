@@ -43,12 +43,12 @@ const URLENCODED = 'application/x-www-form-urlencoded';
 const BOUNDARY = 'opt2-request-matcher';
 const MULTIPART = `multipart/form-data; boundary=${BOUNDARY}`;
 const FILES_ROUTE_PREFIX = 'opt2:/opt2/files/';
-const FINANCE_FILES_ROUTE = `${FILES_ROUTE_PREFIX}finance-attachments/**`;
+const CONTENT_FILES_ROUTE = `${FILES_ROUTE_PREFIX}content-files/**`;
 const LIST_URL = '/admin/?muraAction=cUsers.list&siteid=default';
 const HMAC_KEY = randomBytes(32).toString('hex');
 const OTHER_HMAC_KEY = randomBytes(32).toString('hex');
 
-const SERVICES: readonly OwningService[] = ['identity', 'people', 'strategies-content', 'reporting', 'finance', 'e-signature', 'stub', 'web'];
+const SERVICES: readonly OwningService[] = ['identity', 'people', 'programs-sites', 'strategies-content', 'stub', 'web'];
 const urlOf = (service: string): string => `http://${service}.opt2.test`;
 const SERVICE_URLS: Readonly<Record<string, string>> = Object.freeze(Object.fromEntries(SERVICES.map((s) => [s, urlOf(s)])));
 
@@ -58,8 +58,8 @@ function entry(route: string, owningService: OwningService, state: Authority = '
 
 const ENTRIES: readonly CutoverEntry[] = [
   entry('opt2:/opt2/stub/**', 'stub'),
-  entry('opt2:/opt2/admin/finance/**', 'web'),
-  entry('opt2:/opt2/admin/reporting/**', 'web', 'legacy'),
+  entry('opt2:/opt2/web-sample/**', 'web'),
+  entry('opt2:/opt2/legacy-sample/**', 'web', 'legacy'),
   entry('bridge:/gateway/legacy-bridge/**', 'gateway'),
   entry('api:generatecsrftokens', 'identity'),
   entry('admin:cusers.list', 'people'),
@@ -125,7 +125,7 @@ function signed(bucket: BucketName, key: string, { expires = NOW_S + SIGNED_URL_
   return signLocalUrl({ bucket, key, expires }, Buffer.from(hmacKey, 'utf8'));
 }
 
-const FILE_URL = signed('finance-attachments', 'reports/q2.pdf');
+const FILE_URL = signed('content-files', 'reports/q2.pdf');
 const FILE_QUERY = FILE_URL.slice(FILE_URL.indexOf('?'));
 
 function multipartBody(parts: Array<{ name: string; value: string; filename?: string }>): Buffer {
@@ -212,7 +212,7 @@ describe('createMatcher relay alias', () => {
   it.each([
     ['/opt2/svc/people', 'people', '/'],
     ['/opt2/svc/people?siteid=default', 'people', '/?siteid=default'],
-    ['/opt2/svc/finance/v1/records/a%20b/', 'finance', '/v1/records/a%20b/'],
+    ['/opt2/svc/programs-sites/v1/sites/a%20b/', 'programs-sites', '/v1/sites/a%20b/'],
     ['/opt2/svc/', '', '/'],
   ])('relays %s as service "%s" with service path %s', async (url, service, path) => {
     expect((await matchOf(matcherWith(), url)).destination).toStrictEqual({ kind: 'relay', service, path });
@@ -279,13 +279,12 @@ describe('createMatcher legacy-bound OPT-2 namespaces', () => {
   const PAGE_RENDER = legacyWrite('page:render', 'none', ['identity.credential', 'people.person']);
   const PAGE_LOGIN = legacyWrite('page:login', 'identity', ['identity.login_state']);
   const RELOAD = legacyWrite('reload:application', 'strategies-content', ['content.content']);
-  const SERVED_INDEX = indexOf([...ENTRIES, entry('opt2:/v1/finance/**', 'finance'), PAGE_RENDER, PAGE_LOGIN, RELOAD]);
+  const SERVED_INDEX = indexOf([...ENTRIES, PAGE_RENDER, PAGE_LOGIN, RELOAD]);
   const serving = (): Matcher => matcherWith({ active: () => SERVED_INDEX });
 
   it.each<[string, string, CutoverEntry]>([
-    ['an opt2 path whose entry is legacy', '/opt2/admin/reporting/exports', PAGE_RENDER],
+    ['an opt2 path whose entry is legacy', '/opt2/legacy-sample/exports', PAGE_RENDER],
     ['an opt2 path no entry names', '/opt2/does-not-exist', PAGE_RENDER],
-    ["a synthetic service's /v1/ path no entry names", '/v1/surveys/x', PAGE_RENDER],
     ['a doaction on a legacy-bound opt2 path', '/opt2/does-not-exist?doaction=login', PAGE_LOGIN],
   ])('sends %s (%s) to legacy under the entry legacy serves it as', async (_label, url, served) => {
     const outcome = await matchOf(serving(), url);
@@ -295,7 +294,7 @@ describe('createMatcher legacy-bound OPT-2 namespaces', () => {
     expect(outcome.destination).toStrictEqual({ kind: 'legacy' });
   });
 
-  it.each(['/opt2/admin/reporting/exports?appreload', '/v1/timesheets/sheets?appreload'])(
+  it.each(['/opt2/legacy-sample/exports?appreload'])(
     "serves the legacy-bound reload %s as the page writer behind it over both entries' units, held also by the reload entry",
     async (url) => {
       const outcome = await matchOf(serving(), url);
@@ -307,24 +306,22 @@ describe('createMatcher legacy-bound OPT-2 namespaces', () => {
   );
 
   it('serves a halted legacy-bound opt2 request under its unhalted page entry', async () => {
-    const outcome = await matchOf(serving(), '/opt2/admin/reporting/exports?a-b=one&a.b=two');
+    const outcome = await matchOf(serving(), '/opt2/legacy-sample/exports?a-b=one&a.b=two');
     expect(outcome.result?.key).toBe('page:render');
     expect(outcome.entry).toMatchObject({ route: 'page:render', state: 'legacy', kind: 'legacy-write', units: PAGE_RENDER.units });
     expect(outcome.destination).toStrictEqual({ kind: 'legacy' });
   });
 
   it.each<[string, FailContext]>([
-    ['/opt2/admin/reporting/exports?doaction=login', { surface: 'admin', route: PAGE_LOGIN.route, owner: 'legacy' }],
-    ['/v1/surveys/x?siteid=tenant-a', { surface: 'api', params: { siteid: 'tenant-a' }, route: PAGE_RENDER.route, owner: 'legacy' }],
+    ['/opt2/legacy-sample/exports?doaction=login', { surface: 'admin', route: PAGE_LOGIN.route, owner: 'legacy' }],
   ])("fails %s closed as its namespace's surface with the served key's route and params", async (url, failContext) => {
     expect((await matchOf(serving(), url)).failContext).toEqual(failContext);
   });
 
   it.each<[string, string, OwningService]>([
     ['/opt2/stub/ping?appreload', 'opt2:/opt2/stub/**', 'stub'],
-    ['/opt2/admin/finance/records?doaction=login', 'opt2:/opt2/admin/finance/**', 'web'],
-    ['/v1/finance/records?appreload', 'opt2:/v1/finance/**', 'finance'],
-    [FILE_URL, FINANCE_FILES_ROUTE, 'finance'],
+    ['/opt2/web-sample/records?doaction=login', 'opt2:/opt2/web-sample/**', 'web'],
+    [FILE_URL, CONTENT_FILES_ROUTE, 'strategies-content'],
   ])('keeps the target-bound %s on its opt2 entry', async (url, route, service) => {
     const outcome = await matchOf(serving(), url);
     expect(outcome.result?.family).toBe('opt2');
@@ -365,7 +362,7 @@ describe('createMatcher unavailable destinations', () => {
   it.each([
     ['stub', '/opt2/stub/ping'],
     ['web', LIST_URL],
-    ['finance', FILE_URL],
+    ['strategies-content', FILE_URL],
   ])('answers no-service-url when OPT2_SERVICE_URLS lacks %s for %s', async (service, url) => {
     const urls = Object.fromEntries(Object.entries(SERVICE_URLS).filter(([name]) => name !== service));
     const outcome = await matchOf(matcherWith({ env: { OPT2_SERVICE_URLS: urls } }), url);
@@ -409,7 +406,7 @@ describe('createMatcher bare destinations', () => {
   it('answers 404 for a signed file URL when storage is not the local adapter, without reading the key', async () => {
     const matcher = matcherWith({ env: { OPT2_STORAGE_ADAPTER: 'cloud', OPT2_STATE_DIR: keylessDir } });
     const outcome = await matchOf(matcher, FILE_URL);
-    expect(outcome.entry?.route).toBe(FINANCE_FILES_ROUTE);
+    expect(outcome.entry?.route).toBe(CONTENT_FILES_ROUTE);
     expect(outcome.destination).toStrictEqual({ kind: 'bare', status: 404 });
   });
 });
@@ -424,7 +421,7 @@ describe('createMatcher target destinations', () => {
   });
 
   it('marks a web-owned entry outside the admin family as web, without an admin mapping', async () => {
-    const url = '/opt2/admin/finance/records?id=7';
+    const url = '/opt2/web-sample/records?id=7';
     expect((await matchOf(matcherWith(), url)).destination).toStrictEqual({
       kind: 'target',
       service: 'web',
@@ -436,30 +433,30 @@ describe('createMatcher target destinations', () => {
 
   const FIXTURE = '/legacy-fixtures/cfml/api.cfm';
   const FIXTURE_INDEX = indexOf([
-    entry('fixture:finance/records@get', 'finance'),
-    entry('fixture:finance/records@post', 'finance'),
-    entry('fixture:finance/records/{id}/submit@post', 'finance'),
-    entry('fixture:finance/records/{id}@get', 'finance'),
-    entry('fixture:finance/records/{id}/versions@get', 'finance'),
+    entry('fixture:people/persons@get', 'people'),
+    entry('fixture:people/persons@post', 'people'),
+    entry('fixture:people/persons/{id}/archive@post', 'people'),
+    entry('fixture:people/persons/{id}@get', 'people'),
+    entry('fixture:people/persons/{id}/archives@get', 'people'),
   ]);
   it.each<[method: string, url: string, route: string, path: string]>([
-    ['GET', `${FIXTURE}/finance/records?siteid=tenant-a`, 'fixture:finance/records@get', `${FIXTURE}/finance/records?siteid=tenant-a`],
-    ['GET', '//legacy-fixtures/cfml/api.cfm/FINANCE/records?siteid=tenant-a', 'fixture:finance/records@get', `${FIXTURE}/finance/records?siteid=tenant-a`],
-    ['GET', `${FIXTURE}/finance%2Frecords?siteid=tenant-a`, 'fixture:finance/records@get', `${FIXTURE}/finance/records?siteid=tenant-a`],
-    ['POST', '/legacy-fixtures//cfml/api.cfm/finance/Records/?siteid=tenant-a&q=a+b%2f', 'fixture:finance/records@post', `${FIXTURE}/finance/records?siteid=tenant-a&q=a+b%2f`],
-    ['POST', `${FIXTURE}/FINANCE/Records/Ab-1/SUBMIT`, 'fixture:finance/records/{id}/submit@post', `${FIXTURE}/finance/records/Ab-1/submit`],
-    ['GET', `${FIXTURE}/finance/records/a%5C..%5Cb/versions`, 'fixture:finance/records/{id}/versions@get', `${FIXTURE}/finance/records/a%5C..%5Cb/versions`],
-    ['GET', `${FIXTURE}/finance/records/x../versions`, 'fixture:finance/records/{id}/versions@get', `${FIXTURE}/finance/records/x../versions`],
+    ['GET', `${FIXTURE}/people/persons?siteid=tenant-a`, 'fixture:people/persons@get', `${FIXTURE}/people/persons?siteid=tenant-a`],
+    ['GET', '//legacy-fixtures/cfml/api.cfm/PEOPLE/persons?siteid=tenant-a', 'fixture:people/persons@get', `${FIXTURE}/people/persons?siteid=tenant-a`],
+    ['GET', `${FIXTURE}/people%2Fpersons?siteid=tenant-a`, 'fixture:people/persons@get', `${FIXTURE}/people/persons?siteid=tenant-a`],
+    ['POST', '/legacy-fixtures//cfml/api.cfm/people/Persons/?siteid=tenant-a&q=a+b%2f', 'fixture:people/persons@post', `${FIXTURE}/people/persons?siteid=tenant-a&q=a+b%2f`],
+    ['POST', `${FIXTURE}/PEOPLE/Persons/Ab-1/ARCHIVE`, 'fixture:people/persons/{id}/archive@post', `${FIXTURE}/people/persons/Ab-1/archive`],
+    ['GET', `${FIXTURE}/people/persons/a%5C..%5Cb/archives`, 'fixture:people/persons/{id}/archives@get', `${FIXTURE}/people/persons/a%5C..%5Cb/archives`],
+    ['GET', `${FIXTURE}/people/persons/x../archives`, 'fixture:people/persons/{id}/archives@get', `${FIXTURE}/people/persons/x../archives`],
   ])('sends %s %s to its service on the api.cfm path legacy dispatches, the query as sent', async (method, url, route, path) => {
     const outcome = await matchOf(matcherWith({ active: () => FIXTURE_INDEX }), url, { method });
     expect(outcome.entry?.route).toBe(route);
-    expect(outcome.destination).toStrictEqual({ kind: 'target', service: 'finance', serviceUrl: urlOf('finance'), path, isWeb: false, rawTarget: true });
+    expect(outcome.destination).toStrictEqual({ kind: 'target', service: 'people', serviceUrl: urlOf('people'), path, isWeb: false, rawTarget: true });
   });
 
   it.each<[url: string, key: string]>([
-    [`${FIXTURE}/finance/records/..%5C..%5Cweb.config`, 'cfm:/legacy-fixtures/cfml/api.cfm'],
-    [`${FIXTURE}/finance/records/..%5C..%5Cweb.config/versions`, 'page:render'],
-    [`${FIXTURE}/finance/records/.x/versions`, 'page:render'],
+    [`${FIXTURE}/people/persons/..%5C..%5Cweb.config`, 'cfm:/legacy-fixtures/cfml/api.cfm'],
+    [`${FIXTURE}/people/persons/..%5C..%5Cweb.config/archives`, 'page:render'],
+    [`${FIXTURE}/people/persons/.x/archives`, 'page:render'],
   ])('keys %s as %s, off its target fixture entry, and sends it to legacy', async (url, key) => {
     const outcome = await matchOf(matcherWith({ active: () => FIXTURE_INDEX }), url);
     expect(outcome.result?.key).toBe(key);
@@ -585,10 +582,10 @@ describe('createMatcher signed file URLs', () => {
   });
 
   it('verifies an upper-case object key, which the route key lower-cases', async () => {
-    const url = signed('finance-attachments', 'Reports/Q2 Summary.PDF');
+    const url = signed('content-files', 'Reports/Q2 Summary.PDF');
     const outcome = await matchOf(matcherWith(), url);
-    expect(outcome.result?.key).toBe('opt2:/opt2/files/finance-attachments/reports/q2 summary.pdf');
-    expect(outcome.destination).toMatchObject({ kind: 'target', service: 'finance', path: url });
+    expect(outcome.result?.key).toBe('opt2:/opt2/files/content-files/reports/q2 summary.pdf');
+    expect(outcome.destination).toMatchObject({ kind: 'target', service: 'strategies-content', path: url });
   });
 
   it.each([
@@ -597,15 +594,15 @@ describe('createMatcher signed file URLs', () => {
     ['a percent-encoded files segment', FILE_URL.replace('/opt2/files/', '/opt2/%66iles/')],
     ['a percent-encoded namespace segment', FILE_URL.replace('/opt2/files/', '/%6Fpt2/files/')],
     ['an index.cfm segment the key drops', FILE_URL.replace('/opt2/files/', '/opt2/index.cfm/files/')],
-    ['a dot segment out of the bucket', `/opt2/files/finance-attachments/../reporting-exports/q2.pdf${FILE_QUERY}`],
+    ['a dot segment out of the bucket', `/opt2/files/content-files/../payroll-archive/q2.pdf${FILE_QUERY}`],
     ['a tampered signature', FILE_URL.replace(/sig=([0-9a-f])/, (_match, digit: string) => `sig=${digit === '0' ? '1' : '0'}`)],
-    ['a signature from another key', signed('finance-attachments', 'reports/q2.pdf', { hmacKey: OTHER_HMAC_KEY })],
-    ['an expired signature', signed('finance-attachments', 'reports/q2.pdf', { expires: NOW_S - 1 })],
-    ['no signature', '/opt2/files/finance-attachments/reports/q2.pdf'],
+    ['a signature from another key', signed('content-files', 'reports/q2.pdf', { hmacKey: OTHER_HMAC_KEY })],
+    ['an expired signature', signed('content-files', 'reports/q2.pdf', { expires: NOW_S - 1 })],
+    ['no signature', '/opt2/files/content-files/reports/q2.pdf'],
   ])('answers 403 for %s, which still keys to the bucket entry', async (_label, url) => {
     const outcome = await matchOf(matcherWith(), url);
-    expect(outcome.result?.key.startsWith(`${FILES_ROUTE_PREFIX}finance-attachments/`)).toBe(true);
-    expect(outcome.entry?.route).toBe(FINANCE_FILES_ROUTE);
+    expect(outcome.result?.key.startsWith(`${FILES_ROUTE_PREFIX}content-files/`)).toBe(true);
+    expect(outcome.entry?.route).toBe(CONTENT_FILES_ROUTE);
     expect(outcome.destination).toStrictEqual({ kind: 'bare', status: 403 });
   });
 });
@@ -718,7 +715,7 @@ describe('createMatcher REST spellings under the committed v0002', () => {
     ['POST', '/index.CFM/_api/rest/v1/tenant-a/oauth2', 'rest:oauth2', { grant_type: 'client_credentials' }],
     ['DELETE', '/INDEX.CFM/_api/rest/v1/tenant-a/stats/00000000-0000-0000-0000000000000000', 'rest:stats.delete'],
     ['POST', '/Index.cfm/_api/rest/v1/tenant-a/stats/', 'rest:stats.save', { siteid: 'tenant-a' }],
-    ['GET', '/index.CFM/_api/rest/v1/tenant-a/tokeninfo?access_token=gs-co-19-session&client_id=gs-co-19-session', 'rest:tokeninfo'],
+    ['GET', '/index.CFM/_api/rest/v1/tenant-a/tokeninfo?access_token=tokeninfo-session&client_id=tokeninfo-session', 'rest:tokeninfo'],
     ['POST', '/INDEX.CFM/_api/rest/v1/tenant-a/user/', 'rest:user.save', { siteid: 'tenant-a' }],
   ])('serves session-managed %s %s on legacy as the legacy-write {session} variant of %s', async (method, url, base, form) => {
     const v0002 = await committedIndex('v0002');
@@ -769,7 +766,7 @@ describe('createMatcher REST spellings under the committed v0002', () => {
     ['POST', '/_api/rest/v1/tenant-a/oauth2', 'rest:oauth2', { grant_type: 'client_credentials', ...SITE }],
     ['DELETE', `/_api/rest/v1/tenant-a/stats/${NEUTRAL}?siteid=tenant-a`, 'rest:stats.delete'],
     ['POST', '/_api/rest/v1/tenant-a/stats/', 'rest:stats.save', SITE],
-    ['GET', '/_api/rest/v1/tenant-a/tokeninfo?access_token=gs-co-19-siteid&client_id=gs-co-19-siteid&siteid=tenant-a', 'rest:tokeninfo'],
+    ['GET', '/_api/rest/v1/tenant-a/tokeninfo?access_token=tokeninfo-siteid&client_id=tokeninfo-siteid&siteid=tenant-a', 'rest:tokeninfo'],
     ['POST', '/_api/rest/v1/tenant-a/user/', 'rest:user.save', SITE],
   ])('serves sessionless %s %s carrying a siteid on legacy as the legacy-write {siteid} variant of %s', async (method, url, base, form) => {
     const v0002 = await committedIndex('v0002');
@@ -911,7 +908,7 @@ describe('createMatcher reload requests', () => {
     kind: 'legacy-write',
     units: ['content.trash', TARGETING],
   };
-  const SITE_MONITOR: CutoverEntry = { ...entry('sitemonitor:run', 'programs-sites'), kind: 'job', units: [CONTENT, 'communications.email'] };
+  const SITE_MONITOR: CutoverEntry = { ...entry('sitemonitor:run', 'programs-sites'), kind: 'job', units: [CONTENT, 'programs_sites.site'] };
   const GLOBAL_CONFIG: CutoverEntry = entry('admin:home.redirect', 'identity', 'legacy');
   const RELOAD_INDEX = indexOf([...ENTRIES, RELOAD, TARGETING_SAVE, TRASH_EMPTY, SITE_MONITOR, GLOBAL_CONFIG]);
   const TARGETING_URL = '/_api/json/v1/default/variationtargeting/';
@@ -921,7 +918,7 @@ describe('createMatcher reload requests', () => {
   it.each<[string, string, Sent | undefined, CutoverEntry, string[]]>([
     ['a target write', `${TARGETING_URL}?appreload`, TARGETING_FORM, TARGETING_SAVE, [TARGETING, CONTENT]],
     ['a legacy-write', '/admin/?muraAction=cTrash.empty&appreload', undefined, TRASH_EMPTY, ['content.trash', TARGETING, CONTENT]],
-    ['a target job sharing a unit with the reload', '/_api/sitemonitor/?appreload', undefined, SITE_MONITOR, [CONTENT, 'communications.email']],
+    ['a target job sharing a unit with the reload', '/_api/sitemonitor/?appreload', undefined, SITE_MONITOR, [CONTENT, 'programs_sites.site']],
   ])("serves a reload in front of %s on legacy as that writer's legacy-write over both entries' units", async (_label, url, sent, served, units) => {
     const outcome = await matchOf(reloading(), url, sent);
     expect(outcome.result).toMatchObject({ key: 'reload:application', afterReload: { key: served.route } });
@@ -971,17 +968,17 @@ describe('createMatcher storage key', () => {
     await expect(matchOf(matcher, FILE_URL)).rejects.toThrow(failure);
     await expect(matchOf(matcher, FILE_URL)).rejects.toThrow(failure);
     await writeKey(stateDir, `${HMAC_KEY}\n`);
-    expect((await matchOf(matcher, FILE_URL)).destination).toMatchObject({ kind: 'target', service: 'finance' });
+    expect((await matchOf(matcher, FILE_URL)).destination).toMatchObject({ kind: 'target', service: 'strategies-content' });
   });
 
   it('keeps the key it read for later requests', async () => {
     const stateDir = await mkdtemp(join(root, 'memo-'));
     await writeKey(stateDir, HMAC_KEY);
     const matcher = matcherWith({ env: { OPT2_STATE_DIR: stateDir } });
-    expect((await matchOf(matcher, FILE_URL)).destination).toMatchObject({ kind: 'target', service: 'finance' });
+    expect((await matchOf(matcher, FILE_URL)).destination).toMatchObject({ kind: 'target', service: 'strategies-content' });
     await writeKey(stateDir, OTHER_HMAC_KEY);
-    expect((await matchOf(matcher, FILE_URL)).destination).toMatchObject({ kind: 'target', service: 'finance' });
-    const resigned = signed('finance-attachments', 'reports/q2.pdf', { hmacKey: OTHER_HMAC_KEY });
+    expect((await matchOf(matcher, FILE_URL)).destination).toMatchObject({ kind: 'target', service: 'strategies-content' });
+    const resigned = signed('content-files', 'reports/q2.pdf', { hmacKey: OTHER_HMAC_KEY });
     expect((await matchOf(matcher, resigned)).destination).toStrictEqual({ kind: 'bare', status: 403 });
   });
 });

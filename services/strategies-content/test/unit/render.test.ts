@@ -1,5 +1,4 @@
 /** `/_api/render/*` and `/tasks/render/*` over memory storage and the recording pool: legacy's 200 byte stream, never a signed URL. */
-import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import {
@@ -10,13 +9,13 @@ import {
   unavailableResponseFor,
 } from '@opt2/platform/legacy-compat';
 import { contentFileKey, type ContentFileVariant } from '@opt2/platform/storage';
-import { TENANT_A, TENANT_B, TENANT_UMBRELLA, assertResponseMatchesOpenApi, poolTenantExpectation, type InjectResponse } from '@opt2/platform/testing';
+import { TENANT_A, TENANT_B, TENANT_UMBRELLA, assertResponseMatchesOpenApi, loadOpenApiDocument, poolTenantExpectation, type InjectResponse } from '@opt2/platform/testing';
 import { renderRequestOf, type ParsedRenderRequest, type RenderQuery } from '../../src/routes/render.js';
 import { buildTestApp, createMemoryStorage, createRecordingDb, type MemoryStorage, type RecordingDb, type TestApp } from '../helpers/app.js';
 import { FILE_BYTES, IDS, fileObjectRow, fileRow, seedMemoryStorage, seedRecordingDb, umbrellaSeed } from '../helpers/seed.js';
 import { contentHeaders } from '../helpers/tokens.js';
 
-const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
+const OPENAPI = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as object;
 
 const UMBRELLA = TENANT_UMBRELLA.tenantId;
 const PNG = 'A3F00000-0000-0000-0000000000000001';

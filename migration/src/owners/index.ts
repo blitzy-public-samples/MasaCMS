@@ -27,9 +27,4 @@ export type {
   WatermarkWrite,
   SiteMonitorState,
   SiteMonitorStateInput,
-  AdoptScheduledTask,
-  AdoptScheduledTasksRequest,
-  AdoptScheduledTasksResult,
-  CancelAdoptedTasksRequest,
-  CancelAdoptedTasksResult,
 } from './client.js';

@@ -143,7 +143,7 @@ export const tracingEnvSchema = z.object({
 /** Parsed tracing variables. */
 export type TracingEnv = z.output<typeof tracingEnvSchema>;
 
-/** Variables every OPT-2 process reads; gateway, migration and communications `.extend()` it with the builders above. */
+/** Variables every OPT-2 process reads; each process `.extend()`s it with the builders above for its own variables. */
 export const baseEnvSchema = z.object({
   PORT: envPort(),
   OPT2_SERVICE_NAME: requiredEnvString(z.string().regex(SERVICE_NAME)),

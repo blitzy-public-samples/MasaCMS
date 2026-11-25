@@ -29,12 +29,6 @@ jobs:
           - services/people
           - services/programs-sites
           - services/strategies-content
-          - services/communications
-          - services/reporting
-          - services/surveys
-          - services/timesheets
-          - services/finance
-          - services/e-signature
           - services/stub
     defaults:
       run:

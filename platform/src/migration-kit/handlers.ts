@@ -105,7 +105,7 @@ export type ApplyOrigin = (typeof APPLY_ORIGINS)[number];
 /** Status of a multi-transaction operation; the projector holds `open` rows and never projects `rolled-back` ones. */
 export type OperationStatus = 'open' | 'done' | 'rolled-back';
 
-/** One stored object of an owner's manifest, such as a content file variant or a finance attachment. */
+/** One stored object of an owner's manifest, such as a content file variant. */
 export interface ObjectManifestEntry {
   key: string;
   size: number;
@@ -162,7 +162,7 @@ export interface MigrationHandlerOptions {
   ): Promise<RepositoryRow>;
   /** Statuses of operations; ids it omits fall back to the `open_operation` registry. */
   operationStatus?(db: TenantDb, operationIds: string[]): Promise<Record<string, OperationStatus>>;
-  /** Site of a `Program_<id>` schema as `synthetic.program_site` maps it; required when a mapping takes its tenant from the program. */
+  /** Site of a `Program_<id>` schema as the program-to-site map gives it; required when a mapping takes its tenant from the program. */
   programSiteId?(programId: number): string | null | undefined;
 }
 

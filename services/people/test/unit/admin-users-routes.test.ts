@@ -1,5 +1,4 @@
 /** The cUsers read routes over in-memory people rows, registry and identity: contract shapes, the `before()` gate, tenancy and `route()`. */
-import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { request as httpRequest } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -13,7 +12,7 @@ import { LegacyServiceUnavailableError } from '@opt2/platform/legacy-compat';
 import { createLogger } from '@opt2/platform/logging';
 import { ServiceUnavailableError, createService, fixedClock, loadEnv, throwIfRequestAborted, type FastifyInstance } from '@opt2/platform/service-kit';
 import { tenantIdForSite, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
-import { assertResponseMatchesOpenApi, mintServiceToken, mintUserToken, testVerifier, writeTestSecrets } from '@opt2/platform/testing';
+import { assertResponseMatchesOpenApi, loadOpenApiDocument, mintServiceToken, mintUserToken, testVerifier, writeTestSecrets } from '@opt2/platform/testing';
 import type {
   AccountView,
   AdminSessionState,
@@ -36,7 +35,7 @@ import {
 } from '../../src/routes/admin-users.js';
 import { IdentityDouble, personSearchKeys, personsById, personsInOrder } from '../helpers/search-doubles.js';
 
-const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as {
+const OPENAPI = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as {
   paths: Record<string, Record<string, { operationId?: string; 'x-opt2-transport'?: string; 'x-opt2-requires'?: string[] }>>;
 };
 const NOW = new Date(2026, 5, 30, 9, 15, 0, 0);
@@ -453,7 +452,7 @@ describe('route() URL helpers [legacy: core/mura/utility.cfc:1326-1469]', () => 
 describe('registration', () => {
   const OPERATIONS = [
     'listUserGroups', 'listUsers', 'searchUsers', 'getAdvancedSearch', 'setAdvancedSearch', 'getUserEdit', 'getAddressEdit', 'routeUser', 'readCurrentUser',
-    'readPoolUser', 'listUserGroupsV2', 'listUsersV2', 'searchUsersV2', 'getAdvancedSearchV2', 'setAdvancedSearchV2', 'listUserFeed',
+    'listUserGroupsV2', 'listUsersV2', 'searchUsersV2', 'getAdvancedSearchV2', 'setAdvancedSearchV2', 'listUserFeed',
   ];
 
   it('registers exactly the contract operations of these reads, with their transport and roles', () => {

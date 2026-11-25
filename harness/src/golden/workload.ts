@@ -1,12 +1,10 @@
 // Deterministic legacy write workload of test-all stage 4, sent through the gateway while v0001 is active.
 import { createHash } from 'node:crypto';
 import path from 'node:path';
-import { Roles, SYNTHETIC_ROLES } from '@opt2/platform/auth';
 import { z } from '@opt2/platform/service-kit';
 import {
   CATALOGUE_PATH,
   loadCatalogue,
-  readFixtureStatus,
   stepSchema,
   type Scenario,
   type SessionSpec,
@@ -39,36 +37,23 @@ export const WORKLOAD_COUNTS = Object.freeze({
   contentCreates: 2,
   userEdits: 3,
   groupEdits: 1,
-  timesheetSubmits: 3,
-  financeEdits: 2,
 });
 
-/** Sites written: content, people and fixture edits in `tenant-a`; content creates and the site edit in `tenant-b`. */
+/** Sites written: content and people edits in `tenant-a`; content creates and the site edit in `tenant-b`. */
 export const WORKLOAD_SITES = Object.freeze({ edits: 'tenant-a', creates: 'tenant-b', settings: 'tenant-b' });
 
 const ADMIN_SESSION = 'admin';
-// The fixture API authorises by held role group, and the S2 admin holds none, so fixture writes run in sessions of the
-// seeded role accounts: an employee submits days and a preparer edits records.
-const EMPLOYEE_SESSION = 'employee';
-const PREPARER_SESSION = 'preparer';
 const MODULE_ID = '00000000000000000000000000000000000';
 const HOME_ID = '00000000000000000000000000000000001';
-const FIXTURE_API = '/legacy-fixtures/cfml/api.cfm';
 const TITLE_MAX = 255;
 /** Reserved `.test` domain of the addresses the workload writes; no mail is sent to them. */
 const EMAIL_DOMAIN = 'workload.opt2.test';
-// The seed creates one Masa group per synthetic role, named after it. They carry the fixture authorisation the
-// synthetic scenarios log in with, so none is edited.
-const ROLE_GROUPS: ReadonlySet<string> = new Set(SYNTHETIC_ROLES);
-const DRAFT_DAY = 'DRAFT';
-const IN_PROGRESS = 'IN-PROGRESS';
 /** `user:<site>:<role>` placeholders and `seed:<site>:<role>` session logins, both naming a seeded role account. */
 const ROLE_ACCOUNT = /^(?:user|seed):([^:${}]+):([^${}]+)$/;
 
 /** Seed configuration fields the workload reads from `legacy-fixtures/seed/seed.config.json`. */
 export interface WorkloadSeedConfig {
   seed: number;
-  sites: Readonly<Record<string, { programId: number | null }>>;
   reserved: { rehearsal: { persons: readonly string[]; usernames: readonly string[] } };
 }
 
@@ -116,14 +101,10 @@ export interface WorkloadDataset {
     memberships: readonly WorkloadMembership[];
     content: readonly WorkloadContent[];
   };
-  /** Fixture tables by dataset key (`Program_<id>.<table>`); read only when the fixtures are available. */
-  fixtures?: Readonly<Record<string, readonly unknown[]>>;
 }
 
 /** Inputs of {@link buildWorkloadPlan} besides the seed configuration and dataset. */
 export interface WorkloadPlanOptions {
-  /** Whether the legacy fixtures are loaded (`${OPT2_STATE_DIR}/fixtures.json`); without them none is written. */
-  fixturesAvailable: boolean;
   /** Values held by rows the catalogue references ({@link catalogueSeedKeys}); a row keyed by any is not written. */
   excludedKeys?: ReadonlySet<string>;
   /** Admin username posted at login (default `admin`). */
@@ -133,12 +114,10 @@ export interface WorkloadPlanOptions {
 /**
  * Data predicate over a probe's extracted bindings; element fields match case-insensitively (ACF upper-cases keys).
  * `equals`: the binding is `value`. `some-equals`: an element of the array binding has `field` = `value`.
- * `keyed-not-equals`: the element of the array binding whose `key` is `id` has `field` other than `value`.
  */
 export type WriteCheck =
   | { kind: 'equals'; binding: string; value: string }
-  | { kind: 'some-equals'; binding: string; field: string; value: string }
-  | { kind: 'keyed-not-equals'; binding: string; key: string; id: string; field: string; value: string };
+  | { kind: 'some-equals'; binding: string; field: string; value: string };
 
 /** A write of the plan: `check` holds of plan item `probe`'s response once it is applied; `skip` then stays unsent. */
 export interface WorkloadWrite {
@@ -205,27 +184,15 @@ export interface SeedKeyStores {
   env?: EnvLike;
 }
 
-const timesheetRowSchema = z.object({ timesheet_id: z.string(), person_id: z.string(), siteID: z.string() });
-const dayRowSchema = z.object({ day_id: z.string(), timesheet_id: z.string(), state: z.string() });
-const financeRowSchema = z.object({
-  record_id: z.string(),
-  siteID: z.string(),
-  state: z.string(),
-  title: z.string(),
-  amount: z.string(),
-  period: z.string(),
-});
-
 /** Validates the seed configuration fields of {@link WorkloadSeedConfig}. */
 export const workloadSeedConfigSchema = z.object({
   seed: z.number().int(),
-  sites: z.record(z.string(), z.object({ programId: z.number().int().nullable() })),
   reserved: z.object({
     rehearsal: z.object({ persons: z.array(z.string()), usernames: z.array(z.string()) }),
   }),
 });
 
-/** Validates the dataset fields of {@link WorkloadDataset}; fixture rows are validated per table when planned. */
+/** Validates the dataset fields of {@link WorkloadDataset}. */
 export const workloadDatasetSchema = z.object({
   masa: z.object({
     users: z.array(
@@ -253,7 +220,6 @@ export const workloadDatasetSchema = z.object({
       }),
     ),
   }),
-  fixtures: z.record(z.string(), z.array(z.unknown())),
 });
 
 function sha256Hex(text: string): string {
@@ -311,19 +277,6 @@ function pick<T>(rows: readonly T[], key: (row: T) => string, count: number, see
   return Array.from({ length: count }, (_, i) => sorted[(start + i) % sorted.length] as T);
 }
 
-/** Rows of fixture table `key`, validated by `schema`; throws GoldenConfigError when absent or malformed. */
-function fixtureRows<T>(dataset: WorkloadDataset, key: string, schema: z.ZodType<T>): T[] {
-  const rows = dataset.fixtures?.[key];
-  if (rows === undefined) throw new GoldenConfigError(`seed dataset has no fixture table ${key}`);
-  const parsed = z.array(schema).safeParse(rows);
-  if (!parsed.success) {
-    throw new GoldenConfigError(`seed dataset fixture table ${key}: ${z.prettifyError(parsed.error)}`, {
-      cause: parsed.error,
-    });
-  }
-  return parsed.data;
-}
-
 /** Admin login as plan steps (login page, then its form posted), as GS-ID-01 logs in, so the step runner drives it. */
 function loginItems(username: string): Step[] {
   return [
@@ -359,7 +312,7 @@ function contentFields(site: string, title: string, body: string): Record<string
     title,
     menutitle: title,
     body,
-    // Saves drafts, as GS-CO-01/02 do: an edit leaves the page's active version in place and a create stays unapproved.
+    // Saves drafts: an edit leaves the page's active version in place and a create stays unapproved.
     approved: '0',
     display: '1',
   };
@@ -624,109 +577,11 @@ function siteEditItems(site: string): PlanPart {
   ]);
 }
 
-/** JSON API login of the seeded `role` account of `site` into `session`, as the catalogue's jsonapi sessions log in. */
-function roleLoginItem(name: string, session: string, site: string, role: string): Step {
-  const user = `\${user:${site}:${role}}`;
-  return step({
-    name,
-    method: 'POST',
-    route: `/_api/json/v1/${site}/login`,
-    as: session,
-    csrf: 'json-api:login',
-    form: { username: user, password: `\${secret:seed:${user}}` },
-  });
-}
-
 /**
- * Fixture writes in the `Program_<id>` schema of the edit site: DRAFT day submits unless the day has left DRAFT, then
- * IN-PROGRESS record edits unless the record holds the edit's title.
- */
-function fixtureItems(config: WorkloadSeedConfig, dataset: WorkloadDataset, keys: ReadonlySet<string>): PlanPart {
-  const site = WORKLOAD_SITES.edits;
-  const programId = config.sites[site]?.programId;
-  if (programId === undefined || programId === null) {
-    throw new GoldenConfigError(`seed config gives ${site} no programId`, { path: SEED_CONFIG_PATH });
-  }
-  const schema = `Program_${programId}`;
-  const sheets = new Map(
-    fixtureRows(dataset, `${schema}.timesheet`, timesheetRowSchema).map((row) => [row.timesheet_id, row] as const),
-  );
-  const days = fixtureRows(dataset, `${schema}.timesheet_day`, dayRowSchema).filter((day) => {
-    const sheet = sheets.get(day.timesheet_id);
-    return (
-      sheet !== undefined &&
-      sheet.siteID === site &&
-      day.state === DRAFT_DAY &&
-      ![day.day_id, day.timesheet_id, sheet.person_id].some((key) => keys.has(key))
-    );
-  });
-  const records = fixtureRows(dataset, `${schema}.finance_record`, financeRowSchema).filter(
-    (row) => row.siteID === site && row.state === IN_PROGRESS && !keys.has(row.record_id),
-  );
-  const submits = pick(days, (day) => day.day_id, WORKLOAD_COUNTS.timesheetSubmits, config.seed, 'timesheet-submit');
-  const edits = pick(records, (row) => row.record_id, WORKLOAD_COUNTS.financeEdits, config.seed, 'finance-edit');
-  const submitPart = (day: z.infer<typeof dayRowSchema>, n: number): PlanPart => {
-    const name = `timesheet-submit-${n}`;
-    const probe = step({
-      name: `${name}-probe`,
-      method: 'GET',
-      route: `${FIXTURE_API}/timesheets/sheets/${day.timesheet_id}?siteid=${site}`,
-      as: EMPLOYEE_SESSION,
-      extract: { days: { from: 'body', path: 'data.days' } },
-    });
-    const check: WriteCheck = {
-      kind: 'keyed-not-equals',
-      binding: 'days',
-      key: 'day_id',
-      id: day.day_id,
-      field: 'state',
-      value: DRAFT_DAY,
-    };
-    return writePart(name, probe, check, [
-      step({
-        name,
-        method: 'POST',
-        route: `${FIXTURE_API}/timesheets/days/${day.day_id}/submit?siteid=${site}`,
-        as: EMPLOYEE_SESSION,
-        csrf: `json-api:${day.day_id}`,
-      }),
-    ]);
-  };
-  const editPart = (row: z.infer<typeof financeRowSchema>, n: number): PlanPart => {
-    const name = `finance-edit-${n}`;
-    const title = `OPT-2 workload edit ${n}`;
-    const probe = step({
-      name: `${name}-probe`,
-      method: 'GET',
-      route: `${FIXTURE_API}/finance/records/${row.record_id}?siteid=${site}`,
-      as: PREPARER_SESSION,
-      extract: { title: { from: 'body', path: 'data.title' } },
-    });
-    return writePart(name, probe, { kind: 'equals', binding: 'title', value: title }, [
-      step({
-        name,
-        method: 'POST',
-        route: `${FIXTURE_API}/finance/records/${row.record_id}/edit?siteid=${site}`,
-        as: PREPARER_SESSION,
-        csrf: `json-api:${row.record_id}`,
-        body: { title, amount: row.amount, period: row.period },
-      }),
-    ]);
-  };
-  return joinParts([
-    { items: [roleLoginItem('employee-login', EMPLOYEE_SESSION, site, Roles.timesheetsEmployee)], writes: [] },
-    ...submits.map((day, i) => submitPart(day, i + 1)),
-    { items: [roleLoginItem('preparer-login', PREPARER_SESSION, site, Roles.financePreparer)], writes: [] },
-    ...edits.map((row, i) => editPart(row, i + 1)),
-  ]);
-}
-
-/**
- * The workload for `config` and `dataset`: admin login, content edits and creates, user, group and site edits, and,
- * with the fixtures available, timesheet submits and finance edits, each write preceded by the probe that shows it
- * applied. Pure: equal inputs give an equal plan. Rows are chosen by sorted key from seed-derived offsets, never among
- * reserved rehearsal identities, `excludedKeys`, role groups or users holding memberships. Throws GoldenConfigError
- * when a kind has too few eligible rows.
+ * The workload for `config` and `dataset`: admin login, content edits and creates, and user, group and site edits,
+ * each write preceded by the probe that shows it applied. Pure: equal inputs give an equal plan. Rows are chosen by
+ * sorted key from seed-derived offsets, never among reserved rehearsal identities, `excludedKeys` or users holding
+ * memberships. Throws GoldenConfigError when a kind has too few eligible rows.
  */
 export function buildWorkloadPlan(
   config: WorkloadSeedConfig,
@@ -753,7 +608,7 @@ export function buildWorkloadPlan(
   );
   const groups = dataset.masa.groups.filter(
     (row) =>
-      row.siteID === site && !ROLE_GROUPS.has(row.groupname) && !keys.has(row.groupID) && !keys.has(row.groupname),
+      row.siteID === site && !keys.has(row.groupID) && !keys.has(row.groupname),
   );
   const { seed } = config;
   const { items, writes } = joinParts([
@@ -771,7 +626,6 @@ export function buildWorkloadPlan(
       groupEditItems(row, i + 1),
     ),
     siteEditItems(WORKLOAD_SITES.settings),
-    ...(opts.fixturesAvailable ? [fixtureItems(config, dataset, keys)] : []),
   ]);
   return { seed, items, writes };
 }
@@ -858,13 +712,9 @@ function holds(check: WriteCheck, extracted: Record<string, unknown>): boolean |
     return text === undefined ? undefined : text === check.value;
   }
   if (!Array.isArray(value)) return undefined;
-  if (check.kind === 'some-equals') {
-    const texts = value.map((row) => scalarText(fieldOf(row, check.field)));
-    if (texts.includes(check.value)) return true;
-    return texts.includes(undefined) ? undefined : false;
-  }
-  const text = scalarText(fieldOf(value.find((row) => scalarText(fieldOf(row, check.key)) === check.id), check.field));
-  return text === undefined ? undefined : text !== check.value;
+  const texts = value.map((row) => scalarText(fieldOf(row, check.field)));
+  if (texts.includes(check.value)) return true;
+  return texts.includes(undefined) ? undefined : false;
 }
 
 /** Whether probe `item`'s `sent` shows `write` applied, else why that cannot be told. */
@@ -986,9 +836,8 @@ export interface WorkloadInputs {
 }
 
 /**
- * Reads the seed configuration, the generated dataset, the fixture status and the catalogue, and resolves the
- * catalogue's seeded references into the plan's excluded keys. The admin username is `MURA_ADMIN_USERNAME`, else
- * `admin`.
+ * Reads the seed configuration, the generated dataset and the catalogue, and resolves the catalogue's seeded
+ * references into the plan's excluded keys. The admin username is `MURA_ADMIN_USERNAME`, else `admin`.
  */
 export async function loadWorkloadInputs(stores: SeedKeyStores, paths: WorkloadPaths = {}): Promise<WorkloadInputs> {
   const env = stores.env ?? process.env;
@@ -1002,7 +851,6 @@ export async function loadWorkloadInputs(stores: SeedKeyStores, paths: WorkloadP
     config,
     dataset,
     options: {
-      fixturesAvailable: readFixtureStatus(env).available,
       excludedKeys: catalogueSeedKeys(catalogue.scenarios, stores),
       adminUsername: adminUsername === undefined || adminUsername === '' ? 'admin' : adminUsername,
     },
@@ -1014,7 +862,7 @@ const HELP = `${USAGE}
 
 Sends the deterministic legacy write workload of test-all stage 4 through the gateway (OPT2_GATEWAY_URL, default
 http://127.0.0.1:8100) while v0001 is active. Reads legacy-fixtures/seed/seed.config.json,
-\${OPT2_STATE_DIR}/seed/dataset.json, \${OPT2_STATE_DIR}/fixtures.json and harness/golden/catalogue.yaml.
+\${OPT2_STATE_DIR}/seed/dataset.json and harness/golden/catalogue.yaml.
 Writes \${OPT2_STATE_DIR}/golden/workload.json after each step; exits 1 when any step fails.
 Each write is first checked against legacy and skipped when already applied, so reruns add nothing.`;
 
@@ -1037,7 +885,6 @@ export async function main(argv: string[], deps: WorkloadDeps = {}): Promise<Cli
       writesSent: run.writes.sent,
       writesAlreadyApplied: run.writes.alreadyApplied,
       planDigest: run.planDigest,
-      fixturesAvailable: inputs.options.fixturesAvailable,
       report: run.report,
     },
   };

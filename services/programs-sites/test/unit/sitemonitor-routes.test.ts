@@ -1,5 +1,4 @@
 /** Site-monitor routes: the public legacy run, the recurring task chain and the cursor state, over PostgreSQL and a stub migration. */
-import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -19,6 +18,7 @@ import {
   assertResponseMatchesOpenApi,
   authHeadersFor,
   createThrowawaySchema,
+  loadOpenApiDocument,
   pgAvailable,
   testVerifier,
   writeTestSecrets,
@@ -41,7 +41,7 @@ const { runSiteMonitor: realRunSiteMonitor } =
 
 type ContractOperation = Record<string, unknown>;
 
-const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as {
+const OPENAPI = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as {
   paths: Record<string, Record<string, ContractOperation>>;
 };
 const RUN_CONTRACT_PATH = '/_api/sitemonitor';

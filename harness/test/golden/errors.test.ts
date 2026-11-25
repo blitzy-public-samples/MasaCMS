@@ -17,7 +17,7 @@ import {
 import { SEED_CREDENTIALS_FILE, createScenarioContext, resolvePlaceholders } from '../../src/golden/session.js';
 import { pinnedSha } from '../../src/lib/pin.js';
 
-const SCENARIO = 'GS-CO-07';
+const SCENARIO = 'GS-CO-77';
 const ROUTE_KEY = 'admin:carch.update{upload=image}';
 const REASON = 'image renditions come from the ColdFusion image engine';
 const PLACEHOLDER = '${secret:seed:FIXTURE-user}';
@@ -34,7 +34,7 @@ class ForeignEquivalenceImpossible extends Error {
 describe('haltEvidence', () => {
   it.each([
     ['GS-ID-01', false, ''],
-    ['GS-CO-05', false, ''],
+    ['GS-CO-75', false, ''],
     ['GS-PE-RH-02', false, ''],
     ['GS-ID-09', true, 'rehearsal/'],
   ])('builds repository- and state-relative paths for %s (rehearsal crossing: %s)', (id, crossing, dir) => {

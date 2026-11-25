@@ -1,6 +1,6 @@
 /** Stub note routes and health through `app.inject` on the composed app over the recording database. */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { TENANT_A, TENANT_B } from '@opt2/platform/testing';
+import { TENANT_A, TENANT_B, TENANT_UMBRELLA } from '@opt2/platform/testing';
 import { LEGACY_ERROR_MAP, cfUuid, isCfUuid, legacyHeaders } from '@opt2/platform/legacy-compat';
 import { WRITE_POSITION_HEADER, parseWritePosition } from '@opt2/platform/migration-kit';
 import { NOTE_CREATED_TOPIC } from '../../src/events/topics.js';
@@ -151,11 +151,46 @@ describe('createNote', () => {
       expect.objectContaining({ event_id: published?.envelope.eventId, published_at: BUSINESS_TIME }),
     ]);
   });
+
+  it.each([
+    { caller: TENANT_A, store: TENANT_UMBRELLA, label: 'tenant-a stores it in umbrella, its public user pool' },
+    { caller: TENANT_B, store: TENANT_B, label: 'tenant-b, its own public user pool, keeps it' },
+  ])('writes a pooled note and its outbox row in the public user-pool tenant: $label', async ({ caller, store }) => {
+    const headers = await headersFor('system-user', { site: caller.siteId });
+    const res = await send('POST', NOTES_URL, headers, { title: 'Pooled', body: 'Shared', pool: 'public' });
+
+    expect(res.statusCode).toBe(200);
+    const { noteid } = res.json<{ data: NoteJson }>().data;
+    expect(ctx.db.rows('note', store.tenantId).map((row) => row.note_id)).toContain(noteid);
+    const inserts = [NOTE_TABLE.table, 'outbox'].map((table) => writeOf('insert', table));
+    expect(inserts.map((write) => write.tenantId)).toEqual([store.tenantId, store.tenantId]);
+    expect(ctx.publisher.published.map(({ envelope }) => [envelope.tenantId, envelope.aggregateId])).toEqual([[store.tenantId, noteid]]);
+  });
+
+  it('answers invalidParameters for a pooled note of a site the registry does not hold, without writing', async () => {
+    const unregistered = await buildTestApp({ db: createRecordingDb({ registry: [] }) });
+    try {
+      const res = await unregistered.app.inject({
+        method: 'POST',
+        url: NOTES_URL,
+        headers: await headersFor('system-user'),
+        payload: { title: 'Pooled', pool: 'public' },
+      });
+
+      expect(res.statusCode).toBe(400);
+      expect(res.json()).toEqual({ apiversion: 'v1', method: 'save', error: legacyError('invalidParameters') });
+      expect(unregistered.db.writes.filter((write) => [NOTE_TABLE.table, 'outbox'].includes(write.table))).toEqual([]);
+      expect(unregistered.publisher.published).toEqual([]);
+    } finally {
+      await unregistered.app.close();
+    }
+  });
 });
 
 describe('rejections', () => {
   it.each([
     ['a blank title', 'POST', NOTES_URL, { title: '   ' }, 'save'],
+    ['a pool other than public', 'POST', NOTES_URL, { title: 'First', pool: 'private' }, 'save'],
     ['a list limit of 0', 'GET', `${NOTES_URL}?limit=0`, undefined, 'findMany'],
   ] as const)('answers invalidParameters for %s without writing', async (_label, method, url, payload, reported) => {
     const res = await send(method, url, await headersFor('system-user'), payload);

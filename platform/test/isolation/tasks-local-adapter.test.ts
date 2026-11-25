@@ -47,8 +47,8 @@ import {
   type ThrowawaySchema,
 } from '../../src/testing/index.js';
 
-const EXPORT_QUEUE = QUEUES['reporting-export-run'];
-const QUEUE = EXPORT_QUEUE.name;
+const IMPORT_QUEUE = QUEUES['content-feed-import'];
+const QUEUE = IMPORT_QUEUE.name;
 const SWEEP_QUEUE = outboxSweepQueue('stub');
 const TASK_PATH = '/internal/v1/tasks/iso';
 const KNOWN_TRACEPARENT = '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01';
@@ -103,7 +103,7 @@ describe('local tasks adapter on PostgreSQL', () => {
       name,
       scheduleTime: new Date(nowMs),
       url: `${base}${TASK_PATH}/${name}`,
-      deadlineS: EXPORT_QUEUE.deadlineS,
+      deadlineS: IMPORT_QUEUE.deadlineS,
       ...(tenantId === undefined ? {} : { tenantId }),
       ...extra,
     };
@@ -167,7 +167,7 @@ describe('local tasks adapter on PostgreSQL', () => {
       return reply.code(statuses.get(req.params.name) ?? 204).send();
     });
     base = await receiver.listen({ host: '127.0.0.1', port: 0 });
-    serviceUrls = { [EXPORT_QUEUE.targetService]: base, stub: base };
+    serviceUrls = { [IMPORT_QUEUE.targetService]: base, stub: base };
     adapter = await createLocalTaskAdapter({ db: handle.app, stateDir, serviceUrls, clock, logger, autoStart: false });
   });
 
@@ -309,7 +309,7 @@ describe('local tasks adapter on PostgreSQL', () => {
     expect(transportForPath(path)).toBe('cloud-tasks');
     const { publicKey } = await loadLocalSigningKeys(stateDir);
     const request = { headers: { authorization: delivery?.headers.authorization }, path };
-    const target = createLocalCloudTasksTransport({ publicKey, callee: EXPORT_QUEUE.targetService });
+    const target = createLocalCloudTasksTransport({ publicKey, callee: IMPORT_QUEUE.targetService });
     expect(await target.authenticate(request, { optional: false })).toEqual({
       service: { name: 'tasks-invoker', roles: [TASKS_INVOKER_ROLE] },
     });
@@ -332,7 +332,7 @@ describe('local tasks adapter on PostgreSQL', () => {
 
   it('reschedules a failed delivery by the queue backoff and fails the task after maxAttempts', async () => {
     const name = 'iso-retry';
-    const policy = EXPORT_QUEUE.retry;
+    const policy = IMPORT_QUEUE.retry;
     expect(policy.maxAttempts).toBeGreaterThan(1);
     statuses.set(name, 500);
     await adapter.create(exportTask(name, TENANT_B.tenantId));

@@ -353,9 +353,9 @@ describe('scheduled-job constants', () => {
   it('list the eight planned steps in order with their gates, owners and frozen action lists', () => {
     expect(SITE_MONITOR_STEPS.map((s) => [s.step, s.actions, s.perSite, s.gateFlag, s.expected.disposition, s.expected.owningService])).toEqual([
       ['reminders', ['contentmanager.sendreminders'], false, null, 'decision', null],
-      ['email-send', ['emailmanager.send'], false, null, 'legacy-served', 'communications'],
+      ['email-send', ['emailmanager.send'], false, null, 'legacy-served', null],
       ['changeset-publish', ['changesetmanager.publishbyschedule'], false, null, 'carry', 'strategies-content'],
-      ['bounces', ['emailmanager.trackbounces'], true, 'EmailBroadcaster', 'legacy-served', 'communications'],
+      ['bounces', ['emailmanager.trackbounces'], true, 'EmailBroadcaster', 'legacy-served', null],
       ['feed-import', ['feedmanager.doautoimport'], true, 'FeedManager', 'carry', 'strategies-content'],
       ['cache-purge', ['contentmanager.purgecontentcache', 'settingsbean.purgecache'], false, null, 'legacy-served', 'strategies-content'],
       ['cluster-cleanup', ['clustermanager.clearoldcommands'], false, null, 'decision', null],

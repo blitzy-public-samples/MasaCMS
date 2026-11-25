@@ -72,7 +72,7 @@ import {
   type LegacyUpstream,
 } from './forward-legacy.js';
 import { forwardToTarget } from './forward-target.js';
-import { FIXTURE_AUTHORIZATION_HEADER, applyIdentityEncoding, forwardedHost } from './headers.js';
+import { applyIdentityEncoding, forwardedHost } from './headers.js';
 import {
   RELAY_ALIAS_PREFIX,
   WRITE_KINDS,
@@ -394,22 +394,19 @@ function withRequestStartCookies(list: readonly string[], start: readonly string
 
 /**
  * The destination's extra headers plus, when REST credential handling consumed params, the header naming them for the callee's
- * route key, {@link UNREGISTERED_SITEID_HEADER} when the user token stands in for a `siteid` naming no registered site, and
- * {@link FIXTURE_AUTHORIZATION_HEADER} with `fixtureAuthorization`, a fixture request's inbound `Authorization`, when given.
+ * route key, and {@link UNREGISTERED_SITEID_HEADER} when the user token stands in for a `siteid` naming no registered site.
  */
 function targetExtraHeaders(
   destination: TargetDestination,
   resolution: SessionResolution | undefined,
   unregisteredSiteId: boolean,
-  fixtureAuthorization: string | undefined,
 ): Readonly<Record<string, string>> | undefined {
   const consumed = resolution?.kind === 'session' ? (resolution.consumedParams ?? []) : [];
-  if (consumed.length === 0 && !unregisteredSiteId && fixtureAuthorization === undefined) return destination.extraHeaders;
+  if (consumed.length === 0 && !unregisteredSiteId) return destination.extraHeaders;
   return {
     ...destination.extraHeaders,
     ...(consumed.length === 0 ? {} : { [REST_CONSUMED_PARAMS_HEADER]: consumed.join(',') }),
     ...(unregisteredSiteId ? { [UNREGISTERED_SITEID_HEADER]: 'true' } : {}),
-    ...(fixtureAuthorization === undefined ? {} : { [FIXTURE_AUTHORIZATION_HEADER]: fixtureAuthorization }),
   };
 }
 
@@ -696,9 +693,9 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
     if (result.family === 'cfc' && deps.sites !== undefined) return cfcTokenSite(request, result.siteId, deps.sites);
     if (result.siteId !== undefined && result.siteId !== '') return { siteId: result.siteId, unregisteredSiteId: false };
     let selected = '';
-    // Web's admin set-up, which also serves the OPT-2 screens, fills a missing rc.siteid from session.siteid (admin/Application.cfc:384-412).
+    // Web's admin set-up fills a missing rc.siteid from session.siteid (admin/Application.cfc:384-412).
     if (result.family === 'admin' || destination.isWeb) selected = await deps.identity.adminSite(sessionId);
-    // The fixture's resolveSite falls back to the session user's siteID (legacy-fixtures/cfml/lib/auth.cfc:27-31).
+    // The fixture's resolveSite falls back to the session user's siteID (legacy-fixtures/cfml/lib/auth.cfc:17-19).
     else if (result.family === 'fixture') selected = await userSiteOf(sessionId);
     return { siteId: selected === '' ? DEFAULT_SITE_ID : selected, unregisteredSiteId: false };
   };
@@ -783,13 +780,7 @@ export function createDispatcher(deps: DispatcherDeps): EdgeHandler {
       path: destination.path,
       headers: stripInboundAuthHeaders(request.headers, { afterExchange: true }),
       userToken,
-      // A fixture task run's Basic credential is stripped with Authorization, so it reaches the service in its own header.
-      extraHeaders: targetExtraHeaders(
-        destination,
-        resolution,
-        unregisteredSiteId,
-        result.family === 'fixture' ? request.headers.authorization : undefined,
-      ),
+      extraHeaders: targetExtraHeaders(destination, resolution, unregisteredSiteId),
       method: destination.method,
       forwardBody: destination.forwardBody,
       rawTarget: destination.rawTarget,

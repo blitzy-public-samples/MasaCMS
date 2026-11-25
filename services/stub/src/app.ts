@@ -18,10 +18,10 @@ import {
 import { createTaskPort, ensureOwnRecurring, registerQueueControl, type TaskPort } from '@opt2/platform/tasks';
 import type { TenantDb } from '@opt2/platform/tenancy';
 import { stubConsumers } from './events/consumers.js';
-import { NOTE_CREATED_TOPIC, noteCreatedValidator } from './events/topics.js';
+import { NOTE_COMMENTED_TOPIC, NOTE_CREATED_TOPIC, noteCommentedValidator, noteCreatedValidator } from './events/topics.js';
 import { mappings } from './migration/mappings/index.js';
 import { STUB_OWNER, STUB_SCHEMA, createStubRepository } from './repo/repository.js';
-import { STUB_UNITS } from './repo/tables.js';
+import { NOTE_ACTIVITY_TABLE, NOTE_PROJECTION_TABLE, STUB_UNITS } from './repo/tables.js';
 import { registerRoutes } from './routes/index.js';
 
 /** Equals `info.version` of `contracts/openapi.yaml`. */
@@ -73,7 +73,10 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     if (db === undefined) throw new Error(`${STUB_OWNER}: createService opened no database`);
     const serviceUrls = env.OPT2_SERVICE_URLS;
 
-    const payloadValidators = new Map([[NOTE_CREATED_TOPIC, noteCreatedValidator]]);
+    const payloadValidators = new Map([
+      [NOTE_CREATED_TOPIC, noteCreatedValidator],
+      [NOTE_COMMENTED_TOPIC, noteCommentedValidator],
+    ]);
     const publisher =
       options.publisher ??
       (owned.publisher = createPublisher({
@@ -92,7 +95,9 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
 
     await registerRoutes(app, { db, repository, clock });
     registerConsumers(app, { service: STUB_OWNER, consumers: stubConsumers(repository, clock), publisher, db });
-    registerMigrationHandlers(app, { owner: STUB_OWNER, repository, mappings, units: STUB_UNITS, db });
+    // The consumers' effect tables are exported over their own columns, so event checks read them through the owner's export.
+    const targetOnlyTables = [NOTE_PROJECTION_TABLE.table, NOTE_ACTIVITY_TABLE.table];
+    registerMigrationHandlers(app, { owner: STUB_OWNER, repository, mappings, units: STUB_UNITS, targetOnlyTables, db });
     registerOutboxSweep(app, { service: STUB_OWNER, port: taskPort, serviceUrls, clock });
     registerQueueControl(app, { port: taskPort, service: STUB_OWNER, serviceUrls, clock });
 

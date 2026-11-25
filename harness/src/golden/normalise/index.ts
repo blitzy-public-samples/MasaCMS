@@ -3,7 +3,6 @@ import type { CompareKind, Scenario, Step } from '../catalogue.js';
 import { GoldenConfigError } from '../errors.js';
 import type { FileVariant, SideEffects } from '../side-effects.js';
 import type { RecordedResponse, StepRecord } from '../steps.js';
-import { normaliseChainHashes } from './chain-hashes.js';
 import {
   createSessionCookieTracker,
   normaliseAuth,
@@ -18,10 +17,8 @@ import { normaliseMail, type NormalisedMail } from './mail.js';
 import { applyMasks, masksFor, pathMasks, type Difference, type DifferenceKind, type KnownIssueMask } from './masks.js';
 import { compareRows, normaliseRows, type NormalisedRows } from './rows.js';
 import { applyOverrides, csvKeyColumns, ruleEnabled, type KnownIssueId, type NormaliseRules } from './rules.js';
-import { normaliseTasks, type NormalisedTask } from './tasks.js';
 import { isTokenKey, normaliseText, normaliseValue } from './values.js';
 
-export * from './chain-hashes.js';
 export * from './cookies.js';
 export * from './dom-model.js';
 export * from './exports.js';
@@ -31,7 +28,6 @@ export * from './mail.js';
 export * from './masks.js';
 export * from './rows.js';
 export * from './rules.js';
-export * from './tasks.js';
 export * from './values.js';
 export type { Classification, Difference, DifferenceKind } from './masks.js';
 
@@ -94,7 +90,6 @@ export interface StateTransitions {
 export interface NormalisedSideEffects {
   mail?: NormalisedMail[];
   rows?: NormalisedRows;
-  tasks?: NormalisedTask[];
   files?: NormalisedFile[];
   transitions?: StateTransitions[];
 }
@@ -170,7 +165,7 @@ function literalRules(rules: NormaliseRules): NormaliseRules {
   if (literal === undefined) {
     literal = {
       ...rules,
-      ids: { ...rules.ids, pattern: NEVER, rfc4122: { ...rules.ids.rfc4122, pattern: NEVER }, keyed: [] },
+      ids: { ...rules.ids, pattern: NEVER, rfc4122: { ...rules.ids.rfc4122, pattern: NEVER } },
       timestamps: { ...rules.timestamps, classes: [] },
     };
     literalRulesOf.set(rules, literal);
@@ -256,18 +251,12 @@ function lastKey(at: RawPath): string | undefined {
   return typeof key === 'string' ? key : undefined;
 }
 
-// Chain hashes are replaced on raw JSON, before the other rules, since their check reads the raw ids and `at`.
-function chainHashed(value: unknown, ids: IdOrdinals, rules: NormaliseRules): unknown {
-  if (!rules.envelope.apply.includes(rules.chainHashes.id)) return value;
-  return normaliseChainHashes(value, ids.chainHashes, rules.chainHashes);
-}
-
-// Element order comes from each element's provisional normalised form, so it never depends on raw ids or hashes.
+// Element order comes from each element's provisional normalised form, so it never depends on raw ids.
 function sortProvisionally(items: unknown[], key: string | undefined, env: BodyEnv): unknown[] {
   return items
     .map((item) => {
       const ids = structuredClone(env.ids);
-      return { item, order: JSON.stringify(normaliseValue(chainHashed(item, ids, env.rules), ids, env.rules, key)) };
+      return { item, order: JSON.stringify(normaliseValue(item, ids, env.rules, key)) };
     })
     .sort((a, b) => codeUnitOrder(a.order, b.order))
     .map(({ item }) => item);
@@ -333,7 +322,7 @@ function jsonBody(parsed: unknown, env: BodyEnv): NormalisedBody {
   const ops: PruneOps = { drop: drop.map(parsePath), sort: applied.sortArrays.map(parsePath) };
   const raw = ops.drop.length === 0 && ops.sort.length === 0 ? parsed : prune(parsed, [], ops, env);
   const jsonEnv: JsonEnv = { ...env, literal: applied.literalPaths.map(parsePath), maskedPaths: {} };
-  const value = walkJson(chainHashed(raw, env.ids, rules), undefined, [], isEnvelope ? 'envelope' : 'body', jsonEnv);
+  const value = walkJson(raw, undefined, [], isEnvelope ? 'envelope' : 'body', jsonEnv);
   const { maskedPaths } = jsonEnv;
   return isEnvelope ? { envelope: value, maskedPaths } : { body: value, maskedPaths };
 }
@@ -352,7 +341,7 @@ function structuredBody(contentType: string, text: string, env: BodyEnv): Normal
   return undefined;
 }
 
-// Downloads (CSV, XLSX, PDF, ZIP, other files) are modelled when exports are compared; other text is normalised text.
+// Downloads (CSV, ZIP, other files) are modelled when exports are compared; other text is normalised text.
 async function responseBody(
   response: RecordedResponse,
   text: string | undefined,
@@ -485,7 +474,6 @@ export async function normaliseSideEffects(
   // `effects.legacyRows` (gateway only) has no golden counterpart, so it is left out of the comparison.
   if (kinds.has('mail')) out.mail = normaliseMail(effects.mail, ids, rules);
   if (kinds.has('rows')) out.rows = normaliseRows(effects.rows, ids, rules, ctx.secrets);
-  if (kinds.has('tasks')) out.tasks = normaliseTasks(effects.tasks, { state: ids, rules });
   if (kinds.has('files')) out.files = normaliseFiles(effects.files, ids, rules);
   if (kinds.has('transitions') && steps !== undefined) {
     out.transitions = stateTransitions(steps, { rules, scenario: ctx.scenario });
@@ -710,7 +698,6 @@ function compareSideEffects(golden: NormalisedRun, replay: NormalisedRun, opts: 
       for (const row of rows.extra) out.push(difference(SIDE_EFFECTS_STEP, path, 'extra', undefined, row));
     }
   }
-  if (kinds.has('tasks')) diffValues(want.tasks ?? [], got.tasks ?? [], `${root}tasks`, SIDE_EFFECTS_STEP, out);
   if (kinds.has('files')) diffValues(want.files ?? [], got.files ?? [], `${root}files`, SIDE_EFFECTS_STEP, out);
   if (kinds.has('transitions')) {
     compareTransitions(

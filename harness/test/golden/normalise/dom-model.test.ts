@@ -383,25 +383,3 @@ describe('domModel on the admin reload link', () => {
     expect(model.links).toStrictEqual([{ href: `/admin/?${TOKEN}&reload=${TOKEN}`, text: 'Reload Application' }]);
   });
 });
-
-describe('domModel on the OPT-2 nav group', () => {
-  // A system user's main menu (admin/common/layouts/includes/nav.cfm), with web's OPT-2 group where `opt2` holds it.
-  const sidebar = (opt2: string): string => `<nav id="sidebar"><ul class="nav-main">
-    <li><a id="navContentAdmin" href="/admin/?muraAction=cArch.list&amp;siteid=tenant-a"><span>Content</span></a></li>${opt2}
-    <li id="admin-nav-help"><a class="nav-submenu" href="/admin/"><span>Help</span></a></li>
-  </ul></nav>`;
-  const group = `<li id="admin-nav-opt2"><a class="nav-submenu" data-toggle="nav-submenu" href="#"><i class="mi-cubes"></i><span class="sidebar-mini-hide">OPT-2</span></a>
-    <ul><li><a href="/opt2/admin/communications/templates?siteid=tenant-a"><i class="mi-envelope"></i><span class="sidebar-mini-hide">Communications</span></a></li></ul></li>`;
-
-  it('models a synthetic-role user nav with the group as the legacy nav without it', () => {
-    expect(modelOf(sidebar('')).model.links.map((link) => link.text)).toStrictEqual(['Content', 'Help']);
-    expect(modelOf(sidebar(group)).model).toStrictEqual(modelOf(sidebar('')).model);
-  });
-
-  it.each([
-    ['in another nav group', `<li id="admin-nav-global"><a href="/opt2/admin/communications/templates?siteid=tenant-a">Communications</a></li>`],
-    ['under another element id', group.replace('admin-nav-opt2', 'admin-nav-opt3')],
-  ])('keeps an OPT-2 link %s a difference', (_label, markup) => {
-    expect(modelOf(sidebar(markup)).model).not.toStrictEqual(modelOf(sidebar('')).model);
-  });
-});

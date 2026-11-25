@@ -59,7 +59,7 @@ const CSRF_ROUTE = routeKey('POST', 'identity', '/v1/csrf/tokens');
 const DENIED = Object.freeze({ kind: 'redirect', location: 'secure()' } as const);
 
 const editorGroup = groupsById[GROUP_IDS.defaultEditor]!;
-const tenantAGroup = groupsById[GROUP_IDS.financeApprover]!;
+const tenantAGroup = groupsById[GROUP_IDS.libraryApprover]!;
 
 const groupRoute = (groupId: string): string => routeKey('GET', 'identity', `/v1/groups/${groupId}`);
 

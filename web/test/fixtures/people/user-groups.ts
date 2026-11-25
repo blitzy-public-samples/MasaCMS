@@ -62,16 +62,16 @@ export const defaultPrivateGroupsPage: UserGroupsPage = firstPageOf([
 
 export const tenantAPrivateGroupsPage: UserGroupsPage = firstPageOf([
   listRow(GROUP_IDS.tenantAAdmin, tenantAAdminGroupMembers.length),
-  listRow(GROUP_IDS.communicationsSender, null),
-  listRow(GROUP_IDS.esignatureAuditor, null),
-  listRow(GROUP_IDS.esignatureSigner, null),
-  listRow(GROUP_IDS.financeApprover, null),
-  listRow(GROUP_IDS.financePreparer, null),
-  listRow(GROUP_IDS.reportingExporter, null),
-  listRow(GROUP_IDS.surveysManager, null),
-  listRow(GROUP_IDS.timesheetsEmployee, null),
-  listRow(GROUP_IDS.timesheetsPrimaryApprover, null),
-  listRow(GROUP_IDS.timesheetsSecondaryApprover, null),
+  listRow(GROUP_IDS.archiveViewer, null),
+  listRow(GROUP_IDS.galleryCurator, null),
+  listRow(GROUP_IDS.galleryUploader, null),
+  listRow(GROUP_IDS.libraryApprover, null),
+  listRow(GROUP_IDS.libraryWriter, null),
+  listRow(GROUP_IDS.recordsClerk, null),
+  listRow(GROUP_IDS.studioManager, null),
+  listRow(GROUP_IDS.teamMember, null),
+  listRow(GROUP_IDS.teamPrimaryLead, null),
+  listRow(GROUP_IDS.teamSecondaryLead, null),
 ]);
 
 export const tenantAPublicGroupsPage: UserGroupsPage = firstPageOf([

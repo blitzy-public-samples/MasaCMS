@@ -1,6 +1,5 @@
 // Admin screen contracts, the registered screens with their lookups, and the shell hooks screens supply (server-only).
 import type { Readable } from 'node:stream';
-import type { Role } from '@opt2/platform/auth';
 import {
   IMAGE_UPLOAD_CONDITION,
   PHOTO_CONDITION,
@@ -13,13 +12,12 @@ import {
 } from '@opt2/platform/legacy-compat';
 import type { ScreenGate } from '@/lib/access-gate';
 import type { CsrfRenderer } from '@/lib/csrf';
-import type { GatewayClient, WebServiceName } from '@/lib/gateway-client';
+import type { GatewayClient } from '@/lib/gateway-client';
 import type { SafeHtml } from '@/lib/html';
 import type { RequestBody } from '@/lib/request-body';
 import type { AdminRequest } from '@/lib/request-context';
 import type { RbLookup } from '@/lib/resource-bundles/rb';
 import type { SecondaryMenuCircuit, ShellHooks, ShellView } from '@/shell/document';
-import { OPT2_NAV_MODULES } from '@/shell/nav';
 import { carchContentNav, carchScreens, carchSecondaryMenu } from './carch';
 import { ccategoryScreens, ccategorySecondaryMenu } from './ccategory';
 import { cchainScreens } from './cchain';
@@ -35,7 +33,6 @@ import { cpermScreens } from './cperm';
 import { csettingsScreens } from './csettings';
 import { cusersScreens } from './cusers';
 import { cwebserviceScreens } from './cwebservice';
-import { opt2Actions, opt2Screens } from './opt2';
 
 // ---- Contracts ----
 
@@ -175,32 +172,6 @@ export type ScreenDefinition =
   | JsonScreen
   | DownloadScreen
   | RedirectScreen;
-
-/** Synthetic module with screens under `/opt2/admin/<module>/<screen>`. */
-export type Opt2Module = 'timesheets' | 'finance' | 'e-signature' | 'reporting' | 'surveys' | 'communications';
-
-/** A synthetic-module screen rendered inside the shell. */
-export interface Opt2ScreenDefinition<D = unknown> {
-  module: Opt2Module;
-  screen: string;
-  roles: readonly Role[];
-  service: WebServiceName;
-  /** Check run after the application gate; without one, access is the owning service's decision. */
-  gate?: ScreenGate;
-  load(ctx: ScreenContext): Promise<D>;
-  render(ctx: ScreenContext, data: D): ShellView | Promise<ShellView>;
-}
-
-/** A synthetic-module post action. */
-export interface Opt2ActionDefinition {
-  module: Opt2Module;
-  action: string;
-  roles: readonly Role[];
-  service: WebServiceName;
-  /** Check run after the application gate; without one, access is the owning service's decision. */
-  gate?: ScreenGate;
-  submit(ctx: ScreenContext): Promise<SubmitResult>;
-}
 
 /** A multipart file part as the request carried it. */
 export interface UploadPart {
@@ -364,8 +335,6 @@ function specificity(def: ScreenDefinition): number {
 
 const actionKey = (circuit: string, action: string): string => `${circuit}.${action}`;
 
-const opt2Key = (module: string, slug: string): string => `${module}/${slug}`.toLowerCase();
-
 /** `entries` keyed by `keyOf`; throws on a repeated key. */
 function indexUnique<T>(entries: readonly T[], keyOf: (entry: T) => string, kind: string): ReadonlyMap<string, T> {
   const table = new Map<string, T>();
@@ -396,10 +365,6 @@ const NOT_BUILT_BY_ACTION: ReadonlyMap<string, readonly NotBuiltVariant[]> = gro
 /** Definitions a registry is built from. */
 export interface ScreenRegistryInput {
   readonly screens: readonly ScreenDefinition[];
-  readonly opt2Screens: readonly Opt2ScreenDefinition[];
-  readonly opt2Actions: readonly Opt2ActionDefinition[];
-  /** OPT-2 nav links; each must resolve to a registered screen. */
-  readonly navModules: ReadonlyArray<{ readonly module: string; readonly screen: string }>;
 }
 
 /** Lookups over one set of registered screens. */
@@ -411,21 +376,13 @@ export interface ScreenRegistry {
    * @param uploads The request's multipart file parts; without them every rc value counts as a possible file name.
    */
   findScreen(circuit: string, action: string, rc: Rc, uploads?: readonly UploadPart[]): ScreenDefinition | undefined;
-  /** The synthetic screen at `/opt2/admin/<module>/<screen>`, matched lower-case. */
-  findOpt2Screen(module: string, screen: string): Opt2ScreenDefinition | undefined;
-  /** The synthetic post action `<module>/<action>`, matched lower-case. */
-  findOpt2Action(module: string, action: string): Opt2ActionDefinition | undefined;
   /** Every admin screen, in registration order. */
   allScreens(): readonly ScreenDefinition[];
-  /** Every synthetic screen, in registration order. */
-  allOpt2Screens(): readonly Opt2ScreenDefinition[];
-  /** Every synthetic post action, in registration order. */
-  allOpt2Actions(): readonly Opt2ActionDefinition[];
 }
 
 /**
  * Validates and indexes `input`.
- * @throws Error On a repeated route key or OPT-2 slug, a circuit or action not lower-case, or an unresolved nav link.
+ * @throws Error On a repeated route key, or a circuit or action not lower-case.
  * @throws TypeError On a definition without the function its mode needs.
  */
 export function createScreenRegistry(input: ScreenRegistryInput): ScreenRegistry {
@@ -442,16 +399,7 @@ export function createScreenRegistry(input: ScreenRegistryInput): ScreenRegistry
   for (const [key, defs] of groupBy(byRouteKey.values(), (def) => actionKey(def.circuit, def.action))) {
     byAction.set(key, Object.freeze(defs.toSorted((a, b) => specificity(b) - specificity(a))));
   }
-  const opt2ScreenTable = indexUnique(input.opt2Screens, (def) => opt2Key(def.module, def.screen), 'OPT-2 screen');
-  const opt2ActionTable = indexUnique(input.opt2Actions, (def) => opt2Key(def.module, def.action), 'OPT-2 action');
-  for (const { module, screen } of input.navModules) {
-    if (!opt2ScreenTable.has(opt2Key(module, screen))) {
-      throw new Error(`OPT-2 nav link ${module}/${screen} has no registered screen`);
-    }
-  }
   const screens = Object.freeze([...input.screens]);
-  const opt2Screens = Object.freeze([...input.opt2Screens]);
-  const opt2Actions = Object.freeze([...input.opt2Actions]);
 
   return Object.freeze({
     findScreen(circuit: string, action: string, rc: Rc, uploads?: readonly UploadPart[]): ScreenDefinition | undefined {
@@ -459,11 +407,7 @@ export function createScreenRegistry(input: ScreenRegistryInput): ScreenRegistry
       if (NOT_BUILT_BY_ACTION.get(key)?.some((variant) => variant.matches(rc, uploads))) return undefined;
       return byAction.get(key)?.find((def) => def.variant === undefined || def.variant.matches(rc));
     },
-    findOpt2Screen: (module: string, screen: string) => opt2ScreenTable.get(opt2Key(module, screen)),
-    findOpt2Action: (module: string, action: string) => opt2ActionTable.get(opt2Key(module, action)),
     allScreens: () => screens,
-    allOpt2Screens: () => opt2Screens,
-    allOpt2Actions: () => opt2Actions,
   });
 }
 
@@ -485,28 +429,13 @@ const registry = createScreenRegistry({
     ...cchainScreens,
     ...cnavScreens,
   ],
-  opt2Screens,
-  opt2Actions,
-  navModules: OPT2_NAV_MODULES,
 });
 
 /** {@link ScreenRegistry.findScreen} over the reproduced admin screens. */
 export const findScreen: ScreenRegistry['findScreen'] = registry.findScreen;
 
-/** {@link ScreenRegistry.findOpt2Screen} over the synthetic-module screens. */
-export const findOpt2Screen: ScreenRegistry['findOpt2Screen'] = registry.findOpt2Screen;
-
-/** {@link ScreenRegistry.findOpt2Action} over the synthetic-module post actions. */
-export const findOpt2Action: ScreenRegistry['findOpt2Action'] = registry.findOpt2Action;
-
 /** Every reproduced admin screen. */
 export const allScreens: ScreenRegistry['allScreens'] = registry.allScreens;
-
-/** Every synthetic-module screen. */
-export const allOpt2Screens: ScreenRegistry['allOpt2Screens'] = registry.allOpt2Screens;
-
-/** Every synthetic-module post action. */
-export const allOpt2Actions: ScreenRegistry['allOpt2Actions'] = registry.allOpt2Actions;
 
 // ---- Shell hooks ----
 

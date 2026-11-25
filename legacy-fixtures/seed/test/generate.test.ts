@@ -7,7 +7,7 @@ import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isCfUuid } from '@opt2/platform/legacy-compat';
 import { afterAll, beforeAll, describe, expect, it, onTestFinished, vi } from 'vitest';
-import { loadConfig, roleGroupName, siteForProgram, SITE_ORDER, type SiteCounts, type SiteKey } from '../src/config.js';
+import { loadConfig, SITE_ORDER, type SiteCounts, type SiteKey } from '../src/config.js';
 import { generateCredentials, type SeedCredentials } from '../src/credentials.js';
 import { datasetDigest, type Dataset } from '../src/dataset.js';
 import type { DirectClient } from '../src/direct.js';
@@ -15,7 +15,8 @@ import { fixtureKeys, specForKey, type FixtureModule, type FixtureRow, type Fixt
 import { run, type GenerateDeps } from '../src/generate.js';
 import { MASA_DEFAULT_MODULE_ID, MASA_FORMS_MODULE_ID, MASA_HOME_CONTENT_ID } from '../src/ids.js';
 import type { MasaData, MembershipRow } from '../src/masa.js';
-import { readDataset, type DatasetPart, type Manifest } from '../src/writer.js';
+import { readDataset, writeDataset, type DatasetPart, type Manifest } from '../src/writer.js';
+import { archiveRows, withArchives } from './helpers/archives.js';
 
 const PKG = fileURLToPath(new URL('../', import.meta.url));
 const REPO_ROOT = resolve(PKG, '../..');
@@ -24,63 +25,15 @@ const GENERATE_PATH = join(PKG, 'src', 'generate.ts');
 const PINNED_SHA = '696383140578f8dea3ece26f80cd7bfb370ddf0f';
 const DDL_FILES: Readonly<Record<FixtureModule, string>> = {
   people: 'people/100_person_archive.sql',
-  timesheets: 'timesheets/110_tables.program.sql',
-  finance: 'finance/110_tables.program.sql',
-  surveys: 'surveys/100_tables.sql',
-  reporting: 'reporting/100_tables.sql',
-  communications: 'communications/100_tables.sql',
-  esignature: 'esignature/100_tables.sql',
 };
-// Columns the fixture procedures fill on load, so seeded rows omit them.
-const LOADED_COLUMNS: Readonly<Record<string, readonly string[]>> = { audit_entry: ['seq', 'prev_hash', 'entry_hash'] };
 const MASA_ARRAYS = ['sites', 'groups', 'users', 'memberships', 'categories', 'content', 'files', 'oauthClients', 'formResponses', 'commenters', 'comments'] as const;
-const ROLES: readonly string[] = [
-  'timesheets.employee',
-  'timesheets.primary-approver',
-  'timesheets.secondary-approver',
-  'finance.preparer',
-  'finance.approver',
-  'esignature.signer',
-  'esignature.auditor',
-  'reporting.exporter',
-  'surveys.manager',
-  'communications.sender',
-];
 const SITE_ADMIN = 'site-admin';
 const SYSTEM_USER = 'system-user';
 const MEMBER = 'member';
-const ROLE_SUBJECTS: readonly string[] = [...ROLES, SITE_ADMIN, SYSTEM_USER];
+const ROLE_SUBJECTS: readonly string[] = [SITE_ADMIN, SYSTEM_USER];
 const INSTALLED_USERNAMES: readonly string[] = ['admin', 'qa_editor'];
-const UNSEEDED_KEYS: readonly string[] = [
-  'Program_1.finance_rollup',
-  'Program_2.finance_rollup',
-  'synthetic.program_site',
-  'synthetic.finance_transition',
-  'synthetic.timesheet_transition',
-  'synthetic.transition_rule',
-];
-const TIMESHEET_STEPS: readonly { from: string; action: string; role: string; to: string }[] = [
-  { from: 'DRAFT', action: 'submit', role: 'timesheets.employee', to: 'SUBMITTED' },
-  ...['SUBMITTED', 'RESUBMITTED'].flatMap((from) => [
-    { from, action: 'primary-approve', role: 'timesheets.primary-approver', to: 'PRIMARY_APPROVED' },
-    { from, action: 'return', role: 'timesheets.primary-approver', to: 'RETURNED' },
-  ]),
-  { from: 'PRIMARY_APPROVED', action: 'secondary-approve', role: 'timesheets.secondary-approver', to: 'APPROVED' },
-  { from: 'PRIMARY_APPROVED', action: 'return', role: 'timesheets.secondary-approver', to: 'RETURNED' },
-  { from: 'RETURNED', action: 'resubmit', role: 'timesheets.employee', to: 'RESUBMITTED' },
-];
-const FINANCE_STEPS: ReadonlySet<string> = new Set([
-  'IN-PROGRESS>SUBMITTED',
-  'SUBMITTED>APPROVED',
-  'SUBMITTED>REJECTED',
-  'REJECTED>RE-SUBMITTED',
-  'RE-SUBMITTED>APPROVED',
-  'RE-SUBMITTED>REJECTED',
-  'IN-PROGRESS>IN-PROGRESS',
-  'REJECTED>REJECTED',
-]);
-const USER_COLUMNS = ['person_id', 'actor_user_id', 'createdByID', 'lastUpdateByID', 'respondent_user_id', 'requested_by_id', 'signer_user_id', 'archived_by_id'];
-const SITE_COLUMNS = ['siteID', 'respondentSiteID'];
+// Group and system-user slots of the retired role groups, which generate no row.
+const RETIRED_SLOTS = 10;
 const CF_UUID = /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16}$/;
 const TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{2}0$/;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -91,9 +44,7 @@ const TOKEN_RUN = /[A-Za-z0-9_-]{27,}/g;
 const SECRET_KEY = /"(password|clientsecret|secret)"\s*:/i;
 const URLS_ERROR = 'seed: --direct needs OPT2_SERVICE_URLS, a JSON object of service name to URL\n';
 const URLS_INVALID = 'seed: OPT2_SERVICE_URLS is not a JSON object of service name to http(s) URL';
-const SERVICE_URL_MAP: Readonly<Record<string, string>> = Object.fromEntries(
-  ['people', 'timesheets', 'finance', 'surveys', 'reporting', 'communications', 'e-signature'].map((service) => [service, 'http://127.0.0.1:9']),
-);
+const SERVICE_URL_MAP: Readonly<Record<string, string>> = { people: 'http://127.0.0.1:9' };
 const SERVICE_URLS = JSON.stringify(SERVICE_URL_MAP);
 const EARLIEST_DAY = '1753-01-01';
 
@@ -188,16 +139,6 @@ async function generated(argv: string[], env: NodeJS.ProcessEnv, paths: { out: s
   return { code, log, ...paths };
 }
 
-function groupBy(rows: readonly FixtureRow[], column: string): Map<FixtureValue, FixtureRow[]> {
-  const out = new Map<FixtureValue, FixtureRow[]>();
-  for (const row of rows) {
-    const list = out.get(row[column] ?? null);
-    if (list === undefined) out.set(row[column] ?? null, [row]);
-    else list.push(row);
-  }
-  return out;
-}
-
 function addDays(day: string, days: number): string {
   return new Date(Date.parse(`${day}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10);
 }
@@ -215,16 +156,16 @@ function strings(value: unknown): string[] {
 }
 
 const config = await loadConfig(CONFIG_PATH);
-const KEYS = fixtureKeys(config);
+const KEYS = fixtureKeys();
 const DDL = await loadDdl();
 const LATEST_DAY = addDays(config.businessDate, 366);
 
 /** DDL columns a seeded row of dataset key `key` carries, in order. */
 function columnsOf(key: string): DdlColumn[] {
-  const { table } = specForKey(key).spec;
+  const { table } = specForKey(key);
   const columns = DDL.get(table);
   if (columns === undefined) throw new Error(`${table} is not in the fixture DDL`);
-  return columns.filter((column) => !(LOADED_COLUMNS[table] ?? []).includes(column.name));
+  return columns;
 }
 
 /** Whether `value` loads unchanged into `column`. */
@@ -239,12 +180,6 @@ function fits(column: DdlColumn, value: FixtureValue | undefined): boolean {
       return column.size === '35' ? CF_UUID.test(value) : value.length === Number(column.size) && /^[0-9a-f]+$/.test(value);
     case 'nvarchar':
       return column.size === 'max' || value.length <= Number(column.size);
-    case 'numeric':
-      return /^-?\d{1,15}\.\d{4}$/.test(value);
-    case 'varbinary':
-      return /^(?:[0-9a-f]{2})*$/.test(value);
-    case 'binary':
-      return value.length === 2 * Number(column.size) && /^[0-9a-f]+$/.test(value);
     default:
       return false;
   }
@@ -455,58 +390,32 @@ describe('counts', () => {
     ['umbrella files', () => dataset.masa.files.filter((f) => site(f, 'umbrella')), 20],
     ['umbrella content nodes', () => siteTree('umbrella').filter((c) => c.versions.length > 0), 10],
     ['umbrella forms', () => dataset.masa.content.filter((c) => site(c, 'umbrella') && c.type === 'Form'), 1],
-    ['tenant-a system users', () => dataset.masa.users.filter((u) => site(u, 'tenant-a') && u.isPublic === 0), 2000],
-    ['tenant-a groups', () => dataset.masa.groups.filter((g) => site(g, 'tenant-a')), 50],
+    ['tenant-a system users', () => dataset.masa.users.filter((u) => site(u, 'tenant-a') && u.isPublic === 0), 1990],
+    ['tenant-a groups', () => dataset.masa.groups.filter((g) => site(g, 'tenant-a')), 40],
     ['tenant-a content nodes', () => siteTree('tenant-a').filter((c) => c.versions.length > 0), 5000],
     ['tenant-a forms', () => dataset.masa.content.filter((c) => site(c, 'tenant-a') && c.type === 'Form'), 1],
     ['tenant-a File nodes', () => siteTree('tenant-a').filter((c) => c.type === 'File'), 1],
-    ['tenant-a timesheet days', () => rowsOf('Program_1.timesheet_day'), 20000],
-    ['tenant-a finance records', () => rowsOf('Program_1.finance_record'), 3000],
-    ['tenant-a survey responses', () => rowsOf('synthetic.survey_response').filter((r) => r.siteID === 'tenant-a'), 500],
-    ['tenant-a export jobs', () => rowsOf('synthetic.export_job').filter((r) => r.siteID === 'tenant-a'), 200],
-    ['tenant-b system users', () => dataset.masa.users.filter((u) => site(u, 'tenant-b') && u.isPublic === 0), 180],
+    ['tenant-b system users', () => dataset.masa.users.filter((u) => site(u, 'tenant-b') && u.isPublic === 0), 170],
     ['tenant-b members', () => dataset.masa.users.filter((u) => site(u, 'tenant-b') && u.isPublic === 1), 20],
-    ['tenant-b groups', () => dataset.masa.groups.filter((g) => site(g, 'tenant-b')), 10],
+    ['tenant-b groups', () => dataset.masa.groups.filter((g) => site(g, 'tenant-b')), 0],
     ['tenant-b content nodes', () => siteTree('tenant-b').filter((c) => c.versions.length > 0), 300],
     ['tenant-b forms', () => dataset.masa.content.filter((c) => site(c, 'tenant-b') && c.type === 'Form'), 1],
     ['tenant-b File nodes', () => siteTree('tenant-b').filter((c) => c.type === 'File'), 0],
-    ['tenant-b timesheet days', () => rowsOf('Program_2.timesheet_day'), 2000],
-    ['tenant-b finance records', () => rowsOf('Program_2.finance_record'), 300],
   ] as const)('%s', (_label, select, expected) => {
     expect(select()).toHaveLength(expected);
   });
 
-  const program = (siteID: SiteKey, table: string): FixtureRow[] => {
-    const { programId } = config.sites[siteID];
-    return programId === null ? [] : rowsOf(`Program_${programId}.${table}`);
-  };
-  const synthetic = (siteID: SiteKey, table: string): FixtureRow[] => rowsOf(`synthetic.${table}`).filter((row) => row.siteID === siteID);
-  /** Day count shared by every timesheet of the site: 0 without timesheets, -1 when they differ. */
-  const daysPerSheet = (siteID: SiteKey): number => {
-    const sizes = new Set([...groupBy(program(siteID, 'timesheet_day'), 'timesheet_id').values()].map((days) => days.length));
-    return sizes.size === 0 ? 0 : sizes.size === 1 ? ([...sizes][0] ?? -1) : -1;
-  };
+  const systemUsers = (s: SiteKey): number => dataset.masa.users.filter((u) => site(u, s) && u.isPublic === 0).length;
+  // A site with system users holds the retired slots of both counts.
+  const retired = (s: SiteKey): number => (systemUsers(s) > 0 ? RETIRED_SLOTS : 0);
   const COUNTED: Readonly<Record<keyof SiteCounts, (siteID: SiteKey) => number>> = {
     members: (s) => dataset.masa.users.filter((u) => site(u, s) && u.isPublic === 1).length,
-    systemUsers: (s) => dataset.masa.users.filter((u) => site(u, s) && u.isPublic === 0).length,
-    groups: (s) => dataset.masa.groups.filter((g) => site(g, s)).length,
+    systemUsers: (s) => systemUsers(s) + retired(s),
+    groups: (s) => dataset.masa.groups.filter((g) => site(g, s)).length + retired(s),
     categories: (s) => dataset.masa.categories.filter((c) => site(c, s)).length,
     files: (s) => dataset.masa.files.filter((f) => site(f, s)).length,
     contentNodes: (s) => siteTree(s).length,
     maxVersionsPerNode: (s) => Math.max(0, ...siteTree(s).map((c) => c.versions.length)),
-    timesheetDays: (s) => program(s, 'timesheet_day').length,
-    daysPerTimesheet: daysPerSheet,
-    timesheetEmployees: (s) => new Set(program(s, 'timesheet').map((row) => row.person_id)).size,
-    financeRecords: (s) => program(s, 'finance_record').length,
-    financeAttachments: (s) => program(s, 'finance_attachment').length,
-    surveys: (s) => synthetic(s, 'survey').length,
-    surveyResponses: (s) => synthetic(s, 'survey_response').length,
-    multiSiteResponses: (s) => synthetic(s, 'survey_response').filter((row) => row.respondentSiteID !== s).length,
-    exportDefinitions: (s) => synthetic(s, 'export_definition').length,
-    exportJobs: (s) => synthetic(s, 'export_job').length,
-    messageTemplates: (s) => synthetic(s, 'message_template').length,
-    messages: (s) => synthetic(s, 'message').length,
-    signatureRequests: (s) => synthetic(s, 'signature_request').length,
     oauthClients: (s) => dataset.masa.oauthClients.filter((c) => site(c, s)).length,
   };
 
@@ -523,14 +432,14 @@ describe('counts', () => {
     expect(users.filter((u) => INSTALLED_USERNAMES.includes(u.username.toLowerCase()))).toEqual([]);
   });
 
-  it('leaves the archive and blackout tables to the archive flow', () => {
-    for (const key of ['synthetic.person_archive', 'Program_1.blackout', 'Program_2.blackout']) expect(rowsOf(key), key).toEqual([]);
+  it('leaves the archive table to the archive flow', () => {
+    expect(rowsOf('synthetic.person_archive')).toEqual([]);
   });
 });
 
 describe('ids', () => {
   it('keys every row with a CF UUID unique across the dataset', () => {
-    const ids = [...masaIds(dataset.masa), ...KEYS.flatMap((key) => rowsOf(key).map((row) => row[specForKey(key).spec.key]))];
+    const ids = [...masaIds(dataset.masa), ...KEYS.flatMap((key) => rowsOf(key).map((row) => row[specForKey(key).key]))];
     expect(ids.filter((id) => typeof id !== 'string' || !CF_UUID.test(id) || !isCfUuid(id))).toEqual([]);
     expect(new Set(ids).size).toBe(ids.length);
   });
@@ -562,42 +471,6 @@ describe('ids', () => {
     expect(dataset.masa.content.filter((row) => row.type !== 'File' && row.fileID !== undefined)).toEqual([]);
   });
 
-  it.each([
-    ...[1, 2].flatMap((p) => [
-      [`Program_${p}.timesheet_day`, 'timesheet_id', `Program_${p}.timesheet`],
-      [`Program_${p}.approval_action`, 'day_id', `Program_${p}.timesheet_day`],
-      [`Program_${p}.finance_record_version`, 'record_id', `Program_${p}.finance_record`],
-      [`Program_${p}.finance_attachment`, 'record_id', `Program_${p}.finance_record`],
-    ]),
-    ['synthetic.survey_schedule', 'survey_id', 'synthetic.survey'],
-    ['synthetic.survey_reminder', 'survey_id', 'synthetic.survey'],
-    ['synthetic.survey_target', 'survey_id', 'synthetic.survey'],
-    ['synthetic.survey_response', 'survey_id', 'synthetic.survey'],
-    ['synthetic.export_job', 'definition_id', 'synthetic.export_definition'],
-    ['synthetic.message', 'template_id', 'synthetic.message_template'],
-    ['synthetic.delivery_status', 'message_id', 'synthetic.message'],
-    ['synthetic.signature', 'request_id', 'synthetic.signature_request'],
-    ['synthetic.audit_entry', 'request_id', 'synthetic.signature_request'],
-  ])('%s.%s names a row of %s', (child, column, parent) => {
-    const parents = new Set(rowsOf(parent).map((row) => row[specForKey(parent).spec.key]));
-    expect(rowsOf(child).length).toBeGreaterThan(0);
-    expect(rowsOf(child).filter((row) => row[column] !== null && !parents.has(row[column] ?? null))).toEqual([]);
-  });
-
-  it('names seeded users in every user column', () => {
-    const users = new Set(dataset.masa.users.map((row) => row.userID));
-    const checked = new Set<string>();
-    const stray: string[] = [];
-    for (const key of KEYS) {
-      for (const column of columnsOf(key).filter((c) => USER_COLUMNS.includes(c.name))) {
-        checked.add(column.name);
-        for (const row of rowsOf(key)) if (row[column.name] !== null && !users.has(String(row[column.name]))) stray.push(`${key}.${column.name}`);
-      }
-    }
-    expect([...checked].sort()).toEqual([...USER_COLUMNS].sort());
-    expect(stray).toEqual([]);
-  });
-
   it('joins memberships and OAuth clients to seeded users and groups', () => {
     const users = new Set(dataset.masa.users.map((row) => row.userID));
     const groups = new Map(dataset.masa.groups.map((row) => [row.groupID, row]));
@@ -607,21 +480,6 @@ describe('ids', () => {
       expect(group, m.groupname).toMatchObject({ groupname: m.groupname, siteID: m.groupSiteID });
     }
     expect(dataset.masa.oauthClients.filter((row) => !users.has(row.userID))).toEqual([]);
-  });
-
-  it("names seeded sites, and a Program_<id> row its program's site", () => {
-    const stray: string[] = [];
-    for (const key of KEYS) {
-      const { programId } = specForKey(key);
-      for (const column of columnsOf(key).filter((c) => SITE_COLUMNS.includes(c.name))) {
-        for (const row of rowsOf(key)) {
-          const value = row[column.name];
-          const expected = programId === null ? SITE_ORDER.includes(value as SiteKey) : value === siteForProgram(config, programId);
-          if (!expected) stray.push(`${key}.${column.name}=${String(value)}`);
-        }
-      }
-    }
-    expect(stray).toEqual([]);
   });
 });
 
@@ -659,16 +517,6 @@ describe('value forms', () => {
       const bytes = Buffer.from(file.bytes, 'base64');
       if (file.sha256 !== sha256(bytes) || file.fileSize !== bytes.length) bad.push(`file ${file.fileID}`);
     }
-    for (const key of ['Program_1.finance_attachment', 'Program_2.finance_attachment']) {
-      for (const row of rowsOf(key)) {
-        const bytes = Buffer.from(String(row.content), 'hex');
-        if (row.sha256 !== sha256(bytes) || row.size_bytes !== bytes.length) bad.push(`${key} ${String(row.attachment_id)}`);
-      }
-    }
-    for (const job of rowsOf('synthetic.export_job')) {
-      const expected = job.output === null ? null : sha256(Buffer.from(String(job.output), 'hex'));
-      if (job.output_sha256 !== expected) bad.push(`export_job ${String(job.job_id)}`);
-    }
     expect(bad).toEqual([]);
   });
 });
@@ -677,38 +525,20 @@ describe('reserved rehearsal identities', () => {
   const { persons, usernames } = config.reserved.rehearsal;
   const reserved = new Set(persons);
 
-  it('seeds each reserved person as a tenant-a timesheets.employee only', () => {
+  it('seeds each reserved person as a tenant-a system user in no group', () => {
     expect(persons).toHaveLength(10);
     for (const userID of persons) {
       expect(dataset.masa.users.find((row) => row.userID === userID), userID).toMatchObject({ siteID: 'tenant-a', isPublic: 0 });
-      expect(membershipsOf(userID).map((m) => [m.groupSiteID, m.groupname])).toEqual([['tenant-a', roleGroupName(config, 'timesheets.employee')]]);
+      expect(membershipsOf(userID)).toEqual([]);
     }
   });
 
-  it('gives each reserved person open timesheet days and no approved one', () => {
-    const days = groupBy(rowsOf('Program_1.timesheet_day'), 'timesheet_id');
-    for (const userID of persons) {
-      const sheets = rowsOf('Program_1.timesheet').filter((sheet) => sheet.person_id === userID);
-      const own = sheets.flatMap((sheet) => days.get(sheet.timesheet_id ?? null) ?? []);
-      expect(sheets.length, userID).toBeGreaterThan(0);
-      expect(own.filter((day) => day.state === 'DRAFT' && String(day.work_date) >= config.businessDate).length, userID).toBeGreaterThanOrEqual(5);
-      expect(own.filter((day) => day.state === 'APPROVED')).toEqual([]);
-    }
-  });
-
-  it('references reserved persons only from their own timesheet rows', () => {
-    const sheetOwner = new Map(rowsOf('Program_1.timesheet').map((row) => [row.timesheet_id, row.person_id]));
-    const dayOwner = new Map(rowsOf('Program_1.timesheet_day').map((row) => [row.day_id, sheetOwner.get(row.timesheet_id)]));
-    const owners: Readonly<Record<string, (row: FixtureRow) => FixtureValue | undefined>> = {
-      'Program_1.timesheet': (row) => row.person_id,
-      'Program_1.timesheet_day': (row) => sheetOwner.get(row.timesheet_id ?? null),
-      'Program_1.approval_action': (row) => dayOwner.get(row.day_id ?? null),
-    };
+  it('references reserved persons from no fixture row, OAuth client or role subject', () => {
     const stray: string[] = [];
     for (const key of KEYS) {
       for (const row of rowsOf(key)) {
         for (const [column, value] of Object.entries(row)) {
-          if (typeof value === 'string' && reserved.has(value) && owners[key]?.(row) !== value) stray.push(`${key}.${column}`);
+          if (typeof value === 'string' && reserved.has(value)) stray.push(`${key}.${column}`);
         }
       }
     }
@@ -726,9 +556,9 @@ describe('reserved rehearsal identities', () => {
 });
 
 describe('roles', () => {
-  it.each(['tenant-a', 'tenant-b'] as const)('%s holds one group per synthetic role and its Admin membership', (siteID) => {
+  it.each(['tenant-a', 'tenant-b'] as const)('%s holds generic groups only and its Admin membership', (siteID) => {
     const names = dataset.masa.groups.filter((row) => row.siteID === siteID).map((row) => row.groupname);
-    for (const role of ROLES) expect(names.filter((name) => name === roleGroupName(config, role)), role).toHaveLength(1);
+    expect(names.filter((name) => !/ Team(?: \d+)?$/.test(name))).toEqual([]);
     expect(dataset.masa.memberships.filter((m) => m.groupID === null && m.groupname === 'Admin' && m.groupSiteID === siteID).length).toBeGreaterThan(0);
   });
 
@@ -746,8 +576,7 @@ describe('roles', () => {
       const held = membershipsOf(user.userID).map((m) => [m.groupSiteID, m.groupname, m.groupID === null]);
       expect(user.isPublic, role).toBe(role === MEMBER ? 1 : 0);
       if (role === SITE_ADMIN) expect(held).toEqual([[siteID, 'Admin', true]]);
-      else if (role === MEMBER || role === SYSTEM_USER) expect(held, role).toEqual([]);
-      else expect(held, role).toEqual([[siteID, roleGroupName(config, role), false]]);
+      else expect(held, role).toEqual([]);
       if (role === SYSTEM_USER) expect(oauthUsers.has(user.userID)).toBe(false);
     }
   });
@@ -756,87 +585,11 @@ describe('roles', () => {
 describe('fixture columns', () => {
   it('fills exactly the configured fixture tables', () => {
     expect(Object.keys(dataset.fixtures)).toEqual(KEYS);
-    expect(KEYS.filter((key) => UNSEEDED_KEYS.includes(key))).toEqual([]);
   });
 
   it.each(KEYS)('%s rows carry the DDL columns in catalog order', (key) => {
     const names = columnsOf(key).map((column) => column.name).join();
     expect(rowsOf(key).filter((row) => Object.keys(row).join() !== names)).toEqual([]);
-  });
-});
-
-describe('state consistency', () => {
-  it.each([1, 2])('Program_%i day states replay their approval actions through legal steps', (p) => {
-    const legal = (row: FixtureRow): boolean =>
-      TIMESHEET_STEPS.some((step) => step.from === row.from_state && step.action === row.action && step.role === row.role && step.to === row.to_state);
-    const actions = groupBy(rowsOf(`Program_${p}.approval_action`), 'day_id');
-    const bad = rowsOf(`Program_${p}.timesheet_day`).filter((day) => {
-      let state: FixtureValue = 'DRAFT';
-      let at = '';
-      for (const action of actions.get(day.day_id ?? null) ?? []) {
-        if (action.from_state !== state || String(action.created) < at || !legal(action)) return true;
-        state = action.to_state ?? null;
-        at = String(action.created);
-      }
-      return state !== day.state;
-    });
-    expect(bad).toEqual([]);
-  });
-
-  it.each([1, 2])('Program_%i versions step through the finance lifecycle', (p) => {
-    const versions = groupBy(rowsOf(`Program_${p}.finance_record_version`), 'record_id');
-    const steps = [...versions.values()].flatMap((list) => list.slice(1).map((version, i) => `${String(list[i]?.state)}>${String(version.state)}`));
-    expect(steps.length).toBeGreaterThan(0);
-    expect(steps.filter((step) => !FINANCE_STEPS.has(step))).toEqual([]);
-  });
-
-  it.each([1, 2])('Program_%i records match their last version', (p) => {
-    const versions = groupBy(rowsOf(`Program_${p}.finance_record_version`), 'record_id');
-    const bad = rowsOf(`Program_${p}.finance_record`).filter((record) => {
-      const list = versions.get(record.record_id ?? null) ?? [];
-      const last = list.at(-1);
-      return (
-        last === undefined ||
-        list.length !== record.version ||
-        list.some((version, i) => version.version !== i + 1) ||
-        list[0]?.action !== 'create' ||
-        list[0]?.state !== 'IN-PROGRESS' ||
-        ['state', 'title', 'amount', 'period'].some((column) => last[column] !== record[column])
-      );
-    });
-    expect(bad).toEqual([]);
-  });
-
-  it('gives each message the state of its last delivery status', () => {
-    const history = groupBy(rowsOf('synthetic.delivery_status'), 'message_id');
-    const bad = rowsOf('synthetic.message').filter((message) => {
-      const rows = history.get(message.message_id ?? null) ?? [];
-      const sent = rows.find((row) => row.status === 'sent');
-      return message.state === 'queued' || rows.at(-1)?.status !== message.state || message.sent_at !== (sent?.recorded_at ?? null);
-    });
-    expect(bad).toEqual([]);
-  });
-
-  it('marks a request SIGNED exactly when it has a signature and a signed audit entry', () => {
-    const signatures = groupBy(rowsOf('synthetic.signature'), 'request_id');
-    const entries = groupBy(rowsOf('synthetic.audit_entry'), 'request_id');
-    const bad = rowsOf('synthetic.signature_request').filter((request) => {
-      const signed = request.state === 'SIGNED';
-      const actions = (entries.get(request.request_id ?? null) ?? []).map((row) => row.action);
-      return (
-        (signatures.get(request.request_id ?? null) ?? []).length !== (signed ? 1 : 0) ||
-        actions.join() !== (signed ? 'created,signed' : 'created') ||
-        !['SIGNED', 'PENDING'].includes(String(request.state))
-      );
-    });
-    expect(bad).toEqual([]);
-  });
-
-  it('gives done export jobs an output and failed ones an error', () => {
-    const bad = rowsOf('synthetic.export_job').filter((job) =>
-      job.state === 'done' ? job.output === null || job.error !== null : job.state !== 'failed' || job.output !== null || job.error === null,
-    );
-    expect(bad).toEqual([]);
   });
 });
 
@@ -1022,16 +775,11 @@ describe('CLI', () => {
   });
 
   it.each<[string, (raw: RawConfig) => void, RegExp]>([
-    ['too few groups for the role groups', (raw) => void (raw.sites['tenant-b'].counts.groups = 3), /^seed: Site tenant-b needs at least 10 groups for the role groups, got 3\n$/],
+    ['too few group slots', (raw) => void (raw.sites['tenant-b'].counts.groups = 3), /^seed: Site tenant-b needs at least 10 group slots, got 3\n$/],
     [
       'too few public-pool members to comment',
       (raw) => void (raw.sites['tenant-b'].counts.members = 1),
       /^seed: Site tenant-b needs at least 2 public-pool members to comment, got 1\n$/,
-    ],
-    [
-      'more multi-site survey responses than responses',
-      (raw) => void (raw.sites['tenant-b'].counts.multiSiteResponses = 500),
-      /^seed: Site tenant-b: multiSiteResponses 500 exceeds surveyResponses 20\n$/,
     ],
     ['a history reaching before 1753', (raw) => void (raw.businessDate = '1753-01-02'), /^seed: generate failed \(RangeError\)\n$/],
   ])('exits 1 naming the site and counts, or only the error class, on a config with %s', async (_label, edit, message) => {
@@ -1100,12 +848,12 @@ describe('CLI --direct without a client', () => {
     ['not JSON', '{', `${URLS_INVALID} (OPT2_SERVICE_URLS must be a JSON object)\n`],
     ['not an object', JSON.stringify('http://127.0.0.1:9'), `${URLS_INVALID} (Invalid input: expected record, received string)\n`],
     ['not a URL', JSON.stringify({ ...SERVICE_URL_MAP, people: 'not a url' }), `${URLS_INVALID} (people: Invalid URL)\n`],
-    ['an ftp:// URL', JSON.stringify({ ...SERVICE_URL_MAP, finance: 'ftp://127.0.0.1:9' }), `${URLS_INVALID} (finance: Invalid URL)\n`],
-    ['a key that is not a service name', JSON.stringify({ ...SERVICE_URL_MAP, Finance: 'http://127.0.0.1:9' }), `${URLS_INVALID} (Finance: Invalid key in record)\n`],
+    ['an ftp:// URL', JSON.stringify({ ...SERVICE_URL_MAP, identity: 'ftp://127.0.0.1:9' }), `${URLS_INVALID} (identity: Invalid URL)\n`],
+    ['a key that is not a service name', JSON.stringify({ ...SERVICE_URL_MAP, People: 'http://127.0.0.1:9' }), `${URLS_INVALID} (People: Invalid key in record)\n`],
     [
       'several invalid entries, one keyed by its URL',
-      JSON.stringify({ surveys: 'mailto:ops@example.com', 'http://127.0.0.1:9': 'people' }),
-      `${URLS_INVALID} (surveys: Invalid URL; <name>: Invalid key in record)\n`,
+      JSON.stringify({ identity: 'mailto:ops@example.com', 'http://127.0.0.1:9': 'people' }),
+      `${URLS_INVALID} (identity: Invalid URL; <name>: Invalid key in record)\n`,
     ],
   ])('needs OPT2_SERVICE_URLS: %s', async (_label, urls, message) => {
     const io = captureOutput();
@@ -1117,12 +865,14 @@ describe('CLI --direct without a client', () => {
   });
 
   it.each([
-    ['an empty map', {}, 'timesheets, finance, surveys, reporting, communications, e-signature'],
-    ['a map missing one owner', Object.fromEntries(Object.entries(SERVICE_URL_MAP).filter(([service]) => service !== 'reporting')), 'reporting'],
+    ['an empty map', {}, 'people'],
+    ['a map missing the owner', { identity: 'http://127.0.0.1:9' }, 'people'],
   ])('names each owner of a non-empty table that OPT2_SERVICE_URLS lacks, before reading the signing keys: %s', async (_label, urls, missing) => {
     const io = captureOutput();
     const state = await mkdtemp(join(root, 'unmapped-'));
-    expect(await run(['--direct', '--out', first.out], { OPT2_STATE_DIR: state, OPT2_SERVICE_URLS: JSON.stringify(urls) })).toBe(2);
+    const out = await mkdtemp(join(root, 'archived-'));
+    await writeDataset(out, withArchives(dataset, archiveRows(dataset, [['tenant-a', 1]])), config.chunkRows);
+    expect(await run(['--direct', '--out', out], { OPT2_STATE_DIR: state, OPT2_SERVICE_URLS: JSON.stringify(urls) })).toBe(2);
     expect(io.stderr()).toBe(`seed: OPT2_SERVICE_URLS has no URL for ${missing}\n`);
     expect([io.stdout(), await listing(state)]).toEqual(['', []]);
   });

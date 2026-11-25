@@ -12,12 +12,6 @@ x-opt2-calls:
   - people
   - programs-sites
   - strategies-content
-  - communications
-  - reporting
-  - surveys
-  - timesheets
-  - finance
-  - e-signature
   - gateway
 security:
   - invocationCredential: []
@@ -607,12 +601,6 @@ components:
         - people
         - programs-sites
         - strategies-content
-        - communications
-        - reporting
-        - surveys
-        - timesheets
-        - finance
-        - e-signature
         - stub
     VersionId:
       type: string
@@ -1210,7 +1198,6 @@ components:
         - nativeTaskExisted
         - siteMonitor
         - tasks
-        - fixtureTasks
         - background
       additionalProperties: false
       properties:
@@ -1242,11 +1229,6 @@ components:
         tasks:
           type: array
           description: The native `siteMonitor` task.
-          items:
-            $ref: '#/components/schemas/NativeTask'
-        fixtureTasks:
-          type: array
-          description: The fixture `opt2-survey-*` tasks.
           items:
             $ref: '#/components/schemas/NativeTask'
         background:
@@ -1320,11 +1302,4 @@ components:
             type:
               type: string
     Health:
-      type: object
-      required:
-        - status
-      additionalProperties: false
-      properties:
-        status:
-          type: string
-          const: ok
+      $ref: '../../platform/contracts/openapi-components.v1.yaml#/components/schemas/Health'

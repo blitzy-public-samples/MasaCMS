@@ -57,7 +57,7 @@ import {
   UNITS,
   V0001,
   V0002,
-  blackoutRow,
+  enrolmentRow,
   personArchiveRow,
   seedFakeLegacy,
   userRow,
@@ -297,13 +297,13 @@ describe('createOwnerBatcher', () => {
   it('puts the watermark of a table without rows alone, with no apply', async () => {
     const { doubles, log, sender } = harness();
     const watermark = forwardWatermark('tmailinglist');
-    const batcher = batcherOf(sender, { owner: 'communications', legacyTable: 'tmailinglist', columns: MAILING_LIST_COLUMNS, watermark });
+    const batcher = batcherOf(sender, { owner: 'programs-sites', legacyTable: 'tmailinglist', columns: MAILING_LIST_COLUMNS, watermark });
 
     const stats = await batcher.finish();
 
     expect(stats).toMatchObject({ batches: 0, changes: 0, watermark: 'putWatermark' });
-    expect(log.ops('owner:communications')).toEqual(['putWatermark']);
-    expect(doubles.owner('communications').watermarks.get('tmailinglist|forward')).toEqual(watermark);
+    expect(log.ops('owner:programs-sites')).toEqual(['putWatermark']);
+    expect(doubles.owner('programs-sites').watermarks.get('tmailinglist|forward')).toEqual(watermark);
   });
 
   it.each(MIGRATION_ORIGINS)('sends %s batches with only apply fields, so owners emit state events alone', async (origin) => {
@@ -512,15 +512,15 @@ describe('createApplyTenantResolver', () => {
     await dirs.cleanup();
   });
 
-  /** Fixture ownership plus `temails` resolved by site and `temailstats` by its `temails` parent, as the live file records them. */
+  /** Fixture ownership plus `temails` resolved by site and `temailstats` by its `temails` parent, Masa's rules for its mail tables. */
   async function ownershipWithParentTable(): Promise<string> {
     const file = path.join(dirs.stateDir, 'table-ownership.json');
     const tables = [
       ...FIXTURE_OWNERSHIP.tables,
-      { table: 'temails', owner: 'communications', tenantResolution: 'siteID', siteIdColumn: 'SiteID', targets: [] },
+      { table: 'temails', owner: 'legacy', tenantResolution: 'siteID', siteIdColumn: 'SiteID', targets: [] },
       {
         table: 'temailstats',
-        owner: 'communications',
+        owner: 'legacy',
         tenantResolution: 'parent:temails',
         siteIdColumn: null,
         tenantParent: { table: 'temails', join: 'temailstats.EmailID = temails.EmailID' },
@@ -616,7 +616,7 @@ describe('feed authority under v0002', () => {
       batchSize: DEFAULT_BATCH_SIZE,
     });
 
-    expect(writableUnits).toEqual(new Set([UNITS.mailingList, UNITS.mailingListMember]));
+    expect(writableUnits).toEqual(new Set([UNITS.enrolment, UNITS.mailingList, UNITS.mailingListMember]));
     expect(result.owners.map((owner) => [owner.owner, owner.status])).toEqual([
       ['identity', 'not-writable'],
       ['people', 'not-writable'],
@@ -644,7 +644,7 @@ describe.skipIf(!schemaAvailable)(`backfill and feed authority over migration.sn
     test = await buildTestContext({ migrationDb: true, legacySeed: true, gateway: { active: null }, cutover: { versions: [V0001, V0002] } });
     // Every unit gets a row, so each owner export knows its columns when the after-backfill point reconciles it.
     test.legacy.seed(TABLES['synthetic.person_archive'].qualified, [personArchiveRow()]);
-    test.legacy.seed(TABLES['Program_1.blackout'].qualified, [blackoutRow()]);
+    test.legacy.seed(TABLES['Program_1.enrolment'].qualified, [enrolmentRow()]);
     await test.ctx.db.withMetadata((tx) =>
       tx.query(INSERT_SNAPSHOT_SQL, [
         SNAPSHOT.seq,
@@ -722,7 +722,7 @@ describe.skipIf(!schemaAvailable)(`backfill and feed authority over migration.sn
     const { held } = error as BackfillBaselineError;
     expect(held.length).toBeGreaterThan(0);
     expect(new Set(held.map((mark) => mark.snapshotSeq))).toEqual(new Set([SNAPSHOT_SEQ]));
-    expect(held).toEqual(expect.arrayContaining([{ owner: 'communications', table: 'tmailinglist', snapshotSeq: SNAPSHOT_SEQ }]));
+    expect(held).toEqual(expect.arrayContaining([{ owner: 'programs-sites', table: 'tmailinglist', snapshotSeq: SNAPSHOT_SEQ }]));
     expect(applyCount()).toBe(calls);
   });
 
@@ -753,7 +753,7 @@ describe.skipIf(!schemaAvailable)(`backfill and feed authority over migration.sn
     expect(result.files).toMatchObject({ status: 'skipped-target-authoritative' });
     expect(statusOf('tusers', 'identity')).toBe('not-writable');
     expect(statusOf('tusers', 'people')).toBe('not-writable');
-    expect(statusOf('tmailinglist', 'communications')).toBe('up-to-date');
+    expect(statusOf('tmailinglist', 'programs-sites')).toBe('up-to-date');
     expect(applyCount()).toBe(calls);
   });
 });
@@ -781,7 +781,7 @@ describe.skipIf(!schemaAvailable)(`backfill after a feed to the same snapshot (s
   beforeAll(async () => {
     test = await buildTestContext({ migrationDb: true, legacySeed: true, gateway: { active: null }, cutover: { versions: [V0001, V0002] } });
     test.legacy.seed(TABLES['synthetic.person_archive'].qualified, [personArchiveRow()]);
-    test.legacy.seed(TABLES['Program_1.blackout'].qualified, [blackoutRow()]);
+    test.legacy.seed(TABLES['Program_1.enrolment'].qualified, [enrolmentRow()]);
     await recordSnapshot(SNAPSHOT_SEQ, SNAPSHOT.databaseName);
   });
 
@@ -789,16 +789,16 @@ describe.skipIf(!schemaAvailable)(`backfill after a feed to the same snapshot (s
 
   it('refuses a backfill of snapshot 2 after backfill(1) and feed(2) before any batch, so keyless tables keep their occurrences', async () => {
     const second = SNAPSHOT_SEQ + 1;
-    const communications = test.owners?.owner('communications');
+    const programsSites = test.owners?.owner('programs-sites');
     const tables = ['tmailinglist', 'tmailinglistmembers'] as const;
-    const keyless = (): (number | undefined)[] => tables.map((table) => communications?.rows.get(table)?.length);
+    const keyless = (): (number | undefined)[] => tables.map((table) => programsSites?.rows.get(table)?.length);
     const applies = (): number => ownerCalls(test).filter((call) => call.method === 'apply').length;
     expect(await runBackfill(test.ctx, { snapshotSeq: SNAPSHOT_SEQ })).toMatchObject({ exitCode: 0 });
     test.gateway.setActive(V0001.tableVersion);
     // The upper-cased name opens the same fake database, so the feed to snapshot 2 finds no change and only moves the watermarks.
     await recordSnapshot(second, SNAPSHOT.databaseName.toUpperCase());
     expect(await runFeed(test.ctx, { snapshotSeq: second })).toMatchObject({ snapshotSeq: second, exitCode: 0 });
-    expect(communications?.watermarks.get('tmailinglist|forward')).toMatchObject({ snapshotSeq: second });
+    expect(programsSites?.watermarks.get('tmailinglist|forward')).toMatchObject({ snapshotSeq: second });
     const occurrences = keyless();
     const calls = applies();
 
@@ -810,7 +810,7 @@ describe.skipIf(!schemaAvailable)(`backfill after a feed to the same snapshot (s
       message: expect.stringContaining(`Backfill of snapshot ${String(second)} refused: the target was backfilled from snapshot ${String(SNAPSHOT_SEQ)};`),
     });
     expect((error as BackfillBaselineError).held).toEqual(
-      expect.arrayContaining([{ owner: 'communications', table: 'tmailinglistmembers', snapshotSeq: second }]),
+      expect.arrayContaining([{ owner: 'programs-sites', table: 'tmailinglistmembers', snapshotSeq: second }]),
     );
     // One occurrence per legacy row, the duplicated member row included.
     expect(occurrences).toEqual(tables.map((table) => test.legacy.rows(TABLES[table].qualified).length));

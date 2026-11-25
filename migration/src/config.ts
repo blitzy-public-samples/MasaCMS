@@ -29,12 +29,6 @@ const ownersShape = z
     people: ownerSchema,
     'programs-sites': ownerSchema,
     'strategies-content': ownerSchema,
-    communications: ownerSchema,
-    reporting: ownerSchema,
-    surveys: ownerSchema,
-    timesheets: ownerSchema,
-    finance: ownerSchema,
-    'e-signature': ownerSchema,
     stub: ownerSchema,
     gateway: ownerSchema,
     migration: ownerSchema,
@@ -79,9 +73,7 @@ export const migrationConfigSchema = z
     backfill: z.object({ batchRows: positiveInt() }).strict(),
     snapshot: z.object({ databaseNamePattern: text(), backupFilePattern: text(), subdir: text() }).strict(),
     windows: z.object({ openBudgetMs: positiveInt(), importRetryMs: positiveInt(), gatewayLeaseMs: positiveInt() }).strict(),
-    transition: z
-      .object({ freezeAckTimeoutMs: positiveInt(), cfthreadWaitMs: positiveInt(), drainTimeoutMs: positiveInt() })
-      .strict(),
+    transition: z.object({ freezeAckTimeoutMs: positiveInt(), drainTimeoutMs: positiveInt() }).strict(),
     projection: z
       .object({
         defaultAwaitTimeoutMs: positiveInt(),
@@ -126,7 +118,7 @@ export const migrationConfigSchema = z
 /** Parsed static orchestrator configuration. */
 export type MigrationConfig = z.infer<typeof migrationConfigSchema>;
 
-/** Name of one of the thirteen owners, in bootstrap order. */
+/** Name of one of the seven owners, in bootstrap order. */
 export type OwnerName = keyof MigrationConfig['owners'];
 
 /** One `owners` entry together with its owner name. */

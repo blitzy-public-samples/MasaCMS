@@ -81,16 +81,16 @@ export const ASSUMPTIONS: readonly Readonly<AssumptionDefinition>[] = Object.fre
       assumption:
         '"Program" maps to a Masa site; per-program tables are per-site table sets or `siteID`-keyed tables',
       liveCheck:
-        'live catalog scan for per-site table sets outside `dbo`, `synthetic`, `Program_*` and `opt2_sync`; live ' +
-        '`siteID` table count beside the static figure (a fresh install lacks the lazily created `tremotepointer`); ' +
-        '`synthetic.program_site` rows against `tsettings`',
-      actionIfRefuted: 'Fold each found set by the `Program_<id>` mapping (AAP 0.8.1) and name it here',
+        'live catalog scan for per-site table sets outside `dbo`, `synthetic` and `opt2_sync`; live `siteID` table ' +
+        'count beside the static figure (a fresh install lacks the lazily created `tremotepointer`)',
+      actionIfRefuted:
+        "Fold each found set into its site's tenant by the migration kit's schema fold (AAP 0.8.1) and name it here",
     },
     {
       id: 'A2',
       assumption:
-        'Front-end scope is the admin screens of identity, people, programs-sites and strategies-content, plus ' +
-        'minimal synthetic-module screens; public themes are not redesigned',
+        'Front-end scope is the admin screens of identity, people, programs-sites and strategies-content; public ' +
+        'themes are not redesigned',
       liveCheck:
         'no live probe; the `--live` run decides it from the inventory, and `harness/src/golden/coverage.ts` checks ' +
         'catalogue coverage of every carried admin action',
@@ -132,12 +132,6 @@ export const PLANNED_SITE_ID_TABLES = 54;
 /** Installed site and seed sites (AAP 0.8.6) that a per-site table name would embed. */
 export const KNOWN_SITE_IDS: readonly string[] = Object.freeze(['default', 'umbrella', 'tenant-a', 'tenant-b']);
 
-/** Fixture program-to-site mapping of `synthetic.program_site` (AAP 0.7.6). */
-export const PLANNED_PROGRAM_SITES: readonly Readonly<ProgramSite>[] = Object.freeze([
-  Object.freeze({ programId: 1, siteId: 'tenant-a' }),
-  Object.freeze({ programId: 2, siteId: 'tenant-b' }),
-]);
-
 /** Admin domains the target reproduces screens for. */
 export const MIGRATED_DOMAINS: readonly string[] = Object.freeze([
   'identity',
@@ -166,7 +160,8 @@ const POOL_DEFAULTS_REF = 'core/mura/settings/settingsBean.cfc:328-344';
 const MASA_TABLE_ORIGINS: ReadonlySet<string> = new Set(['bootstrap', 'migration', 'orm']);
 const DISPOSITION_ORDER = ['carry', 'legacy-served', 'decision', 'retired'];
 const KNOWN_LIVE_SCHEMAS: ReadonlySet<string> = new Set(['dbo', 'synthetic', 'opt2_sync']);
-const PROGRAM_SCHEMA = /^Program_(\d+)$/i;
+// ACF names the monitor task by its absolute path under the web root, which is the checkout root.
+const WEB_ROOT_TASK = /^(?:[A-Za-z]:)?[\\/](?:.*[\\/])?(index\.cfm[\\/].*)$/i;
 const SITE_MONITOR_JOB = 'job:sitemonitor';
 const PRISTINE_TEXT = '`${OPT2_PRISTINE_DIR}/native-tasks.json`';
 
@@ -239,12 +234,6 @@ export interface CatalogTable {
   name: string;
 }
 
-/** One `synthetic.program_site` row. */
-export interface ProgramSite {
-  programId: number;
-  siteId: string;
-}
-
 /** One `tsettings` row with its pool columns as stored. */
 export type SitePools = { siteId: string } & Record<PoolColumn, string | null>;
 
@@ -271,8 +260,6 @@ export interface LiveEvidence {
   tables: CatalogTable[];
   /** `dbo` base tables with a `siteID` column. */
   siteIdTableCount: number;
-  /** Null when `synthetic.program_site` does not exist. */
-  programSites: ProgramSite[] | null;
   sites: SitePools[];
   storedProcedures: LiveCheck;
   legacy: LegacyMonitorInfo;
@@ -384,19 +371,6 @@ function a1Static(inv: AssumptionsInventory): Evidence {
     if (outside.length > 0) refutations.push(`Masa tables outside ${code('dbo')}: ${codeList(outside)}`);
     if (embedding.length > 0) refutations.push(`Masa table names embedding a site id: ${codeList(embedding)}`);
   }
-
-  const programSite = inv.tables.find((t) => t.origin === 'fixture' && t.table === 'synthetic.program_site');
-  if (programSite === undefined) {
-    items.push(`the inventory lists no fixture ${code('synthetic.program_site')}`);
-  } else {
-    const perProgram = inv.tables.filter((t) => t.origin === 'fixture' && /^Program_/i.test(t.schema)).length;
-    const programs = PLANNED_PROGRAM_SITES.map((p) => code(`Program_${p.programId}`)).join(' and ');
-    const sites = PLANNED_PROGRAM_SITES.map((p) => code(p.siteId)).join(' and ');
-    items.push(
-      `fixtures add ${counted(perProgram, 'per-program table')}, created in ${programs} and mapped to ${sites} ` +
-        `through ${code('synthetic.program_site')} (${code(ref(programSite.source))})`,
-    );
-  }
   return { items: [...items, ...refutations], refutations };
 }
 
@@ -404,7 +378,7 @@ function a1Live(inv: AssumptionsInventory, live: LiveEvidence): Evidence {
   const siteIds = live.sites.map((s) => s.siteId);
   const dynamic = inv.tables.filter((t) => t.origin === 'dynamic').map((t) => globPattern(t.table));
   const outside = live.tables
-    .filter((t) => !KNOWN_LIVE_SCHEMAS.has(t.schema.toLowerCase()) && !PROGRAM_SCHEMA.test(t.schema))
+    .filter((t) => !KNOWN_LIVE_SCHEMAS.has(t.schema.toLowerCase()))
     .map((t) => `${t.schema}.${t.name}`);
   const embedding = live.tables
     .filter((t) => sameText(t.schema, 'dbo') && !dynamic.some((p) => p.test(t.name)))
@@ -413,8 +387,8 @@ function a1Live(inv: AssumptionsInventory, live: LiveEvidence): Evidence {
   const refutations: string[] = [];
   if (outside.length === 0 && embedding.length === 0) {
     items.push(
-      `no per-site table sets: no table outside ${code('dbo')}, ${code('synthetic')}, ${code('Program_*')} and ` +
-        `${code('opt2_sync')}, and no ${code('dbo')} table name embeds a site id (${codeList(siteIds) || 'no sites'})`,
+      `no per-site table sets: no table outside ${code('dbo')}, ${code('synthetic')} and ${code('opt2_sync')}, and ` +
+        `no ${code('dbo')} table name embeds a site id (${codeList(siteIds) || 'no sites'})`,
     );
   } else {
     if (outside.length > 0) refutations.push(`per-site table set candidates: ${codeList(outside)}`);
@@ -422,25 +396,6 @@ function a1Live(inv: AssumptionsInventory, live: LiveEvidence): Evidence {
   }
   const dboTables = counted(live.siteIdTableCount, `${code('dbo')} table`);
   items.push(`${code('siteID')} on ${dboTables} live (static ${inv.counts.tables.withSiteIdStatic})`);
-
-  const schemas = [...new Set(live.tables.map((t) => t.schema).filter((s) => PROGRAM_SCHEMA.test(s)))].sort();
-  if (live.programSites === null) {
-    items.push(`${code('synthetic.program_site')} absent`);
-  } else {
-    const rows = live.programSites.map((p) => `${code(`Program_${p.programId}`)} → ${code(p.siteId)}`);
-    items.push(`${code('synthetic.program_site')}: ${rows.join(', ') || 'no rows'}`);
-    for (const p of live.programSites) {
-      if (!siteIds.some((s) => sameText(s, p.siteId))) {
-        refutations.push(`${code(`Program_${p.programId}`)} maps to ${code(p.siteId)}, which is not a site`);
-      }
-    }
-  }
-  for (const schema of schemas) {
-    const id = Number(PROGRAM_SCHEMA.exec(schema)?.[1]);
-    if (!(live.programSites ?? []).some((p) => p.programId === id)) {
-      refutations.push(`schema ${code(schema)} has no ${code('synthetic.program_site')} row`);
-    }
-  }
   return { items: [...items, ...refutations], refutations };
 }
 
@@ -587,6 +542,11 @@ function a5Static(inv: AssumptionsInventory): Evidence {
   };
 }
 
+/** A task name, shown relative to the web root when it is an absolute path to `index.cfm`. */
+function taskText(name: string): string {
+  return WEB_ROOT_TASK.exec(name)?.[1] ?? name;
+}
+
 /** A captured `ping` as Masa reads it: true only for a CFML boolean true; null when the value is unknown. */
 function pingFlag(value: boolean | string | null | undefined): boolean | null {
   if (typeof value === 'boolean') return value;
@@ -602,8 +562,8 @@ function pingFlag(value: boolean | string | null | undefined): boolean | null {
 function a5Live(live: LiveEvidence): Evidence {
   const { legacy, nativeTasks } = live;
   const items = [
-    `live ${code('ping')} = ${code(String(legacy.ping))}; monitor task ${code(legacy.siteMonitorTask)} registered: ` +
-      `${legacy.siteMonitorTaskRegistered ? 'yes' : 'no'}`,
+    `live ${code('ping')} = ${code(String(legacy.ping))}; monitor task ${code(taskText(legacy.siteMonitorTask))} ` +
+      `registered: ${legacy.siteMonitorTaskRegistered ? 'yes' : 'no'}`,
   ];
   const refutations: string[] = [];
   if (nativeTasks === null) {
@@ -619,7 +579,7 @@ function a5Live(live: LiveEvidence): Evidence {
   const original = pingFlag(nativeTasks.originalPing);
   const ping = original === null ? String(nativeTasks.originalPing ?? 'unknown') : String(original);
   const { tasks } = nativeTasks;
-  const taskNames = tasks.length > 0 ? ` (${codeList(tasks.map((t) => t.task))})` : '';
+  const taskNames = tasks.length > 0 ? ` (${codeList(tasks.map((t) => taskText(t.task)))})` : '';
   const taskList = `${counted(tasks.length, 'task')}${taskNames}`;
   items.push(
     `native capture ${PRISTINE_TEXT} (${nativeTasks.capturedAt ?? 'capture time unknown'}): original ` +
@@ -726,10 +686,6 @@ export const SITE_ID_TABLES_SQL =
   'JOIN INFORMATION_SCHEMA.TABLES t ON t.TABLE_SCHEMA = c.TABLE_SCHEMA AND t.TABLE_NAME = c.TABLE_NAME ' +
   "WHERE t.TABLE_TYPE = 'BASE TABLE' AND c.TABLE_SCHEMA = 'dbo' AND LOWER(c.COLUMN_NAME) = 'siteid'";
 
-/** Fixture program-to-site rows. */
-export const PROGRAM_SITES_SQL =
-  'SELECT program_id AS programId, siteID AS siteId FROM synthetic.program_site ORDER BY program_id';
-
 /** Every site with its stored pool columns, aliased because the migrations that added them differ in letter case. */
 export const SITE_POOLS_SQL =
   `SELECT SiteID AS siteId, ${POOL_COLUMNS.map((c) => `${c} AS ${c}`).join(', ')} FROM tsettings ORDER BY SiteID`;
@@ -791,8 +747,6 @@ export async function gatherLiveEvidence(sources: LiveSources): Promise<LiveEvid
   const catalog = await db.readOnlyQuery<{ schemaName: string; tableName: string }>(CATALOG_TABLES_SQL);
   const tables = catalog.map((r) => ({ schema: r.schemaName, name: r.tableName }));
   const [siteIdRow] = await db.readOnlyQuery<{ tableCount: number }>(SITE_ID_TABLES_SQL);
-  const hasProgramSite = tables.some((t) => sameText(t.schema, 'synthetic') && sameText(t.name, 'program_site'));
-  const programSites = hasProgramSite ? await db.readOnlyQuery<ProgramSite>(PROGRAM_SITES_SQL) : null;
   const sites = await db.readOnlyQuery<SitePools>(SITE_POOLS_SQL);
   const storedProcedures = await liveCheck(db, { clock });
   const legacy = await probeLegacy(sources);
@@ -801,7 +755,6 @@ export async function gatherLiveEvidence(sources: LiveSources): Promise<LiveEvid
     checkedAt: clock().toISOString(),
     tables,
     siteIdTableCount: siteIdRow?.tableCount ?? 0,
-    programSites,
     sites,
     storedProcedures,
     legacy,

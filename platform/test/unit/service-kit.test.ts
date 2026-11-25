@@ -140,7 +140,7 @@ describe('loadEnv with every base variable set', () => {
     OPT2_TOKEN_AUDIENCE: 'opt2-local',
     OPT2_GATEWAY_URL: 'http://127.0.0.1:8100',
     OPT2_MIGRATION_URL: 'http://127.0.0.1:8102',
-    OPT2_SERVICE_URLS: '{"identity":"http://127.0.0.1:8111","timesheets":"http://127.0.0.1:8118/"}',
+    OPT2_SERVICE_URLS: '{"identity":"http://127.0.0.1:8111","programs-sites":"http://127.0.0.1:8113/"}',
     OPT2_STATE_DIR: STATE_DIR,
     OPT2_TASKS_ADAPTER: 'local',
     OPT2_STORAGE_ADAPTER: 'local',
@@ -156,7 +156,7 @@ describe('loadEnv with every base variable set', () => {
       PORT: 8112,
       PG_PORT: 5432,
       OTEL_EXPORTER_OTLP_ENDPOINT: 'http://127.0.0.1:4318',
-      OPT2_SERVICE_URLS: { identity: 'http://127.0.0.1:8111', timesheets: 'http://127.0.0.1:8118' },
+      OPT2_SERVICE_URLS: { identity: 'http://127.0.0.1:8111', 'programs-sites': 'http://127.0.0.1:8113' },
     });
   });
 });

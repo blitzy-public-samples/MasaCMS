@@ -1,4 +1,4 @@
-// cEditProfile.update without a photo (GS-PE-04) for the tenant-a system user, against ceditprofile.cfc update(),
+// cEditProfile.update without a photo for the tenant-a system user, against ceditprofile.cfc update(),
 // ceditprofile/update.cfm and the edit.cfm form it re-renders.
 import * as cheerio from 'cheerio';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';

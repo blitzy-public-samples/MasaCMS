@@ -20,8 +20,6 @@ const ids = PREVENTED_WRITERS.map((entry) => entry.id);
 const OVERRIDE_REVIEWED = [
   'scheduler-registration',
   'native-sitemonitor-task',
-  'fixture-survey-tasks',
-  'fixture-export-threads',
   'startup-url-conversion',
 ];
 const conditionEntries = PREVENTED_WRITERS.filter((entry) => entry.match.condition !== undefined);
@@ -87,7 +85,6 @@ const reviewingId = (table: string, writer: InventoryWriter): string | undefined
 function expectedEntry(table: string, writer: InventoryWriter): string | undefined {
   const reviewed = OVERRIDE_REVIEWED.find((id) => writer.override === `${OVERRIDE_PREFIX}${id}`);
   if (reviewed !== undefined) return reviewed;
-  if (table === 'synthetic.export_job' && writer.trigger === 'thread') return 'fixture-export-threads';
   const inSpan = reviewingId(table, writer);
   if (inSpan !== undefined) return inSpan;
   const byCondition = conditionEntries.find(
@@ -98,7 +95,7 @@ function expectedEntry(table: string, writer: InventoryWriter): string | undefin
 }
 
 describe('PREVENTED_WRITERS', () => {
-  it('is the closed list of eleven mechanisms, in order', () => {
+  it('is the closed list of nine mechanisms, in order', () => {
     expect(ids).toEqual([
       ...OVERRIDE_REVIEWED,
       'startup-deploy-bundle',
@@ -166,12 +163,6 @@ describe('PREVENTED_WRITERS', () => {
     },
   );
 
-  it('matches every thread writer of synthetic.export_job', () => {
-    const threadRows = nonRequestRows.filter(({ table, writer }) => table === 'synthetic.export_job' && writer.trigger === 'thread');
-    expect(threadRows.map(({ writer }) => writer.component)).toContain('legacy-fixtures/cfml/modules/reporting.cfc');
-    for (const { writer } of threadRows) expect(isPreventedWriter(writer)?.id).toBe('fixture-export-threads');
-  });
-
   it('matches no other non-request inventory writer', () => {
     const mismatched = nonRequestRows
       .map(({ table, writer }) => ({ table, writer, expected: expectedEntry(table, writer), actual: isPreventedWriter(writer)?.id }))
@@ -201,21 +192,6 @@ describe('isPreventedWriter', () => {
         source: { path: 'core/mura/content/contentServer.cfc', lines: [737, 743] },
       },
       'native-sitemonitor-task',
-    ],
-    [
-      'an entry without a line span',
-      { component: 'legacy-fixtures/cfml/modules/reporting.cfc', method: 'createExport', trigger: 'thread' },
-      'fixture-export-threads',
-    ],
-    [
-      'an alsoMatch component',
-      {
-        component: 'legacy-fixtures/sql/reporting/200_usp_export_job_transition.sql',
-        method: '(template)',
-        trigger: 'thread',
-        source: { lines: [50, 59] },
-      },
-      'fixture-export-threads',
     ],
     [
       'a condition whatever the component',
@@ -291,7 +267,7 @@ describe('isPreventedWriter', () => {
     ],
     [
       'a missing method where the entry names one',
-      { component: 'legacy-fixtures/cfml/modules/surveys.cfc', trigger: 'scheduler', source: { lines: [37, 42] } },
+      { component: 'core/mura/content/contentServer.cfc', trigger: 'scheduler', source: { lines: [669, 747] } },
     ],
     [
       'disjoint lines',

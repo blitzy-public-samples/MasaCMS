@@ -297,14 +297,14 @@ describe('renderCpermMain', () => {
       ['Editor', 'Author', 'Read Only', 'Deny', 'Group'],
     ]);
     expect(model.tables.map(({ rows }) => rows.map((cells) => cells.at(-1)))).toEqual([
-      ['communications.sender', 'Editor', 'finance.approver', 'reporting.exporter'],
+      ['archive.viewer', 'Editor', 'library.approver', 'records.clerk'],
       ['Umbrella Members'],
     ]);
     expect(checkedVerdicts(model)).toEqual([
-      [radio(GROUP_IDS.communicationsSender), 'read'],
+      [radio(GROUP_IDS.archiveViewer), 'read'],
       [radio(GROUP_IDS.defaultEditor), 'editor'],
-      [radio(GROUP_IDS.financeApprover), 'author'],
-      [radio(GROUP_IDS.reportingExporter), 'deny'],
+      [radio(GROUP_IDS.libraryApprover), 'author'],
+      [radio(GROUP_IDS.recordsClerk), 'deny'],
       [radio(GROUP_IDS.umbrellaMembers), 'editor'],
     ]);
     expect(markup).toContain('<table class="mura-table-grid">');
@@ -325,10 +325,10 @@ describe('renderCpermMain', () => {
 
     expect(model.tables[0]?.headers).toEqual(['Editor', 'Author', 'Inherit', 'Read Only', 'Deny', 'Group']);
     expect(checkedVerdicts(model)).toEqual([
-      [radio(GROUP_IDS.communicationsSender), 'none'],
+      [radio(GROUP_IDS.archiveViewer), 'none'],
       [radio(GROUP_IDS.defaultEditor), 'author'],
-      [radio(GROUP_IDS.financeApprover), 'read'],
-      [radio(GROUP_IDS.reportingExporter), 'editor'],
+      [radio(GROUP_IDS.libraryApprover), 'read'],
+      [radio(GROUP_IDS.recordsClerk), 'editor'],
       [radio(GROUP_IDS.umbrellaMembers), 'read'],
     ]);
   });
@@ -342,7 +342,7 @@ describe('renderCpermMain', () => {
     expect(model.headings[0]).toBe('Component Permissions');
     expect(markup).not.toContain('class="breadcrumb"');
     expect(model.tables[0]?.headers).toEqual(['Editor', 'Author', 'Deny', 'Group']);
-    expect(checkedVerdicts(model)[0]).toEqual([radio(GROUP_IDS.communicationsSender), 'deny']);
+    expect(checkedVerdicts(model)[0]).toEqual([radio(GROUP_IDS.archiveViewer), 'deny']);
     // An untitled node passes an empty argument list, so MessageFormat leaves the placeholder in place.
     expect(markup).toContain('To set permissions for <em>{1}</em>');
   });
@@ -358,15 +358,15 @@ describe('renderCpermMain', () => {
       .map(({ value, checked }) => [value, checked]);
     expect(exempt).toEqual([
       [GROUP_IDS.defaultAdmin, true],
-      [GROUP_IDS.communicationsSender, false],
+      [GROUP_IDS.archiveViewer, false],
       [GROUP_IDS.defaultEditor, true],
-      [GROUP_IDS.financeApprover, false],
-      [GROUP_IDS.reportingExporter, false],
+      [GROUP_IDS.libraryApprover, false],
+      [GROUP_IDS.recordsClerk, false],
       [GROUP_IDS.umbrellaMembers, false],
     ]);
     // Only an Editor verdict enables the box; the member table compares with legacy's 'editior' and disables every one.
     expect(markup).toContain(`value="${GROUP_IDS.defaultEditor}" checked>`);
-    expect(markup).toContain(`value="${GROUP_IDS.financeApprover}" disabled>`);
+    expect(markup).toContain(`value="${GROUP_IDS.libraryApprover}" disabled>`);
     expect(markup).toContain(`value="${GROUP_IDS.umbrellaMembers}" disabled>`);
     expect(model.controls.find(({ name }) => name === 'chainID')?.options).toEqual([
       { value: '', label: 'None', selected: false },

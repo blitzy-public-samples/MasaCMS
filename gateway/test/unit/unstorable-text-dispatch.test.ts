@@ -1,4 +1,4 @@
-// Requests under v0002 whose JSON body, fixture path, API path params or admin path pairs carry text the target cannot store or bind as legacy does: halted to legacy inside a write window; NUL path ids the target answers as legacy stay on it.
+// Requests under v0002 whose JSON body, fixture path, API path params or admin path pairs carry a NUL the target cannot store or bind as legacy does: halted to legacy inside a write window.
 import { Buffer } from 'node:buffer';
 import { fixedClock } from '@opt2/platform/testing';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -16,13 +16,12 @@ import { committedIndex, committedVariants } from '../helpers/versions.js';
 const JSON_TYPE = 'application/json';
 const URLENCODED = 'application/x-www-form-urlencoded';
 const FIXTURE = '/legacy-fixtures/cfml/api.cfm';
-const FINANCE_CREATE = `${FIXTURE}/finance/records?siteid=tenant-a`;
 const TARGETING_SAVE = '/_api/json/v1/tenant-a/variationtargeting/';
-const SIGN = `${FIXTURE}/esignature/requests/A1B2C3D4-E5F6-7890-ABCDEF1234567890/sign`;
-const SIGN_ROUTE = 'fixture:esignature/requests/{id}/sign@post';
 const API = '/_api/json/v1/tenant-a';
 const REST = '/_api/rest/v1/tenant-a';
 const PATH_ID = 'A1B2C3D4-E5F6-7890-ABCDEF1234567890';
+const ARCHIVE = `${FIXTURE}/people/persons/${PATH_ID}/archive?siteid=tenant-a`;
+const ARCHIVE_ROUTE = 'fixture:people/persons/{id}/archive@post';
 
 // An empty env, so the committed inventory and cut-over files are used whatever OPT2_CUTOVER_DIR the shell sets.
 const PATHS = resolveGatewayPaths({});
@@ -59,10 +58,9 @@ function targetUnits(outcome: RoutedOutcome): string[] {
 
 describe('JSON bodies holding text the target cannot store, matched under v0002', () => {
   it.each<[string, string, (text: string) => unknown, string, OwningService]>([
-    ['a fixture finance create', FINANCE_CREATE, (text) => ({ title: text, amount: '1', period: '2026-06' }), 'fixture:finance/records@post', 'finance'],
+    ['a fixture person archive', ARCHIVE, (text) => ({ effectiveFrom: '2026-06-30', note: text }), ARCHIVE_ROUTE, 'people'],
     ['a JSON API variation-targeting save', TARGETING_SAVE, (text) => ({ contentid: 'C1', initjs: text }), 'api:variationtargeting.save', 'strategies-content'],
     ['a REST variation-targeting save', '/_api/rest/v1/tenant-a/variationtargeting', (text) => ({ targetingjs: text }), 'rest:variationtargeting.save', 'strategies-content'],
-    ['a fixture message filled from template variables', `${FIXTURE}/communications/messages`, (text) => ({ templateId: 'T1', to: 'a@example.org', variables: { name: text } }), 'fixture:communications/messages@post', 'communications'],
   ])('serves %s holding a NUL on legacy as a legacy-write of its entry, and without the NUL on the target', async (_label, url, body, route, service) => {
     const listed = v0002.entryFor(route);
     expect(listed).toMatchObject({ state: 'target', kind: 'write' });
@@ -78,55 +76,11 @@ describe('JSON bodies holding text the target cannot store, matched under v0002'
     expect(carried.destination).toMatchObject({ kind: 'target', service });
   });
 
-  it.each<[string, string, (text: string) => unknown, string, OwningService]>([
-    ['a fixture finance create', FINANCE_CREATE, (text) => ({ title: text, amount: '1', period: '2026-06' }), 'fixture:finance/records@post', 'finance'],
-    ['a fixture template create', `${FIXTURE}/communications/templates?siteid=tenant-a`, (text) => ({ name: text, subject: 'S', bodyText: 'B' }), 'fixture:communications/templates@post', 'communications'],
-    ['an e-signature sign', SIGN, (text) => ({ typedName: text }), SIGN_ROUTE, 'e-signature'],
-    ['a survey response', `${FIXTURE}/surveys/surveys/${PATH_ID}/responses?siteid=tenant-a`, (text) => ({ answers: text }), 'fixture:surveys/surveys/{id}/responses@post', 'surveys'],
-    ['a timesheet day return', `${FIXTURE}/timesheets/days/${PATH_ID}/return?siteid=tenant-a`, (text) => ({ comment: text }), 'fixture:timesheets/days/{id}/return@post', 'timesheets'],
-  ])('serves %s holding an unpaired surrogate on legacy as a legacy-write of its entry, and a surrogate pair or plain text on the target', async (_label, url, body, route, service) => {
-    const listed = v0002.entryFor(route);
-    expect(listed).toMatchObject({ state: 'target', kind: 'write' });
-
-    const halted = await outcomeOf(url, body('Jane \ud800'));
-    expect(halted.result?.key).toBe(route);
-    expect(halted.entry).toMatchObject({ route, state: 'legacy', kind: 'legacy-write', group: listed?.group });
-    expect(halted.destination).toStrictEqual({ kind: 'legacy' });
-    expect(targetUnits(halted).length).toBeGreaterThan(0);
-
-    for (const text of ['Jane \ud83d\ude00', 'Jane']) {
-      const carried = await outcomeOf(url, body(text));
-      expect(carried.entry).toBe(listed);
-      expect(carried.destination).toMatchObject({ kind: 'target', service });
-    }
-  });
-
   it.each<[string, string, unknown, string, OwningService]>([
-    ['a reporting export create, which stores no request text', `${FIXTURE}/reporting/exports?siteid=tenant-a`, { definitionId: PATH_ID, format: 'csv', note: '\ud800' }, 'fixture:reporting/exports@post', 'reporting'],
-    ['a survey schedule, which stores no request text', `${FIXTURE}/surveys/surveys/${PATH_ID}/schedule?siteid=tenant-a`, { launchAt: '\ud800' }, 'fixture:surveys/surveys/{id}/schedule@post', 'surveys'],
     ['a JSON API variation-targeting save, which Masa binds as varchar and stores as `?`', TARGETING_SAVE, { contentid: 'C1', initjs: '\ud800x' }, 'api:variationtargeting.save', 'strategies-content'],
   ])('keeps %s holding an unpaired surrogate on the target', async (_label, url, body, route, service) => {
     const outcome = await outcomeOf(url, body);
     expect(outcome.entry).toBe(v0002.entryFor(route));
-    expect(outcome.destination).toMatchObject({ kind: 'target', service });
-  });
-
-  const EXPORT_CREATE = `${FIXTURE}/reporting/exports?siteid=tenant-a`;
-  const SCHEDULE = `${FIXTURE}/surveys/surveys/${PATH_ID}/schedule?siteid=tenant-a`;
-
-  it.each<[string, string, unknown, string, OwningService]>([
-    ['a reporting export create whose definitionId', EXPORT_CREATE, { definitionId: `${PATH_ID}\u0000`, format: 'csv' }, 'fixture:reporting/exports@post', 'reporting'],
-    ['a reporting export create whose siteid, format and asOf', EXPORT_CREATE, { siteid: '\u0000', definitionId: PATH_ID, format: 'csv\u0000', asOf: '2026-06-30\u0000' }, 'fixture:reporting/exports@post', 'reporting'],
-    ['a reporting export create whose unread key', EXPORT_CREATE, { definitionId: PATH_ID, format: 'csv', 'no\u0000te': 'x' }, 'fixture:reporting/exports@post', 'reporting'],
-    ['a survey schedule whose launchAt', SCHEDULE, { launchAt: '2026-07-01T09:00:00\u0000' }, 'fixture:surveys/surveys/{id}/schedule@post', 'surveys'],
-    ['a survey schedule whose reminders text', SCHEDULE, { launchAt: '2026-07-01T09:00:00', reminders: '[{"offsetMinutes":5,"x":"a\u0000b"}]' }, 'fixture:surveys/surveys/{id}/schedule@post', 'surveys'],
-    ['a survey schedule whose path id', SCHEDULE.replace(PATH_ID, `${PATH_ID}%00`), { launchAt: '2026-07-01T09:00:00' }, 'fixture:surveys/surveys/{id}/schedule@post', 'surveys'],
-  ])('keeps %s holds a NUL on the target, which answers it as legacy does, as legacy would start a thread or ACF tasks outliving the window', async (_label, url, body, route, service) => {
-    const listed = v0002.entryFor(route);
-    expect(listed).toMatchObject({ state: 'target', kind: 'write' });
-    const outcome = await outcomeOf(url, body);
-    expect(outcome.result?.key).toBe(route);
-    expect(outcome.entry).toBe(listed);
     expect(outcome.destination).toMatchObject({ kind: 'target', service });
   });
 
@@ -142,7 +96,6 @@ describe('JSON bodies holding text the target cannot store, matched under v0002'
   }
 
   it.each<[string, string, string, string, OwningService]>([
-    ['a timesheet day return', 'POST', `${FIXTURE}/timesheets/days/{id}/return?siteid=tenant-a`, 'fixture:timesheets/days/{id}/return@post', 'timesheets'],
     ['a person archive', 'POST', `${FIXTURE}/people/persons/{id}/archive?siteid=tenant-a`, 'fixture:people/persons/{id}/archive@post', 'people'],
   ])('serves %s whose path id holds a NUL on legacy under its entry, a writer as a legacy-write, and its id without the NUL on the target', async (_label, method, url, route, service) => {
     const listed = v0002.entryFor(route);
@@ -160,32 +113,16 @@ describe('JSON bodies holding text the target cannot store, matched under v0002'
     expect(carried.destination).toMatchObject({ kind: 'target', service });
   });
 
-  it.each<[string, string, string, string, OwningService]>([
-    ['a finance record read', 'GET', `${FIXTURE}/finance/records/{id}?siteid=tenant-a`, 'fixture:finance/records/{id}@get', 'finance'],
-    ['a finance submit', 'POST', `${FIXTURE}/finance/records/{id}/submit?siteid=tenant-a`, 'fixture:finance/records/{id}/submit@post', 'finance'],
-    ['a survey response list', 'GET', `${FIXTURE}/surveys/surveys/{id}/responses?siteid=tenant-a`, 'fixture:surveys/surveys/{id}/responses@get', 'surveys'],
-    ['a survey launch', 'POST', `${FIXTURE}/surveys/surveys/{id}/launch?siteid=tenant-a`, 'fixture:surveys/surveys/{id}/launch@post', 'surveys'],
-    ['an e-signature sign', 'POST', `${SIGN.replace(PATH_ID, '{id}')}?siteid=tenant-a`, SIGN_ROUTE, 'e-signature'],
-  ])('keeps %s whose path id holds a NUL on the target under its entry, as its service finds no row for it as legacy does', async (_label, method, url, route, service) => {
-    const listed = v0002.entryFor(route);
-    expect(listed).toMatchObject({ state: 'target' });
-    for (const id of [`${PATH_ID}%00`, `${PATH_ID.slice(0, 8)}%00${PATH_ID.slice(8)}`, 'abc%00def', '%00']) {
-      const outcome = await idOutcome(method, url, id);
-      expect([outcome.result?.key, outcome.entry]).toStrictEqual([route, listed]);
-      expect(outcome.destination).toMatchObject({ kind: 'target', service });
-    }
-  });
-
   it.each<[string, string, unknown, string]>([
-    ['a url NUL, which legacy start-up strips', `${FINANCE_CREATE}&title=Q2%00travel&amount=1&period=2026-06`, 'siteid=tenant-a', URLENCODED],
-    ['a form NUL, which legacy start-up strips', FINANCE_CREATE, 'title=Q2%00travel&amount=1&period=2026-06', URLENCODED],
-    ['a url name holding a NUL, which legacy start-up copies to its stripped name', `${FINANCE_CREATE}&ti%00tle=Q2&amount=1&period=2026-06`, 'siteid=tenant-a', URLENCODED],
-    ['a form name holding a NUL', FINANCE_CREATE, 'ti%00tle=Q2&amount=1&period=2026-06', URLENCODED],
-    ['a JSON body sent as text/plain, which legacy does not read', FINANCE_CREATE, { title: 'Q2\u0000travel' }, 'text/plain'],
-  ])('keeps a fixture finance create carrying %s on finance', async (_label, url, body, contentType) => {
+    ['a url NUL, which legacy start-up strips', `${ARCHIVE}&note=Q2%00travel&effectiveFrom=2026-06-30`, 'siteid=tenant-a', URLENCODED],
+    ['a form NUL, which legacy start-up strips', ARCHIVE, 'note=Q2%00travel&effectiveFrom=2026-06-30', URLENCODED],
+    ['a url name holding a NUL, which legacy start-up copies to its stripped name', `${ARCHIVE}&no%00te=Q2&effectiveFrom=2026-06-30`, 'siteid=tenant-a', URLENCODED],
+    ['a form name holding a NUL', ARCHIVE, 'no%00te=Q2&effectiveFrom=2026-06-30', URLENCODED],
+    ['a JSON body sent as text/plain, which legacy does not read', ARCHIVE, { effectiveFrom: '2026-06-30', note: 'Q2\u0000travel' }, 'text/plain'],
+  ])('keeps a fixture person archive carrying %s on people', async (_label, url, body, contentType) => {
     const outcome = await outcomeOf(url, body, contentType);
-    expect(outcome.entry).toBe(v0002.entryFor('fixture:finance/records@post'));
-    expect(outcome.destination).toMatchObject({ kind: 'target', service: 'finance' });
+    expect(outcome.entry).toBe(v0002.entryFor(ARCHIVE_ROUTE));
+    expect(outcome.destination).toMatchObject({ kind: 'target', service: 'people' });
   });
 });
 
@@ -291,8 +228,6 @@ describe('admin path pairs holding a NUL, matched under v0002', () => {
   });
 });
 
-
-
 describe('JSON bodies holding text the target cannot store, through the gateway under v0002', () => {
   let gw: TestGateway;
   let sequence = 0;
@@ -306,9 +241,8 @@ describe('JSON bodies holding text the target cannot store, through the gateway 
   });
 
   it.each<[string, string, unknown, string]>([
-    ['a fixture finance create', FINANCE_CREATE, { title: 'Q2\u0000travel', amount: '1', period: '2026-06' }, 'fixture:finance/records@post'],
+    ['a fixture person archive', ARCHIVE, { effectiveFrom: '2026-06-30', note: 'Q2\u0000travel' }, ARCHIVE_ROUTE],
     ['a JSON API variation-targeting save', TARGETING_SAVE, { contentid: 'C1', initjs: 'a\u0000b' }, 'api:variationtargeting.save'],
-    ['a fixture timesheet day return holding an unpaired surrogate', `${FIXTURE}/timesheets/days/${PATH_ID}/return?siteid=tenant-a`, { comment: 'x\ud800' }, 'fixture:timesheets/days/{id}/return@post'],
   ])('forwards %s to legacy inside one write window over its target units', async (_label, url, body, routeKey) => {
     sequence += 1;
     const requestId = `req-unstorable-${String(sequence)}`;
@@ -328,17 +262,17 @@ describe('JSON bodies holding text the target cannot store, through the gateway 
 
   it('forwards a fixture write whose path id holds a NUL to legacy as sent, inside one write window over its target units', async () => {
     const requestId = 'req-unstorable-path';
-    const url = `${FIXTURE}/timesheets/days/A1B2C3D4-E5F6-7890-ABCDEF1234567890%00/submit?siteid=tenant-a`;
+    const url = `${FIXTURE}/people/persons/${PATH_ID}%00/archive?siteid=tenant-a`;
     let forwarded = '';
     gw.legacy.setResponse((request) => {
       forwarded = request.url;
-      return { status: 404, body: '{"apiversion":"v1","method":"timesheets.days.submit","error":{"code":"invalid_request","message":"Not Found"}}' };
+      return { status: 404, body: '{"apiversion":"v1","method":"people.persons.archive","error":{"code":"invalid_request","message":"Not Found"}}' };
     });
     const res = await gw.app.inject({ method: 'POST', url, headers: { 'x-request-id': requestId, 'content-type': URLENCODED }, payload: 'x=1' });
 
     expect(res.statusCode).toBe(404);
     expect(forwarded).toBe(url);
-    const routeKey = 'fixture:timesheets/days/{id}/submit@post';
+    const routeKey = ARCHIVE_ROUTE;
     const units = (v0002.entryFor(routeKey)?.units ?? []).filter((unit) => v0002.unitAuthority(unit) === 'target').sort();
     const windows = gw.migration.windows.filter((window) => window.requestId === requestId).map((window) => ({ routeKey: window.routeKey, units: [...window.units].sort() }));
     expect(windows).toEqual([{ routeKey, units }]);
@@ -360,41 +294,6 @@ describe('JSON bodies holding text the target cannot store, through the gateway 
     const units = (v0002.entryFor(routeKey)?.units ?? []).filter((unit) => v0002.unitAuthority(unit) === 'target').sort();
     const windows = gw.migration.windows.filter((window) => window.requestId === requestId).map((window) => ({ routeKey: window.routeKey, units: [...window.units].sort() }));
     expect(windows).toEqual([{ routeKey, units }]);
-  });
-
-  it.each<[string, string, unknown, string]>([
-    ['a reporting export create', `${FIXTURE}/reporting/exports?siteid=tenant-a`, { definitionId: `${PATH_ID}\u0000`, format: 'csv' }, 'reporting'],
-    ['a survey schedule', `${FIXTURE}/surveys/surveys/${PATH_ID}%00/schedule?siteid=tenant-a`, { launchAt: '2026-07-01T09:00:00', note: 'a\u0000b' }, 'surveys'],
-    ['a finance submit whose path id', `${FIXTURE}/finance/records/${PATH_ID}%00/submit?siteid=tenant-a`, { note: 'x' }, 'finance'],
-  ])('forwards %s holding a NUL to its service as sent, never to legacy or inside a window', async (_label, url, body, service) => {
-    const targeted = await buildTestGateway({ version: 'v0002', services: ['reporting', 'surveys', 'finance'] });
-    try {
-      const requestId = `req-nul-answered-${service}`;
-      const res = await targeted.app.inject({ method: 'POST', url, headers: { 'x-request-id': requestId, 'content-type': JSON_TYPE }, payload: JSON.stringify(body) });
-
-      expect(res.statusCode).toBe(200);
-      expect(targeted.targets[service]?.requests.map((request) => [request.url, request.body.toString('utf8')])).toEqual([[url, JSON.stringify(body)]]);
-      // Only the session bridge's describe reaches the legacy origin.
-      expect(targeted.legacy.requests.filter((request) => !request.path.startsWith('/gateway/legacy-bridge/'))).toEqual([]);
-      expect(targeted.migration.windows.filter((window) => window.requestId === requestId)).toEqual([]);
-    } finally {
-      await targeted.close();
-    }
-  });
-
-  it("adopts a new client's legacy session at the default site when the siteid of its export create holds a NUL, which names no site", async () => {
-    const targeted = await buildTestGateway({ version: 'v0002', services: ['reporting'] });
-    try {
-      const url = `${FIXTURE}/reporting/exports`;
-      const body = { siteid: 'tenant-a\u0000', definitionId: PATH_ID, format: 'csv' };
-      const res = await targeted.app.inject({ method: 'POST', url, headers: { 'content-type': JSON_TYPE }, payload: JSON.stringify(body) });
-
-      expect(res.statusCode).toBe(200);
-      expect([...targeted.identity.sessions.values()].map((session) => session.siteId)).toEqual(['default']);
-      expect(targeted.targets.reporting?.requests.map((request) => request.body.toString('utf8'))).toEqual([JSON.stringify(body)]);
-    } finally {
-      await targeted.close();
-    }
   });
 
   it('forwards an admin category save whose path pair holds a NUL to legacy as sent, inside one write window over its target units', async () => {

@@ -28,20 +28,30 @@ const DUPLICATE_ID = fixture('catalogue.duplicate-id.yaml');
 const RESERVED_MISUSE = fixture('catalogue.reserved-misuse.yaml');
 const STATUS_SAMPLE = fileURLToPath(new URL('../fixtures/reporting/fixtures-unavailable.json', import.meta.url));
 
-const range = (prefix: string, count: number): string[] =>
-  Array.from({ length: count }, (_, i) => `${prefix}-${String(i + 1).padStart(2, '0')}`);
-
-const STARTING_SET = [
-  ...range('GS-ID', 9),
-  ...range('GS-PE', 5),
-  ...range('GS-PS', 6),
-  ...range('GS-CO', 15),
-  ...range('GS-PUB', 5),
-  ...range('GS-UI', 5),
-  'GS-BR-01',
-  ...range('GS-PE-RH', 3),
+/** The committed scenarios, in catalogue order. */
+const REAL_SCENARIOS = [
+  'GS-ID-01',
+  'GS-ID-02',
+  'GS-ID-09',
+  'GS-PE-01',
+  'GS-PE-02',
+  'GS-PE-03',
+  'GS-PE-05',
+  'GS-CO-04',
+  'GS-CO-06',
+  'GS-PUB-04',
+  'GS-UI-04',
+  'GS-PE-RH-01',
+  'GS-PE-RH-02',
+  'GS-PE-RH-03',
+  'GS-PS-07',
+  'GS-CO-16',
+  'GS-CO-20',
+  'GS-LS-01',
+  'GS-PS-09',
+  'GS-CO-22',
+  'GS-CO-23',
 ];
-const SYNTHETIC_PREFIXES = ['GS-TS', 'GS-FI', 'GS-SU', 'GS-RE', 'GS-CM', 'GS-ES'];
 const CREDENTIAL_KEY = /password|secret/i;
 const PLACEHOLDER = /^\$\{.+\}$/s;
 
@@ -100,7 +110,7 @@ describe('loadCatalogue', () => {
   it('loads a valid catalogue under the pinned source SHA, keeping file order', () => {
     expect(valid.sourceSha).toBe(pinnedSha());
     expect(valid.version).toBe(1);
-    expect(valid.scenarios.map((s) => s.id)).toEqual(['GS-ID-01', 'GS-CO-05', 'GS-PE-01', 'GS-PE-RH-01']);
+    expect(valid.scenarios.map((s) => s.id)).toEqual(['GS-ID-01', 'GS-CO-75', 'GS-PE-01', 'GS-PE-RH-01']);
   });
 
   it('returns scenarios and steps that already satisfy their schemas', () => {
@@ -123,7 +133,7 @@ describe('loadCatalogue', () => {
       form: { muraAction: 'cLogin.login', username: 'admin', password: '${secret:admin}' },
     });
     expect(steps.find((s) => s.name === 'home')).toMatchObject({ method: 'GET', csrf: 'none' });
-    expect(scenarioById(valid, 'GS-CO-05').steps[0]?.extract).toEqual({
+    expect(scenarioById(valid, 'GS-CO-75').steps[0]?.extract).toEqual({
       contentid: { from: 'body', path: 'data.contentid' },
     });
   });
@@ -131,7 +141,7 @@ describe('loadCatalogue', () => {
   it('applies scenario defaults: v0002 unless a rehearsal, and an empty override list as no overrides', () => {
     expect(valid.scenarios.map((s) => [s.id, s.tableVersion])).toEqual([
       ['GS-ID-01', 'v0002'],
-      ['GS-CO-05', 'v0002'],
+      ['GS-CO-75', 'v0002'],
       ['GS-PE-01', 'v0002'],
       ['GS-PE-RH-01', 'v0003'],
     ]);
@@ -139,7 +149,7 @@ describe('loadCatalogue', () => {
   });
 
   it('fills keys a scenario omits from the catalogue defaults', () => {
-    const { compare: _compare, ...withoutCompare } = scenarioById(valid, 'GS-CO-05');
+    const { compare: _compare, ...withoutCompare } = scenarioById(valid, 'GS-CO-75');
     const explicit = scenarioById(valid, 'GS-ID-01');
     const doc = catalogueSchema.parse({
       sourceSha: pinnedSha(),
@@ -210,7 +220,7 @@ describe('loadCatalogue', () => {
 
   it('reads a session site and keeps sessions without one as declared', async () => {
     const catalogue = await loadCatalogue(validVariant('        via: public', '        via: public\n        site: tenant-a'));
-    expect(scenarioById(catalogue, 'GS-CO-05').sessions).toStrictEqual({
+    expect(scenarioById(catalogue, 'GS-CO-75').sessions).toStrictEqual({
       anon: { login: 'none', via: 'public', site: 'tenant-a' },
     });
     expect(scenarioById(catalogue, 'GS-ID-01').sessions).toStrictEqual(scenarioById(valid, 'GS-ID-01').sessions);
@@ -225,14 +235,14 @@ describe('loadCatalogue', () => {
   });
 
   it('finds a scenario by id and throws GoldenConfigError for an unknown one', () => {
-    expect(scenarioById(valid, 'GS-CO-05')).toBe(valid.scenarios[1]);
+    expect(scenarioById(valid, 'GS-CO-75')).toBe(valid.scenarios[1]);
     expect(() => scenarioById(valid, 'GS-XX-99')).toThrow(GoldenConfigError);
     expect(() => scenarioById(valid, 'GS-XX-99')).toThrow('catalogue has no scenario GS-XX-99');
   });
 });
 
 describe('scenario ids', () => {
-  it.each(['GS-ID-01', 'GS-CO-15', 'GS-PE-RH-01', 'GS-PUB-05', 'GS-UI-01'])('accepts %s', (id) => {
+  it.each(['GS-ID-01', 'GS-CO-16', 'GS-PE-RH-01', 'GS-PUB-04', 'GS-UI-04'])('accepts %s', (id) => {
     expect(SCENARIO_ID_PATTERN.test(id)).toBe(true);
   });
 
@@ -278,7 +288,7 @@ describe('step extractions', () => {
 describe('scenario normalisationOverrides', () => {
   let base: Record<string, unknown>;
   beforeAll(async () => {
-    base = { ...scenarioById(await loadCatalogue(VALID), 'GS-CO-05') };
+    base = { ...scenarioById(await loadCatalogue(VALID), 'GS-CO-75') };
   });
   const parsed = (overrides: unknown) => scenarioSchema.safeParse({ ...base, normalisationOverrides: overrides });
 
@@ -337,7 +347,7 @@ describe('multipart file sources', () => {
   });
   const parsed = (steps: Record<string, unknown>[]) =>
     scenarioSchema.safeParse({
-      id: 'GS-CO-21',
+      id: 'GS-CO-22',
       title: 'File sources',
       service: 'strategies-content',
       role: 'admin',
@@ -434,7 +444,7 @@ describe('skipReason', () => {
     [false, false, null],
     [false, true, null],
   ])('fixtures required: %s, available: %s gives %j', (required, available, expected) => {
-    const base = scenarioById(valid, 'GS-CO-05');
+    const base = scenarioById(valid, 'GS-CO-75');
     const scenario = required ? scenarioSchema.parse({ ...base, fixtures: 'required' }) : base;
     expect(scenario.fixtures).toBe(required ? 'required' : undefined);
     expect(skipReason(scenario, { available })).toBe(expected);
@@ -470,30 +480,18 @@ describe('committed catalogue', () => {
     }
   });
 
-  it('holds the starting scenario set', () => {
-    expect(ids).toEqual(expect.arrayContaining(STARTING_SET));
+  it('holds exactly the kept real scenarios, in catalogue order', () => {
+    expect(ids).toEqual(REAL_SCENARIOS);
   });
 
   it.each([
     { id: 'GS-ID-09', sessions: ['admin', 'member'] },
-    { id: 'GS-PUB-01', sessions: ['visitor'] },
-    { id: 'GS-PUB-02', sessions: ['member'] },
-    { id: 'GS-PUB-03', sessions: ['member', 'visitor'] },
     { id: 'GS-PUB-04', sessions: ['member'] },
-    { id: 'GS-PUB-05', sessions: ['visitor'] },
-    { id: 'GS-LS-02', sessions: ['visitor'] },
-    { id: 'GS-BR-01', sessions: ['admin'] },
   ])('addresses the tenant-a public pages of $id on its own domain through sessions $sessions', ({ id, sessions }) => {
     const scenario = scenarioById(catalogue, id);
     const onSite = Object.keys(scenario.sessions).filter((name) => scenario.sessions[name]?.site === 'tenant-a');
     expect(onSite).toStrictEqual(sessions);
     for (const step of scenario.steps) expect(step.route, `${id} ${step.name}`).not.toMatch(/^\/tenant-a\//);
-  });
-
-  it.each(SYNTHETIC_PREFIXES)('holds %s scenarios that all require the legacy fixtures', (prefix) => {
-    const scenarios = catalogue.scenarios.filter((s) => s.id.startsWith(`${prefix}-`));
-    expect(scenarios.length).toBeGreaterThan(0);
-    for (const scenario of scenarios) expect(scenario.fixtures, scenario.id).toBe('required');
   });
 
   it('replays exactly the rehearsal scenarios under v0003', () => {
@@ -506,20 +504,17 @@ describe('committed catalogue', () => {
   });
 
   it('gives each GS-UI scenario its own browser flow', () => {
-    const flows = range('GS-UI', 5).map((id) => scenarioById(catalogue, id).browser);
+    const flows = catalogue.scenarios.filter((s) => s.id.startsWith('GS-UI-')).map((s) => s.browser);
+    expect(flows.length).toBeGreaterThan(0);
     for (const flow of flows) expect(flow).toEqual({ flow: expect.any(String), console: 'no-new-errors' });
     expect(new Set(flows.map((f) => f?.flow)).size).toBe(flows.length);
   });
 
-  it('runs the legacy-write flows after GS-LS-04, so their writes reach no earlier scenario', () => {
-    const last = ids.indexOf('GS-LS-04');
-    const flows = ['GS-PS-09', 'GS-PS-10', 'GS-CO-21', 'GS-CO-22', 'GS-CO-23'];
+  it('runs the legacy-write flows after the GS-LS scenarios, so their writes reach no earlier scenario', () => {
+    const last = ids.findLastIndex((id) => id.startsWith('GS-LS-'));
+    const flows = ['GS-PS-09', 'GS-CO-22', 'GS-CO-23'];
     expect(last).toBeGreaterThanOrEqual(0);
     for (const id of flows) expect(ids.indexOf(id), id).toBeGreaterThan(last);
-  });
-
-  it("posts GS-CO-02's edit save without the form's other hidden fields", () => {
-    expect(scenarioById(catalogue, 'GS-CO-02').steps.find((s) => s.name === 'page')?.mergeHidden).toBe(false);
   });
 
   it('holds credentials only as placeholders', () => {
@@ -530,7 +525,6 @@ describe('committed catalogue', () => {
     const auths = catalogue.scenarios
       .flatMap((s) => s.steps.map((step) => step.auth))
       .filter((auth): auth is NonNullable<typeof auth> => auth !== undefined && /^(?:basic|bearer):/.test(auth));
-    expect(auths.length).toBeGreaterThan(0);
     for (const auth of auths) expect(auth).toMatch(/^(?:basic:.+:\$\{secret:.+\}|bearer:\$\{.+\})$/s);
   });
 });

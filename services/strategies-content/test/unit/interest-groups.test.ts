@@ -1,5 +1,4 @@
 /** `listPrivateInterestGroups` through `app.inject` over a throwaway `content` schema: private-pool reach, levels, ordering, denials and the multi-site halt. */
-import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
@@ -14,6 +13,7 @@ import {
   TENANT_UMBRELLA,
   assertResponseMatchesOpenApi,
   createThrowawaySchema,
+  loadOpenApiDocument,
   mintServiceToken,
   mintUserToken,
   pgAvailable,
@@ -30,7 +30,7 @@ type ContractOperation = Record<string, unknown>;
 
 const SERVICE = 'strategies-content';
 const CLOCK = fixedClock(new Date(2026, 5, 30, 10, 0, 0, 0));
-const OPENAPI = parse(readFileSync(fileURLToPath(new URL('../../contracts/openapi.yaml', import.meta.url)), 'utf8')) as {
+const OPENAPI = loadOpenApiDocument(fileURLToPath(new URL('../../contracts/openapi.yaml', import.meta.url)), parse) as {
   paths: Record<string, Record<string, ContractOperation>>;
 };
 const CONTRACT_PATH = '/v1/sites/{siteid}/private-interest-groups';

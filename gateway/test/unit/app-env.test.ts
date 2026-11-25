@@ -23,12 +23,6 @@ const PACKAGES = [
   'people',
   'programs-sites',
   'strategies-content',
-  'communications',
-  'reporting',
-  'surveys',
-  'timesheets',
-  'finance',
-  'e-signature',
   'stub',
 ] as const;
 const urlOf = (name: string): string => `http://127.0.0.1:${String(8100 + PACKAGES.indexOf(name as (typeof PACKAGES)[number]))}`;
@@ -155,6 +149,23 @@ describe('gatewayEnvSchema service destinations', () => {
     const env = loadEnv(gatewayEnvSchema, sourceOf());
 
     expect(env.OPT2_SERVICE_URLS).toEqual(SERVICE_URLS);
+  });
+
+  it('starts with a map naming only the kept services, the stub and migration at their ports.env ports', () => {
+    const kept = {
+      identity: 'http://127.0.0.1:8111',
+      people: 'http://127.0.0.1:8112',
+      'programs-sites': 'http://127.0.0.1:8113',
+      'strategies-content': 'http://127.0.0.1:8114',
+      web: 'http://127.0.0.1:8101',
+      stub: 'http://127.0.0.1:8199',
+      migration: 'http://127.0.0.1:8102',
+    };
+
+    const env = loadEnv(gatewayEnvSchema, sourceOf({ OPT2_SERVICE_URLS: JSON.stringify(kept) }));
+
+    expect(env.OPT2_SERVICE_URLS).toEqual(kept);
+    expect(RELAY_SERVICES).toEqual(['identity', 'people', 'programs-sites', 'strategies-content']);
   });
 
   it.each([...RELAY_SERVICES, 'web', 'stub'])('fails start-up naming OPT2_SERVICE_URLS.%s when it is missing', (name) => {
@@ -351,18 +362,7 @@ describe('route-key wiring of the legacy site registry', () => {
 describe('projected owners of the active version', () => {
   const ownership = loadTableOwnership(resolveGatewayPaths({}));
   // v0003 returns R to legacy, which leaves people no target-authoritative unit and identity its permission group.
-  const V0002_OWNERS = [
-    'communications',
-    'e-signature',
-    'finance',
-    'identity',
-    'people',
-    'programs-sites',
-    'reporting',
-    'strategies-content',
-    'surveys',
-    'timesheets',
-  ];
+  const V0002_OWNERS = ['identity', 'people', 'programs-sites', 'strategies-content'];
 
   it.each<[CommittedVersion, string[]]>([
     ['v0001', []],

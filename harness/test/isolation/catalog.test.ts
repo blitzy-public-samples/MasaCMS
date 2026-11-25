@@ -53,8 +53,8 @@ function fixtureRows(): EditableRows {
 /** The fixture rows with its unforced table and its BYPASSRLS role repaired. */
 function compliantRows(): EditableRows {
   const rows = fixtureRows();
-  tableRow(rows, 'timesheets', 'blackout').relforcerowsecurity = true;
-  roleRow(rows, 'finance_app').rolbypassrls = false;
+  tableRow(rows, 'programs_sites', 'changelog').relforcerowsecurity = true;
+  roleRow(rows, 'content_app').rolbypassrls = false;
   return rows;
 }
 
@@ -143,18 +143,18 @@ function fakeCatalogClient(
 }
 
 describe('evaluateCatalog', () => {
-  it('reports only the unforced timesheets.blackout and the BYPASSRLS finance_app of the committed fixture', () => {
+  it('reports only the unforced programs_sites.changelog and the BYPASSRLS content_app of the committed fixture', () => {
     const result = evaluateCatalog(FIXTURE);
 
     expect(result.findings).toEqual([
-      { kind: 'rls-not-forced', object: 'timesheets.blackout', detail: expect.stringContaining('FORCE ROW LEVEL SECURITY') },
-      { kind: 'role-bypassrls', object: 'finance_app', detail: expect.stringContaining('BYPASSRLS') },
+      { kind: 'rls-not-forced', object: 'programs_sites.changelog', detail: expect.stringContaining('FORCE ROW LEVEL SECURITY') },
+      { kind: 'role-bypassrls', object: 'content_app', detail: expect.stringContaining('BYPASSRLS') },
     ]);
-    expect(result.roles).toEqual({ ...NO_PRIVILEGED_ROLES, rolbypassrls: ['finance_app'] });
+    expect(result.roles).toEqual({ ...NO_PRIVILEGED_ROLES, rolbypassrls: ['content_app'] });
     expect(Object.keys(result.rlsCatalog)).toEqual(SCHEMAS);
     expect(result.rlsCatalog.people).toEqual({ tables: 2, enabled: 2, forced: 2, usingAndWithCheck: 2 });
-    expect(result.rlsCatalog.timesheets).toEqual({ tables: 1, enabled: 1, forced: 0, usingAndWithCheck: 1 });
-    for (const schema of SCHEMAS.filter((name) => name !== 'people' && name !== 'timesheets')) {
+    expect(result.rlsCatalog.programs_sites).toEqual({ tables: 1, enabled: 1, forced: 0, usingAndWithCheck: 1 });
+    for (const schema of SCHEMAS.filter((name) => name !== 'people' && name !== 'programs_sites')) {
       expect(result.rlsCatalog[schema]).toEqual({ tables: 1, enabled: 1, forced: 1, usingAndWithCheck: 1 });
     }
     expect(FIXTURE).toEqual(JSON.parse(FIXTURE_TEXT));
@@ -396,17 +396,17 @@ describe('evaluateCatalog', () => {
 
   it('reports a tenant table that is not exempt and has no RLS, tenant_id or policy', () => {
     const rows = compliantRows();
-    rows.tables.push(unguardedTable('finance', 'tenant_registry_archive'));
+    rows.tables.push(unguardedTable('stub', 'tenant_registry_archive'));
 
     const result = evaluateCatalog(rows);
 
     expect(kindsAndObjects(result.findings)).toEqual([
-      { kind: 'policy-missing-using', object: 'finance.tenant_registry_archive' },
-      { kind: 'policy-missing-using', object: 'finance.tenant_registry_archive' },
-      { kind: 'rls-disabled', object: 'finance.tenant_registry_archive' },
-      { kind: 'rls-not-forced', object: 'finance.tenant_registry_archive' },
+      { kind: 'policy-missing-using', object: 'stub.tenant_registry_archive' },
+      { kind: 'policy-missing-using', object: 'stub.tenant_registry_archive' },
+      { kind: 'rls-disabled', object: 'stub.tenant_registry_archive' },
+      { kind: 'rls-not-forced', object: 'stub.tenant_registry_archive' },
     ]);
-    expect(result.rlsCatalog.finance).toEqual({ tables: 2, enabled: 1, forced: 1, usingAndWithCheck: 1 });
+    expect(result.rlsCatalog.stub).toEqual({ tables: 2, enabled: 1, forced: 1, usingAndWithCheck: 1 });
   });
 
   it('ignores tables of other schemas, roles that are not service roles and their memberships', () => {
@@ -571,7 +571,7 @@ describe('evaluateCatalog', () => {
     tableRow(rows, 'people', 'person').tenantIdPresent = false;
     policyRow(rows, 'people', 'person').with_check = null;
     rows.policies = rows.policies.filter((row) => !(row.schemaname === 'people' && row.tablename === 'outbox'));
-    rows.tables = rows.tables.filter((row) => row.schema !== 'surveys');
+    rows.tables = rows.tables.filter((row) => row.schema !== 'identity');
     rows.roles = rows.roles.filter((row) => row.rolname !== 'stub_owner');
     roleRow(rows, 'content_app').rolsuper = true;
     rows.memberships.push({ member: 'people_app', ancestor: 'elevated', via: [], rolsuper: true, rolbypassrls: false });
@@ -589,25 +589,18 @@ describe('evaluateCatalog', () => {
 });
 
 describe('service schemas and roles', () => {
-  it('maps the eleven service folders to their schemas in report order', () => {
-    expect(SERVICE_SCHEMAS).toHaveLength(11);
+  it('maps the five service folders to their schemas in report order', () => {
+    expect(SERVICE_SCHEMAS).toHaveLength(5);
     expect(SCHEMAS).toEqual([
       'identity',
       'people',
       'programs_sites',
       'content',
-      'communications',
-      'reporting',
-      'surveys',
-      'timesheets',
-      'finance',
-      'esignature',
       'stub',
     ]);
     expect(SERVICE_SCHEMAS.filter(({ service, schema }) => service !== schema)).toEqual([
       { service: 'programs-sites', schema: 'programs_sites' },
       { service: 'strategies-content', schema: 'content' },
-      { service: 'e-signature', schema: 'esignature' },
     ]);
   });
 
@@ -622,7 +615,7 @@ describe('service schemas and roles', () => {
     expect(names).toEqual(
       [...SCHEMAS, ...COORDINATION_SCHEMAS].flatMap((schema) => ROLE_SUFFIXES.map((suffix) => `${schema}_${suffix}`)),
     );
-    expect(names).toHaveLength(39);
+    expect(names).toHaveLength(21);
     expect(names).toContain('gateway_app');
     expect(names).toContain('migration_migrator');
     expect(new Set(names).size).toBe(names.length);

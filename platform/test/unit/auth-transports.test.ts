@@ -91,8 +91,8 @@ import {
 const NOW = Math.floor(Date.now() / 1000);
 const PROJECT = 'proj';
 const PEOPLE_URL = 'https://opt2-people-abc123-uc.a.run.app';
-const FINANCE_URL = 'https://opt2-finance-abc123-uc.a.run.app';
-const PUSH_ENDPOINT = `${PEOPLE_URL}/internal/v1/events/timesheets.people.person.archived.v1`;
+const CONTENT_URL = 'https://opt2-strategies-content-abc123-uc.a.run.app';
+const PUSH_ENDPOINT = `${PEOPLE_URL}/internal/v1/events/people.programs-sites.site.changed.v1`;
 const GOOGLE_ISSUER = 'https://accounts.google.com';
 const GATEWAY_EMAIL = 'opt2-gateway@proj.iam.gserviceaccount.com';
 const PUBSUB_INVOKER_EMAIL = 'opt2-pubsub-invoker@proj.iam.gserviceaccount.com';
@@ -736,7 +736,7 @@ describe('local service tokens', () => {
     const token = await signLocalServiceToken({
       keys: localKeys,
       caller: 'gateway',
-      audience: 'finance',
+      audience: 'strategies-content',
       roles,
       ttlSeconds: 60,
     });
@@ -760,7 +760,7 @@ describe('local service tokens', () => {
   it.each([
     {
       problem: 'is addressed to another service',
-      token: () => mintServiceToken({ caller: 'gateway', audience: 'finance' }),
+      token: () => mintServiceToken({ caller: 'gateway', audience: 'strategies-content' }),
     },
     {
       problem: 'has the user-token issuer',
@@ -865,7 +865,7 @@ describe('local invocation credentials', () => {
 
   it('refuses a credential minted for another callee as invalid-credential', async () => {
     const headers = await createLocalInvocationMinter({ keys: localKeys, caller: 'gateway' }).headersFor({
-      name: 'finance',
+      name: 'strategies-content',
     });
     const verifier = createLocalInvocationVerifier({ publicKey: issuerKey.publicKey, callee: 'people' });
     expect(await denialOf(() => verifier.verify(headers[INVOCATION_HEADER] ?? ''))).toEqual(INVALID_CREDENTIAL);
@@ -981,7 +981,7 @@ describe('createCloudInvocationVerifier', () => {
   });
 
   it.each([
-    { problem: 'the wrong audience', overrides: { aud: FINANCE_URL } },
+    { problem: 'the wrong audience', overrides: { aud: CONTENT_URL } },
     { problem: 'the push endpoint path as audience', overrides: { aud: PUSH_ENDPOINT } },
     { problem: 'the wrong issuer', overrides: { iss: 'https://securetoken.google.com/proj' } },
     { problem: 'an expiry an hour ago', overrides: { iat: NOW - 7200, exp: NOW - 3600 } },
@@ -1056,7 +1056,7 @@ describe('createCloudInvocationMinter', () => {
   it('keeps one ID-token client per callee origin', async () => {
     const tokens = new Map([
       [PEOPLE_URL, await signToken(googleOidcClaims(), issuerKey)],
-      [FINANCE_URL, await signToken(googleOidcClaims({ aud: FINANCE_URL }), issuerKey)],
+      [CONTENT_URL, await signToken(googleOidcClaims({ aud: CONTENT_URL }), issuerKey)],
     ]);
     const fetchedFor: string[] = [];
     const auth = new InMemoryGoogleAuth(
@@ -1074,11 +1074,11 @@ describe('createCloudInvocationMinter', () => {
     const minter = createCloudInvocationMinter({ auth });
     const people = await minter.headersFor({ name: 'people', url: `${PEOPLE_URL}/internal/v1/people` });
     const peopleAgain = await minter.headersFor({ name: 'people', url: `${PEOPLE_URL}/internal/v1/tokens` });
-    const finance = await minter.headersFor({ name: 'finance', url: `${FINANCE_URL}/internal/v1/invoices` });
-    expect(auth.requestedAudiences).toEqual([PEOPLE_URL, FINANCE_URL]);
-    expect(fetchedFor).toEqual([PEOPLE_URL, FINANCE_URL]);
+    const content = await minter.headersFor({ name: 'strategies-content', url: `${CONTENT_URL}/internal/v1/files` });
+    expect(auth.requestedAudiences).toEqual([PEOPLE_URL, CONTENT_URL]);
+    expect(fetchedFor).toEqual([PEOPLE_URL, CONTENT_URL]);
     expect(peopleAgain).toEqual(people);
-    expect(finance).toEqual({ [INVOCATION_HEADER]: `Bearer ${tokens.get(FINANCE_URL) ?? ''}` });
+    expect(content).toEqual({ [INVOCATION_HEADER]: `Bearer ${tokens.get(CONTENT_URL) ?? ''}` });
   });
 
   it('rejects a target without a URL', async () => {
@@ -1223,9 +1223,9 @@ describe('createCloudInvocationMinter', () => {
     expect(auth.credentialLookups).toBe(0);
     await expect(minter.headersFor({ name: 'people', url: PEOPLE_URL })).rejects.toThrow('metadata server unavailable');
     await expect(minter.headersFor({ name: 'people', url: PEOPLE_URL })).resolves.toHaveProperty(INVOCATION_HEADER);
-    await expect(minter.headersFor({ name: 'finance', url: FINANCE_URL })).resolves.toHaveProperty(INVOCATION_HEADER);
+    await expect(minter.headersFor({ name: 'strategies-content', url: CONTENT_URL })).resolves.toHaveProperty(INVOCATION_HEADER);
     expect(auth.credentialLookups).toBe(2);
-    expect(source.requests.map(({ data }) => (data as { audience: string }).audience)).toEqual([PEOPLE_URL, FINANCE_URL]);
+    expect(source.requests.map(({ data }) => (data as { audience: string }).audience)).toEqual([PEOPLE_URL, CONTENT_URL]);
   });
 
   it('fails closed on a TokenCreator denial, without ADC fallback, and retries the exchange at the next call', async () => {
@@ -1309,12 +1309,12 @@ async function localServiceBearer(caller: string, audience = 'people'): Promise<
 
 describe('transportForPath', () => {
   it.each([
-    { path: '/internal/v1/events/timesheets.people.person.archived.v1', transport: 'pubsub-push' },
+    { path: '/internal/v1/events/people.programs-sites.site.changed.v1', transport: 'pubsub-push' },
     { path: `${PUSH_PATH}?${pushKeyQuery()}`, transport: 'pubsub-push' },
     { path: '/internal/v1/events/', transport: 'service' },
     { path: '/internal/v1/events/a/b', transport: 'service' },
     { path: TASK_PATH, transport: 'cloud-tasks' },
-    { path: '/internal/v1/tasks/surveys/launch', transport: 'cloud-tasks' },
+    { path: '/internal/v1/tasks/feeds/import', transport: 'cloud-tasks' },
     { path: '/internal/v1/tasks', transport: 'service' },
     { path: '/internal/v1/outbox/sweep', transport: 'cloud-tasks' },
     { path: '/internal/v1/outbox/sweep/now', transport: 'service' },
@@ -1412,7 +1412,7 @@ describe('createServiceTransport', () => {
   });
 
   it.each([
-    { label: 'a credential minted for another callee', header: () => localServiceBearer('gateway', 'finance'), denial: INVALID_CREDENTIAL },
+    { label: 'a credential minted for another callee', header: () => localServiceBearer('gateway', 'strategies-content'), denial: INVALID_CREDENTIAL },
     { label: "a managed invoker's service token", header: () => localServiceBearer('tasks-invoker'), denial: WRONG_SCHEME },
   ])('still verifies $label presented on a route where the invocation credential is optional', async ({ header, denial }) => {
     const headers = { [INVOCATION_HEADER]: await header() };
@@ -1490,7 +1490,7 @@ describe('createServiceTransport', () => {
   it.each([
     {
       problem: 'an invocation token for another service',
-      headers: async () => ({ [INVOCATION_HEADER]: await localServiceBearer('gateway', 'finance') }),
+      headers: async () => ({ [INVOCATION_HEADER]: await localServiceBearer('gateway', 'strategies-content') }),
       expected: INVALID_CREDENTIAL,
     },
     {
@@ -1640,7 +1640,7 @@ describe.each([
 
   it.each([
     { problem: 'the service origin as audience', overrides: { aud: PEOPLE_URL } },
-    { problem: "another service's route as audience", overrides: { aud: managedAudience(FINANCE_URL, route) } },
+    { problem: "another service's route as audience", overrides: { aud: managedAudience(CONTENT_URL, route) } },
     { problem: 'the wrong issuer', overrides: { iss: 'https://securetoken.google.com/proj' } },
     { problem: "the other managed invoker's email", overrides: { email: otherInvokerEmail } },
     { problem: "a service caller's email", overrides: { email: GATEWAY_EMAIL } },
@@ -1686,27 +1686,27 @@ describe.each([
   });
 });
 
-describe('createCloudCloudTasksTransport on the fixed survey launch route', () => {
-  const SURVEYS_URL = 'https://surveys-abc.a.run.app';
-  const LAUNCH_PATH = '/internal/v1/tasks/surveys/launch';
+describe('createCloudCloudTasksTransport on the fixed feed import route', () => {
+  const IMPORT_URL = 'https://strategies-content-abc.a.run.app';
+  const IMPORT_PATH = '/internal/v1/jobs/feed-auto-import';
   const identity = { service: { ...TASKS_INVOKER_IDENTITY.service, email: TASKS_INVOKER_EMAIL } };
 
-  /** Authenticates a launch delivery to surveys carrying a tasks-invoker OIDC token addressed to `aud`. */
-  async function launchWith(aud: string): Promise<AuthResult> {
+  /** Authenticates an import delivery to strategies-content carrying a tasks-invoker OIDC token addressed to `aud`. */
+  async function importWith(aud: string): Promise<AuthResult> {
     const token = await signToken(googleOidcClaims({ aud, email: TASKS_INVOKER_EMAIL }), issuerKey);
-    const tasks = createCloudCloudTasksTransport({ project: PROJECT, selfUrl: SURVEYS_URL, client: googleClient });
-    return authenticate(tasks, LAUNCH_PATH, { authorization: `Bearer ${token}` });
+    const tasks = createCloudCloudTasksTransport({ project: PROJECT, selfUrl: IMPORT_URL, client: googleClient });
+    return authenticate(tasks, IMPORT_PATH, { authorization: `Bearer ${token}` });
   }
 
   it('accepts the token addressed to the exact task URL', async () => {
-    await expect(launchWith(`${SURVEYS_URL}${LAUNCH_PATH}`)).resolves.toEqual(identity);
+    await expect(importWith(`${IMPORT_URL}${IMPORT_PATH}`)).resolves.toEqual(identity);
   });
 
   it.each([
-    { given: 'the service origin', aud: SURVEYS_URL },
-    { given: "another route's URL", aud: `${SURVEYS_URL}/internal/v1/tasks/reminders` },
+    { given: 'the service origin', aud: IMPORT_URL },
+    { given: "another route's URL", aud: `${IMPORT_URL}/internal/v1/jobs/publish-scheduled-changesets` },
   ])('refuses a token addressed to $given as invalid-credential', async ({ aud }) => {
-    expect(await denialOf(() => launchWith(aud))).toEqual(INVALID_CREDENTIAL);
+    expect(await denialOf(() => importWith(aud))).toEqual(INVALID_CREDENTIAL);
   });
 });
 
@@ -1745,7 +1745,7 @@ describe('createLocalCloudTasksTransport', () => {
   it.each([
     {
       problem: 'is addressed to another service',
-      token: async () => `Bearer ${await mintTasksInvokerToken({ audience: 'finance' })}`,
+      token: async () => `Bearer ${await mintTasksInvokerToken({ audience: 'strategies-content' })}`,
     },
     {
       problem: 'has the user-token issuer',
@@ -1940,15 +1940,15 @@ describe('createAuthFromEnv', () => {
     ])('mints invocation credentials for the service carrying $carrying', async ({ minterRoles, roles }) => {
       const variant = await withPushKey(await stateDirWith(`env-minter-${String(roles.length)}`, 'pem'));
       const auth = await createAuthFromEnv(localEnv(variant), { minterRoles });
-      const headers = await auth.invocationMinter.headersFor({ name: 'finance' });
-      const finance = createLocalInvocationVerifier({ publicKey: issuerKey.publicKey, callee: 'finance' });
-      await expect(finance.verify(headers[INVOCATION_HEADER] ?? '')).resolves.toEqual({ name: 'people', roles });
+      const headers = await auth.invocationMinter.headersFor({ name: 'strategies-content' });
+      const content = createLocalInvocationVerifier({ publicKey: issuerKey.publicKey, callee: 'strategies-content' });
+      await expect(content.verify(headers[INVOCATION_HEADER] ?? '')).resolves.toEqual({ name: 'people', roles });
     });
 
     it('starts without the private key file and fails only when minting', async () => {
       const variant = await withPushKey(await stateDirWith('env-verify-only', 'absent'));
       const auth = await createAuthFromEnv(localEnv(variant));
-      await expect(auth.invocationMinter.headersFor({ name: 'finance' })).rejects.toThrow(
+      await expect(auth.invocationMinter.headersFor({ name: 'strategies-content' })).rejects.toThrow(
         'Local service token for people needs token-signing-private.pem',
       );
     });
@@ -2102,7 +2102,7 @@ describe('createAuthFromEnv', () => {
   });
 
   describe('in cloud mode', () => {
-    const SERVICE_URLS = { people: PEOPLE_URL, finance: FINANCE_URL };
+    const SERVICE_URLS = { people: PEOPLE_URL, 'strategies-content': CONTENT_URL };
     const NO_SERVICE_URL = 'OPT2_SERVICE_URLS has no valid URL for people';
 
     /** Cloud environment of the people service; an `undefined` override drops the setting. */
@@ -2157,8 +2157,8 @@ describe('createAuthFromEnv', () => {
       });
       const forwarded = `Bearer ${cloudRunForwarded(googleOidcClaims())}`;
       expect(await denialOf(() => auth.invocationVerifier.verify(forwarded))).toEqual(INVALID_CREDENTIAL);
-      const forFinance = `Bearer ${await signToken(googleOidcClaims({ aud: FINANCE_URL }), issuerKey)}`;
-      expect(await denialOf(() => auth.invocationVerifier.verify(forFinance))).toEqual(INVALID_CREDENTIAL);
+      const forContent = `Bearer ${await signToken(googleOidcClaims({ aud: CONTENT_URL }), issuerKey)}`;
+      expect(await denialOf(() => auth.invocationVerifier.verify(forContent))).toEqual(INVALID_CREDENTIAL);
     });
 
     it.each([
@@ -2238,8 +2238,8 @@ describe('createAuthFromEnv', () => {
 
     it('mints with the Google ID-token minter, which needs the callee URL', async () => {
       const auth = await createAuthFromEnv(cloudEnv());
-      await expect(auth.invocationMinter.headersFor({ name: 'finance' })).rejects.toThrow(
-        new TypeError('No URL for invocation target finance'),
+      await expect(auth.invocationMinter.headersFor({ name: 'strategies-content' })).rejects.toThrow(
+        new TypeError('No URL for invocation target strategies-content'),
       );
     });
 
@@ -2273,7 +2273,7 @@ describe('createAuthFromEnv', () => {
       { problem: 'OPT2_SERVICE_URLS is JSON null', env: { OPT2_SERVICE_URLS: 'null' }, message: NO_SERVICE_URL },
       {
         problem: 'OPT2_SERVICE_URLS lacks the service',
-        env: { OPT2_SERVICE_URLS: { finance: FINANCE_URL } },
+        env: { OPT2_SERVICE_URLS: { 'strategies-content': CONTENT_URL } },
         message: NO_SERVICE_URL,
       },
       {

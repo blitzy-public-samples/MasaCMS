@@ -111,19 +111,8 @@ interface UntypedFacade {
 const facade = (client: GatewayClient, key: FacadeKey): UntypedFacade => client[key] as unknown as UntypedFacade;
 
 describe('constants', () => {
-  it('names the ten services web calls', () => {
-    expect(WEB_SERVICE_NAMES).toEqual([
-      'identity',
-      'people',
-      'programs-sites',
-      'strategies-content',
-      'communications',
-      'reporting',
-      'surveys',
-      'timesheets',
-      'finance',
-      'e-signature',
-    ]);
+  it('names the four services web calls', () => {
+    expect(WEB_SERVICE_NAMES).toEqual(['identity', 'people', 'programs-sites', 'strategies-content']);
   });
 
   it('bounds relayed calls by the gateway forward bound plus one 10 s service-call timeout', () => {
@@ -153,12 +142,6 @@ describe('routing', () => {
     ['people', 'people'],
     ['programsSites', 'programs-sites'],
     ['strategiesContent', 'strategies-content'],
-    ['communications', 'communications'],
-    ['reporting', 'reporting'],
-    ['surveys', 'surveys'],
-    ['timesheets', 'timesheets'],
-    ['finance', 'finance'],
-    ['eSignature', 'e-signature'],
   ])('sends %s facade calls under /opt2/svc/%s with path parameters encoded', async (key, service) => {
     route('GET', service, '/v1/items/a%2Fb%20c', jsonReply({ key }));
     const bound = facade(createGatewayClient(ANONYMOUS), key);
@@ -744,9 +727,9 @@ describe('answers', () => {
   });
 
   it.each([400, 404, 500])('returns HTTP %i as a response, not as unavailability', async (status) => {
-    route('GET', 'finance', '/v1/finance/records', jsonReply({ error: `status ${status}` }, status));
+    route('GET', 'people', '/v1/users', jsonReply({ error: `status ${status}` }, status));
 
-    const response = await createGatewayClient(ANONYMOUS).get('finance', '/v1/finance/records');
+    const response = await createGatewayClient(ANONYMOUS).get('people', '/v1/users');
 
     expect(response).toMatchObject({ status, ok: false, body: { error: `status ${status}` } });
     expect(isUnavailable(response)).toBe(false);
@@ -754,32 +737,32 @@ describe('answers', () => {
   });
 
   it('returns an unrouted path as an empty 404 response', async () => {
-    const response = await createGatewayClient(ANONYMOUS).get('finance', '/v1/unknown');
+    const response = await createGatewayClient(ANONYMOUS).get('people', '/v1/unknown');
 
     expect(response).toMatchObject({ status: 404, ok: false, body: undefined, setCookies: [] });
     expect(isUnavailable(response)).toBe(false);
   });
 
   it.each([502, 503, 504])('fails closed on HTTP %i after exactly one request', async (status) => {
-    route('GET', 'timesheets', '/v1/timesheets/sheets', {
+    route('GET', 'programs-sites', '/v1/user-sites', {
       status,
       headers: { 'content-type': 'text/html' },
       body: '<h1>Service Unavailable</h1>',
     });
 
     const error = await createGatewayClient(ANONYMOUS)
-      .get('timesheets', '/v1/timesheets/sheets')
+      .get('programs-sites', '/v1/user-sites')
       .catch((caught: unknown) => caught);
 
     expect(error).toBeInstanceOf(GatewayUnavailableError);
     expect(error).toBeInstanceOf(LegacyServiceUnavailableError);
     expect(error).toMatchObject({
       name: 'GatewayUnavailableError',
-      service: 'timesheets',
+      service: 'programs-sites',
       status,
       surface: 'admin',
       reason: 'gateway-unavailable',
-      message: `Service timesheets unavailable through the gateway (HTTP ${status})`,
+      message: `Service programs-sites unavailable through the gateway (HTTP ${status})`,
     });
     expect((error as GatewayUnavailableError).cause).toBeUndefined();
     expect(isUnavailable(error)).toBe(true);
@@ -795,18 +778,18 @@ describe('answers', () => {
       { status, label: 'an HTML page labelled JSON', body: '<html><body><h1>Service Unavailable</h1></body></html>' },
     ]),
   )('fails closed on HTTP $status with $label without decoding it', async ({ status, body }) => {
-    route('GET', 'timesheets', '/v1/timesheets/sheets', {
+    route('GET', 'programs-sites', '/v1/user-sites', {
       status,
       headers: { 'content-type': 'application/json' },
       body,
     });
 
     const error = await createGatewayClient(ANONYMOUS)
-      .get('timesheets', '/v1/timesheets/sheets')
+      .get('programs-sites', '/v1/user-sites')
       .catch((caught: unknown) => caught);
 
     expect(error).toBeInstanceOf(GatewayUnavailableError);
-    expect(error).toMatchObject({ service: 'timesheets', status });
+    expect(error).toMatchObject({ service: 'programs-sites', status });
     expect(isUnavailable(error)).toBe(true);
     expect(fake.requests).toHaveLength(1);
   });
@@ -815,14 +798,14 @@ describe('answers', () => {
     await fake.refuse();
 
     const error = await createGatewayClient(ANONYMOUS)
-      .get('surveys', '/v1/surveys')
+      .get('strategies-content', '/v1/sites/tenant-a/header-prompts')
       .catch((caught: unknown) => caught);
 
     expect(error).toBeInstanceOf(GatewayUnavailableError);
     expect(error).toMatchObject({
-      service: 'surveys',
+      service: 'strategies-content',
       status: undefined,
-      message: 'Service surveys unavailable through the gateway (no answer)',
+      message: 'Service strategies-content unavailable through the gateway (no answer)',
     });
     expect((error as GatewayUnavailableError).cause).toBeInstanceOf(ServiceUnavailableError);
     expect(isUnavailable(error)).toBe(true);
@@ -830,31 +813,31 @@ describe('answers', () => {
   });
 
   it('fails closed after exactly one request when the gateway drops the connection mid-response', async () => {
-    route('GET', 'reporting', '/v1/reporting/exports', () => {
+    route('GET', 'identity', '/v1/sessions/current', () => {
       fake.closeConnections();
       return OK;
     });
 
     const error = await createGatewayClient(ANONYMOUS)
-      .get('reporting', '/v1/reporting/exports')
+      .get('identity', '/v1/sessions/current')
       .catch((caught: unknown) => caught);
 
     expect(error).toBeInstanceOf(GatewayUnavailableError);
-    expect(error).toMatchObject({ service: 'reporting', status: undefined });
+    expect(error).toMatchObject({ service: 'identity', status: undefined });
     expect((error as GatewayUnavailableError).cause).toBeInstanceOf(ServiceUnavailableError);
     expect(isUnavailable(error)).toBe(true);
     expect(fake.requests).toHaveLength(1);
   });
 
   it('propagates an undecodable JSON answer unchanged instead of failing closed', async () => {
-    route('GET', 'communications', '/v1/templates', {
+    route('GET', 'people', '/v1/groups', {
       status: 200,
       headers: { 'content-type': 'application/json' },
       body: '{"truncated":',
     });
 
     const error = await createGatewayClient(ANONYMOUS)
-      .get('communications', '/v1/templates')
+      .get('people', '/v1/groups')
       .catch((caught: unknown) => caught);
 
     expect(error).toBeInstanceOf(Error);
@@ -996,7 +979,7 @@ describe('setServiceClientForTests', () => {
     const secondClient = createGatewayClient({ requestId: 'req-second', inbound: {} }, second.client);
 
     const answers = [
-      await secondClient.get('finance', '/v1/y'),
+      await secondClient.get('identity', '/v1/y'),
       await firstClient.get('people', '/v1/x'),
       await createGatewayClient(ANONYMOUS).get('people', '/v1/x'),
       await firstClient.raw('people', { method: 'GET', path: '/v1/z' }),
@@ -1008,7 +991,7 @@ describe('setServiceClientForTests', () => {
       ['/opt2/svc/people/v1/z', { [REQUEST_ID_HEADER]: 'req-anonymous' }],
     ]);
     expect(second.request.mock.calls.map(([req]) => [req.path, req.headers])).toEqual([
-      ['/opt2/svc/finance/v1/y', { [REQUEST_ID_HEADER]: 'req-second' }],
+      ['/opt2/svc/identity/v1/y', { [REQUEST_ID_HEADER]: 'req-second' }],
     ]);
     expect(fake.requests.map(requestLine)).toEqual(['GET /opt2/svc/people/v1/x']);
   });

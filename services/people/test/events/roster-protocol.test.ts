@@ -1,13 +1,12 @@
 /** The roster write protocol through people's three carried Type=2 save entry points, over a throwaway schema and the identity double. */
 import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
 import { performance } from 'node:perf_hooks';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 import { parse } from 'yaml';
 import { OperationBlockedError, WRITE_POSITION_HEADER, openOperations, parseWritePosition } from '@opt2/platform/migration-kit';
-import { TENANT_A, assertResponseMatchesOpenApi, mintTasksInvokerToken } from '@opt2/platform/testing';
+import { TENANT_A, assertResponseMatchesOpenApi, loadOpenApiDocument, mintTasksInvokerToken } from '@opt2/platform/testing';
 import { SERVICE_NAME } from '../../src/app.js';
 import { OperationNotFoundError, main, runResolveOperation } from '../../src/cli.js';
 import { createFaultHooks, type InjectedFaults, type RosterStep } from '../../src/domain/faults.js';
@@ -35,7 +34,7 @@ import {
 } from '../helpers/fixtures.js';
 import { createIdentityDouble, type DoubleOperationState } from '../helpers/identity-double.js';
 
-const CONTRACT = parse(readFileSync(fileURLToPath(new URL('../../contracts/openapi.yaml', import.meta.url)), 'utf8')) as object;
+const CONTRACT = loadOpenApiDocument(fileURLToPath(new URL('../../contracts/openapi.yaml', import.meta.url)), parse) as object;
 const FORM = Object.freeze({ 'content-type': 'application/x-www-form-urlencoded' });
 const SITE = TENANT_A.siteId;
 const TENANT = TENANT_A.tenantId;

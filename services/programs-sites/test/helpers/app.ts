@@ -3,24 +3,24 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
-  ROLE_SET,
-  authHeadersFor,
+  CLIENT_ROUTE_KEY,
   businessClock,
+  clientPathPattern,
+  closingParen,
+  collapseSql,
   createCapturingPublisher,
+  createHeadersFor,
+  fakePoolTenantDb,
   fixedClock,
+  localTestEnv,
+  localTestUrl,
+  pathWithoutQuery,
+  splitTopLevel,
   testVerifier,
   writeTestSecrets,
-  type RoleSubject,
+  type ClientHandler,
 } from '@opt2/platform/testing';
-import {
-  SYSTEM_TENANT_ID,
-  tenantDbFromPool,
-  type Pool,
-  type QueryConfig,
-  type QueryResult,
-  type QueryResultRow,
-  type TenantDb,
-} from '@opt2/platform/tenancy';
+import { SYSTEM_TENANT_ID, type QueryResult, type QueryResultRow, type TenantDb } from '@opt2/platform/tenancy';
 import {
   resolvePageSize,
   type CreateTaskInput,
@@ -48,34 +48,17 @@ const STATE_DIR_PREFIX = 'opt2-programs-sites-';
 
 /** Raw environment that `loadEnv(programsSitesEnvSchema)` accepts in local mode; an override of `undefined` removes the variable. */
 export function testEnv(overrides: Readonly<Record<string, string | undefined>> = {}): Record<string, string> {
-  const merged: Record<string, string | undefined> = {
-    PORT: '8113',
-    OPT2_SERVICE_NAME: SERVICE,
-    OPT2_ENV: 'local',
-    OPT2_DB_AUTH: 'password',
-    PG_HOST: process.env.PG_HOST || '127.0.0.1',
-    PG_PORT: process.env.PG_PORT || '5432',
-    PG_DATABASE: process.env.PG_DATABASE || 'opt2_test',
-    PG_USER: process.env.PG_USER || 'programs_sites_app',
-    PG_PASSWORD: process.env.PG_PASSWORD || 'unused',
-    OPT2_TOKEN_ISSUER: 'opt2-local-identity',
-    OPT2_TOKEN_AUDIENCE: 'opt2-local',
-    OPT2_JWKS_URL: 'http://127.0.0.1:8111/.well-known/jwks.json',
-    OPT2_GATEWAY_URL: 'http://127.0.0.1:8100',
-    OPT2_MIGRATION_URL: 'http://127.0.0.1:8102',
-    OPT2_SERVICE_URLS: JSON.stringify({
-      identity: 'http://127.0.0.1:8111',
-      migration: 'http://127.0.0.1:8102',
-      'strategies-content': 'http://127.0.0.1:8114',
-      'programs-sites': 'http://127.0.0.1:8113',
-    }),
-    OPT2_STATE_DIR: 'OPT2_STATE_DIR' in overrides ? undefined : mkdtempSync(path.join(tmpdir(), STATE_DIR_PREFIX)),
-    OPT2_TASKS_ADAPTER: 'local',
-    OPT2_STORAGE_ADAPTER: 'local',
-    TZ: process.env.TZ ?? 'UTC',
-    ...overrides,
-  };
-  return Object.fromEntries(Object.entries(merged).filter((entry): entry is [string, string] => entry[1] !== undefined));
+  return localTestEnv(
+    {
+      service: SERVICE,
+      database: { name: 'opt2_test', user: 'programs_sites_app' },
+      pgFromProcessEnv: true,
+      callees: ['identity', 'migration', 'strategies-content', 'programs-sites'],
+      stateDir: () => mkdtempSync(path.join(tmpdir(), STATE_DIR_PREFIX)),
+      extra: { OPT2_GATEWAY_URL: localTestUrl('gateway'), OPT2_MIGRATION_URL: localTestUrl('migration'), OPT2_STORAGE_ADAPTER: 'local', TZ: process.env.TZ ?? 'UTC' },
+    },
+    overrides,
+  );
 }
 
 /** Clock every suite shares: local `2026-06-30T12:00:00`, the seed's business date. */
@@ -337,10 +320,8 @@ const WRITE_TARGET =
   /(?<!\b(?:FOR|DO|KEY)\s+)\b(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+((?:"[^"]+"|[A-Za-z_][\w$]*)(?:\.(?:"[^"]+"|[A-Za-z_][\w$]*))?)/gi;
 const WORD = /^\s*([A-Za-z_][A-Za-z0-9_]*)/;
 const FIRST_XID = 1000n;
-
-function collapse(sql: string): string {
-  return sql.replace(/\s+/g, ' ').trim();
-}
+// Quotes the SQL scanners skip: string literals and quoted identifiers.
+const QUOTES = '\'"';
 
 function firstWord(text: string): string {
   return WORD.exec(text)?.[1]?.toUpperCase() ?? '';
@@ -348,51 +329,6 @@ function firstWord(text: string): string {
 
 function unquote(name: string): string {
   return name.replace(/"/g, '').toLowerCase();
-}
-
-/** Index of the `)` closing the `(` at `open`, skipping quoted text; -1 when unbalanced. */
-function closingParen(text: string, open: number): number {
-  let depth = 0;
-  let quote = '';
-  for (let i = open; i < text.length; i += 1) {
-    const ch = text.charAt(i);
-    if (quote !== '') {
-      if (ch === quote) quote = '';
-    } else if (ch === "'" || ch === '"') {
-      quote = ch;
-    } else if (ch === '(') {
-      depth += 1;
-    } else if (ch === ')') {
-      depth -= 1;
-      if (depth === 0) return i;
-    }
-  }
-  return -1;
-}
-
-/** `text` split at commas outside parentheses and quotes, each part trimmed. */
-function splitTopLevel(text: string): string[] {
-  const parts: string[] = [];
-  let depth = 0;
-  let quote = '';
-  let start = 0;
-  for (let i = 0; i < text.length; i += 1) {
-    const ch = text.charAt(i);
-    if (quote !== '') {
-      if (ch === quote) quote = '';
-    } else if (ch === "'" || ch === '"') {
-      quote = ch;
-    } else if (ch === '(') {
-      depth += 1;
-    } else if (ch === ')') {
-      depth -= 1;
-    } else if (ch === ',' && depth === 0) {
-      parts.push(text.slice(start, i).trim());
-      start = i + 1;
-    }
-  }
-  parts.push(text.slice(start).trim());
-  return parts.filter((part) => part !== '');
 }
 
 /** The verb the statement executes and every verb it contains, CTE bodies of a `WITH` query included. */
@@ -444,18 +380,18 @@ function boundValue(expression: string, params: readonly unknown[]): unknown {
 function insertedRows(sql: string, params: readonly unknown[]): Record<string, unknown>[] | undefined {
   const head = /^INSERT INTO \S+ \(/i.exec(sql);
   if (head === null) return undefined;
-  const columnsEnd = closingParen(sql, head[0].length - 1);
+  const columnsEnd = closingParen(sql, head[0].length - 1, QUOTES);
   if (columnsEnd < 0) return undefined;
-  const columns = splitTopLevel(sql.slice(head[0].length, columnsEnd)).map(unquote);
+  const columns = splitTopLevel(sql.slice(head[0].length, columnsEnd), QUOTES).map(unquote);
   const afterColumns = sql.slice(columnsEnd + 1);
   const valuesKeyword = /^\s*VALUES\s*/i.exec(afterColumns);
   if (valuesKeyword === null) return undefined;
   const rows: Record<string, unknown>[] = [];
   let rest = afterColumns.slice(valuesKeyword[0].length);
   while (rest.startsWith('(')) {
-    const end = closingParen(rest, 0);
+    const end = closingParen(rest, 0, QUOTES);
     if (end < 0) return undefined;
-    const values = splitTopLevel(rest.slice(1, end));
+    const values = splitTopLevel(rest.slice(1, end), QUOTES);
     rows.push(Object.fromEntries(columns.map((column, i) => [column, boundValue(values[i] ?? 'NULL', params)])));
     rest = rest.slice(end + 1).replace(/^\s*,\s*/, '');
   }
@@ -474,7 +410,7 @@ function everyColumn(row: QueryResultRow): QueryResultRow {
 function projectReturning(sql: string, row: Readonly<Record<string, unknown>>, xid: () => string): QueryResultRow | undefined {
   const returning = /\bRETURNING (.+)$/i.exec(sql)?.[1];
   if (returning === undefined) return undefined;
-  const items = splitTopLevel(returning);
+  const items = splitTopLevel(returning, QUOTES);
   if (items.length === 1 && items[0] === '*') return everyColumn({ ...row });
   const projected: QueryResultRow = {};
   for (const item of items) {
@@ -502,7 +438,7 @@ function updatedRow(sql: string, params: readonly unknown[], base: Readonly<Reco
   const list = /^UPDATE \S+ SET (.+?)(?= WHERE | FROM | RETURNING |$)/i.exec(sql)?.[1];
   if (list === undefined) return undefined;
   const row: Record<string, unknown> = { ...base };
-  for (const assignment of splitTopLevel(list)) {
+  for (const assignment of splitTopLevel(list, QUOTES)) {
     const parts = /^("?[\w$]+"?)\s*=\s*(.+)$/.exec(assignment);
     if (parts?.[1] === undefined || parts[2] === undefined) continue;
     const column = unquote(parts[1]);
@@ -527,7 +463,7 @@ function pick(row: GateRow, columns: readonly string[]): QueryResultRow {
 
 function selectedColumns(sql: string): string[] {
   const list = /^SELECT (.+?) FROM /i.exec(sql)?.[1] ?? '*';
-  return list.trim() === '*' ? ['unit', 'state', 'holder_id', 'phase'] : splitTopLevel(list).map(unquote);
+  return list.trim() === '*' ? ['unit', 'state', 'holder_id', 'phase'] : splitTopLevel(list, QUOTES).map(unquote);
 }
 
 /**
@@ -544,7 +480,6 @@ export function createRecordingDb(seed: RecordingDbSeed = {}): RecordingDb {
   let recorded: RecordedStatement[] = [];
   let nextXid = FIRST_XID;
   const openXids = new Set<bigint>();
-  let ended = false;
 
   const gateOf = (unit: string): GateRow => gates.get(unit) ?? { unit, state: 'open', holder_id: null, phase: 'quiet' };
   const kindOf = (session: Session): RecordedStatement['kind'] =>
@@ -563,7 +498,7 @@ export function createRecordingDb(seed: RecordingDbSeed = {}): RecordingDb {
     session.locked.clear();
   };
   const matches = (pattern: string | RegExp, sql: string): boolean =>
-    typeof pattern === 'string' ? sql.toLowerCase().includes(collapse(pattern).toLowerCase()) : sql.search(pattern) !== -1;
+    typeof pattern === 'string' ? sql.toLowerCase().includes(collapseSql(pattern).toLowerCase()) : sql.search(pattern) !== -1;
 
   function gateAnswer(sql: string, verb: string, params: readonly unknown[]): Answer | undefined {
     if (!GATE_TABLE.test(sql)) return undefined;
@@ -637,11 +572,8 @@ export function createRecordingDb(seed: RecordingDbSeed = {}): RecordingDb {
     return { rows: [], rowCount: verb === 'SELECT' ? 0 : null };
   }
 
-  async function run(session: Session, input: string | QueryConfig, values?: unknown[]): Promise<QueryResult> {
-    if (ended) throw new Error('Cannot use a pool after calling end on the pool');
-    const sql = collapse(typeof input === 'string' ? input : input.text);
-    const configValues: readonly unknown[] | undefined = typeof input === 'string' ? undefined : input.values;
-    const params: unknown[] = [...(configValues ?? values ?? [])];
+  async function run(session: Session, text: string, params: unknown[]): Promise<QueryResult> {
+    const sql = collapseSql(text);
     const verb = verbsOf(sql).main;
     if (verb === 'BEGIN' || verb === 'START') session.inTransaction = true;
     if (SET_TENANT.test(sql)) session.tenantId = typeof params[0] === 'string' && params[0] !== '' ? params[0] : null;
@@ -666,29 +598,9 @@ export function createRecordingDb(seed: RecordingDbSeed = {}): RecordingDb {
   }
 
   const newSession = (): Session => ({ tenantId: undefined, xid: undefined, inTransaction: false, locked: new Map() });
-  const fakePool = {
-    async connect() {
-      if (ended) throw new Error('Cannot use a pool after calling end on the pool');
-      const session = newSession();
-      return {
-        query: (input: string | QueryConfig, values?: unknown[]): Promise<QueryResult> => run(session, input, values),
-        release: (): void => undefined,
-      };
-    },
-    query: (input: string | QueryConfig, values?: unknown[]): Promise<QueryResult> => run(newSession(), input, values),
-    async end(): Promise<void> {
-      ended = true;
-    },
-    on: (): void => undefined,
-  };
-  const base = tenantDbFromPool(fakePool as unknown as Pool, { schema: SCHEMA });
 
-  // tenantDbFromPool freezes its TenantDb, so the recording members sit on an object that delegates to it.
   return {
-    schema: base.schema,
-    withTenant: (tenantId, fn, options) => base.withTenant(tenantId, fn, options),
-    withMetadata: (fn, options) => base.withMetadata(fn, options),
-    end: () => base.end(),
+    ...fakePoolTenantDb({ schema: SCHEMA, session: newSession, run }),
     startup: [],
     respond(pattern, rows) {
       responders.push({ pattern, rows });
@@ -712,9 +624,6 @@ export function createRecordingDb(seed: RecordingDbSeed = {}): RecordingDb {
     },
   };
 }
-
-/** Answers one service call. */
-export type ClientHandler = (req: ServiceRequest) => ServiceResponse | Promise<ServiceResponse>;
 
 /** Handlers per callee: one for every call, or several keyed `'<METHOD> <path>'`, where a `{name}` segment matches any one segment. */
 export type ClientHandlers = Readonly<Record<string, ClientHandler | Readonly<Record<string, ClientHandler>>>>;
@@ -768,28 +677,14 @@ const IDENTITY = 'identity';
 const MIGRATION = 'migration';
 const AUTHORITY_PATH = '/internal/v1/authority';
 const LEGACY_STEPS_PATH = '/internal/v1/legacy-steps';
-const ROUTE_KEY = /^(GET|POST|PUT|PATCH|DELETE) (\/\S*)$/;
 const LEGACY_UNAVAILABLE = Object.freeze({
   apiversion: 'v1',
   method: '',
   error: Object.freeze({ code: 'server_error', message: 'Unhandled Exception' }),
 });
 
-function pathPattern(pathTemplate: string): RegExp {
-  const source = pathTemplate
-    .split(/(\{[^}/]+\})/)
-    .map((part) => (/^\{[^}/]+\}$/.test(part) ? '[^/]+' : part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
-    .join('');
-  return new RegExp(`^${source}$`);
-}
-
-function pathOnly(requestPath: string): string {
-  const query = requestPath.indexOf('?');
-  return query === -1 ? requestPath : requestPath.slice(0, query);
-}
-
 function clientRoute(service: string, method: ServiceRequest['method'], routePath: string, handler: ClientHandler): ClientRoute {
-  return { service, method, path: routePath, pattern: pathPattern(routePath), handler };
+  return { service, method, path: routePath, pattern: clientPathPattern(routePath), handler };
 }
 
 /** Creates a {@link ClientRecorder}; `clock` stamps the default legacy-step `serverTime`. */
@@ -808,7 +703,7 @@ export function createClientRecorder(handlers: ClientHandlers = {}, options: { c
       continue;
     }
     for (const [key, handler] of Object.entries(entry)) {
-      const parsed = ROUTE_KEY.exec(key);
+      const parsed = CLIENT_ROUTE_KEY.exec(key);
       if (parsed?.[1] === undefined || parsed[2] === undefined) throw new TypeError(`client handler key must be '<METHOD> <path>': ${key}`);
       routes.push(clientRoute(service, parsed[1] as ServiceRequest['method'], parsed[2], handler));
     }
@@ -848,7 +743,7 @@ export function createClientRecorder(handlers: ClientHandlers = {}, options: { c
   ];
 
   const handlerFor = (req: ServiceRequest): ClientHandler | undefined => {
-    const requestPath = pathOnly(req.path);
+    const requestPath = pathWithoutQuery(req.path);
     const matching = (route: ClientRoute): boolean =>
       route.service === req.service && route.method === req.method && route.pattern.test(requestPath);
     return routes.findLast(matching)?.handler ?? perService.get(req.service) ?? defaults.find(matching)?.handler;
@@ -864,8 +759,8 @@ export function createClientRecorder(handlers: ClientHandlers = {}, options: { c
   return {
     requests,
     requestsTo(service, routePath) {
-      const pattern = routePath === undefined ? undefined : pathPattern(routePath);
-      return requests.filter((call) => call.service === service && (pattern === undefined || pattern.test(pathOnly(call.path))));
+      const pattern = routePath === undefined ? undefined : clientPathPattern(routePath);
+      return requests.filter((call) => call.service === service && (pattern === undefined || pattern.test(pathWithoutQuery(call.path))));
     },
     on(service, method, routePath, handler) {
       routes.push(clientRoute(service, method, routePath, handler));
@@ -985,17 +880,5 @@ export async function buildTestApp(
   }
 }
 
-function roleSubjectNamed(name: string): RoleSubject {
-  const found = ROLE_SET.find((candidate) => candidate.name === name);
-  if (found === undefined) throw new TypeError(`ROLE_SET has no subject named ${name}`);
-  return found;
-}
-
-/**
- * `app.inject` headers presenting `subject`, or the `ROLE_SET` subject of that name, to programs-sites; user tokens are
- * minted for `site`, `tenant-a` by default. Throws TypeError for a name `ROLE_SET` lacks.
- */
-export function headersFor(subject: RoleSubject | string, opts: { site?: string } = {}): Promise<Record<string, string>> {
-  const resolved = typeof subject === 'string' ? roleSubjectNamed(subject) : subject;
-  return authHeadersFor(resolved, { audience: SERVICE, ...(opts.site === undefined ? {} : { site: opts.site }) });
-}
+/** `app.inject` headers presenting a subject, or the `ROLE_SET` subject of that name, to programs-sites; user tokens name `site`, tenant-a by default. */
+export const headersFor = createHeadersFor({ audience: SERVICE });

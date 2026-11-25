@@ -1,6 +1,6 @@
 /** The `session.mura` role list, user struct and login snapshot `loginByQuery` builds, and the token roles a snapshot grants on a site. */
 import { readFile } from 'node:fs/promises';
-import { Roles, SYNTHETIC_ROLES, isCoreModuleId, moduleRole } from '@opt2/platform/auth';
+import { Roles, isCoreModuleId, moduleRole } from '@opt2/platform/auth';
 import { cfDateTimeFormat, cfListAppend, cfListToArray, sqlServerDatetime } from '@opt2/platform/legacy-compat';
 import { SAFE_ERROR_TEXT } from '@opt2/platform/logging';
 import type { TenantRegistryEntry } from '@opt2/platform/tenancy';
@@ -78,17 +78,11 @@ export const ANONYMOUS_USER_STRUCT: Readonly<AnonymousUserStruct> = Object.freez
   showTrace: false,
 });
 
-/** One synthetic-role group of `config/role-map.json`. */
-export interface RoleMapEntry {
-  groupName: string;
-  role: string;
-}
-
-/** `config/role-map.json`: private-pool group names that grant synthetic roles. */
+/** `config/role-map.json`: the private-pool scope of Masa-group role grants; no target role is granted through a group, so it lists none. */
 export interface RoleMap {
   sourceSha: string;
   scope: 'privateUserPool';
-  groups: readonly RoleMapEntry[];
+  groups: readonly never[];
 }
 
 /** One `tpermissions` module grant of the site, joined to its group's current name and visibility. */
@@ -98,10 +92,9 @@ export interface ModuleGroupGrant {
   isPublic: number | null;
 }
 
-/** Inputs of `tokenRolesFor` that callers read from the database or config. */
+/** Inputs of `tokenRolesFor` that callers read from the database. */
 export interface TokenRoleOptions {
   moduleGrants: readonly ModuleGroupGrant[];
-  roleMap: RoleMap;
 }
 
 /** Token roles of a snapshot on one site; `roles` is empty without site access. */
@@ -260,13 +253,10 @@ export function parseRoleMap(value: unknown): RoleMap {
   if (typeof map !== 'object' || map === null || typeof map.sourceSha !== 'string' || map.scope !== 'privateUserPool' || !Array.isArray(map.groups)) {
     throw new TypeError('role-map.json must be {sourceSha, scope: "privateUserPool", groups: [...]}');
   }
-  for (const group of map.groups as unknown[]) {
-    const entry = group as Partial<RoleMapEntry> | null;
-    if (typeof entry?.groupName !== 'string' || entry.groupName === '' || typeof entry.role !== 'string' || !SYNTHETIC_ROLES.includes(entry.role)) {
-      throw new TypeError(`role-map.json group ${JSON.stringify(group)} needs a groupName and a synthetic role`);
-    }
+  if (map.groups.length > 0) {
+    throw new TypeError(`role-map.json group ${JSON.stringify(map.groups[0])}: no target role is granted through a Masa group`);
   }
-  return { sourceSha: map.sourceSha, scope: map.scope, groups: map.groups.map(({ groupName, role }) => ({ groupName, role })) };
+  return { sourceSha: map.sourceSha, scope: map.scope, groups: [] };
 }
 
 /** Start-up refusal of an unreadable, non-JSON or invalid `role-map.json`; `cause` is the read, JSON or shape error. */
@@ -323,7 +313,7 @@ export function moduleGrantHeld(snapshot: Pick<LoginSnapshot, 'roleList'>, site:
 /**
  * Token roles of a login snapshot on `site`, from its login-time role list and the registry's pools. Each test keeps the case rule
  * of the legacy check it replaces: exact for S2, Admin and module grants [legacy: core/mura/permission.cfc:312,340-342], no-case for
- * the pool markers and fixture role groups [legacy: core/mura/permission.cfc:676,689-691].
+ * the pool markers [legacy: core/mura/permission.cfc:676,689-691].
  */
 export function tokenRolesFor(snapshot: Pick<LoginSnapshot, 'roleList'>, site: TokenRoleSite, opts: TokenRoleOptions): TokenRoles {
   const list = snapshot.roleList;
@@ -343,8 +333,5 @@ export function tokenRolesFor(snapshot: Pick<LoginSnapshot, 'roleList'>, site: T
   roles.push(...moduleRolesFor(list, opts.moduleGrants, privatePool, publicPool));
   if (privateMember) roles.push(Roles.systemUser);
   if (publicMember) roles.push(Roles.member);
-  for (const { groupName, role } of opts.roleMap.groups) {
-    if (roleListHas(list, `${groupName};${privatePool};0`, { ignoreCase: true })) roles.push(role);
-  }
   return { roles: [...new Set(roles)], hasSiteAccess: true };
 }

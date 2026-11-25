@@ -10,14 +10,10 @@ export const SCHEDULER_STATE_TABLE = 'migration.scheduler_state';
 export const SCHEDULER_KEYS = {
   siteMonitor: 'sitemonitor',
   nativeTasks: 'nativeTasks',
-  surveyTasks: 'surveyTasks',
 } as const;
 
 /** A scheduler state row key. */
 export type SchedulerKey = (typeof SCHEDULER_KEYS)[keyof typeof SCHEDULER_KEYS];
-
-/** Name prefix of the fixture survey launch and reminder tasks. */
-export const SURVEY_TASK_PREFIX = 'opt2-survey-';
 
 /** An ACF scheduled task in the bridge wire shape. */
 export type NativeTask = ScheduledTaskDefinition;
@@ -54,22 +50,10 @@ export interface NativeTasksRecord {
   importedAt: string;
 }
 
-/** Hand-off state of the fixture `opt2-survey-*` tasks (key `surveyTasks`). */
-export interface SurveyTasksRecord {
-  state: 'legacy' | 'adopted';
-  /** Definitions captured at pause time, each with its `paused` and `expired` flags as they were before pausing. */
-  definitions: NativeTask[];
-  paused: PauseReason | null;
-  adoptedNames: string[];
-  adoptedAt?: string;
-  updatedAt: string;
-}
-
 /** The record type stored under each key. */
 export interface SchedulerRecordMap {
   sitemonitor: SiteMonitorRecord;
   nativeTasks: NativeTasksRecord;
-  surveyTasks: SurveyTasksRecord;
 }
 
 /** The value `updateSchedulerKey` passes to its callback: the stored record, else its default, which is `null` for `nativeTasks`. */
@@ -79,7 +63,6 @@ export type SchedulerCurrent<K extends SchedulerKey> = SchedulerRecordMap[K] | (
 export interface SchedulerStateSnapshot {
   sitemonitor: SiteMonitorRecord;
   nativeTasks: NativeTasksRecord | null;
-  surveyTasks: SurveyTasksRecord;
 }
 
 /** The database handle the scheduler state needs. */
@@ -127,16 +110,6 @@ export const nativeTasksRecordSchema = z.object({
   importedAt: stampSchema,
 }) satisfies z.ZodType<NativeTasksRecord>;
 
-/** Schema of the `surveyTasks` record. */
-export const surveyTasksRecordSchema = z.object({
-  state: z.enum(['legacy', 'adopted']),
-  definitions: z.array(nativeTaskSchema),
-  paused: pauseReasonSchema.nullable(),
-  adoptedNames: z.array(z.string()),
-  adoptedAt: stampSchema.optional(),
-  updatedAt: stampSchema,
-}) satisfies z.ZodType<SurveyTasksRecord>;
-
 /** The `sitemonitor` record before any capture: no native task, still on legacy. */
 export function defaultSiteMonitorRecord(now: Date): SiteMonitorRecord {
   return {
@@ -148,11 +121,6 @@ export function defaultSiteMonitorRecord(now: Date): SiteMonitorRecord {
     targetTriggerDisabled: false,
     updatedAt: now.toISOString(),
   };
-}
-
-/** The `surveyTasks` record before any pause or adoption. */
-export function defaultSurveyTasksRecord(now: Date): SurveyTasksRecord {
-  return { state: 'legacy', definitions: [], paused: null, adoptedNames: [], updatedAt: now.toISOString() };
 }
 
 /** Raised when a scheduler state value fails its key's schema. */
@@ -194,11 +162,6 @@ export function isSiteMonitorTask(task: Pick<NativeTask, 'task' | 'url'>, name?:
   return task.task.toLowerCase() === 'sitemonitor' || ACF_MONITOR_TASK.test(task.task) || MONITOR_URL.test(task.url);
 }
 
-/** True when `task` is a fixture survey task. */
-export function isSurveyTask(task: Pick<NativeTask, 'task'>): boolean {
-  return task.task.startsWith(SURVEY_TASK_PREFIX);
-}
-
 interface KeySpec<K extends SchedulerKey> {
   schema: z.ZodType<SchedulerRecordMap[K]>;
   /** The record carries `updatedAt`, which `updateSchedulerKey` stamps. */
@@ -209,7 +172,6 @@ interface KeySpec<K extends SchedulerKey> {
 const KEY_SPECS: { readonly [K in SchedulerKey]: KeySpec<K> } = {
   sitemonitor: { schema: siteMonitorRecordSchema, stamped: true, fallback: defaultSiteMonitorRecord },
   nativeTasks: { schema: nativeTasksRecordSchema, stamped: false, fallback: () => null },
-  surveyTasks: { schema: surveyTasksRecordSchema, stamped: true, fallback: defaultSurveyTasksRecord },
 };
 
 const OWNED_KEYS: readonly SchedulerKey[] = Object.values(SCHEDULER_KEYS);
@@ -259,7 +221,6 @@ export async function readSchedulerState(db: SchedulerDb, now: Date): Promise<Sc
   return {
     sitemonitor: read(SCHEDULER_KEYS.siteMonitor) ?? defaultSiteMonitorRecord(now),
     nativeTasks: read(SCHEDULER_KEYS.nativeTasks),
-    surveyTasks: read(SCHEDULER_KEYS.surveyTasks) ?? defaultSurveyTasksRecord(now),
   };
 }
 

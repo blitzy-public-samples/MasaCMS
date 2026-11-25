@@ -1,8 +1,7 @@
 // The native Edit Group, Edit User and Edit Address forms, posted as browsers post them, against their owners' contracts.
-import { readFileSync } from 'node:fs';
 import * as cheerio from 'cheerio';
 import { CSRF_FIELD_EXPIRES, CSRF_FIELD_TOKEN } from '@opt2/platform/legacy-compat';
-import { assertRequestMatchesOpenApi } from '@opt2/platform/testing';
+import { assertRequestMatchesOpenApi, loadOpenApiDocument } from '@opt2/platform/testing';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import type { components } from '@/generated/clients/people';
@@ -39,7 +38,7 @@ type Entry = readonly [name: string, value: FormDataEntryValue];
 /** A producer contract as consumer contract tests load it, by relative path. */
 const contract = (service: 'identity' | 'people'): object => {
   const file = new URL(`../../../services/${service}/contracts/openapi.yaml`, import.meta.url);
-  return parse(readFileSync(file, 'utf8')) as object;
+  return loadOpenApiDocument(file, parse) as object;
 };
 
 const IDENTITY = contract('identity');

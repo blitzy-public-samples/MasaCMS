@@ -74,7 +74,7 @@ let contentRead: Scenario;
 beforeAll(async () => {
   rules = loadRules(undefined, { PORT: '8500' });
   catalogue = await loadCatalogue(fixturePath('golden/catalogue.valid.yaml'));
-  contentRead = scenarioById(catalogue, 'GS-CO-05');
+  contentRead = scenarioById(catalogue, 'GS-CO-75');
 });
 
 interface RecordSpec {
@@ -251,15 +251,6 @@ describe('normaliseStep representations', () => {
     expect(step.body).toBeUndefined();
   });
 
-  it('represents a PDF download by the text of each page when exports are compared, else by its digest', async () => {
-    const bytes = readFileSync(fixturePath('exports/tiny.pdf'));
-    const record = stepRecord({ routeKey: 'admin:carch.downloaddata', contentType: 'application/pdf', bytes });
-    const step = await normaliseOne(record, comparing(['status', 'export']));
-    const digest = await normaliseOne(record, comparing(['status', 'envelope']));
-    expect(step.export).toStrictEqual({ kind: 'pdf', pages: ['Fixture report page 1'] });
-    expect(digest.export).toStrictEqual({ kind: 'file', sha256: record.response.sha256, contentType: 'application/pdf' });
-  });
-
   it('represents a ZIP download by its files when only the DOM is compared, whatever its entry times', async () => {
     const zipType = 'application/zip; charset=UTF-8';
     const download = async (date: Date): Promise<StepRecord> => {
@@ -424,73 +415,6 @@ describe('scenario normalisationOverrides', () => {
   });
 });
 
-describe('Mailpit message ids in the GS-CM-02 envelopes', () => {
-  // Mailpit message IDs: 22-character base57 short UUIDs.
-  const SENT = 'jP4qsXbu9KJuRQ9KBXVkPu';
-  const OTHER = 'Gq3nC7ZJm7dxuRPjZpUFrd';
-  const MESSAGE = '7A8B9C0D-1E2F-4A3B-8C4D5E6F7A8B9C0D';
-  let delivery: Scenario;
-
-  beforeAll(async () => {
-    delivery = scenarioById(await loadCatalogue(), 'GS-CM-02');
-  });
-
-  // The fixture detail() envelope: queued, sent and delivered rows, the delivered one carrying the Mailpit ID.
-  const detail = (method: string, mailpitId: string): string =>
-    JSON.stringify({
-      apiversion: 'v1',
-      method,
-      params: {},
-      data: {
-        message_id: MESSAGE,
-        state: 'delivered',
-        history: ['queued', 'sent', 'delivered'].map((status) => ({
-          status,
-          mailpit_id: status === 'delivered' ? mailpitId : '',
-        })),
-      },
-    });
-
-  const record = (name: string, index: number, mailpitId: string): StepRecord =>
-    stepRecord({ name, index, routeKey: 'fixture:communications/messages', contentType: JSON_TYPE, text: detail(name, mailpitId) });
-
-  const side = async (sent: string, polled: string, scenario: Scenario = delivery): Promise<NormalisedStep[]> =>
-    normalise([record('send', 0, sent), record('history', 1, polled)], scenario);
-
-  const mailpitIds = (steps: readonly NormalisedStep[]): string[][] =>
-    steps.map((step) => (step.envelope as { data: { history: { mailpit_id: string }[] } }).data.history.map((row) => row.mailpit_id));
-
-  it('gives a repeated Mailpit ID one ordinal across the steps and keeps the empty ones', async () => {
-    expect(mailpitIds(await side(SENT, SENT))).toStrictEqual([
-      ['', '', '<mailpit:1>'],
-      ['', '', '<mailpit:1>'],
-    ]);
-  });
-
-  it.each<[string, string, string, string[]]>([
-    ['another Mailpit ID for the same message', OTHER, OTHER, []],
-    ['a second Mailpit ID on the later step', SENT, OTHER, ['history:envelope.data.history[2].mailpit_id']],
-    ['no Mailpit ID', '', '', ['send', 'history'].map((step) => `${step}:envelope.data.history[2].mailpit_id`)],
-  ])('compares a replay carrying %s', async (_label, sent, polled, paths) => {
-    const differences = compareNormalised(run(await side(SENT, SENT)), run(await side(sent, polled)), {
-      rules,
-      scenario: delivery,
-    });
-    expect(differences.map((diff) => `${diff.step}:${diff.path}`)).toStrictEqual(paths);
-  });
-
-  it('keeps Mailpit IDs literal on a literalPaths override', async () => {
-    const literal = scenarioSchema.parse({
-      ...delivery,
-      normalisationOverrides: { literalPaths: ['data.history[*].mailpit_id'] },
-    });
-    expect(mailpitIds(await side(SENT, SENT, literal))).toStrictEqual([
-      ['', '', SENT],
-      ['', '', SENT],
-    ]);
-  });
-});
-
 describe('compareNormalised steps', () => {
   it('normalises a legacy response and its gateway replay to the same step', async () => {
     const served = { ...legacyHeaders(), date: 'Tue, 30 Jun 2026 12:00:00 GMT' };
@@ -514,7 +438,7 @@ describe('compareNormalised steps', () => {
   });
 
   it('finds no difference between the committed golden set and replay output samples', async () => {
-    const golden = goldenRun(await readGoldenSet('GS-CO-05', fixturePath('golden/golden-set.sample.json')));
+    const golden = goldenRun(await readGoldenSet('GS-CO-75', fixturePath('golden/golden-set.sample.json')));
     const output = JSON.parse(readFixture('golden/replay-output.sample.json')) as Pick<GoldenSet, 'steps' | 'sideEffects'>;
     const replay = goldenRun(output);
     expect(replay.steps.map((step) => [step.name, step.routeKey])).toStrictEqual([['findone', CONTENT_ROUTE]]);
@@ -614,7 +538,7 @@ describe('compareNormalised side effects', () => {
         keyless: true,
         rows: rows.map((row) => encodeRow(ROW_COLUMNS, row)),
       };
-      return { mail: [], rows: { [ROWS_UNIT]: snapshot }, tasks: [], files: [] };
+      return { mail: [], rows: { [ROWS_UNIT]: snapshot }, files: [] };
     };
     const side = async (rows: Record<string, string>[]): Promise<NormalisedRun> => {
       const ctx = { state: createNormaliseState(), rules, scenario };
@@ -640,9 +564,7 @@ describe('compareNormalised side effects', () => {
   });
 
   it('normalises and compares only the side-effect kinds the scenario compares', async () => {
-    const scenario = comparing(['status', 'mail', 'tasks', 'files'], {
-      tasks: { source: 'scheduled-tasks', prefix: 'opt2-survey-' },
-    });
+    const scenario = comparing(['status', 'mail', 'files']);
     const effects = (fileId: string, smallSha: string): SideEffects => ({
       mail: [
         {
@@ -655,15 +577,6 @@ describe('compareNormalised side effects', () => {
         },
       ],
       rows: {},
-      tasks: [
-        {
-          name: 'opt2-survey-1-launch',
-          kind: 'launch',
-          target: '/internal/v1/surveys/1/launch',
-          scheduledAt: '2026-06-30T09:00:00',
-          base: '2026-06-30T09:00:00',
-        },
-      ],
       files: [
         { fileId, name: '_small', contentType: 'image/png', sha256: smallSha, size: 10 },
         { fileId, name: 'original', contentType: 'image/png', sha256: 'a'.repeat(64), size: 40 },
@@ -672,7 +585,7 @@ describe('compareNormalised side effects', () => {
     const side = async (fileId: string, smallSha: string): Promise<NormalisedRun> =>
       run([], await normaliseSideEffects(effects(fileId, smallSha), { state: createNormaliseState(), rules, scenario }));
     const golden = await side(cfUuid(), 'b'.repeat(64));
-    expect(Object.keys(golden.sideEffects).sort()).toStrictEqual(['files', 'mail', 'tasks']);
+    expect(Object.keys(golden.sideEffects).sort()).toStrictEqual(['files', 'mail']);
     expect(golden.sideEffects.files?.map((file) => [file.variant, file.name])).toStrictEqual([
       ['original', ordinal(1)],
       ['_small', ordinal(1)],
@@ -689,7 +602,6 @@ describe('compareNormalised side effects', () => {
     const effects: SideEffects = {
       mail: [],
       rows: {},
-      tasks: [],
       files: [{ fileId: cfUuid(), name: 'original', contentType: 'image/png', sha256: 'a'.repeat(64), size: 1 }],
     };
     await expect(
@@ -728,7 +640,7 @@ describe('compareNormalised known-issue masks', () => {
   // edit-user page mask declared for listed scenarios only.
   it.each<[string, string, () => Scenario]>([
     ['GS-PE-01', 'known-issue:default-member', () => scenarioById(catalogue, 'GS-PE-01')],
-    ['GS-CO-05', 'difference', () => comparing(['status', 'dom'])],
+    ['GS-CO-75', 'difference', () => comparing(['status', 'dom'])],
   ])('classifies a User Type change under %s as %s', async (_id, verdict, scenarioOf) => {
     const scenario = scenarioOf();
     const replayHtml = replaced(
@@ -753,7 +665,7 @@ describe('compareNormalised known-issue masks', () => {
       'links[0].text',
     ],
   ];
-  // date-mask is narrowed to MASKED_IN, so GS-CO-05 shows the same pages unmasked.
+  // date-mask is narrowed to MASKED_IN, so GS-CO-75 shows the same pages unmasked.
   const MASKED_IN = 'GS-PE-01';
   const DATE_MASK = 'known-issue:date-mask';
   // Golden and replay text, the scenario, and the verdicts of the lifted date and of its carrier.
@@ -761,7 +673,7 @@ describe('compareNormalised known-issue masks', () => {
     ['a day-of-year date against an ISO date', '11/317/2026', '2026-11-13', MASKED_IN, DATE_MASK, DATE_MASK],
     ['a date with a time', '11/317/2026 10:30 AM', '2026-11-13 10:30 AM', MASKED_IN, DATE_MASK, DATE_MASK],
     ['other words changed', 'Updated 11/317/2026 by admin', 'Updated 2026-11-13 by root', MASKED_IN, DATE_MASK, 'difference'],
-    ['a date outside the mask scenarios', '11/317/2026', '2026-11-13', 'GS-CO-05', undefined, 'difference'],
+    ['a date outside the mask scenarios', '11/317/2026', '2026-11-13', 'GS-CO-75', undefined, 'difference'],
   ];
   const CARRIED = CARRIERS.flatMap(([carrier, page, path]) =>
     DATE_TEXTS.map((text) => [carrier, ...text, page, path] as const),

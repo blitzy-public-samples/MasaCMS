@@ -1,5 +1,4 @@
 /** Consumer contract of people's identity client: every request it sends and every answer it reads, against identity's OpenAPI contract. */
-import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import { LegacyServiceUnavailableError, cfUuid } from '@opt2/platform/legacy-compat';
@@ -21,6 +20,7 @@ import {
   assertRequestMatchesOpenApi,
   assertResponseMatchesOpenApi,
   findOperation,
+  loadOpenApiDocument,
 } from '@opt2/platform/testing';
 import {
   createIdentityClient,
@@ -55,8 +55,8 @@ interface IdentityDoc {
   };
 }
 
-const IDENTITY_DOC = parse(readFileSync(new URL('../../../identity/contracts/openapi.yaml', import.meta.url), 'utf8')) as IdentityDoc;
-const PEOPLE_DOC = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as { 'x-opt2-calls': string[] };
+const IDENTITY_DOC = loadOpenApiDocument(new URL('../../../identity/contracts/openapi.yaml', import.meta.url), parse) as unknown as IdentityDoc;
+const PEOPLE_DOC = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as { 'x-opt2-calls': string[] };
 
 // A contract without the header schema yields a pattern that matches no value.
 const WRITE_POSITION_PATTERN = new RegExp(IDENTITY_DOC.components.headers.XOpt2WritePosition?.schema.pattern ?? '(?!)');

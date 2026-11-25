@@ -1,4 +1,4 @@
-// cperm.module over the identity fixtures, as the GS-ID-07 DOM model reads it.
+// cperm.module over the identity fixtures, as its DOM model reads it.
 import * as cheerio from 'cheerio';
 import type { CheerioAPI } from 'cheerio';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -44,10 +44,10 @@ const MEMBER_NODE_SCRIPT = 'These settings override any basic permissions';
 const NO_GROUPS = '<div class="help-block-empty">There are currently no groups available.</div>';
 const GRID_HEADERS = ['Allow', 'Group'];
 const PRIVATE_ROWS = [
-  ['', 'communications.sender'],
+  ['', 'archive.viewer'],
   ['', 'Editor'],
-  ['', 'finance.approver'],
-  ['', 'reporting.exporter'],
+  ['', 'library.approver'],
+  ['', 'records.clerk'],
 ];
 const PUBLIC_ROWS = [['', 'Umbrella Members']];
 
@@ -93,10 +93,10 @@ const USERS: ModuleCase = {
   answer: cpermModuleUsersAnswer,
   csrf: CSRF_CPERM_MODULE,
   grants: [
-    [GROUP_IDS.communicationsSender, false],
+    [GROUP_IDS.archiveViewer, false],
     [GROUP_IDS.defaultEditor, true],
-    [GROUP_IDS.financeApprover, false],
-    [GROUP_IDS.reportingExporter, true],
+    [GROUP_IDS.libraryApprover, false],
+    [GROUP_IDS.recordsClerk, true],
     [GROUP_IDS.umbrellaMembers, false],
   ],
 };
@@ -108,10 +108,10 @@ const CATEGORIES: ModuleCase = {
   answer: cpermModuleCategoriesAnswer,
   csrf: CATEGORIES_CSRF,
   grants: [
-    [GROUP_IDS.communicationsSender, false],
+    [GROUP_IDS.archiveViewer, false],
     [GROUP_IDS.defaultEditor, false],
-    [GROUP_IDS.financeApprover, true],
-    [GROUP_IDS.reportingExporter, false],
+    [GROUP_IDS.libraryApprover, true],
+    [GROUP_IDS.recordsClerk, false],
     [GROUP_IDS.umbrellaMembers, true],
   ],
 };
@@ -244,8 +244,8 @@ describe('cperm.module for the tenant-a site admin', () => {
       .map(({ value }) => value);
     expect(changed).toEqual([
       GROUP_IDS.defaultEditor,
-      GROUP_IDS.financeApprover,
-      GROUP_IDS.reportingExporter,
+      GROUP_IDS.libraryApprover,
+      GROUP_IDS.recordsClerk,
       GROUP_IDS.umbrellaMembers,
     ]);
     expect([users.model.headings[0], categories.model.headings[0]]).toEqual([
@@ -277,7 +277,7 @@ describe('cperm.module for the tenant-a site admin', () => {
     expect(markup).toContain('<td class="var-width" nowrap>R&D Editors</td>');
     expect(markup).toContain('<td class="var-width" nowrap>Members &amp; Friends</td>');
     expect(fragmentModel(markup).tables.map((grid) => grid.rows)).toEqual([
-      [['', 'communications.sender'], ['', 'R&D Editors'], ['', 'finance.approver'], ['', 'reporting.exporter']],
+      [['', 'archive.viewer'], ['', 'R&D Editors'], ['', 'library.approver'], ['', 'records.clerk']],
       [['', 'Members & Friends']],
     ]);
   });

@@ -1,6 +1,5 @@
 /** `/internal/v1/migration/objects` over a throwaway `content` schema and local storage: wire mapping, contract shapes, the read back, deletion, 400s and authorisation. */
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -18,6 +17,7 @@ import {
   TENANT_B,
   assertResponseMatchesOpenApi,
   createThrowawaySchema,
+  loadOpenApiDocument,
   mintServiceToken,
   mintUserToken,
   pgAvailable,
@@ -32,7 +32,7 @@ import { registerMigrationObjectRoutes } from '../../src/routes/migration-object
 
 type ContractOperation = Record<string, unknown>;
 
-const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as {
+const OPENAPI = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as {
   paths: Record<string, Record<string, ContractOperation>>;
 };
 const SERVICE = 'strategies-content';

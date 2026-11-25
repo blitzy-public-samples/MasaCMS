@@ -35,7 +35,7 @@ Extracted from: git archive 696383140578f8dea3ece26f80cd7bfb370ddf0f · generato
 | routes | apiMethods | 36 |
 | routes | oauth | 9 |
 | routes | soap | 7 |
-| routes | fixture | 50 |
+| routes | fixture | 2 |
 | tables | bootstrap | 41 |
 | tables | bootstrapAfterDrops | 40 |
 | tables | migrationCreated | 12 |
@@ -44,24 +44,24 @@ Extracted from: git archive 696383140578f8dea3ece26f80cd7bfb370ddf0f · generato
 | tables | retired | 1 |
 | tables | withSiteIdStatic | 55 |
 | tables | withoutPrimaryKeyBootstrap | 10 |
-| tables | fixture | 26 |
+| tables | fixture | 1 |
 | tables | live | 72 |
 | tables | withSiteIdLive | 54 |
 | tables | dynamic | 0 |
 | tables | liveOnly | 0 |
 | tables | withoutPrimaryKey | 7 |
 | relations | daoJoin | 49 |
-| relations | fixtureFk | 15 |
+| relations | fixtureFk | 0 |
 | relations | ormFk | 72 |
-| relations | programFold | 8 |
-| relations | relations | 147 |
+| relations | programFold | 0 |
+| relations | relations | 124 |
 | relations | relationsDropped | 0 |
 | relations | tenantParent | 3 |
 | relations | unknownOrientation | 21 |
 | storedProcedures | static | 0 |
 | storedProcedures | live | 0 |
 | storedProcedures | foreignKeys | 0 |
-| dispositions | carry | 808 |
+| dispositions | carry | 735 |
 | dispositions | legacy-served | 150 |
 | dispositions | decision | 171 |
 | dispositions | retired | 56 |
@@ -85,7 +85,7 @@ Extracted from: git archive 696383140578f8dea3ece26f80cd7bfb370ddf0f · generato
 | `ctl:carch.edit` | `admin:carch.edit` | strategies-content | carry (5, legacy-write) `EX-CARCH-EDIT-FORM` | none | page (text/html) |
 | `ctl:carch.editlive` | `admin:carch.editlive` | strategies-content | carry (5) | none | redirect |
 | `ctl:carch.edittext` | `admin:carch.edittext` | strategies-content | carry (5) | none | page (text/html) |
-| `ctl:carch.emailtest` | `admin:carch.emailtest` | communications | legacy-served (4) | validates `testEmail` | fragment (text/html) |
+| `ctl:carch.emailtest` | `admin:carch.emailtest` | — | legacy-served (4) | validates `testEmail` | fragment (text/html) |
 | `ctl:carch.export` | `admin:carch.export` | strategies-content | legacy-served (4) | none | page (text/html) |
 | `ctl:carch.exportcomponent` | `admin:carch.exportcomponent` | strategies-content | legacy-served (4) | none | download (application/zip) |
 | `ctl:carch.exportcontent` | `admin:carch.exportcontent` | strategies-content | legacy-served (4) | none | redirect |
@@ -120,7 +120,7 @@ Extracted from: git archive 696383140578f8dea3ece26f80cd7bfb370ddf0f · generato
 | `ctl:carch.loadtagarray` | `admin:carch.loadtagarray` | strategies-content | carry (5) | none | json (application/json) |
 | `ctl:carch.lockcheck` | `admin:carch.lockcheck` | strategies-content | carry (5) | none | page (text/html) |
 | `ctl:carch.lockfile` | `admin:carch.lockfile` | strategies-content | carry (5) | validates `rc.contentid & "lockfile"` | json (text/html) |
-| `ctl:carch.multifileupload{upload=image}` | `admin:carch.multifileupload{upload=image}` | strategies-content | carry (5) `EX-FILE-RENDITION` | none | page (text/html) |
+| `ctl:carch.multifileupload{upload=image}` | `admin:carch.multifileupload{upload=image}` | strategies-content | carry (5) `EX-CARCH-UPLOAD-PAGELIMIT` | none | page (text/html) |
 | `ctl:carch.multifileupload` | `admin:carch.multifileupload` | strategies-content | carry (5) `EX-CARCH-UPLOAD-PAGELIMIT` | none | page (text/html) |
 | `ctl:carch.refreshsitesection` | `admin:carch.refreshsitesection` | strategies-content | carry (5) | none | fragment (text/html) |
 | `ctl:carch.relatedcontent` | `admin:carch.relatedcontent` | strategies-content | carry (5) | none | page (text/html) |
@@ -173,34 +173,34 @@ Extracted from: git archive 696383140578f8dea3ece26f80cd7bfb370ddf0f · generato
 | `ctl:ccomments.purgedeletedcomments` | `admin:ccomments.purgedeletedcomments` | strategies-content | carry (5) | none | redirect |
 | `ctl:ccomments.singleedit` | `admin:ccomments.singleedit` | strategies-content | carry (5) | none | redirect |
 | `ctl:ccomments.unapprove` | `admin:ccomments.unapprove` | strategies-content | carry (5) | none | redirect |
-| `ctl:cdashboard.dismissalert` | `admin:cdashboard.dismissalert` | reporting | legacy-served (4) | none | json (text/html) |
-| `ctl:cdashboard.listsessions` | `admin:cdashboard.listsessions` | reporting | legacy-served (4) | none | page (text/html) |
-| `ctl:cdashboard.loademailactivity` | `admin:cdashboard.loademailactivity` | reporting | legacy-served (4) | none | page (text/html) |
-| `ctl:cdashboard.loadformactivity` | `admin:cdashboard.loadformactivity` | reporting | legacy-served (4) | none | page (text/html) |
-| `ctl:cdashboard.loadpopularcontent` | `admin:cdashboard.loadpopularcontent` | reporting | legacy-served (4) | none | page (text/html) |
-| `ctl:cdashboard.loadrecentcomments` | `admin:cdashboard.loadrecentcomments` | reporting | legacy-served (4) | none | page (text/html) |
-| `ctl:cdashboard.loaduseractivity` | `admin:cdashboard.loaduseractivity` | reporting | legacy-served (4) | none | page (text/html) |
-| `ctl:cdashboard.main` | `admin:cdashboard.main` | reporting | legacy-served (4) | none | page (text/html) |
-| `ctl:cdashboard.recentcomments` | `admin:cdashboard.recentcomments` | reporting | legacy-served (4) | none | page (text/html) |
-| `ctl:cdashboard.sessionsearch` | `admin:cdashboard.sessionsearch` | reporting | legacy-served (4) | none | page (text/html) |
-| `ctl:cdashboard.topcontent` | `admin:cdashboard.topcontent` | reporting | legacy-served (4) | none | page (text/html) |
-| `ctl:cdashboard.toprated` | `admin:cdashboard.toprated` | reporting | legacy-served (4) | none | page (text/html) |
-| `ctl:cdashboard.topreferers` | `admin:cdashboard.topreferers` | reporting | legacy-served (4) | none | page (text/html) |
-| `ctl:cdashboard.topsearches` | `admin:cdashboard.topsearches` | reporting | legacy-served (4) | none | page (text/html) |
-| `ctl:cdashboard.viewsession` | `admin:cdashboard.viewsession` | reporting | legacy-served (4) | none | page (text/html) |
+| `ctl:cdashboard.dismissalert` | `admin:cdashboard.dismissalert` | — | legacy-served (4) | none | json (text/html) |
+| `ctl:cdashboard.listsessions` | `admin:cdashboard.listsessions` | — | legacy-served (4) | none | page (text/html) |
+| `ctl:cdashboard.loademailactivity` | `admin:cdashboard.loademailactivity` | — | legacy-served (4) | none | page (text/html) |
+| `ctl:cdashboard.loadformactivity` | `admin:cdashboard.loadformactivity` | — | legacy-served (4) | none | page (text/html) |
+| `ctl:cdashboard.loadpopularcontent` | `admin:cdashboard.loadpopularcontent` | — | legacy-served (4) | none | page (text/html) |
+| `ctl:cdashboard.loadrecentcomments` | `admin:cdashboard.loadrecentcomments` | — | legacy-served (4) | none | page (text/html) |
+| `ctl:cdashboard.loaduseractivity` | `admin:cdashboard.loaduseractivity` | — | legacy-served (4) | none | page (text/html) |
+| `ctl:cdashboard.main` | `admin:cdashboard.main` | — | legacy-served (4) | none | page (text/html) |
+| `ctl:cdashboard.recentcomments` | `admin:cdashboard.recentcomments` | — | legacy-served (4) | none | page (text/html) |
+| `ctl:cdashboard.sessionsearch` | `admin:cdashboard.sessionsearch` | — | legacy-served (4) | none | page (text/html) |
+| `ctl:cdashboard.topcontent` | `admin:cdashboard.topcontent` | — | legacy-served (4) | none | page (text/html) |
+| `ctl:cdashboard.toprated` | `admin:cdashboard.toprated` | — | legacy-served (4) | none | page (text/html) |
+| `ctl:cdashboard.topreferers` | `admin:cdashboard.topreferers` | — | legacy-served (4) | none | page (text/html) |
+| `ctl:cdashboard.topsearches` | `admin:cdashboard.topsearches` | — | legacy-served (4) | none | page (text/html) |
+| `ctl:cdashboard.viewsession` | `admin:cdashboard.viewsession` | — | legacy-served (4) | none | page (text/html) |
 | `ctl:ceditprofile.edit` | `admin:ceditprofile.edit` | people | carry (5) | none | page (text/html) |
 | `ctl:ceditprofile.update{photo}` | `admin:ceditprofile.update{photo}` | spans identity, people, strategies-content | decision (3, withheld) | validates | page (text/html) |
 | `ctl:ceditprofile.update{extdata}` | `admin:ceditprofile.update{extdata}` | spans identity, people, strategies-content | decision (3, withheld) (corrected; expected carry) | validates | page (text/html) |
 | `ctl:ceditprofile.update` | `admin:ceditprofile.update` | people | carry (5, legacy-write) `EX-ROSTER-POOLMOVE` | validates | page (text/html) |
-| `ctl:cemail.deletebounces` | `admin:cemail.deletebounces` | communications | legacy-served (4) | none | redirect |
-| `ctl:cemail.download` | `admin:cemail.download` | communications | legacy-served (4) | none | download (application/msexcel) |
-| `ctl:cemail.edit` | `admin:cemail.edit` | communications | legacy-served (4) | none | page (text/html) |
-| `ctl:cemail.list` | `admin:cemail.list` | communications | legacy-served (4) | none | page (text/html) |
-| `ctl:cemail.showallbounces` | `admin:cemail.showallbounces` | communications | legacy-served (4) | none | page (text/html) |
-| `ctl:cemail.showbounces` | `admin:cemail.showbounces` | communications | legacy-served (4) | none | page (text/html) |
-| `ctl:cemail.showreturns` | `admin:cemail.showreturns` | communications | legacy-served (4) | none | page (text/html) |
-| `ctl:cemail.sitelist` | `admin:cemail.sitelist` | communications | legacy-served (4) | none | page (text/html) |
-| `ctl:cemail.update` | `admin:cemail.update` | communications | legacy-served (4) | none | redirect |
+| `ctl:cemail.deletebounces` | `admin:cemail.deletebounces` | spans legacy | legacy-served (4) | none | redirect |
+| `ctl:cemail.download` | `admin:cemail.download` | — | legacy-served (4) | none | download (application/msexcel) |
+| `ctl:cemail.edit` | `admin:cemail.edit` | — | legacy-served (4) | none | page (text/html) |
+| `ctl:cemail.list` | `admin:cemail.list` | — | legacy-served (4) | none | page (text/html) |
+| `ctl:cemail.showallbounces` | `admin:cemail.showallbounces` | — | legacy-served (4) | none | page (text/html) |
+| `ctl:cemail.showbounces` | `admin:cemail.showbounces` | — | legacy-served (4) | none | page (text/html) |
+| `ctl:cemail.showreturns` | `admin:cemail.showreturns` | — | legacy-served (4) | none | page (text/html) |
+| `ctl:cemail.sitelist` | `admin:cemail.sitelist` | — | legacy-served (4) | none | page (text/html) |
+| `ctl:cemail.update` | `admin:cemail.update` | spans legacy | legacy-served (4) | none | redirect |
 | `ctl:cextend.download` | `admin:cextend.download` | — | decision (3, withheld) | none | download (application/xml) |
 | `ctl:cextend.editattributes` | `admin:cextend.editattributes` | — | decision (3, withheld) | none | page (text/html) |
 | `ctl:cextend.editrelatedcontentset` | `admin:cextend.editrelatedcontentset` | — | decision (3, withheld) | none | page (text/html) |
@@ -208,16 +208,16 @@ Extracted from: git archive 696383140578f8dea3ece26f80cd7bfb370ddf0f · generato
 | `ctl:cextend.editsubtype` | `admin:cextend.editsubtype` | — | decision (3, withheld) | none | page (text/html) |
 | `ctl:cextend.export` | `admin:cextend.export` | — | decision (3, withheld) | none | page (text/html) |
 | `ctl:cextend.exportsubtype` | `admin:cextend.exportsubtype` | — | decision (3, withheld) | none | page (text/html) |
-| `ctl:cextend.importsubtypes` | `admin:cextend.importsubtypes` | spans communications, e-signature, finance, identity, people, programs-sites, reporting, strategies-content, surveys, timesheets | decision (2, withheld) | validates `import` | redirect |
+| `ctl:cextend.importsubtypes` | `admin:cextend.importsubtypes` | spans identity, people, programs-sites, strategies-content | decision (2, withheld) | validates `import` | redirect |
 | `ctl:cextend.listsets` | `admin:cextend.listsets` | — | decision (3, withheld) | none | page (text/html) |
 | `ctl:cextend.listsubtypes` | `admin:cextend.listsubtypes` | — | decision (3, withheld) | none | page (text/html) |
-| `ctl:cextend.saveattributesort` | `admin:cextend.saveattributesort` | spans communications, e-signature, finance, identity, people, programs-sites, reporting, strategies-content, surveys, timesheets | decision (3, withheld) | none | json (text/html) |
-| `ctl:cextend.saveextendsetsort` | `admin:cextend.saveextendsetsort` | spans communications, e-signature, finance, identity, people, programs-sites, reporting, strategies-content, surveys, timesheets | decision (3, withheld) | none | json (text/html) |
-| `ctl:cextend.saverelatedsetsort` | `admin:cextend.saverelatedsetsort` | spans communications, e-signature, finance, identity, people, programs-sites, reporting, strategies-content, surveys, timesheets | decision (3, withheld) | none | json (text/html) |
-| `ctl:cextend.updateattribute` | `admin:cextend.updateattribute` | spans communications, e-signature, finance, identity, people, programs-sites, reporting, strategies-content, surveys, timesheets | decision (3, withheld) | validates `rc.attributeid` | redirect |
-| `ctl:cextend.updaterelatedcontentset` | `admin:cextend.updaterelatedcontentset` | spans communications, e-signature, finance, identity, people, programs-sites, reporting, strategies-content, surveys, timesheets | decision (3, withheld) | validates `rc.relatedContentSetID` | redirect |
-| `ctl:cextend.updateset` | `admin:cextend.updateset` | spans communications, e-signature, finance, identity, people, programs-sites, reporting, strategies-content, surveys, timesheets | decision (3, withheld) | validates `rc.extendsetid` | redirect |
-| `ctl:cextend.updatesubtype` | `admin:cextend.updatesubtype` | spans communications, e-signature, finance, identity, people, programs-sites, reporting, strategies-content, surveys, timesheets | decision (3, withheld) | validates `rc.subtypeid` | redirect |
+| `ctl:cextend.saveattributesort` | `admin:cextend.saveattributesort` | spans identity, people, programs-sites, strategies-content | decision (3, withheld) | none | json (text/html) |
+| `ctl:cextend.saveextendsetsort` | `admin:cextend.saveextendsetsort` | spans identity, people, programs-sites, strategies-content | decision (3, withheld) | none | json (text/html) |
+| `ctl:cextend.saverelatedsetsort` | `admin:cextend.saverelatedsetsort` | spans identity, people, programs-sites, strategies-content | decision (3, withheld) | none | json (text/html) |
+| `ctl:cextend.updateattribute` | `admin:cextend.updateattribute` | spans identity, people, programs-sites, strategies-content | decision (3, withheld) | validates `rc.attributeid` | redirect |
+| `ctl:cextend.updaterelatedcontentset` | `admin:cextend.updaterelatedcontentset` | spans identity, people, programs-sites, strategies-content | decision (3, withheld) | validates `rc.relatedContentSetID` | redirect |
+| `ctl:cextend.updateset` | `admin:cextend.updateset` | spans identity, people, programs-sites, strategies-content | decision (3, withheld) | validates `rc.extendsetid` | redirect |
+| `ctl:cextend.updatesubtype` | `admin:cextend.updatesubtype` | spans identity, people, programs-sites, strategies-content | decision (3, withheld) | validates `rc.subtypeid` | redirect |
 | `ctl:cfeed.edit` | `admin:cfeed.edit` | strategies-content | carry (5) | none | page (text/html) |
 | `ctl:cfeed.import1` | `admin:cfeed.import1` | strategies-content | carry (5) `EX-FEED-REMOTE-OVERSIZE` | none | page (text/html) |
 | `ctl:cfeed.import2` | `admin:cfeed.import2` | strategies-content | decision (2, withheld) (corrected; expected carry) | none | page (text/html) |
@@ -241,12 +241,12 @@ Extracted from: git archive 696383140578f8dea3ece26f80cd7bfb370ddf0f · generato
 | `ctl:clogin.logout` | `admin:clogin.logout` | identity | carry (5) | none | redirect |
 | `ctl:clogin.main{status=sendlogin}` | `admin:clogin.main{status=sendlogin}` | spans identity, people, strategies-content | decision (3, withheld) (corrected; expected carry) | none | page (text/html) |
 | `ctl:clogin.main` | `admin:clogin.main` | identity | carry (5) | none | page (text/html) |
-| `ctl:cmailinglist.download` | `admin:cmailinglist.download` | communications | legacy-served (4) | none | download (text/plain) |
-| `ctl:cmailinglist.edit` | `admin:cmailinglist.edit` | communications | legacy-served (4) | none | page (text/html) |
-| `ctl:cmailinglist.list` | `admin:cmailinglist.list` | communications | legacy-served (4) | none | page (text/html) |
-| `ctl:cmailinglist.listmembers` | `admin:cmailinglist.listmembers` | communications | legacy-served (4) | none | page (text/html) |
-| `ctl:cmailinglist.update` | `admin:cmailinglist.update` | communications | legacy-served (4) | none | redirect |
-| `ctl:cmailinglist.updatemember` | `admin:cmailinglist.updatemember` | communications | legacy-served (4) | none | redirect |
+| `ctl:cmailinglist.download` | `admin:cmailinglist.download` | — | legacy-served (4) | none | download (text/plain) |
+| `ctl:cmailinglist.edit` | `admin:cmailinglist.edit` | — | legacy-served (4) | none | page (text/html) |
+| `ctl:cmailinglist.list` | `admin:cmailinglist.list` | — | legacy-served (4) | none | page (text/html) |
+| `ctl:cmailinglist.listmembers` | `admin:cmailinglist.listmembers` | — | legacy-served (4) | none | page (text/html) |
+| `ctl:cmailinglist.update` | `admin:cmailinglist.update` | spans legacy | legacy-served (4) | none | redirect |
+| `ctl:cmailinglist.updatemember` | `admin:cmailinglist.updatemember` | spans legacy | legacy-served (4) | none | redirect |
 | `ctl:cmessage.noaccess` | `admin:cmessage.noaccess` | identity | carry (5) | none | page (text/html) |
 | `ctl:cnav.searchsitedata` | `admin:cnav.searchsitedata` | strategies-content | carry (5) | none | json (application/json) |
 | `ctl:controller` | — | — | — | — | — |
@@ -258,7 +258,7 @@ Extracted from: git archive 696383140578f8dea3ece26f80cd7bfb370ddf0f · generato
 | `ctl:csettings.createbundle` | `admin:csettings.createbundle` | strategies-content | legacy-served (4) | validates `csrfContext` | page (text/html) |
 | `ctl:csettings.deleteplugin` | `admin:csettings.deleteplugin` | spans strategies-content | decision (2, withheld) (corrected; expected legacy-served) | validates `rc.moduleid` | redirect |
 | `ctl:csettings.deploybundle` | `admin:csettings.deploybundle` | programs-sites | legacy-served (4) | none | page (text/html) |
-| `ctl:csettings.deployplugin` | `admin:csettings.deployplugin` | spans communications, e-signature, finance, identity, people, programs-sites, reporting, strategies-content, surveys, timesheets | decision (2, withheld) (corrected; expected legacy-served) | validates `rc.moduleid \| newplugin` | redirect |
+| `ctl:csettings.deployplugin` | `admin:csettings.deployplugin` | spans identity, legacy, people, programs-sites, strategies-content | decision (2, withheld) (corrected; expected legacy-served) | validates `rc.moduleid \| newplugin` | redirect |
 | `ctl:csettings.editplugin` | `admin:csettings.editplugin` | programs-sites | legacy-served (4) | none | page (text/html) |
 | `ctl:csettings.editsite` | `admin:csettings.editsite` | programs-sites | carry (5) | none | page (text/html) |
 | `ctl:csettings.exporthtml` | `admin:csettings.exporthtml` | programs-sites | legacy-served (4) | none | page (text/html) |
@@ -277,9 +277,9 @@ Extracted from: git archive 696383140578f8dea3ece26f80cd7bfb370ddf0f · generato
 | `ctl:csettings.updatesite{action=update}` | `admin:csettings.updatesite{action=update}` | programs-sites | decision (2, withheld) (corrected; expected carry) | validates `"" \| rc.siteID` | redirect |
 | `ctl:csettings.updatesite` | `admin:csettings.updatesite` | programs-sites | carry (5) | validates `"" \| rc.siteID` | redirect |
 | `ctl:ctrash.detail` | `admin:ctrash.detail` | — | decision (3, withheld) | none | page (text/html) |
-| `ctl:ctrash.empty` | `admin:ctrash.empty` | spans communications, e-signature, finance, identity, people, programs-sites, reporting, strategies-content, surveys, timesheets | decision (2, withheld) | validates `'emptytrash' & rc.siteID` | redirect |
+| `ctl:ctrash.empty` | `admin:ctrash.empty` | spans identity, legacy, people, programs-sites, strategies-content | decision (2, withheld) | validates `'emptytrash' & rc.siteID` | redirect |
 | `ctl:ctrash.list` | `admin:ctrash.list` | — | decision (3, withheld) | none | page (text/html) |
-| `ctl:ctrash.restore` | `admin:ctrash.restore` | spans communications, e-signature, finance, identity, people, programs-sites, reporting, strategies-content, surveys, timesheets | decision (2, withheld) | validates `'restore' & rc.objectID` | redirect |
+| `ctl:ctrash.restore` | `admin:ctrash.restore` | spans identity, legacy, people, programs-sites, strategies-content | decision (2, withheld) | validates `'restore' & rc.objectID` | redirect |
 | `ctl:cusers.addtogroup` | `admin:cusers.addtogroup` | identity | carry (5, legacy-write) `EX-SEC-GROUP-SITE` | validates `rc.userid & rc.groupid & 'addtogroup'` | redirect |
 | `ctl:cusers.advancedsearch` | `admin:cusers.advancedsearch` | people | carry (5) | none | page (text/html) |
 | `ctl:cusers.advancedsearchtocsv` | `admin:cusers.advancedsearchtocsv` | people | carry (5) | none | redirect |
@@ -332,7 +332,7 @@ Search for `muraAction` in `core/** excluding core/vendor`: 0 handlers; 21 files
 | `rte:/_api/ajax/v1` | — | — | carry (5) | — | — |
 | `rte:/_api/asset/render` | `asset:render` | strategies-content | legacy-served (4) | none | — |
 | `rte:/_api/asset/upload` | `asset:upload` | strategies-content | legacy-served (4) | none | — |
-| `rte:/_api/email/trackopen` | `trackopen:open` | communications | legacy-served (4) | none | — |
+| `rte:/_api/email/trackopen` | `trackopen:open` | spans legacy | legacy-served (4) | none | — |
 | `rte:/_api/feed/v1` | `feed:v1` | strategies-content | carry (5) | none | `EX-CONTENT-FEED-UNORDERED-SORT` |
 | `rte:/_api/json/v1` | — | — | carry (5) | — | — |
 | `rte:/_api/render/file` | `render:file` | strategies-content | carry (5, legacy-write) | none | `EX-FILE-RENDITION` |
@@ -844,56 +844,8 @@ Search for `muraAction` in `core/** excluding core/vendor`: 0 handlers; 21 files
 
 | Id | Route key | Owner | Disposition (step) | CSRF | Notes |
 | --- | --- | --- | --- | --- | --- |
-| `fix:communications/messages/{id}@get` | `fixture:communications/messages/{id}@get` | communications | carry (fixture-definition) | none | — |
-| `fix:communications/messages@get` | `fixture:communications/messages@get` | communications | carry (fixture-definition) | none | — |
-| `fix:communications/messages@post` | `fixture:communications/messages@post` | communications | carry (fixture-definition) | validates | — |
-| `fix:communications/templates@get` | `fixture:communications/templates@get` | communications | carry (fixture-definition) | none | — |
-| `fix:communications/templates@post` | `fixture:communications/templates@post` | communications | carry (fixture-definition) | validates | — |
-| `fix:esignature/requests/{id}/audit@get` | `fixture:esignature/requests/{id}/audit@get` | e-signature | carry (fixture-definition) | none | — |
-| `fix:esignature/requests/{id}/sign@post` | `fixture:esignature/requests/{id}/sign@post` | e-signature | carry (fixture-definition) | validates `route.id` | — |
-| `fix:esignature/requests/{id}/verify@get` | `fixture:esignature/requests/{id}/verify@get` | e-signature | carry (fixture-definition) | none | — |
-| `fix:esignature/requests/{id}/verify@post` | `fixture:esignature/requests/{id}/verify@post` | e-signature | carry (fixture-definition) | validates `route.id` | — |
-| `fix:esignature/requests@get` | `fixture:esignature/requests@get` | e-signature | carry (fixture-definition) | none | — |
-| `fix:esignature/requests@post` | `fixture:esignature/requests@post` | e-signature | carry (fixture-definition) | validates | — |
-| `fix:finance/records/{id}/approve@post` | `fixture:finance/records/{id}/approve@post` | finance | carry (fixture-definition) | validates `route.id` | — |
-| `fix:finance/records/{id}/attachments/{id}@get` | `fixture:finance/records/{id}/attachments/{id}@get` | finance | carry (fixture-definition) | none | — |
-| `fix:finance/records/{id}/attachments@get` | `fixture:finance/records/{id}/attachments@get` | finance | carry (fixture-definition) | none | — |
-| `fix:finance/records/{id}/attachments@post` | `fixture:finance/records/{id}/attachments@post` | finance | carry (fixture-definition) | validates `route.id` | — |
-| `fix:finance/records/{id}/edit@post` | `fixture:finance/records/{id}/edit@post` | finance | carry (fixture-definition) | validates `route.id` | — |
-| `fix:finance/records/{id}/reject@post` | `fixture:finance/records/{id}/reject@post` | finance | carry (fixture-definition) | validates `route.id` | — |
-| `fix:finance/records/{id}/resubmit@post` | `fixture:finance/records/{id}/resubmit@post` | finance | carry (fixture-definition) | validates `route.id` | — |
-| `fix:finance/records/{id}/submit@post` | `fixture:finance/records/{id}/submit@post` | finance | carry (fixture-definition) | validates `route.id` | — |
-| `fix:finance/records/{id}/versions@get` | `fixture:finance/records/{id}/versions@get` | finance | carry (fixture-definition) | none | — |
-| `fix:finance/records/{id}@get` | `fixture:finance/records/{id}@get` | finance | carry (fixture-definition) | none | — |
-| `fix:finance/records@get` | `fixture:finance/records@get` | finance | carry (fixture-definition) | none | — |
-| `fix:finance/records@post` | `fixture:finance/records@post` | finance | carry (fixture-definition) | validates | — |
-| `fix:finance/rollups@get` | `fixture:finance/rollups@get` | finance | carry (fixture-definition) | none | — |
 | `fix:people/persons/{id}/archive@get` | `fixture:people/persons/{id}/archive@get` | people | carry (fixture-definition) | none | — |
 | `fix:people/persons/{id}/archive@post` | `fixture:people/persons/{id}/archive@post` | people | carry (fixture-definition) | validates `route.id` | — |
-| `fix:reporting/exports/{id}/download@get` | `fixture:reporting/exports/{id}/download@get` | reporting | carry (fixture-definition) | none | — |
-| `fix:reporting/exports/{id}@get` | `fixture:reporting/exports/{id}@get` | reporting | carry (fixture-definition) | none | — |
-| `fix:reporting/exports@get` | `fixture:reporting/exports@get` | reporting | carry (fixture-definition) | none | — |
-| `fix:reporting/exports@post` | `fixture:reporting/exports@post` | reporting | carry (fixture-definition) | validates | — |
-| `fix:surveys/surveys/{id}/launch@get` | `fixture:surveys/surveys/{id}/launch@get` | surveys | carry (fixture-definition) | none | — |
-| `fix:surveys/surveys/{id}/launch@post` | `fixture:surveys/surveys/{id}/launch@post` | surveys | carry (fixture-definition) | none | — |
-| `fix:surveys/surveys/{id}/remind@get` | `fixture:surveys/surveys/{id}/remind@get` | surveys | carry (fixture-definition) | none | — |
-| `fix:surveys/surveys/{id}/remind@post` | `fixture:surveys/surveys/{id}/remind@post` | surveys | carry (fixture-definition) | none | — |
-| `fix:surveys/surveys/{id}/responses@get` | `fixture:surveys/surveys/{id}/responses@get` | surveys | carry (fixture-definition) | none | — |
-| `fix:surveys/surveys/{id}/responses@post` | `fixture:surveys/surveys/{id}/responses@post` | surveys | carry (fixture-definition) | validates `route.id` | — |
-| `fix:surveys/surveys/{id}/schedule@post` | `fixture:surveys/surveys/{id}/schedule@post` | surveys | carry (fixture-definition) | validates `route.id` | — |
-| `fix:surveys/surveys/{id}/targets/bulk@post` | `fixture:surveys/surveys/{id}/targets/bulk@post` | surveys | carry (fixture-definition) | validates `route.id` | — |
-| `fix:surveys/surveys/{id}/tasks@get` | `fixture:surveys/surveys/{id}/tasks@get` | surveys | carry (fixture-definition) | none | — |
-| `fix:surveys/surveys/{id}@get` | `fixture:surveys/surveys/{id}@get` | surveys | carry (fixture-definition) | none | — |
-| `fix:surveys/surveys@get` | `fixture:surveys/surveys@get` | surveys | carry (fixture-definition) | none | — |
-| `fix:surveys/surveys@post` | `fixture:surveys/surveys@post` | surveys | carry (fixture-definition) | validates | — |
-| `fix:timesheets/days/{id}/primary-approve@post` | `fixture:timesheets/days/{id}/primary-approve@post` | timesheets | carry (fixture-definition) | validates `route.id` | — |
-| `fix:timesheets/days/{id}/resubmit@post` | `fixture:timesheets/days/{id}/resubmit@post` | timesheets | carry (fixture-definition) | validates `route.id` | — |
-| `fix:timesheets/days/{id}/return@post` | `fixture:timesheets/days/{id}/return@post` | timesheets | carry (fixture-definition) | validates `route.id` | — |
-| `fix:timesheets/days/{id}/secondary-approve@post` | `fixture:timesheets/days/{id}/secondary-approve@post` | timesheets | carry (fixture-definition) | validates `route.id` | — |
-| `fix:timesheets/days/{id}/submit@post` | `fixture:timesheets/days/{id}/submit@post` | timesheets | carry (fixture-definition) | validates `route.id` | — |
-| `fix:timesheets/sheets/{id}/status@get` | `fixture:timesheets/sheets/{id}/status@get` | timesheets | carry (fixture-definition) | none | — |
-| `fix:timesheets/sheets/{id}@get` | `fixture:timesheets/sheets/{id}@get` | timesheets | carry (fixture-definition) | none | — |
-| `fix:timesheets/sheets@get` | `fixture:timesheets/sheets@get` | timesheets | carry (fixture-definition) | none | — |
 | `rte:/oauth` | `rest:oauth` | identity | carry (5) | none | — |
 | `rte:/oauth2` | `rest:oauth2` | identity | carry (5) | none | — |
 | `rte:/oauth2{session}` | `rest:oauth2{session}` | identity | carry (5, legacy-write) | none | `EX-REST-INDEX-SESSION` |
@@ -915,7 +867,7 @@ Search for `muraAction` in `core/** excluding core/vendor`: 0 handlers; 21 files
 
 | Id | Entry | Owner | Disposition (step) | CSRF | Windowed | Session effects |
 | --- | --- | --- | --- | --- | --- | --- |
-| `fe:appreload` | application reload by ?\<appreloadkey> (default appreload) or the Global Config reload link; start-up re-runs | spans communications, e-signature, finance, identity, people, programs-sites, reporting, strategies-content, surveys, timesheets | decision (2, withheld, legacy-write) (corrected; expected legacy-served) `EX-SEC-APPRELOAD` | none | yes | none |
+| `fe:appreload` | application reload by ?\<appreloadkey> (default appreload) or the Global Config reload link; start-up re-runs | spans identity, legacy, people, programs-sites, strategies-content | decision (2, withheld, legacy-write) (corrected; expected legacy-served) `EX-SEC-APPRELOAD` | none | yes | none |
 | `fe:cfm:/core/modules/v1/favorites/ajax/deletefavorite.cfm` | favorites ajax endpoint deleteFavorite.cfm | people | carry (5, legacy-write) `EX-FAVORITES` | none | yes | none |
 | `fe:cfm:/core/modules/v1/favorites/ajax/deleterssfavorite.cfm` | favorites ajax endpoint deleteRSSFavorite.cfm | people | carry (5, legacy-write) `EX-FAVORITES` | none | yes | none |
 | `fe:cfm:/core/modules/v1/favorites/ajax/savefavorite.cfm` | favorites ajax endpoint saveFavorite.cfm | people | carry (5, legacy-write) `EX-FAVORITES` | none | yes | none |
@@ -924,23 +876,23 @@ Search for `muraAction` in `core/** excluding core/vendor`: 0 handlers; 21 files
 | `fe:commentsproxy.get` | commentsProxy.get remote method | strategies-content | carry (5) | none | no | none |
 | `fe:commentsproxy.getContentStats` | commentsProxy.getContentStats remote method | strategies-content | carry (5) | none | no | none |
 | `fe:commentsproxy.renderCommentsPage` | commentsProxy.renderCommentsPage remote method | strategies-content | legacy-served (4) | none | no | none |
-| `fe:doaction=contactsend` | doaction=contactsend: doAction case commented out at the pin, so the value only renders the page | communications | retired (1) (corrected; expected legacy-served) | none | no | none |
+| `fe:doaction=contactsend` | doaction=contactsend: doAction case commented out at the pin, so the value only renders the page | — | retired (1) (corrected; expected legacy-served) | none | no | none |
 | `fe:doaction=createprofile` | doaction=createprofile: standardEventsHandler.doAction case | spans identity, people, strategies-content | decision (3, withheld) (corrected; expected legacy-served) | validates `editprofile` | yes | login |
 | `fe:doaction=forward` | doaction=forward: named by core/mura/email/emailUtility.cfc; no code acts on it, so the page renders | — | legacy-served (4) | none | no | none |
-| `fe:doaction=forwardEmail` | doaction=forwardEmail: standardEventsHandler.doAction case | communications | legacy-served (4) | none | yes | none |
+| `fe:doaction=forwardEmail` | doaction=forwardEmail: standardEventsHandler.doAction case | spans legacy | legacy-served (4) | none | yes | none |
 | `fe:doaction=login` | doaction=login: standardEventsHandler.doAction case | identity | legacy-served (4) | validates `login` | yes | login |
 | `fe:doaction=logout` | doaction=logout: standardEventsHandler.doAction case | identity | legacy-served (4) | none | no | logout |
-| `fe:doaction=masterSubscribe` | doaction=masterSubscribe: standardEventsHandler.doAction case | communications | legacy-served (4) | none | yes | none |
-| `fe:doaction=return` | doaction=return: standardEventsHandler.doAction case | communications | legacy-served (4) | none | yes | none |
+| `fe:doaction=masterSubscribe` | doaction=masterSubscribe: standardEventsHandler.doAction case | spans legacy | legacy-served (4) | none | yes | none |
+| `fe:doaction=return` | doaction=return: standardEventsHandler.doAction case | spans legacy | legacy-served (4) | none | yes | none |
 | `fe:doaction=saveRate` | doaction=saveRate: read by core/modules/v1/rater/index.cfm; not a doAction case | strategies-content | legacy-served (4) | none | yes | none |
 | `fe:doaction=sendlogin` | doaction=sendlogin: read by core/modules/v1/login/index.cfm; not a doAction case | spans identity, people, strategies-content | decision (3, withheld) | none | yes | none |
 | `fe:doaction=setReminder` | doaction=setReminder: standardEventsHandler.doAction case | — | decision (2, withheld) (corrected; expected legacy-served) | none | no | none |
-| `fe:doaction=subscribe` | doaction=subscribe: standardEventsHandler.doAction case | communications | legacy-served (4) | none | yes | none |
-| `fe:doaction=unsubscribe` | doaction=unsubscribe: standardEventsHandler.doAction case | communications | legacy-served (4) | none | yes | none |
+| `fe:doaction=subscribe` | doaction=subscribe: standardEventsHandler.doAction case | spans legacy | legacy-served (4) | none | yes | none |
+| `fe:doaction=unsubscribe` | doaction=unsubscribe: standardEventsHandler.doAction case | spans legacy | legacy-served (4) | none | yes | none |
 | `fe:doaction=updateprofile` | doaction=updateprofile: standardEventsHandler.doAction case | spans identity, people, strategies-content | decision (3, withheld) (corrected; expected legacy-served) | validates `editprofile` | yes | login |
-| `fe:doaction=validateMember` | doaction=validateMember: read by core/modules/v1/mailing_list_master/index.cfm; not a doAction case | communications | legacy-served (4) | none | yes | none |
+| `fe:doaction=validateMember` | doaction=validateMember: read by core/modules/v1/mailing_list_master/index.cfm; not a doAction case | spans legacy | legacy-served (4) | none | yes | none |
 | `fe:processasyncobject{saveform}` | processAsyncObject rendering the form display object with saveform | spans identity, people, strategies-content | decision (3, withheld) (corrected; expected legacy-served) | validates `getValue('formID')` | yes | login |
-| `fe:render` | page render through handleRootRequest; the theme and display objects render in CFML | spans identity, reporting, strategies-content | decision (3, withheld) (corrected; expected legacy-served) | none | yes | login |
+| `fe:render` | page render through handleRootRequest; the theme and display objects render in CFML | spans identity, legacy, strategies-content | decision (3, withheld) (corrected; expected legacy-served) | none | yes | login |
 | `fe:saveform` | form display object submits through dataCollectionBean while the page renders (saveform) | spans identity, strategies-content | decision (3, withheld) (corrected; expected legacy-served) | validates `getValue('formID')` | yes | none |
 
 ## Unreachable remote methods
@@ -999,10 +951,10 @@ Search for `muraAction` in `core/** excluding core/vendor`: 0 handlers; 21 files
 
 | Order | Step | Call | Owner | Disposition (step) | Target mechanism | State this run |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 | `job:sitemonitor.reminders` | contentManager.sendReminders (catch-up at now - 30 min when the minutes differ) | — | decision (2, withheld) | proposed communications step | legacy step via gateway/legacy-bridge/cfml/jobs.cfm |
-| 2 | `job:sitemonitor.email-send` | emailManager.send | communications | legacy-served (4) | proposed communications step; not built while cemail is legacy-served | legacy step |
+| 1 | `job:sitemonitor.reminders` | contentManager.sendReminders (catch-up at now - 30 min when the minutes differ) | — | decision (2, withheld) | none; tcontenteventreminders is proposed to stay on legacy | legacy step via gateway/legacy-bridge/cfml/jobs.cfm |
+| 2 | `job:sitemonitor.email-send` | emailManager.send | spans legacy | legacy-served (4) | legacy only; no target service owns the mail tables | legacy step |
 | 3 | `job:sitemonitor.changeset-publish` | changesetManager.publishBySchedule | strategies-content | decision (2, withheld) (corrected; expected carry) | /internal/v1/jobs/publish-scheduled-changesets | target once its group is target-authoritative |
-| 4 | `job:sitemonitor.bounces` | emailManager.trackBounces per site with EmailBroadcaster; mail-server dedupe ineffective (listAppend result discarded) | communications | legacy-served (4) | proposed communications step | legacy step |
+| 4 | `job:sitemonitor.bounces` | emailManager.trackBounces per site with EmailBroadcaster; mail-server dedupe ineffective (listAppend result discarded) | spans legacy | legacy-served (4) | legacy only; no target service owns the mail tables | legacy step |
 | 5 | `job:sitemonitor.feed-import` | feedManager.doAutoImport per site with FeedManager | strategies-content | decision (2, withheld) (corrected; expected carry) | /internal/v1/jobs/feed-auto-import?siteid= | target once its group is target-authoritative |
 | 6 | `job:sitemonitor.cache-purge` | contentManager.purgeContentCache and settingsBean.purgeCache for display windows in [lastMonitored, now] | strategies-content | legacy-served (4) | legacy only; the output cache exists only in legacy | legacy step |
 | 7 | `job:sitemonitor.cluster-cleanup` | clusterManager.clearOldCommands | — | decision (2, withheld) | retired in target; Pub/Sub replaces tclustercommands | legacy step |
@@ -1056,8 +1008,8 @@ Units each writing entry point reaches:
 | `api:login` | identity.credential, identity.login_state, identity.user_strike |
 | `api:processasyncobject` | content.content_rating, content.file, content.trash, file-store, identity.credential, identity.extend_data_user_activity, identity.group_account, identity.login_state, identity.membership, identity.oauth_token, identity.redirect, identity.trash, identity.user_account, identity.user_address, identity.user_device, identity.user_interest, identity.user_strike, identity.user_tag, people.extend_data_user_activity, people.person, people.trash, people.user_address, people.user_interest, people.user_tag |
 | `api:processasyncobject{saveform}` | content.content_rating, content.file, content.form_response_packet, content.form_response_question, content.trash, file-store, identity.credential, identity.extend_data_user_activity, identity.group_account, identity.login_state, identity.membership, identity.oauth_token, identity.redirect, identity.trash, identity.user_account, identity.user_address, identity.user_device, identity.user_interest, identity.user_strike, identity.user_tag, people.extend_data_user_activity, people.person, people.trash, people.user_address, people.user_interest, people.user_tag |
-| `api:site.save` | communications.extend_attribute, communications.extend_data, communications.extend_rc_set, communications.extend_set, communications.extend_subtype, communications.mailing_list, communications.mailing_list_member, communications.trash, content.approval_action, content.approval_chain, content.approval_membership, content.approval_request, content.category, content.changeset, content.changeset_category_assign, content.changeset_tag_assign, content.comment, content.commenter, content.content, content.content_category_assign, content.content_object, content.content_rating, content.content_related, content.content_remote_pointer, content.content_stats, content.content_tag, content.extend_attribute, content.extend_data, content.extend_rc_set, content.extend_set, content.extend_subtype, content.feed, content.feed_advanced_param, content.feed_item, content.file, content.file_metadata, content.filename_archive, content.form_response_packet, content.form_response_question, content.trash, content.variation_targeting, esignature.trash, file-store, finance.trash, identity.credential, identity.extend_attribute, identity.extend_data, identity.extend_data_user_activity, identity.extend_rc_set, identity.extend_set, identity.extend_subtype, identity.group_account, identity.login_state, identity.membership, identity.oauth_client, identity.permission, identity.trash, identity.user_account, identity.user_address, identity.user_favorite, identity.user_interest, identity.user_tag, legacy:tentity, legacy:tplugindisplayobjects, legacy:tplugins, legacy:tpluginscripts, legacy:tpluginsettings, legacy:trazunasettings, legacy:tremotepointer, people.extend_attribute, people.extend_data, people.extend_data_user_activity, people.extend_rc_set, people.extend_set, people.extend_subtype, people.person, people.trash, people.user_address, people.user_favorite, people.user_interest, people.user_tag, programs_sites.extend_attribute, programs_sites.extend_data, programs_sites.extend_rc_set, programs_sites.extend_set, programs_sites.extend_subtype, programs_sites.image_size, programs_sites.site, programs_sites.system_object, programs_sites.trash, reporting.trash, surveys.trash, timesheets.trash |
-| `api:site.save{bundle}` | communications.extend_attribute, communications.extend_data, communications.extend_rc_set, communications.extend_set, communications.extend_subtype, communications.mailing_list, communications.mailing_list_member, communications.trash, content.approval_action, content.approval_chain, content.approval_membership, content.approval_request, content.category, content.changeset, content.changeset_category_assign, content.changeset_tag_assign, content.comment, content.commenter, content.content, content.content_category_assign, content.content_object, content.content_rating, content.content_related, content.content_remote_pointer, content.content_stats, content.content_tag, content.extend_attribute, content.extend_data, content.extend_rc_set, content.extend_set, content.extend_subtype, content.feed, content.feed_advanced_param, content.feed_item, content.file, content.file_metadata, content.filename_archive, content.form_response_packet, content.form_response_question, content.trash, content.variation_targeting, esignature.trash, file-store, finance.trash, identity.credential, identity.extend_attribute, identity.extend_data, identity.extend_data_user_activity, identity.extend_rc_set, identity.extend_set, identity.extend_subtype, identity.group_account, identity.login_state, identity.membership, identity.oauth_client, identity.permission, identity.trash, identity.user_account, identity.user_address, identity.user_favorite, identity.user_interest, identity.user_tag, legacy:tentity, legacy:tplugindisplayobjects, legacy:tplugins, legacy:tpluginscripts, legacy:tpluginsettings, legacy:trazunasettings, legacy:tremotepointer, people.extend_attribute, people.extend_data, people.extend_data_user_activity, people.extend_rc_set, people.extend_set, people.extend_subtype, people.person, people.trash, people.user_address, people.user_favorite, people.user_interest, people.user_tag, programs_sites.extend_attribute, programs_sites.extend_data, programs_sites.extend_rc_set, programs_sites.extend_set, programs_sites.extend_subtype, programs_sites.image_size, programs_sites.site, programs_sites.system_object, programs_sites.trash, reporting.trash, surveys.trash, timesheets.trash |
+| `api:site.save` | content.approval_action, content.approval_chain, content.approval_membership, content.approval_request, content.category, content.changeset, content.changeset_category_assign, content.changeset_tag_assign, content.comment, content.commenter, content.content, content.content_category_assign, content.content_object, content.content_rating, content.content_related, content.content_remote_pointer, content.content_stats, content.content_tag, content.extend_attribute, content.extend_data, content.extend_rc_set, content.extend_set, content.extend_subtype, content.feed, content.feed_advanced_param, content.feed_item, content.file, content.file_metadata, content.filename_archive, content.form_response_packet, content.form_response_question, content.trash, content.variation_targeting, file-store, identity.credential, identity.extend_attribute, identity.extend_data, identity.extend_data_user_activity, identity.extend_rc_set, identity.extend_set, identity.extend_subtype, identity.group_account, identity.login_state, identity.membership, identity.oauth_client, identity.permission, identity.trash, identity.user_account, identity.user_address, identity.user_favorite, identity.user_interest, identity.user_tag, legacy:tentity, legacy:tmailinglist, legacy:tmailinglistmembers, legacy:tplugindisplayobjects, legacy:tplugins, legacy:tpluginscripts, legacy:tpluginsettings, legacy:trazunasettings, legacy:tremotepointer, people.extend_attribute, people.extend_data, people.extend_data_user_activity, people.extend_rc_set, people.extend_set, people.extend_subtype, people.person, people.trash, people.user_address, people.user_favorite, people.user_interest, people.user_tag, programs_sites.extend_attribute, programs_sites.extend_data, programs_sites.extend_rc_set, programs_sites.extend_set, programs_sites.extend_subtype, programs_sites.image_size, programs_sites.site, programs_sites.system_object, programs_sites.trash |
+| `api:site.save{bundle}` | content.approval_action, content.approval_chain, content.approval_membership, content.approval_request, content.category, content.changeset, content.changeset_category_assign, content.changeset_tag_assign, content.comment, content.commenter, content.content, content.content_category_assign, content.content_object, content.content_rating, content.content_related, content.content_remote_pointer, content.content_stats, content.content_tag, content.extend_attribute, content.extend_data, content.extend_rc_set, content.extend_set, content.extend_subtype, content.feed, content.feed_advanced_param, content.feed_item, content.file, content.file_metadata, content.filename_archive, content.form_response_packet, content.form_response_question, content.trash, content.variation_targeting, file-store, identity.credential, identity.extend_attribute, identity.extend_data, identity.extend_data_user_activity, identity.extend_rc_set, identity.extend_set, identity.extend_subtype, identity.group_account, identity.login_state, identity.membership, identity.oauth_client, identity.permission, identity.trash, identity.user_account, identity.user_address, identity.user_favorite, identity.user_interest, identity.user_tag, legacy:tentity, legacy:tmailinglist, legacy:tmailinglistmembers, legacy:tplugindisplayobjects, legacy:tplugins, legacy:tpluginscripts, legacy:tpluginsettings, legacy:trazunasettings, legacy:tremotepointer, people.extend_attribute, people.extend_data, people.extend_data_user_activity, people.extend_rc_set, people.extend_set, people.extend_subtype, people.person, people.trash, people.user_address, people.user_favorite, people.user_interest, people.user_tag, programs_sites.extend_attribute, programs_sites.extend_data, programs_sites.extend_rc_set, programs_sites.extend_set, programs_sites.extend_subtype, programs_sites.image_size, programs_sites.site, programs_sites.system_object, programs_sites.trash |
 | `api:stats.delete` | content.content_stats |
 | `api:stats.save` | content.content_stats |
 | `api:undeclareentity` | legacy:tentity |
@@ -1112,16 +1064,16 @@ Units each writing entry point reaches:
 | `ctl:ceditprofile.update` | identity.credential, identity.group_account, identity.membership, identity.oauth_token, identity.redirect, identity.user_account, identity.user_address, identity.user_interest, identity.user_tag, people.person, people.user_address, people.user_interest, people.user_tag |
 | `ctl:ceditprofile.update{extdata}` | content.file, file-store, identity.credential, identity.extend_data_user_activity, identity.group_account, identity.membership, identity.oauth_token, identity.redirect, identity.user_account, identity.user_address, identity.user_interest, identity.user_tag, people.extend_data_user_activity, people.person, people.user_address, people.user_interest, people.user_tag |
 | `ctl:ceditprofile.update{photo}` | content.file, file-store, identity.credential, identity.extend_data_user_activity, identity.group_account, identity.membership, identity.oauth_token, identity.redirect, identity.user_account, identity.user_address, identity.user_interest, identity.user_tag, people.extend_data_user_activity, people.person, people.user_address, people.user_interest, people.user_tag |
-| `ctl:cemail.deletebounces` | communications.mailing_list_member |
-| `ctl:cemail.update` | communications.email, communications.email_stat, communications.trash |
-| `ctl:cextend.importsubtypes` | communications.extend_attribute, communications.extend_rc_set, communications.extend_set, communications.extend_subtype, content.extend_attribute, content.extend_rc_set, content.extend_set, content.extend_subtype, esignature.extend_attribute, esignature.extend_rc_set, esignature.extend_set, esignature.extend_subtype, finance.extend_attribute, finance.extend_rc_set, finance.extend_set, finance.extend_subtype, identity.extend_attribute, identity.extend_rc_set, identity.extend_set, identity.extend_subtype, legacy:trazunasettings, people.extend_attribute, people.extend_rc_set, people.extend_set, people.extend_subtype, programs_sites.extend_attribute, programs_sites.extend_rc_set, programs_sites.extend_set, programs_sites.extend_subtype, programs_sites.image_size, programs_sites.site, reporting.extend_attribute, reporting.extend_rc_set, reporting.extend_set, reporting.extend_subtype, surveys.extend_attribute, surveys.extend_rc_set, surveys.extend_set, surveys.extend_subtype, timesheets.extend_attribute, timesheets.extend_rc_set, timesheets.extend_set, timesheets.extend_subtype |
-| `ctl:cextend.saveattributesort` | communications.extend_attribute, content.extend_attribute, esignature.extend_attribute, finance.extend_attribute, identity.extend_attribute, people.extend_attribute, programs_sites.extend_attribute, reporting.extend_attribute, surveys.extend_attribute, timesheets.extend_attribute |
-| `ctl:cextend.saveextendsetsort` | communications.extend_set, content.extend_set, esignature.extend_set, finance.extend_set, identity.extend_set, people.extend_set, programs_sites.extend_set, reporting.extend_set, surveys.extend_set, timesheets.extend_set |
-| `ctl:cextend.saverelatedsetsort` | communications.extend_rc_set, content.extend_rc_set, esignature.extend_rc_set, finance.extend_rc_set, identity.extend_rc_set, people.extend_rc_set, programs_sites.extend_rc_set, reporting.extend_rc_set, surveys.extend_rc_set, timesheets.extend_rc_set |
-| `ctl:cextend.updateattribute` | communications.extend_attribute, communications.extend_data, content.extend_attribute, content.extend_data, content.file, esignature.extend_attribute, esignature.extend_data, file-store, finance.extend_attribute, finance.extend_data, identity.extend_attribute, identity.extend_data, identity.extend_data_user_activity, people.extend_attribute, people.extend_data, people.extend_data_user_activity, programs_sites.extend_attribute, programs_sites.extend_data, reporting.extend_attribute, reporting.extend_data, surveys.extend_attribute, surveys.extend_data, timesheets.extend_attribute, timesheets.extend_data |
-| `ctl:cextend.updaterelatedcontentset` | communications.extend_rc_set, content.extend_rc_set, esignature.extend_rc_set, finance.extend_rc_set, identity.extend_rc_set, people.extend_rc_set, programs_sites.extend_rc_set, reporting.extend_rc_set, surveys.extend_rc_set, timesheets.extend_rc_set |
-| `ctl:cextend.updateset` | communications.extend_attribute, communications.extend_data, communications.extend_set, content.extend_attribute, content.extend_data, content.extend_set, content.file, esignature.extend_attribute, esignature.extend_data, esignature.extend_set, file-store, finance.extend_attribute, finance.extend_data, finance.extend_set, identity.extend_attribute, identity.extend_data, identity.extend_data_user_activity, identity.extend_set, people.extend_attribute, people.extend_data, people.extend_data_user_activity, people.extend_set, programs_sites.extend_attribute, programs_sites.extend_data, programs_sites.extend_set, reporting.extend_attribute, reporting.extend_data, reporting.extend_set, surveys.extend_attribute, surveys.extend_data, surveys.extend_set, timesheets.extend_attribute, timesheets.extend_data, timesheets.extend_set |
-| `ctl:cextend.updatesubtype` | communications.extend_attribute, communications.extend_data, communications.extend_set, communications.extend_subtype, content.content, content.extend_attribute, content.extend_data, content.extend_set, content.extend_subtype, content.file, esignature.extend_attribute, esignature.extend_data, esignature.extend_set, esignature.extend_subtype, file-store, finance.extend_attribute, finance.extend_data, finance.extend_set, finance.extend_subtype, identity.extend_attribute, identity.extend_data, identity.extend_data_user_activity, identity.extend_set, identity.extend_subtype, identity.group_account, people.extend_attribute, people.extend_data, people.extend_data_user_activity, people.extend_set, people.extend_subtype, people.person, programs_sites.extend_attribute, programs_sites.extend_data, programs_sites.extend_set, programs_sites.extend_subtype, reporting.extend_attribute, reporting.extend_data, reporting.extend_set, reporting.extend_subtype, surveys.extend_attribute, surveys.extend_data, surveys.extend_set, surveys.extend_subtype, timesheets.extend_attribute, timesheets.extend_data, timesheets.extend_set, timesheets.extend_subtype |
+| `ctl:cemail.deletebounces` | legacy:tmailinglistmembers |
+| `ctl:cemail.update` | legacy:temails, legacy:temailstats, legacy:ttrash |
+| `ctl:cextend.importsubtypes` | content.extend_attribute, content.extend_rc_set, content.extend_set, content.extend_subtype, identity.extend_attribute, identity.extend_rc_set, identity.extend_set, identity.extend_subtype, legacy:trazunasettings, people.extend_attribute, people.extend_rc_set, people.extend_set, people.extend_subtype, programs_sites.extend_attribute, programs_sites.extend_rc_set, programs_sites.extend_set, programs_sites.extend_subtype, programs_sites.image_size, programs_sites.site |
+| `ctl:cextend.saveattributesort` | content.extend_attribute, identity.extend_attribute, people.extend_attribute, programs_sites.extend_attribute |
+| `ctl:cextend.saveextendsetsort` | content.extend_set, identity.extend_set, people.extend_set, programs_sites.extend_set |
+| `ctl:cextend.saverelatedsetsort` | content.extend_rc_set, identity.extend_rc_set, people.extend_rc_set, programs_sites.extend_rc_set |
+| `ctl:cextend.updateattribute` | content.extend_attribute, content.extend_data, content.file, file-store, identity.extend_attribute, identity.extend_data, identity.extend_data_user_activity, people.extend_attribute, people.extend_data, people.extend_data_user_activity, programs_sites.extend_attribute, programs_sites.extend_data |
+| `ctl:cextend.updaterelatedcontentset` | content.extend_rc_set, identity.extend_rc_set, people.extend_rc_set, programs_sites.extend_rc_set |
+| `ctl:cextend.updateset` | content.extend_attribute, content.extend_data, content.extend_set, content.file, file-store, identity.extend_attribute, identity.extend_data, identity.extend_data_user_activity, identity.extend_set, people.extend_attribute, people.extend_data, people.extend_data_user_activity, people.extend_set, programs_sites.extend_attribute, programs_sites.extend_data, programs_sites.extend_set |
+| `ctl:cextend.updatesubtype` | content.content, content.extend_attribute, content.extend_data, content.extend_set, content.extend_subtype, content.file, file-store, identity.extend_attribute, identity.extend_data, identity.extend_data_user_activity, identity.extend_set, identity.extend_subtype, identity.group_account, people.extend_attribute, people.extend_data, people.extend_data_user_activity, people.extend_set, people.extend_subtype, people.person, programs_sites.extend_attribute, programs_sites.extend_data, programs_sites.extend_set, programs_sites.extend_subtype |
 | `ctl:cfeed.import2` | content.approval_action, content.approval_request, content.changeset, content.changeset_category_assign, content.changeset_tag_assign, content.content, content.content_assignment, content.content_category_assign, content.content_object, content.content_related, content.content_stats, content.content_tag, content.extend_data, content.file, content.file_metadata, content.filename_archive, content.source_map, content.variation_targeting, file-store, identity.extend_data, identity.redirect, legacy:tcontenteventreminders |
 | `ctl:cfeed.update` | content.content_object, content.feed, content.feed_advanced_param, content.feed_item, content.trash |
 | `ctl:cfeed.update{closecompactdisplay=true}` | content.content_object, content.feed, content.feed_advanced_param, content.feed_item, content.trash |
@@ -1130,23 +1082,23 @@ Units each writing entry point reaches:
 | `ctl:clogin.login` | identity.credential, identity.login_state, identity.user_device, identity.user_strike |
 | `ctl:clogin.login{status=sendlogin}` | content.file, file-store, identity.credential, identity.login_state, identity.membership, identity.oauth_token, identity.redirect, identity.user_account, identity.user_device, identity.user_strike, people.extend_data_user_activity, people.person, people.user_address, people.user_interest, people.user_tag |
 | `ctl:clogin.main{status=sendlogin}` | content.file, file-store, identity.credential, identity.membership, identity.oauth_token, identity.redirect, identity.user_account, people.extend_data_user_activity, people.person, people.user_address, people.user_interest, people.user_tag |
-| `ctl:cmailinglist.update` | communications.mailing_list, communications.mailing_list_member, communications.trash |
-| `ctl:cmailinglist.updatemember` | communications.mailing_list_member |
+| `ctl:cmailinglist.update` | legacy:tmailinglist, legacy:tmailinglistmembers, legacy:ttrash |
+| `ctl:cmailinglist.updatemember` | legacy:tmailinglistmembers |
 | `ctl:cperm.update` | content.approval_assignment, identity.permission |
 | `ctl:cperm.updatemodule` | identity.permission |
 | `ctl:csettings.createbundle` | file-store |
 | `ctl:csettings.deleteplugin` | content.content, content.content_object, legacy:tplugindisplayobjects, legacy:tplugins, legacy:tpluginscripts, legacy:tpluginsettings |
-| `ctl:csettings.deployplugin` | communications.extend_attribute, communications.extend_data, communications.extend_rc_set, communications.extend_set, communications.extend_subtype, communications.mailing_list, communications.mailing_list_member, communications.trash, content.approval_action, content.approval_chain, content.approval_membership, content.approval_request, content.category, content.changeset, content.changeset_category_assign, content.changeset_tag_assign, content.comment, content.commenter, content.content, content.content_category_assign, content.content_object, content.content_rating, content.content_related, content.content_remote_pointer, content.content_stats, content.content_tag, content.extend_attribute, content.extend_data, content.extend_rc_set, content.extend_set, content.extend_subtype, content.feed, content.feed_advanced_param, content.feed_item, content.file, content.file_metadata, content.filename_archive, content.form_response_packet, content.form_response_question, content.trash, content.variation_targeting, esignature.trash, file-store, finance.trash, identity.credential, identity.extend_attribute, identity.extend_data, identity.extend_data_user_activity, identity.extend_rc_set, identity.extend_set, identity.extend_subtype, identity.group_account, identity.login_state, identity.membership, identity.oauth_client, identity.permission, identity.trash, identity.user_account, identity.user_address, identity.user_favorite, identity.user_interest, identity.user_tag, legacy:tplugindisplayobjects, legacy:tplugins, legacy:tpluginscripts, legacy:tpluginsettings, legacy:trazunasettings, legacy:tremotepointer, people.extend_attribute, people.extend_data, people.extend_data_user_activity, people.extend_rc_set, people.extend_set, people.extend_subtype, people.person, people.trash, people.user_address, people.user_favorite, people.user_interest, people.user_tag, programs_sites.extend_attribute, programs_sites.extend_data, programs_sites.extend_rc_set, programs_sites.extend_set, programs_sites.extend_subtype, programs_sites.image_size, programs_sites.site, programs_sites.system_object, programs_sites.trash, reporting.trash, surveys.trash, timesheets.trash |
+| `ctl:csettings.deployplugin` | content.approval_action, content.approval_chain, content.approval_membership, content.approval_request, content.category, content.changeset, content.changeset_category_assign, content.changeset_tag_assign, content.comment, content.commenter, content.content, content.content_category_assign, content.content_object, content.content_rating, content.content_related, content.content_remote_pointer, content.content_stats, content.content_tag, content.extend_attribute, content.extend_data, content.extend_rc_set, content.extend_set, content.extend_subtype, content.feed, content.feed_advanced_param, content.feed_item, content.file, content.file_metadata, content.filename_archive, content.form_response_packet, content.form_response_question, content.trash, content.variation_targeting, file-store, identity.credential, identity.extend_attribute, identity.extend_data, identity.extend_data_user_activity, identity.extend_rc_set, identity.extend_set, identity.extend_subtype, identity.group_account, identity.login_state, identity.membership, identity.oauth_client, identity.permission, identity.trash, identity.user_account, identity.user_address, identity.user_favorite, identity.user_interest, identity.user_tag, legacy:tmailinglist, legacy:tmailinglistmembers, legacy:tplugindisplayobjects, legacy:tplugins, legacy:tpluginscripts, legacy:tpluginsettings, legacy:trazunasettings, legacy:tremotepointer, people.extend_attribute, people.extend_data, people.extend_data_user_activity, people.extend_rc_set, people.extend_set, people.extend_subtype, people.person, people.trash, people.user_address, people.user_favorite, people.user_interest, people.user_tag, programs_sites.extend_attribute, programs_sites.extend_data, programs_sites.extend_rc_set, programs_sites.extend_set, programs_sites.extend_subtype, programs_sites.image_size, programs_sites.site, programs_sites.system_object, programs_sites.trash |
 | `ctl:csettings.list` | programs_sites.site |
 | `ctl:csettings.loadcustomimages` | programs_sites.image_size |
-| `ctl:csettings.sitecopy` | communications.extend_attribute, communications.extend_data, communications.extend_rc_set, communications.extend_set, communications.extend_subtype, communications.mailing_list, communications.mailing_list_member, communications.trash, content.approval_action, content.approval_chain, content.approval_membership, content.approval_request, content.category, content.changeset, content.changeset_category_assign, content.changeset_tag_assign, content.comment, content.commenter, content.content, content.content_category_assign, content.content_object, content.content_rating, content.content_related, content.content_remote_pointer, content.content_stats, content.content_tag, content.extend_attribute, content.extend_data, content.extend_rc_set, content.extend_set, content.extend_subtype, content.feed, content.feed_advanced_param, content.feed_item, content.file, content.file_metadata, content.filename_archive, content.form_response_packet, content.form_response_question, content.trash, content.variation_targeting, esignature.trash, file-store, finance.trash, identity.credential, identity.extend_attribute, identity.extend_data, identity.extend_data_user_activity, identity.extend_rc_set, identity.extend_set, identity.extend_subtype, identity.group_account, identity.login_state, identity.membership, identity.oauth_client, identity.permission, identity.trash, identity.user_account, identity.user_address, identity.user_favorite, identity.user_interest, identity.user_tag, legacy:tplugindisplayobjects, legacy:tplugins, legacy:tpluginscripts, legacy:tpluginsettings, legacy:trazunasettings, legacy:tremotepointer, people.extend_attribute, people.extend_data, people.extend_data_user_activity, people.extend_rc_set, people.extend_set, people.extend_subtype, people.person, people.trash, people.user_address, people.user_favorite, people.user_interest, people.user_tag, programs_sites.extend_attribute, programs_sites.extend_data, programs_sites.extend_rc_set, programs_sites.extend_set, programs_sites.extend_subtype, programs_sites.image_size, programs_sites.site, programs_sites.system_object, programs_sites.trash, reporting.trash, surveys.trash, timesheets.trash |
+| `ctl:csettings.sitecopy` | content.approval_action, content.approval_chain, content.approval_membership, content.approval_request, content.category, content.changeset, content.changeset_category_assign, content.changeset_tag_assign, content.comment, content.commenter, content.content, content.content_category_assign, content.content_object, content.content_rating, content.content_related, content.content_remote_pointer, content.content_stats, content.content_tag, content.extend_attribute, content.extend_data, content.extend_rc_set, content.extend_set, content.extend_subtype, content.feed, content.feed_advanced_param, content.feed_item, content.file, content.file_metadata, content.filename_archive, content.form_response_packet, content.form_response_question, content.trash, content.variation_targeting, file-store, identity.credential, identity.extend_attribute, identity.extend_data, identity.extend_data_user_activity, identity.extend_rc_set, identity.extend_set, identity.extend_subtype, identity.group_account, identity.login_state, identity.membership, identity.oauth_client, identity.permission, identity.trash, identity.user_account, identity.user_address, identity.user_favorite, identity.user_interest, identity.user_tag, legacy:tmailinglist, legacy:tmailinglistmembers, legacy:tplugindisplayobjects, legacy:tplugins, legacy:tpluginscripts, legacy:tpluginsettings, legacy:trazunasettings, legacy:tremotepointer, people.extend_attribute, people.extend_data, people.extend_data_user_activity, people.extend_rc_set, people.extend_set, people.extend_subtype, people.person, people.trash, people.user_address, people.user_favorite, people.user_interest, people.user_tag, programs_sites.extend_attribute, programs_sites.extend_data, programs_sites.extend_rc_set, programs_sites.extend_set, programs_sites.extend_subtype, programs_sites.image_size, programs_sites.site, programs_sites.system_object, programs_sites.trash |
 | `ctl:csettings.updateplugin` | content.content, content.extend_attribute, content.extend_rc_set, content.extend_set, content.extend_subtype, legacy:tplugindisplayobjects, legacy:tplugins, legacy:tpluginscripts, legacy:tpluginsettings, legacy:trazunasettings, programs_sites.extend_attribute, programs_sites.extend_rc_set, programs_sites.extend_set, programs_sites.extend_subtype, programs_sites.image_size, programs_sites.site |
-| `ctl:csettings.updatesite{action=add}` | communications.extend_attribute, communications.extend_data, communications.extend_rc_set, communications.extend_set, communications.extend_subtype, communications.mailing_list, content.content, content.extend_attribute, content.extend_data, content.extend_rc_set, content.extend_set, content.extend_subtype, content.file, file-store, identity.credential, identity.group_account, identity.user_account, legacy:tentity, legacy:trazunasettings, people.extend_attribute, people.extend_data, people.extend_rc_set, people.extend_set, people.extend_subtype, people.person, programs_sites.extend_attribute, programs_sites.extend_data, programs_sites.extend_rc_set, programs_sites.extend_set, programs_sites.extend_subtype, programs_sites.image_size, programs_sites.site, programs_sites.system_object |
-| `ctl:csettings.updatesite{action=delete}` | communications.email, communications.email_return_stat, communications.email_stat, communications.extend_attribute, communications.extend_data, communications.extend_rc_set, communications.extend_set, communications.extend_subtype, communications.mailing_list, communications.mailing_list_member, communications.trash, content.approval_action, content.approval_assignment, content.approval_chain, content.approval_membership, content.approval_request, content.category, content.changeset, content.changeset_category_assign, content.changeset_tag_assign, content.comment, content.content, content.content_assignment, content.content_category_assign, content.content_object, content.content_rating, content.content_related, content.content_remote_pointer, content.content_tag, content.extend_attribute, content.extend_data, content.extend_rc_set, content.extend_set, content.extend_subtype, content.feed, content.feed_advanced_param, content.feed_item, content.file, content.file_metadata, content.filename_archive, content.form_response_packet, content.form_response_question, content.trash, content.variation_targeting, esignature.trash, file-store, finance.trash, identity.credential, identity.extend_attribute, identity.extend_data, identity.extend_rc_set, identity.extend_set, identity.extend_subtype, identity.group_account, identity.login_state, identity.membership, identity.oauth_client, identity.permission, identity.trash, identity.user_account, identity.user_address, identity.user_favorite, identity.user_interest, legacy:tcontenteventreminders, legacy:tentity, legacy:trazunasettings, legacy:tremotepointer, people.extend_attribute, people.extend_data, people.extend_rc_set, people.extend_set, people.extend_subtype, people.person, people.trash, people.user_address, people.user_favorite, people.user_interest, programs_sites.extend_attribute, programs_sites.extend_data, programs_sites.extend_rc_set, programs_sites.extend_set, programs_sites.extend_subtype, programs_sites.image_size, programs_sites.site, programs_sites.system_object, programs_sites.trash, reporting.extend_attribute, reporting.extend_data, reporting.extend_rc_set, reporting.extend_set, reporting.extend_subtype, reporting.session_tracking, reporting.trash, surveys.trash, timesheets.trash |
+| `ctl:csettings.updatesite{action=add}` | content.content, content.extend_attribute, content.extend_data, content.extend_rc_set, content.extend_set, content.extend_subtype, content.file, file-store, identity.credential, identity.group_account, identity.user_account, legacy:tentity, legacy:tmailinglist, legacy:trazunasettings, people.extend_attribute, people.extend_data, people.extend_rc_set, people.extend_set, people.extend_subtype, people.person, programs_sites.extend_attribute, programs_sites.extend_data, programs_sites.extend_rc_set, programs_sites.extend_set, programs_sites.extend_subtype, programs_sites.image_size, programs_sites.site, programs_sites.system_object |
+| `ctl:csettings.updatesite{action=delete}` | content.approval_action, content.approval_assignment, content.approval_chain, content.approval_membership, content.approval_request, content.category, content.changeset, content.changeset_category_assign, content.changeset_tag_assign, content.comment, content.content, content.content_assignment, content.content_category_assign, content.content_object, content.content_rating, content.content_related, content.content_remote_pointer, content.content_tag, content.extend_attribute, content.extend_data, content.extend_rc_set, content.extend_set, content.extend_subtype, content.feed, content.feed_advanced_param, content.feed_item, content.file, content.file_metadata, content.filename_archive, content.form_response_packet, content.form_response_question, content.trash, content.variation_targeting, file-store, identity.credential, identity.extend_attribute, identity.extend_data, identity.extend_rc_set, identity.extend_set, identity.extend_subtype, identity.group_account, identity.login_state, identity.membership, identity.oauth_client, identity.permission, identity.trash, identity.user_account, identity.user_address, identity.user_favorite, identity.user_interest, legacy:tcontenteventreminders, legacy:temailreturnstats, legacy:temails, legacy:temailstats, legacy:tentity, legacy:tmailinglist, legacy:tmailinglistmembers, legacy:trazunasettings, legacy:tremotepointer, legacy:tsessiontracking, people.extend_attribute, people.extend_data, people.extend_rc_set, people.extend_set, people.extend_subtype, people.person, people.trash, people.user_address, people.user_favorite, people.user_interest, programs_sites.extend_attribute, programs_sites.extend_data, programs_sites.extend_rc_set, programs_sites.extend_set, programs_sites.extend_subtype, programs_sites.image_size, programs_sites.site, programs_sites.system_object, programs_sites.trash |
 | `ctl:csettings.updatesite{action=update}` | content.extend_attribute, content.extend_data, content.extend_rc_set, content.extend_set, content.extend_subtype, content.file, file-store, legacy:tentity, legacy:trazunasettings, programs_sites.extend_attribute, programs_sites.extend_data, programs_sites.extend_rc_set, programs_sites.extend_set, programs_sites.extend_subtype, programs_sites.image_size, programs_sites.site |
-| `ctl:csettings.updatesite{bundle}` | communications.email, communications.email_return_stat, communications.email_stat, communications.extend_attribute, communications.extend_data, communications.extend_rc_set, communications.extend_set, communications.extend_subtype, communications.mailing_list, communications.mailing_list_member, communications.trash, content.approval_action, content.approval_assignment, content.approval_chain, content.approval_membership, content.approval_request, content.category, content.changeset, content.changeset_category_assign, content.changeset_tag_assign, content.comment, content.commenter, content.content, content.content_assignment, content.content_category_assign, content.content_object, content.content_rating, content.content_related, content.content_remote_pointer, content.content_stats, content.content_tag, content.extend_attribute, content.extend_data, content.extend_rc_set, content.extend_set, content.extend_subtype, content.feed, content.feed_advanced_param, content.feed_item, content.file, content.file_metadata, content.filename_archive, content.form_response_packet, content.form_response_question, content.trash, content.variation_targeting, esignature.trash, file-store, finance.trash, identity.credential, identity.extend_attribute, identity.extend_data, identity.extend_data_user_activity, identity.extend_rc_set, identity.extend_set, identity.extend_subtype, identity.group_account, identity.login_state, identity.membership, identity.oauth_client, identity.permission, identity.trash, identity.user_account, identity.user_address, identity.user_favorite, identity.user_interest, identity.user_tag, legacy:tcontenteventreminders, legacy:tentity, legacy:tplugindisplayobjects, legacy:tplugins, legacy:tpluginscripts, legacy:tpluginsettings, legacy:trazunasettings, legacy:tremotepointer, people.extend_attribute, people.extend_data, people.extend_data_user_activity, people.extend_rc_set, people.extend_set, people.extend_subtype, people.person, people.trash, people.user_address, people.user_favorite, people.user_interest, people.user_tag, programs_sites.extend_attribute, programs_sites.extend_data, programs_sites.extend_rc_set, programs_sites.extend_set, programs_sites.extend_subtype, programs_sites.image_size, programs_sites.site, programs_sites.system_object, programs_sites.trash, reporting.extend_attribute, reporting.extend_data, reporting.extend_rc_set, reporting.extend_set, reporting.extend_subtype, reporting.session_tracking, reporting.trash, surveys.trash, timesheets.trash |
-| `ctl:ctrash.empty` | communications.mailing_list_member, communications.trash, content.comment, content.content_assignment, content.content_category_assign, content.content_rating, content.content_remote_pointer, content.feed_advanced_param, content.feed_item, content.file, content.file_metadata, content.form_response_packet, content.form_response_question, content.trash, content.variation_targeting, esignature.trash, file-store, finance.trash, identity.membership, identity.permission, identity.trash, identity.user_address, identity.user_favorite, identity.user_interest, legacy:tcontenteventreminders, people.trash, people.user_address, people.user_favorite, people.user_interest, programs_sites.trash, reporting.trash, surveys.trash, timesheets.trash |
-| `ctl:ctrash.restore` | communications.email, communications.email_stat, communications.extend_data, communications.mailing_list, communications.mailing_list_member, communications.trash, content.approval_action, content.approval_request, content.category, content.changeset, content.changeset_category_assign, content.changeset_tag_assign, content.content, content.content_assignment, content.content_category_assign, content.content_object, content.content_related, content.content_stats, content.content_tag, content.extend_data, content.feed, content.feed_advanced_param, content.feed_item, content.file, content.file_metadata, content.filename_archive, content.source_map, content.trash, content.variation_targeting, esignature.extend_data, esignature.trash, file-store, finance.extend_data, finance.trash, identity.credential, identity.extend_data, identity.extend_data_user_activity, identity.group_account, identity.membership, identity.oauth_token, identity.redirect, identity.trash, identity.user_account, identity.user_address, identity.user_interest, identity.user_tag, legacy:tcontenteventreminders, people.extend_data, people.extend_data_user_activity, people.person, people.trash, people.user_address, people.user_interest, people.user_tag, programs_sites.extend_data, programs_sites.trash, reporting.extend_data, reporting.trash, surveys.extend_data, surveys.trash, timesheets.extend_data, timesheets.trash |
+| `ctl:csettings.updatesite{bundle}` | content.approval_action, content.approval_assignment, content.approval_chain, content.approval_membership, content.approval_request, content.category, content.changeset, content.changeset_category_assign, content.changeset_tag_assign, content.comment, content.commenter, content.content, content.content_assignment, content.content_category_assign, content.content_object, content.content_rating, content.content_related, content.content_remote_pointer, content.content_stats, content.content_tag, content.extend_attribute, content.extend_data, content.extend_rc_set, content.extend_set, content.extend_subtype, content.feed, content.feed_advanced_param, content.feed_item, content.file, content.file_metadata, content.filename_archive, content.form_response_packet, content.form_response_question, content.trash, content.variation_targeting, file-store, identity.credential, identity.extend_attribute, identity.extend_data, identity.extend_data_user_activity, identity.extend_rc_set, identity.extend_set, identity.extend_subtype, identity.group_account, identity.login_state, identity.membership, identity.oauth_client, identity.permission, identity.trash, identity.user_account, identity.user_address, identity.user_favorite, identity.user_interest, identity.user_tag, legacy:tcontenteventreminders, legacy:temailreturnstats, legacy:temails, legacy:temailstats, legacy:tentity, legacy:tmailinglist, legacy:tmailinglistmembers, legacy:tplugindisplayobjects, legacy:tplugins, legacy:tpluginscripts, legacy:tpluginsettings, legacy:trazunasettings, legacy:tremotepointer, legacy:tsessiontracking, people.extend_attribute, people.extend_data, people.extend_data_user_activity, people.extend_rc_set, people.extend_set, people.extend_subtype, people.person, people.trash, people.user_address, people.user_favorite, people.user_interest, people.user_tag, programs_sites.extend_attribute, programs_sites.extend_data, programs_sites.extend_rc_set, programs_sites.extend_set, programs_sites.extend_subtype, programs_sites.image_size, programs_sites.site, programs_sites.system_object, programs_sites.trash |
+| `ctl:ctrash.empty` | content.comment, content.content_assignment, content.content_category_assign, content.content_rating, content.content_remote_pointer, content.feed_advanced_param, content.feed_item, content.file, content.file_metadata, content.form_response_packet, content.form_response_question, content.trash, content.variation_targeting, file-store, identity.membership, identity.permission, identity.trash, identity.user_address, identity.user_favorite, identity.user_interest, legacy:tcontenteventreminders, legacy:tmailinglistmembers, people.trash, people.user_address, people.user_favorite, people.user_interest, programs_sites.trash |
+| `ctl:ctrash.restore` | content.approval_action, content.approval_request, content.category, content.changeset, content.changeset_category_assign, content.changeset_tag_assign, content.content, content.content_assignment, content.content_category_assign, content.content_object, content.content_related, content.content_stats, content.content_tag, content.extend_data, content.feed, content.feed_advanced_param, content.feed_item, content.file, content.file_metadata, content.filename_archive, content.source_map, content.trash, content.variation_targeting, file-store, identity.credential, identity.extend_data, identity.extend_data_user_activity, identity.group_account, identity.membership, identity.oauth_token, identity.redirect, identity.trash, identity.user_account, identity.user_address, identity.user_interest, identity.user_tag, legacy:tcontenteventreminders, legacy:temails, legacy:temailstats, legacy:tmailinglist, legacy:tmailinglistmembers, people.extend_data, people.extend_data_user_activity, people.person, people.trash, people.user_address, people.user_interest, people.user_tag, programs_sites.extend_data, programs_sites.trash |
 | `ctl:cusers.addtogroup` | identity.membership |
 | `ctl:cusers.edituser` | identity.user_strike |
 | `ctl:cusers.removefromgroup` | identity.membership |
@@ -1165,57 +1117,32 @@ Units each writing entry point reaches:
 | `ctl:cusers.update{type=2,action=update}` | identity.credential, identity.membership, identity.oauth_token, identity.redirect, identity.user_account, people.person, people.user_address, people.user_interest, people.user_tag |
 | `ctl:cwebservice.delete` | identity.oauth_client, identity.oauth_token |
 | `ctl:cwebservice.save` | identity.oauth_client, identity.oauth_token |
-| `fe:appreload` | communications.email, communications.extend_attribute, communications.extend_data, communications.extend_rc_set, communications.extend_set, communications.extend_subtype, communications.mailing_list, communications.mailing_list_member, communications.trash, content.approval_action, content.approval_chain, content.approval_membership, content.approval_request, content.category, content.changeset, content.changeset_category_assign, content.changeset_tag_assign, content.comment, content.commenter, content.content, content.content_assignment, content.content_category_assign, content.content_object, content.content_rating, content.content_related, content.content_remote_pointer, content.content_stats, content.content_tag, content.extend_attribute, content.extend_data, content.extend_rc_set, content.extend_set, content.extend_subtype, content.feed, content.feed_advanced_param, content.feed_item, content.file, content.file_metadata, content.filename_archive, content.form_response_packet, content.form_response_question, content.trash, content.variation_targeting, esignature.trash, file-store, finance.trash, identity.credential, identity.extend_attribute, identity.extend_data, identity.extend_data_user_activity, identity.extend_rc_set, identity.extend_set, identity.extend_subtype, identity.group_account, identity.login_state, identity.membership, identity.oauth_client, identity.permission, identity.trash, identity.user_account, identity.user_address, identity.user_favorite, identity.user_interest, identity.user_tag, legacy:tclustercommands, legacy:tclusterpeers, legacy:tentity, legacy:tplugindisplayobjects, legacy:tplugins, legacy:tpluginscripts, legacy:tpluginsettings, legacy:trazunasettings, legacy:tremotepointer, people.extend_attribute, people.extend_data, people.extend_data_user_activity, people.extend_rc_set, people.extend_set, people.extend_subtype, people.person, people.trash, people.user_address, people.user_favorite, people.user_interest, people.user_tag, programs_sites.extend_attribute, programs_sites.extend_data, programs_sites.extend_rc_set, programs_sites.extend_set, programs_sites.extend_subtype, programs_sites.image_size, programs_sites.site, programs_sites.system_object, programs_sites.trash, reporting.trash, surveys.trash, timesheets.trash |
+| `fe:appreload` | content.approval_action, content.approval_chain, content.approval_membership, content.approval_request, content.category, content.changeset, content.changeset_category_assign, content.changeset_tag_assign, content.comment, content.commenter, content.content, content.content_assignment, content.content_category_assign, content.content_object, content.content_rating, content.content_related, content.content_remote_pointer, content.content_stats, content.content_tag, content.extend_attribute, content.extend_data, content.extend_rc_set, content.extend_set, content.extend_subtype, content.feed, content.feed_advanced_param, content.feed_item, content.file, content.file_metadata, content.filename_archive, content.form_response_packet, content.form_response_question, content.trash, content.variation_targeting, file-store, identity.credential, identity.extend_attribute, identity.extend_data, identity.extend_data_user_activity, identity.extend_rc_set, identity.extend_set, identity.extend_subtype, identity.group_account, identity.login_state, identity.membership, identity.oauth_client, identity.permission, identity.trash, identity.user_account, identity.user_address, identity.user_favorite, identity.user_interest, identity.user_tag, legacy:tclustercommands, legacy:tclusterpeers, legacy:temails, legacy:tentity, legacy:tmailinglist, legacy:tmailinglistmembers, legacy:tplugindisplayobjects, legacy:tplugins, legacy:tpluginscripts, legacy:tpluginsettings, legacy:trazunasettings, legacy:tremotepointer, people.extend_attribute, people.extend_data, people.extend_data_user_activity, people.extend_rc_set, people.extend_set, people.extend_subtype, people.person, people.trash, people.user_address, people.user_favorite, people.user_interest, people.user_tag, programs_sites.extend_attribute, programs_sites.extend_data, programs_sites.extend_rc_set, programs_sites.extend_set, programs_sites.extend_subtype, programs_sites.image_size, programs_sites.site, programs_sites.system_object, programs_sites.trash |
 | `fe:cfm:/core/modules/v1/favorites/ajax/deletefavorite.cfm` | people.user_favorite |
 | `fe:cfm:/core/modules/v1/favorites/ajax/deleterssfavorite.cfm` | people.user_favorite |
 | `fe:cfm:/core/modules/v1/favorites/ajax/savefavorite.cfm` | people.user_favorite |
 | `fe:cfm:/core/modules/v1/rater/ajax/saverate.cfm` | content.content_rating, content.content_stats |
 | `fe:commentsproxy.flag` | content.comment, content.content_stats |
 | `fe:doaction=createprofile` | content.file, file-store, identity.credential, identity.extend_data_user_activity, identity.group_account, identity.login_state, identity.membership, identity.oauth_token, identity.redirect, identity.user_account, identity.user_address, identity.user_device, identity.user_interest, identity.user_tag, people.extend_data_user_activity, people.person, people.user_address, people.user_interest, people.user_tag |
-| `fe:doaction=forwardEmail` | communications.email |
+| `fe:doaction=forwardEmail` | legacy:temails |
 | `fe:doaction=login` | identity.credential, identity.login_state, identity.user_device, identity.user_strike |
-| `fe:doaction=masterSubscribe` | communications.mailing_list_member |
-| `fe:doaction=return` | communications.email_return_stat, communications.email_stat |
+| `fe:doaction=masterSubscribe` | legacy:tmailinglistmembers |
+| `fe:doaction=return` | legacy:temailreturnstats, legacy:temailstats |
 | `fe:doaction=saveRate` | content.content_rating, content.content_stats |
 | `fe:doaction=sendlogin` | content.file, file-store, identity.credential, identity.membership, identity.oauth_token, identity.redirect, identity.user_account, identity.user_strike, people.extend_data_user_activity, people.person, people.user_address, people.user_interest, people.user_tag |
 | `fe:doaction=setReminder` | legacy:tcontenteventreminders |
-| `fe:doaction=subscribe` | communications.mailing_list_member |
-| `fe:doaction=unsubscribe` | communications.mailing_list_member |
+| `fe:doaction=subscribe` | legacy:tmailinglistmembers |
+| `fe:doaction=unsubscribe` | legacy:tmailinglistmembers |
 | `fe:doaction=updateprofile` | content.content_rating, content.file, content.trash, file-store, identity.credential, identity.extend_data_user_activity, identity.group_account, identity.login_state, identity.membership, identity.oauth_token, identity.redirect, identity.trash, identity.user_account, identity.user_address, identity.user_device, identity.user_interest, identity.user_tag, people.extend_data_user_activity, people.person, people.trash, people.user_address, people.user_interest, people.user_tag |
-| `fe:doaction=validateMember` | communications.mailing_list_member |
+| `fe:doaction=validateMember` | legacy:tmailinglistmembers |
 | `fe:processasyncobject{saveform}` | content.content_rating, content.file, content.form_response_packet, content.form_response_question, content.trash, file-store, identity.credential, identity.extend_data_user_activity, identity.group_account, identity.login_state, identity.membership, identity.oauth_token, identity.redirect, identity.trash, identity.user_account, identity.user_address, identity.user_device, identity.user_interest, identity.user_strike, identity.user_tag, people.extend_data_user_activity, people.person, people.trash, people.user_address, people.user_interest, people.user_tag |
-| `fe:render` | content.filename_archive, file-store, identity.credential, identity.group_account, identity.login_state, identity.user_strike, reporting.session_tracking |
+| `fe:render` | content.filename_archive, file-store, identity.credential, identity.group_account, identity.login_state, identity.user_strike, legacy:tsessiontracking |
 | `fe:saveform` | content.file, content.form_response_packet, content.form_response_question, file-store, identity.redirect |
-| `fix:communications/messages@post` | communications.delivery_status, communications.message |
-| `fix:communications/templates@post` | communications.message_template |
-| `fix:esignature/requests/{id}/sign@post` | esignature.audit_entry, esignature.signature, esignature.signature_request |
-| `fix:esignature/requests@post` | esignature.audit_entry, esignature.signature_request |
-| `fix:finance/records/{id}/approve@post` | finance.record, finance.record_version, finance.rollup |
-| `fix:finance/records/{id}/attachments@post` | finance.attachment |
-| `fix:finance/records/{id}/edit@post` | finance.record, finance.record_version, finance.rollup |
-| `fix:finance/records/{id}/reject@post` | finance.record, finance.record_version, finance.rollup |
-| `fix:finance/records/{id}/resubmit@post` | finance.record, finance.record_version, finance.rollup |
-| `fix:finance/records/{id}/submit@post` | finance.record, finance.record_version, finance.rollup |
-| `fix:finance/records@post` | finance.record, finance.record_version, finance.rollup |
-| `fix:people/persons/{id}/archive@post` | people.person_archive, timesheets.blackout |
-| `fix:reporting/exports@post` | reporting.export_job |
-| `fix:surveys/surveys/{id}/launch@get` | surveys.survey |
-| `fix:surveys/surveys/{id}/launch@post` | surveys.survey |
-| `fix:surveys/surveys/{id}/remind@get` | surveys.survey_reminder |
-| `fix:surveys/surveys/{id}/remind@post` | surveys.survey_reminder |
-| `fix:surveys/surveys/{id}/responses@post` | surveys.survey_response |
-| `fix:surveys/surveys/{id}/schedule@post` | surveys.survey, surveys.survey_reminder, surveys.survey_schedule |
-| `fix:surveys/surveys/{id}/targets/bulk@post` | surveys.survey_target |
-| `fix:surveys/surveys@post` | surveys.survey |
-| `fix:timesheets/days/{id}/primary-approve@post` | timesheets.approval_action, timesheets.timesheet_day |
-| `fix:timesheets/days/{id}/resubmit@post` | timesheets.approval_action, timesheets.timesheet_day |
-| `fix:timesheets/days/{id}/return@post` | timesheets.approval_action, timesheets.timesheet_day |
-| `fix:timesheets/days/{id}/secondary-approve@post` | timesheets.approval_action, timesheets.timesheet_day |
-| `fix:timesheets/days/{id}/submit@post` | timesheets.approval_action, timesheets.timesheet_day |
-| `job:sitemonitor.bounces` | communications.email_stat |
+| `fix:people/persons/{id}/archive@post` | people.person_archive |
+| `job:sitemonitor.bounces` | legacy:temailstats |
 | `job:sitemonitor.changeset-publish` | content.approval_action, content.approval_request, content.changeset, content.changeset_category_assign, content.changeset_rollback, content.changeset_tag_assign, content.content, content.content_assignment, content.content_category_assign, content.content_object, content.content_related, content.content_stats, content.content_tag, content.extend_data, content.file, content.file_metadata, content.filename_archive, content.source_map, content.variation_targeting, file-store, identity.extend_data, identity.redirect, legacy:tcontenteventreminders |
 | `job:sitemonitor.cluster-cleanup` | legacy:tclustercommands, legacy:tclusterpeers |
-| `job:sitemonitor.email-send` | communications.email, communications.email_stat |
+| `job:sitemonitor.email-send` | legacy:temails, legacy:temailstats |
 | `job:sitemonitor.feed-import` | content.approval_action, content.approval_request, content.changeset, content.changeset_category_assign, content.changeset_tag_assign, content.content, content.content_assignment, content.content_category_assign, content.content_object, content.content_related, content.content_stats, content.content_tag, content.extend_data, content.file, content.file_metadata, content.filename_archive, content.source_map, content.variation_targeting, file-store, identity.extend_data, identity.redirect, legacy:tcontenteventreminders |
 | `job:sitemonitor.reminders` | legacy:tcontenteventreminders |
 | `rest:address.delete` | content.content_rating, content.file, content.trash, file-store, people.extend_data_user_activity, people.trash, people.user_address |
@@ -1316,8 +1243,8 @@ Units each writing entry point reaches:
 | `rest:login{siteid}` | identity.credential, identity.login_state, identity.user_strike |
 | `rest:processasyncobject` | content.content_rating, content.file, content.trash, file-store, identity.credential, identity.extend_data_user_activity, identity.group_account, identity.login_state, identity.membership, identity.oauth_token, identity.redirect, identity.trash, identity.user_account, identity.user_address, identity.user_device, identity.user_interest, identity.user_strike, identity.user_tag, people.extend_data_user_activity, people.person, people.trash, people.user_address, people.user_interest, people.user_tag |
 | `rest:processasyncobject{saveform}` | content.content_rating, content.file, content.form_response_packet, content.form_response_question, content.trash, file-store, identity.credential, identity.extend_data_user_activity, identity.group_account, identity.login_state, identity.membership, identity.oauth_token, identity.redirect, identity.trash, identity.user_account, identity.user_address, identity.user_device, identity.user_interest, identity.user_strike, identity.user_tag, people.extend_data_user_activity, people.person, people.trash, people.user_address, people.user_interest, people.user_tag |
-| `rest:site.save` | communications.extend_attribute, communications.extend_data, communications.extend_rc_set, communications.extend_set, communications.extend_subtype, communications.mailing_list, communications.mailing_list_member, communications.trash, content.approval_action, content.approval_chain, content.approval_membership, content.approval_request, content.category, content.changeset, content.changeset_category_assign, content.changeset_tag_assign, content.comment, content.commenter, content.content, content.content_category_assign, content.content_object, content.content_rating, content.content_related, content.content_remote_pointer, content.content_stats, content.content_tag, content.extend_attribute, content.extend_data, content.extend_rc_set, content.extend_set, content.extend_subtype, content.feed, content.feed_advanced_param, content.feed_item, content.file, content.file_metadata, content.filename_archive, content.form_response_packet, content.form_response_question, content.trash, content.variation_targeting, esignature.trash, file-store, finance.trash, identity.credential, identity.extend_attribute, identity.extend_data, identity.extend_data_user_activity, identity.extend_rc_set, identity.extend_set, identity.extend_subtype, identity.group_account, identity.login_state, identity.membership, identity.oauth_client, identity.permission, identity.trash, identity.user_account, identity.user_address, identity.user_favorite, identity.user_interest, identity.user_tag, legacy:tentity, legacy:tplugindisplayobjects, legacy:tplugins, legacy:tpluginscripts, legacy:tpluginsettings, legacy:trazunasettings, legacy:tremotepointer, people.extend_attribute, people.extend_data, people.extend_data_user_activity, people.extend_rc_set, people.extend_set, people.extend_subtype, people.person, people.trash, people.user_address, people.user_favorite, people.user_interest, people.user_tag, programs_sites.extend_attribute, programs_sites.extend_data, programs_sites.extend_rc_set, programs_sites.extend_set, programs_sites.extend_subtype, programs_sites.image_size, programs_sites.site, programs_sites.system_object, programs_sites.trash, reporting.trash, surveys.trash, timesheets.trash |
-| `rest:site.save{bundle}` | communications.extend_attribute, communications.extend_data, communications.extend_rc_set, communications.extend_set, communications.extend_subtype, communications.mailing_list, communications.mailing_list_member, communications.trash, content.approval_action, content.approval_chain, content.approval_membership, content.approval_request, content.category, content.changeset, content.changeset_category_assign, content.changeset_tag_assign, content.comment, content.commenter, content.content, content.content_category_assign, content.content_object, content.content_rating, content.content_related, content.content_remote_pointer, content.content_stats, content.content_tag, content.extend_attribute, content.extend_data, content.extend_rc_set, content.extend_set, content.extend_subtype, content.feed, content.feed_advanced_param, content.feed_item, content.file, content.file_metadata, content.filename_archive, content.form_response_packet, content.form_response_question, content.trash, content.variation_targeting, esignature.trash, file-store, finance.trash, identity.credential, identity.extend_attribute, identity.extend_data, identity.extend_data_user_activity, identity.extend_rc_set, identity.extend_set, identity.extend_subtype, identity.group_account, identity.login_state, identity.membership, identity.oauth_client, identity.permission, identity.trash, identity.user_account, identity.user_address, identity.user_favorite, identity.user_interest, identity.user_tag, legacy:tentity, legacy:tplugindisplayobjects, legacy:tplugins, legacy:tpluginscripts, legacy:tpluginsettings, legacy:trazunasettings, legacy:tremotepointer, people.extend_attribute, people.extend_data, people.extend_data_user_activity, people.extend_rc_set, people.extend_set, people.extend_subtype, people.person, people.trash, people.user_address, people.user_favorite, people.user_interest, people.user_tag, programs_sites.extend_attribute, programs_sites.extend_data, programs_sites.extend_rc_set, programs_sites.extend_set, programs_sites.extend_subtype, programs_sites.image_size, programs_sites.site, programs_sites.system_object, programs_sites.trash, reporting.trash, surveys.trash, timesheets.trash |
+| `rest:site.save` | content.approval_action, content.approval_chain, content.approval_membership, content.approval_request, content.category, content.changeset, content.changeset_category_assign, content.changeset_tag_assign, content.comment, content.commenter, content.content, content.content_category_assign, content.content_object, content.content_rating, content.content_related, content.content_remote_pointer, content.content_stats, content.content_tag, content.extend_attribute, content.extend_data, content.extend_rc_set, content.extend_set, content.extend_subtype, content.feed, content.feed_advanced_param, content.feed_item, content.file, content.file_metadata, content.filename_archive, content.form_response_packet, content.form_response_question, content.trash, content.variation_targeting, file-store, identity.credential, identity.extend_attribute, identity.extend_data, identity.extend_data_user_activity, identity.extend_rc_set, identity.extend_set, identity.extend_subtype, identity.group_account, identity.login_state, identity.membership, identity.oauth_client, identity.permission, identity.trash, identity.user_account, identity.user_address, identity.user_favorite, identity.user_interest, identity.user_tag, legacy:tentity, legacy:tmailinglist, legacy:tmailinglistmembers, legacy:tplugindisplayobjects, legacy:tplugins, legacy:tpluginscripts, legacy:tpluginsettings, legacy:trazunasettings, legacy:tremotepointer, people.extend_attribute, people.extend_data, people.extend_data_user_activity, people.extend_rc_set, people.extend_set, people.extend_subtype, people.person, people.trash, people.user_address, people.user_favorite, people.user_interest, people.user_tag, programs_sites.extend_attribute, programs_sites.extend_data, programs_sites.extend_rc_set, programs_sites.extend_set, programs_sites.extend_subtype, programs_sites.image_size, programs_sites.site, programs_sites.system_object, programs_sites.trash |
+| `rest:site.save{bundle}` | content.approval_action, content.approval_chain, content.approval_membership, content.approval_request, content.category, content.changeset, content.changeset_category_assign, content.changeset_tag_assign, content.comment, content.commenter, content.content, content.content_category_assign, content.content_object, content.content_rating, content.content_related, content.content_remote_pointer, content.content_stats, content.content_tag, content.extend_attribute, content.extend_data, content.extend_rc_set, content.extend_set, content.extend_subtype, content.feed, content.feed_advanced_param, content.feed_item, content.file, content.file_metadata, content.filename_archive, content.form_response_packet, content.form_response_question, content.trash, content.variation_targeting, file-store, identity.credential, identity.extend_attribute, identity.extend_data, identity.extend_data_user_activity, identity.extend_rc_set, identity.extend_set, identity.extend_subtype, identity.group_account, identity.login_state, identity.membership, identity.oauth_client, identity.permission, identity.trash, identity.user_account, identity.user_address, identity.user_favorite, identity.user_interest, identity.user_tag, legacy:tentity, legacy:tmailinglist, legacy:tmailinglistmembers, legacy:tplugindisplayobjects, legacy:tplugins, legacy:tpluginscripts, legacy:tpluginsettings, legacy:trazunasettings, legacy:tremotepointer, people.extend_attribute, people.extend_data, people.extend_data_user_activity, people.extend_rc_set, people.extend_set, people.extend_subtype, people.person, people.trash, people.user_address, people.user_favorite, people.user_interest, people.user_tag, programs_sites.extend_attribute, programs_sites.extend_data, programs_sites.extend_rc_set, programs_sites.extend_set, programs_sites.extend_subtype, programs_sites.image_size, programs_sites.site, programs_sites.system_object, programs_sites.trash |
 | `rest:stats.delete` | content.content_stats |
 | `rest:stats.delete{session}` | content.content_stats |
 | `rest:stats.delete{siteid}` | content.content_stats |
@@ -1338,7 +1265,7 @@ Units each writing entry point reaches:
 | `rest:variationtargeting.save{session}` | content.variation_targeting |
 | `rest:variationtargeting.save{siteid}` | content.variation_targeting |
 | `rte:/_api/asset/upload` | file-store |
-| `rte:/_api/email/trackopen` | communications.email_stat |
+| `rte:/_api/email/trackopen` | legacy:temailstats |
 | `rte:/_api/render/file` | file-store |
 | `rte:/oauth` | identity.credential, identity.group_account, identity.login_state, identity.oauth_token, identity.user_strike |
 | `rte:/oauth2` | identity.credential, identity.group_account, identity.login_state, identity.oauth_token, identity.user_strike |
@@ -1354,45 +1281,6 @@ Sources of the write records, by unit, table and operation:
 
 | Unit | Table | Op | Sources |
 | --- | --- | --- | --- |
-| `communications.delivery_status` | `synthetic.delivery_status` | insert | `legacy-fixtures/cfml/modules/communications.cfc:270-271` |
-| `communications.email` | `temails` | delete | `core/mura/settings/settingsDAO.cfc:204` |
-| `communications.email` | `temails` | insert | `core/mura/email/emailDAO.cfc:99-120` |
-| `communications.email` | `temails` | update | `core/mura/configBean.cfc:973-977; core/mura/email/emailDAO.cfc:146-163, 172-174; core/mura/email/emailManager.cfc:156; core/mura/email/emailUtility.cfc:142, 281, 285, 440, 444` |
-| `communications.email_return_stat` | `temailreturnstats` | delete | `core/mura/settings/settingsDAO.cfc:196` |
-| `communications.email_return_stat` | `temailreturnstats` | insert | `core/mura/email/emailUtility.cfc:474-477` |
-| `communications.email_stat` | `temailstats` | delete | `core/mura/settings/settingsDAO.cfc:200` |
-| `communications.email_stat` | `temailstats` | insert | `core/mura/email/emailUtility.cfc:484-485` |
-| `communications.email_stat` | `temailstats` | update | `core/mura/email/emailUtility.cfc:459-462` |
-| `communications.extend_attribute` | `tclassextendattributes` | delete | `core/mura/extend/extendAttribute.cfc:498-499; core/mura/publisher.cfc:2574-2579; core/mura/settings/settingsDAO.cfc:260` |
-| `communications.extend_attribute` | `tclassextendattributes` | insert | `core/mura/extend/extendAttribute.cfc:423-441; core/mura/extend/extendManager.cfc:1943-1957; core/mura/publisher.cfc:2846-2872` |
-| `communications.extend_attribute` | `tclassextendattributes` | save | `admin/core/controllers/cextend.cfc:140-151, 162-173, 200-211` |
-| `communications.extend_attribute` | `tclassextendattributes` | update | `core/mura/configBean.cfc:973-977; core/mura/extend/extendAttribute.cfc:398-415; core/mura/extend/extendManager.cfc:981-984; core/mura/publisher.cfc:2819-2840` |
-| `communications.extend_data` | `tclassextenddata` | delete | `core/mura/extend/extendAttribute.cfc:476-477; core/mura/extend/extendManager.cfc:523-525, 591-593, 1086-1087; core/mura/publisher.cfc:2919-2945, 2950; core/mura/settings/settingsDAO.cfc:256` |
-| `communications.extend_data` | `tclassextenddata` | insert | `core/mura/extend/extendManager.cfc:530-556, 633-641, 728-754, 812-838, 900-916; core/mura/publisher.cfc:2961-2982` |
-| `communications.extend_data` | `tclassextenddata` | save | `admin/core/controllers/cextend.cfc:140-151, 162-173, 200-211` |
-| `communications.extend_data` | `tclassextenddata` | update | `core/mura/configBean.cfc:973-977; core/mura/content/contentUtility.cfc:1240-1243` |
-| `communications.extend_rc_set` | `tclassextendrcsets` | delete | `admin/core/controllers/cextend.cfc:193; core/mura/bean/beanORM.cfc:731` |
-| `communications.extend_rc_set` | `tclassextendrcsets` | save | `admin/core/controllers/cextend.cfc:190; core/mura/extend/extendManager.cfc:1967; core/mura/publisher.cfc:2779` |
-| `communications.extend_rc_set` | `tclassextendrcsets` | update | `core/mura/extend/extendManager.cfc:1011-1014` |
-| `communications.extend_set` | `tclassextendsets` | delete | `core/mura/extend/extendSet.cfc:385; core/mura/publisher.cfc:2565-2571; core/mura/settings/settingsDAO.cfc:264` |
-| `communications.extend_set` | `tclassextendsets` | insert | `core/mura/extend/extendSet.cfc:356-365; core/mura/publisher.cfc:2718-2729` |
-| `communications.extend_set` | `tclassextendsets` | save | `admin/core/controllers/cextend.cfc:140-151, 162-173` |
-| `communications.extend_set` | `tclassextendsets` | update | `core/mura/configBean.cfc:973-977; core/mura/extend/extendManager.cfc:996-999; core/mura/extend/extendSet.cfc:342-350; core/mura/publisher.cfc:2733-2741` |
-| `communications.extend_subtype` | `tclassextend` | delete | `core/mura/extend/extendSubType.cfc:735-737; core/mura/publisher.cfc:2556-2561; core/mura/settings/settingsDAO.cfc:268` |
-| `communications.extend_subtype` | `tclassextend` | insert | `core/mura/extend/extendSubType.cfc:668-686; core/mura/publisher.cfc:2627-2681` |
-| `communications.extend_subtype` | `tclassextend` | save | `admin/core/controllers/cextend.cfc:140-151; core/mura/extend/extendManager.cfc:1897-1913` |
-| `communications.extend_subtype` | `tclassextend` | update | `core/mura/configBean.cfc:973-977; core/mura/extend/extendSubType.cfc:633-649; core/mura/publisher.cfc:2590-2623; core/mura/settings/settingsManager.cfc:728` |
-| `communications.mailing_list` | `tmailinglist` | delete | `core/mura/mailinglist/mailinglistDAO.cfc:178; core/mura/publisher.cfc:1991-2004; core/mura/settings/settingsDAO.cfc:153` |
-| `communications.mailing_list` | `tmailinglist` | insert | `core/mura/mailinglist/mailinglistDAO.cfc:88-95; core/mura/publisher.cfc:2008-2018; core/mura/settings/settingsDAO.cfc:841-849` |
-| `communications.mailing_list` | `tmailinglist` | update | `core/mura/configBean.cfc:973-977; core/mura/mailinglist/mailinglistDAO.cfc:163-168` |
-| `communications.mailing_list_member` | `tmailinglistmembers` | delete | `core/mura/email/emailGateway.cfc:323; core/mura/mailinglist/mailinglistDAO.cfc:188; core/mura/mailinglist/mailinglistUtility.cfc:137; core/mura/mailinglist/memberDAO.cfc:173, 187; core/mura/publisher.cfc:2027; core/mura/settings/settingsDAO.cfc:157; core/mura/trash/trashManager.cfc:111-112` |
-| `communications.mailing_list_member` | `tmailinglistmembers` | insert | `core/mura/mailinglist/memberDAO.cfc:96-105; core/mura/publisher.cfc:2032-2047` |
-| `communications.mailing_list_member` | `tmailinglistmembers` | update | `core/mura/mailinglist/memberDAO.cfc:152-159; core/mura/mailinglist/memberManager.cfc:234-238` |
-| `communications.message` | `synthetic.message` | insert | `legacy-fixtures/cfml/modules/communications.cfc:104-105` |
-| `communications.message` | `synthetic.message` | update | `legacy-fixtures/cfml/modules/communications.cfc:245` |
-| `communications.message_template` | `synthetic.message_template` | insert | `legacy-fixtures/cfml/modules/communications.cfc:66-67` |
-| `communications.trash` | `ttrash` | delete | `core/mura/publisher.cfc:1669-1676; core/mura/settings/settingsDAO.cfc:276; core/mura/trash/trashManager.cfc:128-129, 432-434` |
-| `communications.trash` | `ttrash` | insert | `core/mura/publisher.cfc:1719-1740; core/mura/trash/trashManager.cfc:257-271` |
 | `content.approval_action` | `tapprovalactions` | delete | `core/mura/bean/beanORM.cfc:456-538, 707-723; core/mura/publisher.cfc:171-190; core/mura/settings/settingsDAO.cfc:284, 303-313` |
 | `content.approval_action` | `tapprovalactions` | save | `core/mura/bean/beanORM.cfc:462-538; core/mura/content/approval/approvalRequestBean.cfc:26, 114, 135; core/mura/publisher.cfc:171-190, 598-610` |
 | `content.approval_assignment` | `tapprovalassignments` | delete | `core/mura/settings/settingsDAO.cfc:288` |
@@ -1495,58 +1383,8 @@ Sources of the write records, by unit, table and operation:
 | `content.trash` | `ttrash` | insert | `core/mura/publisher.cfc:1719-1740; core/mura/trash/trashManager.cfc:257-271` |
 | `content.variation_targeting` | `tcontentvariationtargeting` | delete | `core/mura/bean/beanORM.cfc:731; core/mura/client/api/json/v1/jsonApiUtility.cfc:3299; core/mura/publisher.cfc:171-190; core/mura/settings/settingsDAO.cfc:303-313; core/mura/trash/trashManager.cfc:81-82` |
 | `content.variation_targeting` | `tcontentvariationtargeting` | save | `admin/core/views/carch/variationtargeting.cfm:9; core/mura/client/api/json/v1/jsonApiUtility.cfc:2004; core/mura/content/contentManager.cfc:1739; core/mura/publisher.cfc:171-190, 598-610` |
-| `esignature.audit_entry` | `synthetic.audit_entry` | insert | `legacy-fixtures/sql/esignature/200_usp_audit_append.sql:42-43` |
-| `esignature.extend_attribute` | `tclassextendattributes` | delete | `core/mura/extend/extendAttribute.cfc:498-499` |
-| `esignature.extend_attribute` | `tclassextendattributes` | insert | `core/mura/extend/extendAttribute.cfc:423-441; core/mura/extend/extendManager.cfc:1943-1957` |
-| `esignature.extend_attribute` | `tclassextendattributes` | save | `admin/core/controllers/cextend.cfc:140-151, 162-173, 200-211` |
-| `esignature.extend_attribute` | `tclassextendattributes` | update | `core/mura/extend/extendAttribute.cfc:398-415; core/mura/extend/extendManager.cfc:981-984` |
-| `esignature.extend_data` | `tclassextenddata` | delete | `core/mura/extend/extendAttribute.cfc:476-477; core/mura/extend/extendManager.cfc:523-525, 591-593, 1086-1087` |
-| `esignature.extend_data` | `tclassextenddata` | insert | `core/mura/extend/extendManager.cfc:530-556, 633-641, 728-754, 812-838, 900-916` |
-| `esignature.extend_data` | `tclassextenddata` | save | `admin/core/controllers/cextend.cfc:140-151, 162-173, 200-211` |
-| `esignature.extend_rc_set` | `tclassextendrcsets` | delete | `admin/core/controllers/cextend.cfc:193; core/mura/bean/beanORM.cfc:731` |
-| `esignature.extend_rc_set` | `tclassextendrcsets` | save | `admin/core/controllers/cextend.cfc:190; core/mura/extend/extendManager.cfc:1967` |
-| `esignature.extend_rc_set` | `tclassextendrcsets` | update | `core/mura/extend/extendManager.cfc:1011-1014` |
-| `esignature.extend_set` | `tclassextendsets` | delete | `core/mura/extend/extendSet.cfc:385` |
-| `esignature.extend_set` | `tclassextendsets` | insert | `core/mura/extend/extendSet.cfc:356-365` |
-| `esignature.extend_set` | `tclassextendsets` | save | `admin/core/controllers/cextend.cfc:140-151, 162-173` |
-| `esignature.extend_set` | `tclassextendsets` | update | `core/mura/extend/extendManager.cfc:996-999; core/mura/extend/extendSet.cfc:342-350` |
-| `esignature.extend_subtype` | `tclassextend` | delete | `core/mura/extend/extendSubType.cfc:735-737` |
-| `esignature.extend_subtype` | `tclassextend` | insert | `core/mura/extend/extendSubType.cfc:668-686` |
-| `esignature.extend_subtype` | `tclassextend` | save | `admin/core/controllers/cextend.cfc:140-151; core/mura/extend/extendManager.cfc:1897-1913` |
-| `esignature.extend_subtype` | `tclassextend` | update | `core/mura/extend/extendSubType.cfc:633-649` |
-| `esignature.signature` | `synthetic.signature` | insert | `legacy-fixtures/cfml/modules/esignature.cfc:130-131` |
-| `esignature.signature_request` | `synthetic.signature_request` | insert | `legacy-fixtures/cfml/modules/esignature.cfc:83-84` |
-| `esignature.signature_request` | `synthetic.signature_request` | update | `legacy-fixtures/cfml/modules/esignature.cfc:118-120` |
-| `esignature.trash` | `ttrash` | delete | `core/mura/publisher.cfc:1669-1676; core/mura/settings/settingsDAO.cfc:276; core/mura/trash/trashManager.cfc:128-129, 432-434` |
-| `esignature.trash` | `ttrash` | insert | `core/mura/publisher.cfc:1719-1740; core/mura/trash/trashManager.cfc:257-271` |
 | `file-store` | — | delete | `core/mura/content/contentManager.cfc:1422, 1492, 1831, 1924, 1932, 1982; core/mura/content/dataCollection/dataCollectionManager.cfc:207; core/mura/content/file/fileDAO.cfc:245, 343, 400; core/mura/content/file/fileManager.cfc:139, 146, 154, 365, 758, 795, 813, 1110; core/mura/extend/extendAttribute.cfc:472, 489; core/mura/extend/extendManager.cfc:588, 1082; core/mura/fileWriter.cfc:129, 171, 173, 304, 377; core/mura/publisher.cfc:1549; core/mura/settings/settingsManager.cfc:275, 287; core/mura/trash/trashManager.cfc:142, 144; core/mura/user/userManager.cfc:500, 731, 1004; core/mura/utility.cfc:324` |
 | `file-store` | — | write | `core/mura/content/dataCollection/dataCollectionManager.cfc:152; core/mura/content/file/fileBean.cfc:123; core/mura/content/file/fileDAO.cfc:157, 161, 164, 167, 171, 174, 178, 182, 185, 188, 192, 195; core/mura/content/file/fileManager.cfc:132, 362, 365, 1127, 1157, 1213, 1240, 1253, 1262; core/mura/content/file/processImgCfimage.cfc:290, 295, 304, 310, 315; core/mura/extend/extendManager.cfc:623; core/mura/fileWriter.cfc:122, 124, 132, 134, 171, 173; core/mura/user/userManager.cfc:1007` |
-| `finance.attachment` | `Program_N.finance_attachment` | insert | `legacy-fixtures/cfml/modules/finance.cfc:138` |
-| `finance.extend_attribute` | `tclassextendattributes` | delete | `core/mura/extend/extendAttribute.cfc:498-499` |
-| `finance.extend_attribute` | `tclassextendattributes` | insert | `core/mura/extend/extendAttribute.cfc:423-441; core/mura/extend/extendManager.cfc:1943-1957` |
-| `finance.extend_attribute` | `tclassextendattributes` | save | `admin/core/controllers/cextend.cfc:140-151, 162-173, 200-211` |
-| `finance.extend_attribute` | `tclassextendattributes` | update | `core/mura/extend/extendAttribute.cfc:398-415; core/mura/extend/extendManager.cfc:981-984` |
-| `finance.extend_data` | `tclassextenddata` | delete | `core/mura/extend/extendAttribute.cfc:476-477; core/mura/extend/extendManager.cfc:523-525, 591-593, 1086-1087` |
-| `finance.extend_data` | `tclassextenddata` | insert | `core/mura/extend/extendManager.cfc:530-556, 633-641, 728-754, 812-838, 900-916` |
-| `finance.extend_data` | `tclassextenddata` | save | `admin/core/controllers/cextend.cfc:140-151, 162-173, 200-211` |
-| `finance.extend_rc_set` | `tclassextendrcsets` | delete | `admin/core/controllers/cextend.cfc:193; core/mura/bean/beanORM.cfc:731` |
-| `finance.extend_rc_set` | `tclassextendrcsets` | save | `admin/core/controllers/cextend.cfc:190; core/mura/extend/extendManager.cfc:1967` |
-| `finance.extend_rc_set` | `tclassextendrcsets` | update | `core/mura/extend/extendManager.cfc:1011-1014` |
-| `finance.extend_set` | `tclassextendsets` | delete | `core/mura/extend/extendSet.cfc:385` |
-| `finance.extend_set` | `tclassextendsets` | insert | `core/mura/extend/extendSet.cfc:356-365` |
-| `finance.extend_set` | `tclassextendsets` | save | `admin/core/controllers/cextend.cfc:140-151, 162-173` |
-| `finance.extend_set` | `tclassextendsets` | update | `core/mura/extend/extendManager.cfc:996-999; core/mura/extend/extendSet.cfc:342-350` |
-| `finance.extend_subtype` | `tclassextend` | delete | `core/mura/extend/extendSubType.cfc:735-737` |
-| `finance.extend_subtype` | `tclassextend` | insert | `core/mura/extend/extendSubType.cfc:668-686` |
-| `finance.extend_subtype` | `tclassextend` | save | `admin/core/controllers/cextend.cfc:140-151; core/mura/extend/extendManager.cfc:1897-1913` |
-| `finance.extend_subtype` | `tclassextend` | update | `core/mura/extend/extendSubType.cfc:633-649` |
-| `finance.record` | `Program_N.finance_record` | insert | `legacy-fixtures/sql/finance/200_procedures.program.sql:41-42` |
-| `finance.record` | `Program_N.finance_record` | update | `legacy-fixtures/sql/finance/200_procedures.program.sql:144-147` |
-| `finance.record_version` | `Program_N.finance_record_version` | insert | `legacy-fixtures/sql/finance/200_procedures.program.sql:44-45, 149-150` |
-| `finance.rollup` | `Program_N.finance_rollup` | delete | `legacy-fixtures/sql/finance/200_procedures.program.sql:175` |
-| `finance.rollup` | `Program_N.finance_rollup` | insert | `legacy-fixtures/sql/finance/200_procedures.program.sql:177-180` |
-| `finance.trash` | `ttrash` | delete | `core/mura/publisher.cfc:1669-1676; core/mura/settings/settingsDAO.cfc:276; core/mura/trash/trashManager.cfc:128-129, 432-434` |
-| `finance.trash` | `ttrash` | insert | `core/mura/publisher.cfc:1719-1740; core/mura/trash/trashManager.cfc:257-271` |
 | `identity.credential` | `tusers` | delete | `core/mura/publisher.cfc:2412-2428; core/mura/settings/settingsDAO.cfc:149; core/mura/user/userDAO.cfc:375` |
 | `identity.credential` | `tusers` | insert | `core/mura/publisher.cfc:2433-2477; core/mura/settings/settingsDAO.cfc:853-880; core/mura/user/userDAO.cfc:304-344` |
 | `identity.credential` | `tusers` | update | `core/mura/configBean.cfc:973-977; core/mura/user/userDAO.cfc:411-455, 698-701; core/mura/user/userUtility.cfc:167-173` |
@@ -1611,9 +1449,23 @@ Sources of the write records, by unit, table and operation:
 | `legacy:tcontenteventreminders` | `tcontenteventreminders` | delete | `core/mura/content/reminder/reminderManager.cfc:141; core/mura/settings/settingsDAO.cfc:224; core/mura/trash/trashManager.cfc:36-37` |
 | `legacy:tcontenteventreminders` | `tcontenteventreminders` | insert | `core/mura/content/reminder/reminderDAO.cfc:88-98` |
 | `legacy:tcontenteventreminders` | `tcontenteventreminders` | update | `core/mura/content/reminder/reminderDAO.cfc:135-143; core/mura/content/reminder/reminderUtility.cfc:177-180` |
+| `legacy:temailreturnstats` | `temailreturnstats` | delete | `core/mura/settings/settingsDAO.cfc:196` |
+| `legacy:temailreturnstats` | `temailreturnstats` | insert | `core/mura/email/emailUtility.cfc:474-477` |
+| `legacy:temails` | `temails` | delete | `core/mura/settings/settingsDAO.cfc:204` |
+| `legacy:temails` | `temails` | insert | `core/mura/email/emailDAO.cfc:99-120` |
+| `legacy:temails` | `temails` | update | `core/mura/configBean.cfc:973-977; core/mura/email/emailDAO.cfc:146-163, 172-174; core/mura/email/emailManager.cfc:156; core/mura/email/emailUtility.cfc:142, 281, 285, 440, 444` |
+| `legacy:temailstats` | `temailstats` | delete | `core/mura/settings/settingsDAO.cfc:200` |
+| `legacy:temailstats` | `temailstats` | insert | `core/mura/email/emailUtility.cfc:484-485` |
+| `legacy:temailstats` | `temailstats` | update | `core/mura/email/emailUtility.cfc:459-462` |
 | `legacy:tentity` | `tentity` | delete | `core/mura/bean/beanFactory.cfc:199; core/mura/bean/beanORM.cfc:731` |
 | `legacy:tentity` | `tentity` | save | `core/mura/bean/beanEntity.cfc:19; core/mura/bean/beanFactory.cfc:160` |
 | `legacy:tentity-declared:*` | `tentity-declared:*` | update | `core/mura/client/api/json/v1/jsonApiUtility.cfc:215` |
+| `legacy:tmailinglist` | `tmailinglist` | delete | `core/mura/mailinglist/mailinglistDAO.cfc:178; core/mura/publisher.cfc:1991-2004; core/mura/settings/settingsDAO.cfc:153` |
+| `legacy:tmailinglist` | `tmailinglist` | insert | `core/mura/mailinglist/mailinglistDAO.cfc:88-95; core/mura/publisher.cfc:2008-2018; core/mura/settings/settingsDAO.cfc:841-849` |
+| `legacy:tmailinglist` | `tmailinglist` | update | `core/mura/configBean.cfc:973-977; core/mura/mailinglist/mailinglistDAO.cfc:163-168` |
+| `legacy:tmailinglistmembers` | `tmailinglistmembers` | delete | `core/mura/email/emailGateway.cfc:323; core/mura/mailinglist/mailinglistDAO.cfc:188; core/mura/mailinglist/mailinglistUtility.cfc:137; core/mura/mailinglist/memberDAO.cfc:173, 187; core/mura/publisher.cfc:2027; core/mura/settings/settingsDAO.cfc:157; core/mura/trash/trashManager.cfc:111-112` |
+| `legacy:tmailinglistmembers` | `tmailinglistmembers` | insert | `core/mura/mailinglist/memberDAO.cfc:96-105; core/mura/publisher.cfc:2032-2047` |
+| `legacy:tmailinglistmembers` | `tmailinglistmembers` | update | `core/mura/mailinglist/memberDAO.cfc:152-159; core/mura/mailinglist/memberManager.cfc:234-238` |
 | `legacy:tplugindisplayobjects` | `tplugindisplayobjects` | delete | `core/mura/plugin/pluginManager.cfc:1173; core/mura/publisher.cfc:3323-3324` |
 | `legacy:tplugindisplayobjects` | `tplugindisplayobjects` | insert | `core/mura/plugin/pluginDisplayObjectBean.cfc:275-285; core/mura/publisher.cfc:3328-3348` |
 | `legacy:tplugindisplayobjects` | `tplugindisplayobjects` | update | `core/mura/configBean.cfc:973-977; core/mura/plugin/pluginDisplayObjectBean.cfc:260-269; core/mura/plugin/pluginManager.cfc:1111-1113` |
@@ -1629,6 +1481,9 @@ Sources of the write records, by unit, table and operation:
 | `legacy:trazunasettings` | `trazunasettings` | save | `core/mura/content/file/razuna/razunaSettingsBean.cfc:22; core/mura/extend/extendManager.cfc:2016-2018; core/mura/settings/settingsManager.cfc:271, 379` |
 | `legacy:tremotepointer` | `tremotepointer` | delete | `core/mura/publisher.cfc:171-190; core/mura/settings/settingsDAO.cfc:303-313` |
 | `legacy:tremotepointer` | `tremotepointer` | save | `core/mura/publisher.cfc:171-190, 598-610` |
+| `legacy:tsessiontracking` | `tsessiontracking` | delete | `core/mura/settings/settingsDAO.cfc:240; core/mura/user/sessionTracking/sessionTrackingDAO.cfc:222-223` |
+| `legacy:tsessiontracking` | `tsessiontracking` | insert | `core/mura/user/sessionTracking/sessionTrackingDAO.cfc:168-190` |
+| `legacy:ttrash` | `ttrash` | insert | `core/mura/trash/trashManager.cfc:257-271` |
 | `people.extend_attribute` | `tclassextendattributes` | delete | `core/mura/extend/extendAttribute.cfc:498-499; core/mura/publisher.cfc:2574-2579; core/mura/settings/settingsDAO.cfc:260` |
 | `people.extend_attribute` | `tclassextendattributes` | insert | `core/mura/extend/extendAttribute.cfc:423-441; core/mura/extend/extendManager.cfc:1943-1957; core/mura/publisher.cfc:2846-2872` |
 | `people.extend_attribute` | `tclassextendattributes` | save | `admin/core/controllers/cextend.cfc:140-151, 162-173, 200-211` |
@@ -1655,7 +1510,7 @@ Sources of the write records, by unit, table and operation:
 | `people.person` | `tusers` | delete | `core/mura/publisher.cfc:2412-2428; core/mura/settings/settingsDAO.cfc:149; core/mura/user/userDAO.cfc:375` |
 | `people.person` | `tusers` | insert | `core/mura/publisher.cfc:2433-2477; core/mura/settings/settingsDAO.cfc:853-880; core/mura/user/userDAO.cfc:304-344` |
 | `people.person` | `tusers` | update | `core/mura/configBean.cfc:973-977; core/mura/extend/extendSubType.cfc:742-746; core/mura/user/userDAO.cfc:411-455` |
-| `people.person_archive` | `synthetic.person_archive` | insert | `legacy-fixtures/cfml/modules/people.cfc:50` |
+| `people.person_archive` | `synthetic.person_archive` | insert | `legacy-fixtures/cfml/modules/people.cfc:49` |
 | `people.trash` | `ttrash` | delete | `core/mura/publisher.cfc:1669-1676; core/mura/settings/settingsDAO.cfc:276; core/mura/trash/trashManager.cfc:128-129, 432-434` |
 | `people.trash` | `ttrash` | insert | `core/mura/publisher.cfc:1719-1740; core/mura/trash/trashManager.cfc:257-271` |
 | `people.user_address` | `tuseraddresses` | delete | `core/mura/publisher.cfc:2349-2368; core/mura/settings/settingsDAO.cfc:145; core/mura/trash/trashManager.cfc:94-95; core/mura/user/userDAO.cfc:814` |
@@ -1698,114 +1553,12 @@ Sources of the write records, by unit, table and operation:
 | `programs_sites.system_object` | `tsystemobjects` | update | `core/mura/configBean.cfc:973-977; core/mura/settings/settingsManager.cfc:734-737` |
 | `programs_sites.trash` | `ttrash` | delete | `core/mura/publisher.cfc:1669-1676; core/mura/settings/settingsDAO.cfc:276; core/mura/trash/trashManager.cfc:128-129, 432-434` |
 | `programs_sites.trash` | `ttrash` | insert | `core/mura/publisher.cfc:1719-1740; core/mura/trash/trashManager.cfc:257-271` |
-| `reporting.export_job` | `synthetic.export_job` | insert | `legacy-fixtures/cfml/modules/reporting.cfc:66-67` |
-| `reporting.export_job` | `synthetic.export_job` | update | `legacy-fixtures/sql/reporting/200_usp_export_job_transition.sql:50-59` |
-| `reporting.extend_attribute` | `tclassextendattributes` | delete | `core/mura/extend/extendAttribute.cfc:498-499; core/mura/publisher.cfc:2574-2579; core/mura/settings/settingsDAO.cfc:260` |
-| `reporting.extend_attribute` | `tclassextendattributes` | insert | `core/mura/extend/extendAttribute.cfc:423-441; core/mura/extend/extendManager.cfc:1943-1957; core/mura/publisher.cfc:2846-2872` |
-| `reporting.extend_attribute` | `tclassextendattributes` | save | `admin/core/controllers/cextend.cfc:140-151, 162-173, 200-211` |
-| `reporting.extend_attribute` | `tclassextendattributes` | update | `core/mura/extend/extendAttribute.cfc:398-415; core/mura/extend/extendManager.cfc:981-984; core/mura/publisher.cfc:2819-2840` |
-| `reporting.extend_data` | `tclassextenddata` | delete | `core/mura/extend/extendAttribute.cfc:476-477; core/mura/extend/extendManager.cfc:523-525, 591-593, 1086-1087; core/mura/publisher.cfc:2919-2945, 2950; core/mura/settings/settingsDAO.cfc:256` |
-| `reporting.extend_data` | `tclassextenddata` | insert | `core/mura/extend/extendManager.cfc:530-556, 633-641, 728-754, 812-838, 900-916; core/mura/publisher.cfc:2961-2982` |
-| `reporting.extend_data` | `tclassextenddata` | save | `admin/core/controllers/cextend.cfc:140-151, 162-173, 200-211` |
-| `reporting.extend_data` | `tclassextenddata` | update | `core/mura/content/contentUtility.cfc:1240-1243` |
-| `reporting.extend_rc_set` | `tclassextendrcsets` | delete | `admin/core/controllers/cextend.cfc:193; core/mura/bean/beanORM.cfc:731` |
-| `reporting.extend_rc_set` | `tclassextendrcsets` | save | `admin/core/controllers/cextend.cfc:190; core/mura/extend/extendManager.cfc:1967; core/mura/publisher.cfc:2779` |
-| `reporting.extend_rc_set` | `tclassextendrcsets` | update | `core/mura/extend/extendManager.cfc:1011-1014` |
-| `reporting.extend_set` | `tclassextendsets` | delete | `core/mura/extend/extendSet.cfc:385; core/mura/publisher.cfc:2565-2571; core/mura/settings/settingsDAO.cfc:264` |
-| `reporting.extend_set` | `tclassextendsets` | insert | `core/mura/extend/extendSet.cfc:356-365; core/mura/publisher.cfc:2718-2729` |
-| `reporting.extend_set` | `tclassextendsets` | save | `admin/core/controllers/cextend.cfc:140-151, 162-173` |
-| `reporting.extend_set` | `tclassextendsets` | update | `core/mura/extend/extendManager.cfc:996-999; core/mura/extend/extendSet.cfc:342-350; core/mura/publisher.cfc:2733-2741` |
-| `reporting.extend_subtype` | `tclassextend` | delete | `core/mura/extend/extendSubType.cfc:735-737; core/mura/publisher.cfc:2556-2561; core/mura/settings/settingsDAO.cfc:268` |
-| `reporting.extend_subtype` | `tclassextend` | insert | `core/mura/extend/extendSubType.cfc:668-686; core/mura/publisher.cfc:2627-2681` |
-| `reporting.extend_subtype` | `tclassextend` | save | `admin/core/controllers/cextend.cfc:140-151; core/mura/extend/extendManager.cfc:1897-1913` |
-| `reporting.extend_subtype` | `tclassextend` | update | `core/mura/extend/extendSubType.cfc:633-649; core/mura/publisher.cfc:2590-2623; core/mura/settings/settingsManager.cfc:728` |
-| `reporting.session_tracking` | `tsessiontracking` | delete | `core/mura/settings/settingsDAO.cfc:240; core/mura/user/sessionTracking/sessionTrackingDAO.cfc:222-223` |
-| `reporting.session_tracking` | `tsessiontracking` | insert | `core/mura/user/sessionTracking/sessionTrackingDAO.cfc:168-190` |
-| `reporting.trash` | `ttrash` | delete | `core/mura/publisher.cfc:1669-1676; core/mura/settings/settingsDAO.cfc:276; core/mura/trash/trashManager.cfc:128-129, 432-434` |
-| `reporting.trash` | `ttrash` | insert | `core/mura/publisher.cfc:1719-1740; core/mura/trash/trashManager.cfc:257-271` |
-| `surveys.extend_attribute` | `tclassextendattributes` | delete | `core/mura/extend/extendAttribute.cfc:498-499` |
-| `surveys.extend_attribute` | `tclassextendattributes` | insert | `core/mura/extend/extendAttribute.cfc:423-441; core/mura/extend/extendManager.cfc:1943-1957` |
-| `surveys.extend_attribute` | `tclassextendattributes` | save | `admin/core/controllers/cextend.cfc:140-151, 162-173, 200-211` |
-| `surveys.extend_attribute` | `tclassextendattributes` | update | `core/mura/extend/extendAttribute.cfc:398-415; core/mura/extend/extendManager.cfc:981-984` |
-| `surveys.extend_data` | `tclassextenddata` | delete | `core/mura/extend/extendAttribute.cfc:476-477; core/mura/extend/extendManager.cfc:523-525, 591-593, 1086-1087` |
-| `surveys.extend_data` | `tclassextenddata` | insert | `core/mura/extend/extendManager.cfc:530-556, 633-641, 728-754, 812-838, 900-916` |
-| `surveys.extend_data` | `tclassextenddata` | save | `admin/core/controllers/cextend.cfc:140-151, 162-173, 200-211` |
-| `surveys.extend_rc_set` | `tclassextendrcsets` | delete | `admin/core/controllers/cextend.cfc:193; core/mura/bean/beanORM.cfc:731` |
-| `surveys.extend_rc_set` | `tclassextendrcsets` | save | `admin/core/controllers/cextend.cfc:190; core/mura/extend/extendManager.cfc:1967` |
-| `surveys.extend_rc_set` | `tclassextendrcsets` | update | `core/mura/extend/extendManager.cfc:1011-1014` |
-| `surveys.extend_set` | `tclassextendsets` | delete | `core/mura/extend/extendSet.cfc:385` |
-| `surveys.extend_set` | `tclassextendsets` | insert | `core/mura/extend/extendSet.cfc:356-365` |
-| `surveys.extend_set` | `tclassextendsets` | save | `admin/core/controllers/cextend.cfc:140-151, 162-173` |
-| `surveys.extend_set` | `tclassextendsets` | update | `core/mura/extend/extendManager.cfc:996-999; core/mura/extend/extendSet.cfc:342-350` |
-| `surveys.extend_subtype` | `tclassextend` | delete | `core/mura/extend/extendSubType.cfc:735-737` |
-| `surveys.extend_subtype` | `tclassextend` | insert | `core/mura/extend/extendSubType.cfc:668-686` |
-| `surveys.extend_subtype` | `tclassextend` | save | `admin/core/controllers/cextend.cfc:140-151; core/mura/extend/extendManager.cfc:1897-1913` |
-| `surveys.extend_subtype` | `tclassextend` | update | `core/mura/extend/extendSubType.cfc:633-649` |
-| `surveys.survey` | `synthetic.survey` | insert | `legacy-fixtures/cfml/modules/surveys.cfc:69-70` |
-| `surveys.survey` | `synthetic.survey` | update | `legacy-fixtures/cfml/modules/surveys.cfc:238, 383` |
-| `surveys.survey_reminder` | `synthetic.survey_reminder` | delete | `legacy-fixtures/cfml/modules/surveys.cfc:219` |
-| `surveys.survey_reminder` | `synthetic.survey_reminder` | insert | `legacy-fixtures/cfml/modules/surveys.cfc:222-229` |
-| `surveys.survey_reminder` | `synthetic.survey_reminder` | update | `legacy-fixtures/cfml/modules/surveys.cfc:409` |
-| `surveys.survey_response` | `synthetic.survey_response` | insert | `legacy-fixtures/cfml/modules/surveys.cfc:327-328` |
-| `surveys.survey_schedule` | `synthetic.survey_schedule` | insert | `legacy-fixtures/cfml/modules/surveys.cfc:213-214` |
-| `surveys.survey_schedule` | `synthetic.survey_schedule` | update | `legacy-fixtures/cfml/modules/surveys.cfc:204-206` |
-| `surveys.survey_target` | `synthetic.survey_target` | insert | `legacy-fixtures/sql/surveys/200_usp_survey_bulk_target.sql:18-34` |
-| `surveys.trash` | `ttrash` | delete | `core/mura/publisher.cfc:1669-1676; core/mura/settings/settingsDAO.cfc:276; core/mura/trash/trashManager.cfc:128-129, 432-434` |
-| `surveys.trash` | `ttrash` | insert | `core/mura/publisher.cfc:1719-1740; core/mura/trash/trashManager.cfc:257-271` |
-| `timesheets.approval_action` | `Program_N.approval_action` | insert | `legacy-fixtures/sql/timesheets/200_procedures.program.sql:146-147` |
-| `timesheets.blackout` | `Program_N.blackout` | insert | `legacy-fixtures/sql/timesheets/200_procedures.program.sql:180-183` |
-| `timesheets.extend_attribute` | `tclassextendattributes` | delete | `core/mura/extend/extendAttribute.cfc:498-499` |
-| `timesheets.extend_attribute` | `tclassextendattributes` | insert | `core/mura/extend/extendAttribute.cfc:423-441; core/mura/extend/extendManager.cfc:1943-1957` |
-| `timesheets.extend_attribute` | `tclassextendattributes` | save | `admin/core/controllers/cextend.cfc:140-151, 162-173, 200-211` |
-| `timesheets.extend_attribute` | `tclassextendattributes` | update | `core/mura/extend/extendAttribute.cfc:398-415; core/mura/extend/extendManager.cfc:981-984` |
-| `timesheets.extend_data` | `tclassextenddata` | delete | `core/mura/extend/extendAttribute.cfc:476-477; core/mura/extend/extendManager.cfc:523-525, 591-593, 1086-1087` |
-| `timesheets.extend_data` | `tclassextenddata` | insert | `core/mura/extend/extendManager.cfc:530-556, 633-641, 728-754, 812-838, 900-916` |
-| `timesheets.extend_data` | `tclassextenddata` | save | `admin/core/controllers/cextend.cfc:140-151, 162-173, 200-211` |
-| `timesheets.extend_rc_set` | `tclassextendrcsets` | delete | `admin/core/controllers/cextend.cfc:193; core/mura/bean/beanORM.cfc:731` |
-| `timesheets.extend_rc_set` | `tclassextendrcsets` | save | `admin/core/controllers/cextend.cfc:190; core/mura/extend/extendManager.cfc:1967` |
-| `timesheets.extend_rc_set` | `tclassextendrcsets` | update | `core/mura/extend/extendManager.cfc:1011-1014` |
-| `timesheets.extend_set` | `tclassextendsets` | delete | `core/mura/extend/extendSet.cfc:385` |
-| `timesheets.extend_set` | `tclassextendsets` | insert | `core/mura/extend/extendSet.cfc:356-365` |
-| `timesheets.extend_set` | `tclassextendsets` | save | `admin/core/controllers/cextend.cfc:140-151, 162-173` |
-| `timesheets.extend_set` | `tclassextendsets` | update | `core/mura/extend/extendManager.cfc:996-999; core/mura/extend/extendSet.cfc:342-350` |
-| `timesheets.extend_subtype` | `tclassextend` | delete | `core/mura/extend/extendSubType.cfc:735-737` |
-| `timesheets.extend_subtype` | `tclassextend` | insert | `core/mura/extend/extendSubType.cfc:668-686` |
-| `timesheets.extend_subtype` | `tclassextend` | save | `admin/core/controllers/cextend.cfc:140-151; core/mura/extend/extendManager.cfc:1897-1913` |
-| `timesheets.extend_subtype` | `tclassextend` | update | `core/mura/extend/extendSubType.cfc:633-649` |
-| `timesheets.timesheet_day` | `Program_N.timesheet_day` | update | `legacy-fixtures/sql/timesheets/200_procedures.program.sql:142-144` |
-| `timesheets.trash` | `ttrash` | delete | `core/mura/publisher.cfc:1669-1676; core/mura/settings/settingsDAO.cfc:276; core/mura/trash/trashManager.cfc:128-129, 432-434` |
-| `timesheets.trash` | `ttrash` | insert | `core/mura/publisher.cfc:1719-1740; core/mura/trash/trashManager.cfc:257-271` |
 
 ## Tables
 
 | Id | Origin | siteID | PK | Owner(s) | Rule step(s) | Disposition (step) | Writers |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `tbl:Program_N.approval_action` | fixture | no | yes | timesheets | 1 | carry (5) | 1 |
-| `tbl:Program_N.blackout` | fixture | no | yes | timesheets | 1 | carry (5) | 1 |
-| `tbl:Program_N.finance_attachment` | fixture | no | yes | finance | 1 | carry (5) | 1 |
-| `tbl:Program_N.finance_record` | fixture | yes | yes | finance | 1 | carry (5) | 2 |
-| `tbl:Program_N.finance_record_version` | fixture | no | yes | finance | 1 | carry (5) | 2 |
-| `tbl:Program_N.finance_rollup` | fixture | no | yes | finance | 1 | carry (5) | 2 |
-| `tbl:Program_N.timesheet` | fixture | yes | yes | timesheets | 1 | carry (5) | 0 |
-| `tbl:Program_N.timesheet_day` | fixture | no | yes | timesheets | 1 | carry (5) | 1 |
-| `tbl:synthetic.audit_entry` | fixture | no | yes | e-signature | 1 | carry (5) | 1 |
-| `tbl:synthetic.delivery_status` | fixture | no | yes | communications | 1 | carry (5) | 1 |
-| `tbl:synthetic.export_definition` | fixture | yes | yes | reporting | 1 | carry (5) | 0 |
-| `tbl:synthetic.export_job` | fixture | yes | yes | reporting | 1 | carry (5) | 3 |
-| `tbl:synthetic.finance_transition` | fixture | no | yes | finance | 1 | carry (5) | 0 |
-| `tbl:synthetic.message` | fixture | yes | yes | communications | 1 | carry (5) | 2 |
-| `tbl:synthetic.message_template` | fixture | yes | yes | communications | 1 | carry (5) | 1 |
 | `tbl:synthetic.person_archive` | fixture | yes | yes | people | 1 | carry (5) | 1 |
-| `tbl:synthetic.program_site` | fixture | yes | yes | programs-sites | 1 | carry (5) | 0 |
-| `tbl:synthetic.signature` | fixture | no | yes | e-signature | 1 | carry (5) | 1 |
-| `tbl:synthetic.signature_request` | fixture | yes | yes | e-signature | 1 | carry (5) | 2 |
-| `tbl:synthetic.survey` | fixture | yes | yes | surveys | 1 | carry (5) | 4 |
-| `tbl:synthetic.survey_reminder` | fixture | no | yes | surveys | 1 | carry (5) | 4 |
-| `tbl:synthetic.survey_response` | fixture | yes | yes | surveys | 1 | carry (5) | 1 |
-| `tbl:synthetic.survey_schedule` | fixture | no | yes | surveys | 1 | carry (5) | 2 |
-| `tbl:synthetic.survey_target` | fixture | yes | yes | surveys | 1 | carry (5) | 1 |
-| `tbl:synthetic.timesheet_transition` | fixture | no | yes | timesheets | 1 | carry (5) | 0 |
-| `tbl:synthetic.transition_rule` | fixture | no | yes | timesheets | 1 | carry (5) | 0 |
 | `tbl:tapprovalactions` | orm | yes | yes | strategies-content | 1 | carry (5) | 16 |
 | `tbl:tapprovalassignments` | orm | yes | yes | strategies-content | 1 | carry (5) | 2 |
 | `tbl:tapprovalchains` | orm | yes | yes | strategies-content | 1 | carry (5) | 9 |
@@ -1815,12 +1568,12 @@ Sources of the write records, by unit, table and operation:
 | `tbl:tchangesetrollback` | orm | yes | yes | strategies-content | 1 | carry (5) | 4 |
 | `tbl:tchangesets` | migration | yes | yes | strategies-content | 1 | carry (5) | 14 |
 | `tbl:tchangesettagassign` | orm | yes | yes | strategies-content | 1 | carry (5) | 11 |
-| `tbl:tclassextend` | bootstrap | yes | yes | communications, e-signature, finance, identity, people, programs-sites, reporting, strategies-content, surveys, timesheets | 1 | carry (5) | 23 |
-| `tbl:tclassextendattributes` | bootstrap | yes | yes | communications, e-signature, finance, identity, people, programs-sites, reporting, strategies-content, surveys, timesheets | 1 | carry (5) | 24 |
-| `tbl:tclassextenddata` | bootstrap | yes | yes | communications, e-signature, finance, identity, people, programs-sites, reporting, strategies-content, surveys, timesheets | 1 | carry (5) | 36 |
+| `tbl:tclassextend` | bootstrap | yes | yes | identity, people, programs-sites, strategies-content | 1 | carry (5) | 23 |
+| `tbl:tclassextendattributes` | bootstrap | yes | yes | identity, people, programs-sites, strategies-content | 1 | carry (5) | 24 |
+| `tbl:tclassextenddata` | bootstrap | yes | yes | identity, people, programs-sites, strategies-content | 1 | carry (5) | 36 |
 | `tbl:tclassextenddatauseractivity` | bootstrap | yes | yes | identity, people | 1 | carry (5) | 15 |
-| `tbl:tclassextendrcsets` | orm | yes | yes | communications, e-signature, finance, identity, people, programs-sites, reporting, strategies-content, surveys, timesheets | 1 | carry (5) | 11 |
-| `tbl:tclassextendsets` | bootstrap | yes | yes | communications, e-signature, finance, identity, people, programs-sites, reporting, strategies-content, surveys, timesheets | 1 | carry (5) | 20 |
+| `tbl:tclassextendrcsets` | orm | yes | yes | identity, people, programs-sites, strategies-content | 1 | carry (5) | 11 |
+| `tbl:tclassextendsets` | bootstrap | yes | yes | identity, people, programs-sites, strategies-content | 1 | carry (5) | 20 |
 | `tbl:tclustercommands` | migration | no | yes | — | 5 | decision (2, withheld) | 11 |
 | `tbl:tclusterpeers` | migration | no | yes | — | 5 | decision (2, withheld) | 11 |
 | `tbl:tcontent` | bootstrap | yes | yes | strategies-content | 1 | carry (5) | 101 |
@@ -1846,17 +1599,17 @@ Sources of the write records, by unit, table and operation:
 | `tbl:tcontenttags` | bootstrap | yes | yes | strategies-content | 1 | carry (5) | 18 |
 | `tbl:tcontentvariationtargeting` | orm | yes | yes | strategies-content | 1 | carry (5) | 13 |
 | `tbl:tdirectories` | migration | yes | yes | programs-sites | 1 | carry (5) | 0 |
-| `tbl:temailreturnstats` | bootstrap | no | no | communications | 1 | legacy-served (4) | 2 |
-| `tbl:temails` | bootstrap | yes | yes | communications | 1 | legacy-served (4) | 16 |
-| `tbl:temailstats` | bootstrap | no | no | communications | 1 | legacy-served (4) | 7 |
+| `tbl:temailreturnstats` | bootstrap | no | no | legacy | — | legacy-served (4) | 2 |
+| `tbl:temails` | bootstrap | yes | yes | legacy | — | legacy-served (4) | 16 |
+| `tbl:temailstats` | bootstrap | no | no | legacy | — | legacy-served (4) | 7 |
 | `tbl:tentity` | orm | no | yes | — | 5 | decision (2, withheld) | 10 |
 | `tbl:tfiles` | bootstrap | yes | yes | strategies-content | 1 | carry (5) | 41 |
 | `tbl:tformresponsepackets` | bootstrap | yes | yes | strategies-content | 1 | carry (5) | 9 |
 | `tbl:tformresponsequestions` | bootstrap | no | yes | strategies-content | 1 | carry (5) | 9 |
 | `tbl:tglobals` | bootstrap | no | no | — | — | retired (1) | 0 |
 | `tbl:timagesizes` | migration | yes | yes | programs-sites | 1 | carry (5) | 14 |
-| `tbl:tmailinglist` | bootstrap | yes | no | communications | 1 | legacy-served (4) | 11 |
-| `tbl:tmailinglistmembers` | bootstrap | yes | no | communications | 1 | legacy-served (4) | 14 |
+| `tbl:tmailinglist` | bootstrap | yes | no | legacy | — | legacy-served (4) | 11 |
+| `tbl:tmailinglistmembers` | bootstrap | yes | no | legacy | — | legacy-served (4) | 14 |
 | `tbl:toauthclients` | orm | yes | yes | identity | 1 | carry (5) | 8 |
 | `tbl:toauthtokens` | orm | no | yes | identity | 1 | carry (5) | 19 |
 | `tbl:tpermissions` | bootstrap | yes | yes | identity | 2 | carry (5) | 11 |
@@ -1867,10 +1620,10 @@ Sources of the write records, by unit, table and operation:
 | `tbl:trazunasettings` | orm | yes | yes | — | 5 | decision (2, withheld) | 13 |
 | `tbl:tredirects` | bootstrap | yes | yes | identity | 1 | carry (5) | 13 |
 | `tbl:tremotepointer` | orm | yes | yes | — | 5 | decision (2, withheld) | 4 |
-| `tbl:tsessiontracking` | bootstrap | yes | yes | reporting | 1 | legacy-served (4) | 5 |
+| `tbl:tsessiontracking` | bootstrap | yes | yes | legacy | — | legacy-served (4) | 5 |
 | `tbl:tsettings` | bootstrap | yes | yes (bootstrap: no) | programs-sites | 1 | carry (5) | 21 |
 | `tbl:tsystemobjects` | bootstrap | yes | no | programs-sites | 1 | carry (5) | 12 |
-| `tbl:ttrash` | migration | yes | yes | communications, e-signature, finance, identity, people, programs-sites, reporting, strategies-content, surveys, timesheets | 1 | carry (5) | 13 |
+| `tbl:ttrash` | migration | yes | yes | identity, people, programs-sites, strategies-content | 1 | carry (5) | 13 |
 | `tbl:tuseraddresses` | bootstrap | yes | yes | identity, people | 1 | carry (5) | 13 |
 | `tbl:tuserdevice` | orm | yes | yes | identity | 1 | carry (5) | 3 |
 | `tbl:tuserremotesessions` | migration | no | yes | identity | 1 | carry (5) | 0 |
@@ -1883,7 +1636,7 @@ Sources of the write records, by unit, table and operation:
 
 ## Relations and stored procedures
 
-- Relations: 147 (program-fold 8, fixture-fk 15, orm-fk 72, dao-join 49, tenant-parent 3)
+- Relations: 124 (orm-fk 72, dao-join 49, tenant-parent 3)
 - Stored procedures: static 0, live 0; foreign keys: static 0
 
 ## Unoriented relations (not ordered)
@@ -1980,7 +1733,7 @@ Sources of the write records, by unit, table and operation:
 | correction | `fe:doaction=setReminder` | `core/mura/Handler/standardEventsHandler.cfc:658-664` | AAP expects legacy-served, the rule computes decision at step 2 (writes decision-list table tcontenteventreminders) |
 | correction | `fe:doaction=updateprofile` | `core/mura/Handler/standardEventsHandler.cfc:565-602` | AAP expects legacy-served, the rule computes decision at step 3 (write set spans identity, people, strategies-content; no input names the owner) |
 | correction | `fe:processasyncobject{saveform}` | `core/mura/client/api/json/v1/jsonApiUtility.cfc:3823-4102` | AAP expects legacy-served, the rule computes decision at step 3 (write set spans identity, people, strategies-content; no input names the owner) |
-| correction | `fe:render` | `core/mura/content/contentServer.cfc:779-799` | AAP expects legacy-served, the rule computes decision at step 3 (write set spans identity, reporting, strategies-content; no input names the owner) |
+| correction | `fe:render` | `core/mura/content/contentServer.cfc:779-799` | AAP expects legacy-served, the rule computes decision at step 3 (write set spans identity, legacy, strategies-content; no input names the owner) |
 | correction | `fe:saveform` | `core/modules/v1/form/index.cfm:114-150` | AAP expects legacy-served, the rule computes decision at step 3 (write set spans identity, strategies-content; no input names the owner) |
 | correction | `job:sitemonitor.changeset-publish` | `core/mura/content/contentServer.cfc:687` | AAP expects carry, the rule computes decision at step 2 (writes decision-list table tcontenteventreminders) [AAP 0.3.2] |
 | correction | `job:sitemonitor.feed-import` | `core/mura/content/contentServer.cfc:697-699` | AAP expects carry, the rule computes decision at step 2 (writes decision-list table tcontenteventreminders) [AAP 0.3.2] |

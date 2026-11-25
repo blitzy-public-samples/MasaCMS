@@ -1,15 +1,15 @@
 /** Fixture archive route calls and envelope checks shared by the offline and PostgreSQL archive suites. */
-import { readFileSync } from 'node:fs';
 import { expect } from 'vitest';
 import { parse } from 'yaml';
 import { CSRF_HEADER_EXPIRES, CSRF_HEADER_TOKEN, type LegacyErrorSpec } from '@opt2/platform/legacy-compat';
+import { loadOpenApiDocument } from '@opt2/platform/testing';
 import { FIXTURE_ARCHIVE_PATH } from '../../src/routes/fixture-archive.js';
 import { userHeaders, type TestApp } from './app.js';
 import { ARCHIVE_EFFECTIVE_FROM, type TestActor } from './fixtures.js';
 
 export type InjectResponse = Awaited<ReturnType<TestApp['app']['inject']>>;
 
-export const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
+export const OPENAPI = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as object;
 
 /** api.cfm's envelope `method` of the archive route. */
 export const METHOD = 'people.persons.archive';

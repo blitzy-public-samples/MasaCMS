@@ -60,12 +60,7 @@ import { tenantIdForSite } from '@opt2/platform/tenancy';
 import {
   GateConflict,
   OwnerCallError,
-  type AdoptScheduledTask,
-  type AdoptScheduledTasksRequest,
-  type AdoptScheduledTasksResult,
   type ApplyResult,
-  type CancelAdoptedTasksRequest,
-  type CancelAdoptedTasksResult,
   type ChangesParams,
   type DeleteObjectResult,
   type ExportParams,
@@ -90,14 +85,9 @@ const WATERMARK_PATH = `${MIGRATION_PATH_PREFIX}/watermark`;
 const GATE_PATH = `${MIGRATION_PATH_PREFIX}/gate`;
 const OBJECTS_PATH = '/internal/v1/migration/objects';
 const SITEMONITOR_STATE_PATH = '/internal/v1/sitemonitor/state';
-const ADOPT_TASKS_PATH = '/internal/v1/migration/adopt-scheduled-tasks';
-const CANCEL_ADOPTED_TASKS_PATH = '/internal/v1/migration/cancel-adopted-scheduled-tasks';
 
 const CONTENT = 'strategies-content';
-const FINANCE = 'finance';
-const REPORTING = 'reporting';
 const PROGRAMS_SITES = 'programs-sites';
-const COMMUNICATIONS = 'communications';
 
 /** The legacy table whose strategies-content unit carries the `content-files` manifest. */
 const FILES_TABLE = 'tfiles';
@@ -164,11 +154,6 @@ export interface StoredObject extends ObjectManifestEntry {
   bytes: Buffer;
 }
 
-/** A fixture survey task communications adopted. */
-export interface AdoptedTask extends AdoptScheduledTask {
-  scheduledImmediately: boolean;
-}
-
 /** One queue-control call an owner double answered. */
 export interface QueueControlRecord {
   service: string;
@@ -220,13 +205,7 @@ export interface OwnerDoubleState {
   readonly objects: Map<string, StoredObject>;
   /** Units whose first export page carries the object manifest. */
   readonly manifestUnits: Set<string>;
-  /** Finance attachment bytes keyed `<tenantId>/<attachmentId>`. */
-  readonly attachments: Map<string, Buffer>;
-  /** Reporting export output bytes keyed `<tenantId>/<jobId>`. */
-  readonly exportOutputs: Map<string, Buffer>;
   siteMonitorState: SiteMonitorState;
-  readonly adoptedTasks: Map<string, AdoptedTask>;
-  readonly cancelledTasks: string[];
   readonly queueControls: QueueControlRecord[];
   readonly pausedQueues: Set<string>;
   readonly calls: OwnerCall[];
@@ -268,7 +247,7 @@ export interface OwnerDoublesOptions {
   sleep?: (ms: number) => Promise<void>;
   /** Initial gates by unit; units outside the catalog go to the owner whose units share their schema. */
   gates?: Record<string, Partial<OwnerGate>>;
-  /** Clock of site-monitor `updatedAt`, adoption times and queue slots. */
+  /** Clock of site-monitor `updatedAt` and queue slots. */
   clock?: Clock;
 }
 
@@ -290,12 +269,8 @@ const ROUTES: Readonly<Record<OwnerMethod, readonly [HttpMethod, string]>> = {
   putObject: ['POST', OBJECTS_PATH],
   getObject: ['GET', OBJECTS_PATH],
   deleteObject: ['DELETE', OBJECTS_PATH],
-  getAttachmentObject: ['GET', OBJECTS_PATH],
-  getExportObject: ['GET', OBJECTS_PATH],
   siteMonitorState: ['GET', SITEMONITOR_STATE_PATH],
   putSiteMonitorState: ['PUT', SITEMONITOR_STATE_PATH],
-  adoptScheduledTasks: ['POST', ADOPT_TASKS_PATH],
-  cancelAdoptedScheduledTasks: ['POST', CANCEL_ADOPTED_TASKS_PATH],
   queueControl: ['POST', QUEUE_CONTROL_PREFIX],
 };
 
@@ -444,11 +419,7 @@ class OwnerDouble implements OwnerDoubleState {
   readonly gates = new Map<string, OwnerGate>();
   readonly objects = new Map<string, StoredObject>();
   readonly manifestUnits = new Set<string>();
-  readonly attachments = new Map<string, Buffer>();
-  readonly exportOutputs = new Map<string, Buffer>();
   siteMonitorState: SiteMonitorState = { lastMonitored: null, updatedAt: null };
-  readonly adoptedTasks = new Map<string, AdoptedTask>();
-  readonly cancelledTasks: string[] = [];
   readonly queueControls: QueueControlRecord[] = [];
   readonly pausedQueues = new Set<string>();
   readonly calls: OwnerCall[] = [];
@@ -601,7 +572,7 @@ class OwnerDouble implements OwnerDoubleState {
     };
   }
 
-  #wallClock(method: 'apply' | 'putWatermark' | 'putSiteMonitorState' | 'adoptScheduledTasks', text: string): string {
+  #wallClock(method: 'apply' | 'putWatermark' | 'putSiteMonitorState', text: string): string {
     try {
       return formatCanonicalTimestamp(text);
     } catch (error) {
@@ -992,54 +963,11 @@ class OwnerDouble implements OwnerDoubleState {
     return { key, deleted: true, writePositions: new Map([[this.name, this.#write()]]) };
   }
 
-  /** Finance `GET /objects`: the stored bytes of one attachment. */
-  getAttachmentObject(tenantId: string, attachmentId: string): Readable {
-    const held = this.attachments.get(`${tenantId.toLowerCase()}/${attachmentId}`);
-    if (held === undefined) throw notFound(this.name, 'getAttachmentObject');
-    return Readable.from([Buffer.from(held)], { objectMode: false });
-  }
-
-  /** Reporting `GET /objects`: the stored output of one export job. */
-  getExportObject(tenantId: string, jobId: string): Readable {
-    const held = this.exportOutputs.get(`${tenantId.toLowerCase()}/${jobId}`);
-    if (held === undefined) throw notFound(this.name, 'getExportObject');
-    return Readable.from([Buffer.from(held)], { objectMode: false });
-  }
-
   /** programs-sites `PUT /sitemonitor/state`: seeds the cursor and stamps `updatedAt` from the clock. */
   seedSiteMonitorState(input: SiteMonitorStateInput): SiteMonitorState {
     const lastMonitored = this.#wallClock('putSiteMonitorState', input.lastMonitored);
     this.siteMonitorState = { lastMonitored, updatedAt: formatCanonicalTimestamp(this.#ctx.clock.now()) };
     return { ...this.siteMonitorState };
-  }
-
-  /** communications adoption, idempotent by task name; a time at or before now is scheduled immediately. */
-  adopt(req: AdoptScheduledTasksRequest): AdoptScheduledTasksResult {
-    const now = formatCanonicalTimestamp(this.#ctx.clock.now());
-    const times = req.tasks.map((task) => this.#wallClock('adoptScheduledTasks', task.scheduleTime));
-    const result: AdoptScheduledTasksResult = { adopted: 0, existing: 0, scheduledImmediately: 0 };
-    req.tasks.forEach((task, index) => {
-      if (this.adoptedTasks.has(task.name)) {
-        result.existing += 1;
-        return;
-      }
-      const scheduledImmediately = (times[index] ?? now) <= now;
-      this.adoptedTasks.set(task.name, { ...task, scheduledImmediately });
-      result.adopted += 1;
-      if (scheduledImmediately) result.scheduledImmediately += 1;
-    });
-    return result;
-  }
-
-  /** communications cancellation of the named adopted tasks, or of every one. */
-  cancelAdopted(req: CancelAdoptedTasksRequest): CancelAdoptedTasksResult {
-    let cancelled = 0;
-    for (const name of req.names ?? [...this.adoptedTasks.keys()]) {
-      if (!this.adoptedTasks.delete(name)) continue;
-      this.cancelledTasks.push(name);
-      cancelled += 1;
-    }
-    return { cancelled };
   }
 
   /** Queue control of a registry queue this service creates; `ensure` creates the current slot's chain task once. */
@@ -1207,16 +1135,6 @@ export function createOwnerDoubles(catalog: UnitCatalog, opts: OwnerDoublesOptio
       return invoke(state, 'deleteObject', [key], () => state.deleteObject(key));
     },
 
-    async getAttachmentObject(params) {
-      const state = stateOf(FINANCE, 'getAttachmentObject');
-      return invoke(state, 'getAttachmentObject', [params], () => state.getAttachmentObject(params.tenantId, params.attachmentId));
-    },
-
-    async getExportObject(params) {
-      const state = stateOf(REPORTING, 'getExportObject');
-      return invoke(state, 'getExportObject', [params], () => state.getExportObject(params.tenantId, params.jobId));
-    },
-
     async siteMonitorState() {
       const state = stateOf(PROGRAMS_SITES, 'siteMonitorState');
       return invoke(state, 'siteMonitorState', [], () => ({ ...state.siteMonitorState }));
@@ -1225,16 +1143,6 @@ export function createOwnerDoubles(catalog: UnitCatalog, opts: OwnerDoublesOptio
     async putSiteMonitorState(input) {
       const state = stateOf(PROGRAMS_SITES, 'putSiteMonitorState');
       return invoke(state, 'putSiteMonitorState', [input], () => state.seedSiteMonitorState(input));
-    },
-
-    async adoptScheduledTasks(req) {
-      const state = stateOf(COMMUNICATIONS, 'adoptScheduledTasks');
-      return invoke(state, 'adoptScheduledTasks', [req], () => state.adopt(req));
-    },
-
-    async cancelAdoptedScheduledTasks(req) {
-      const state = stateOf(COMMUNICATIONS, 'cancelAdoptedScheduledTasks');
-      return invoke(state, 'cancelAdoptedScheduledTasks', [req], () => state.cancelAdopted(req));
     },
 
     async queueControl(service, queue, op) {

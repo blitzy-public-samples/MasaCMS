@@ -4,7 +4,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 import { LegacyServiceUnavailableError, apiUnavailableResponse, legacyErrorResponse } from '@opt2/platform/legacy-compat';
 import { WRITE_POSITION_HEADER, isApplied, parseWritePosition, type RepositoryRow } from '@opt2/platform/migration-kit';
-import { ROLE_SET, TENANT_A, assertResponseMatchesOpenApi, authHeadersFor, testVerifier } from '@opt2/platform/testing';
+import { ROLE_SET, TENANT_A, assertResponseMatchesOpenApi, authHeadersFor, loadOpenApiDocument, testVerifier } from '@opt2/platform/testing';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { parse } from 'yaml';
 
@@ -59,7 +59,7 @@ const OWNER = 'programs-sites';
 const TARGET_TABLE = 'image_size';
 const AWAIT_PATH = '/internal/v1/projection/await';
 const SYNC_SQL = readFileSync(new URL('../sql/005_opt2_sync.sql', import.meta.url), 'utf8');
-const OPENAPI = parse(readFileSync(new URL('../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
+const OPENAPI = loadOpenApiDocument(new URL('../contracts/openapi.yaml', import.meta.url), parse) as object;
 
 /** The programs-sites group (`image_size`, `site`) `target`-authoritative, every other group `legacy`. */
 const PROGRAMS_SITES_TARGET = fixtureVersion('v0201', { [FIXTURE_GROUP_IDS.programsSites]: 'target' });

@@ -77,7 +77,7 @@ function goldenOf(id: string = ID): GoldenSet {
     tableVersion: null,
     fixtures: { available: true, reason: null },
     steps: [exchange('xhr-0', 0, 'admin:carch.loadsitemanager'), exchange(BROWSER_FINAL_STEP, 1, 'admin:carch.list')],
-    sideEffects: { mail: [], rows: {}, tasks: [], files: [] },
+    sideEffects: { mail: [], rows: {}, files: [] },
   };
 }
 
@@ -199,8 +199,8 @@ describe('classifyScenario on a browser scenario', () => {
     ],
     [
       'a golden set of another scenario',
-      () => [goldenOf('GS-ID-03'), recordOf(goldenOf())],
-      `golden set holds scenario GS-ID-03, not ${ID}`,
+      () => [goldenOf('GS-ID-73'), recordOf(goldenOf())],
+      `golden set holds scenario GS-ID-73, not ${ID}`,
     ],
     [
       'a golden set without the final DOM',
@@ -209,8 +209,8 @@ describe('classifyScenario on a browser scenario', () => {
     ],
     [
       'a record of another scenario',
-      () => [goldenOf(), recordOf(goldenOf(), { scenarioId: 'GS-ID-03' })],
-      `browser record holds scenario GS-ID-03, not ${ID}`,
+      () => [goldenOf(), recordOf(goldenOf(), { scenarioId: 'GS-ID-73' })],
+      `browser record holds scenario GS-ID-73, not ${ID}`,
     ],
     [
       'a record of another source SHA',
@@ -399,12 +399,12 @@ describe('main over browser records', () => {
   }
 
   it('fails an empty record and a record without its capture, and passes a complete one', async () => {
-    const flags = await writeInputs(['GS-ID-02', 'GS-ID-03', 'GS-ID-04']);
+    const flags = await writeInputs(['GS-ID-02', 'GS-ID-73', 'GS-ID-74']);
     await writeJson(browserResultPath('GS-ID-02', env), {});
-    await writeJson(browserResultPath('GS-ID-03', env), recordOf(goldenOf('GS-ID-03')));
-    await writeJson(browserResultPath('GS-ID-04', env), recordOf(goldenOf('GS-ID-04')));
+    await writeJson(browserResultPath('GS-ID-73', env), recordOf(goldenOf('GS-ID-73')));
+    await writeJson(browserResultPath('GS-ID-74', env), recordOf(goldenOf('GS-ID-74')));
     const readGolden = async (id: string): Promise<GoldenSet> => {
-      if (id === 'GS-ID-04') {
+      if (id === 'GS-ID-74') {
         throw new Error(`golden set of ${id}`, { cause: Object.assign(new Error('absent'), { code: 'ENOENT' }) });
       }
       return goldenOf(id);
@@ -417,8 +417,8 @@ describe('main over browser records', () => {
     const report = await readReport();
     expect(Object.fromEntries(report.scenarios.map((s) => [s.id, [s.result, s.reason]]))).toEqual({
       'GS-ID-02': ['fail', expect.stringMatching(/^\$\{OPT2_STATE_DIR\}\/golden\/browser\/GS-ID-02\.json: does not/)],
-      'GS-ID-03': ['pass', null],
-      'GS-ID-04': ['fail', 'no golden set at harness/golden/sets/GS-ID-04.json'],
+      'GS-ID-73': ['pass', null],
+      'GS-ID-74': ['fail', 'no golden set at harness/golden/sets/GS-ID-74.json'],
     });
   });
 

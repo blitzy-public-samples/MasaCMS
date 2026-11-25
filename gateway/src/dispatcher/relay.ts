@@ -1,4 +1,4 @@
-// Web's service relay: forwards web's calls to the ten services' versioned APIs with the verified user token and the gateway's own credential.
+// Web's service relay: forwards web's calls to the four services' versioned APIs with the verified user token and the gateway's own credential.
 import {
   AuthDenial,
   hasAnyRole,
@@ -21,18 +21,7 @@ import type { FailContext } from './fail-closed.js';
 import { forwardToTarget, type TargetForwardContext } from './forward-target.js';
 
 /** Service folder names web may call through the relay; the stub is not a relay target. */
-export const RELAY_SERVICES = [
-  'identity',
-  'people',
-  'programs-sites',
-  'strategies-content',
-  'communications',
-  'reporting',
-  'surveys',
-  'timesheets',
-  'finance',
-  'e-signature',
-] as const;
+export const RELAY_SERVICES = ['identity', 'people', 'programs-sites', 'strategies-content'] as const;
 
 /** One relay target service. */
 export type RelayService = (typeof RELAY_SERVICES)[number];

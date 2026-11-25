@@ -8,34 +8,37 @@ import {
   UndeclaredRouteError,
   collectRouteMatrix,
   hasAnyRole,
-  isServiceRole,
   moduleRole,
-  renderAuthDenial,
-  rolesForService,
   serviceRole,
-  type DenialResponse,
   type Opt2RouteConfig,
   type RouteMatrixEntry,
 } from '@opt2/platform/auth';
 import { LEGACY_ERROR_MAP, cfUuid } from '@opt2/platform/legacy-compat';
 import { createService } from '@opt2/platform/service-kit';
 import {
+  MINIMUM_SUBJECTS,
   ROLE_SET,
   TENANT_A,
   TENANT_B,
   TEST_PUSH_KEY,
   authHeadersFor,
+  createCredentialCache,
+  expectedAuthDenial,
   fixtureForSite,
   mintServiceToken,
   mintTasksInvokerToken,
   mintUserToken,
+  parsedJson,
   pushKeyQuery,
   pushTo,
   registryPayloads,
+  renderedDenial,
+  roleSubjectNamed as subjectNamed,
   subjectQueryFor,
   subjectSiteFor,
   testEnvelope,
   testVerifier,
+  withQuery,
   type InjectResponse,
   type PushTarget,
   type RoleSubject,
@@ -159,7 +162,6 @@ const EXPECTED_ROUTES: readonly RouteMatrixEntry[] = [
   { method: 'POST', url: '/internal/v1/task-queues/:queue/pause', transport: 'service', requires: QUEUE_CONTROL, siteCheck: true },
   { method: 'POST', url: '/internal/v1/task-queues/:queue/resume', transport: 'service', requires: QUEUE_CONTROL, siteCheck: true },
   { method: 'GET', url: '/internal/v1/users/current', transport: 'service', requires: [serviceRole('identity')], siteCheck: true },
-  { method: 'GET', url: '/internal/v1/users/pool-user', transport: 'service', requires: [serviceRole('e-signature')], siteCheck: true },
   { method: 'GET', url: '/internal/v2/roster-operations/halted', transport: 'service', requires: HALTED_ROSTER_READ, siteCheck: true },
   { method: 'GET', url: '/legacy-fixtures/cfml/api.cfm/people/persons/:userId/archive', transport: 'service', public: true, siteCheck: false },
   { method: 'POST', url: '/legacy-fixtures/cfml/api.cfm/people/persons/:userId/archive', transport: 'service', public: true, siteCheck: false },
@@ -190,9 +192,6 @@ const EXPECTED_ROUTES: readonly RouteMatrixEntry[] = [
  * users lists, whose `siteid=all` only S2 may send.
  */
 const HANDLER_SITE_BOUND: ReadonlySet<string> = new Set(['GET /v1/users', 'GET /v2/users']);
-
-/** Routes whose handler refuses an admitted workload without a user token with 401 before any effect: e-signature's pool-user read. */
-const HANDLER_USER_BOUND: ReadonlySet<string> = new Set(['GET /internal/v1/users/pool-user']);
 
 function tenantOfSite(siteId: string): string {
   if (siteId === DEFAULT_SITE.siteId) return DEFAULT_SITE.tenantId;
@@ -319,27 +318,16 @@ interface Credential {
 
 const NO_CREDENTIAL: Credential = Object.freeze({ headers: {}, query: '' });
 
-const credentialCache = new Map<string, { mintedAt: number; credential: Promise<Credential> }>();
-
-// User tokens live 300 s; re-minting after 120 s keeps a slow run from presenting an expired one.
-const CREDENTIAL_REUSE_MS = 120_000;
+const cachedCredential = createCredentialCache<Credential>();
 
 function credentialOf(subject: RoleSubject): Promise<Credential> {
-  const hit = credentialCache.get(subject.name);
-  if (hit !== undefined && Date.now() - hit.mintedAt < CREDENTIAL_REUSE_MS) return hit.credential;
   const sub = SUBJECT_SUBS.get(subject.name);
-  const credential = authHeadersFor(subject, { site: SITE_A, audience: SERVICE_NAME, ...(sub === undefined ? {} : { sub }) }).then((headers) => ({
-    headers,
-    query: new URLSearchParams(subjectQueryFor(subject)).toString(),
-  }));
-  credentialCache.set(subject.name, { mintedAt: Date.now(), credential });
-  return credential;
-}
-
-function subjectNamed(name: string): RoleSubject {
-  const found = ROLE_SET.find((subject) => subject.name === name);
-  if (found === undefined) throw new TypeError(`ROLE_SET has no subject named ${name}`);
-  return found;
+  return cachedCredential(subject.name, () =>
+    authHeadersFor(subject, { site: SITE_A, audience: SERVICE_NAME, ...(sub === undefined ? {} : { sub }) }).then((headers) => ({
+      headers,
+      query: new URLSearchParams(subjectQueryFor(subject)).toString(),
+    })),
+  );
 }
 
 /** A people actor's user token beside the gateway's invocation credential; `tid` replaces the tenant its site gives. */
@@ -373,10 +361,6 @@ interface ProbeResult {
   identityCalls: string[];
   published: number;
   tasks: number;
-}
-
-function withQuery(url: string, query: string): string {
-  return query === '' ? url : `${url}${url.includes('?') ? '&' : '?'}${query}`;
 }
 
 function publishedCount(): number {
@@ -413,12 +397,8 @@ interface ErrorEnvelope {
 }
 
 function errorEnvelope(res: InjectResponse): ErrorEnvelope | undefined {
-  try {
-    const body: unknown = JSON.parse(res.body);
-    return typeof body === 'object' && body !== null ? (body as ErrorEnvelope) : undefined;
-  } catch {
-    return undefined;
-  }
+  const body = parsedJson(res.body);
+  return typeof body === 'object' && body !== null ? (body as ErrorEnvelope) : undefined;
 }
 
 const AUTH_DENIAL_ROWS = [LEGACY_ERROR_MAP.authorization, LEGACY_ERROR_MAP.invalidAccessToken, LEGACY_ERROR_MAP.accessTokenExpired];
@@ -446,17 +426,9 @@ function isHookDenial(result: ProbeResult): boolean {
   return body?.apiversion === 'v1' && matchesRow && effectFree(result);
 }
 
-type DenialRequest = Parameters<typeof renderAuthDenial>[1];
-
-/** The response the platform renders `denial` with for `url`; renderAuthDenial reads only the request's query. */
-function denialResponse(denial: AuthDenial, url: string): DenialResponse {
-  const query = Object.fromEntries(new URL(url, 'http://people.test').searchParams);
-  return renderAuthDenial(denial, { query } as unknown as DenialRequest);
-}
-
 /** Whether `result` is exactly the platform's rendering of `denial`, with no effect. */
 function isDenialOf(result: ProbeResult, denial: AuthDenial, url: string): boolean {
-  const expected = denialResponse(denial, url);
+  const expected = renderedDenial(denial, url);
   return result.res.statusCode === expected.status && result.res.body === expected.body && effectFree(result);
 }
 
@@ -559,7 +531,6 @@ const PROBES: Readonly<Record<string, () => Probe | Promise<Probe>>> = {
   'POST /internal/v1/task-queues/:queue/pause': () => control('pause'),
   'POST /internal/v1/task-queues/:queue/resume': () => control('resume'),
   'GET /internal/v1/users/current': () => get(CURRENT_USER_URL),
-  'GET /internal/v1/users/pool-user': () => get(`/internal/v1/users/pool-user?${ON_SITE_A}&userid=${STRANGER_ID}`),
   'GET /internal/v2/roster-operations/halted': () => get('/internal/v2/roster-operations/halted', false),
   'GET /legacy-fixtures/cfml/api.cfm/people/persons/:userId/archive': () =>
     get(`/legacy-fixtures/cfml/api.cfm/people/persons/${STRANGER_ID}/archive?siteid=notasite`, false),
@@ -602,45 +573,11 @@ const REACHED: Outcome = Object.freeze({ kind: 'reached' });
 const DENIED_401: Outcome = Object.freeze({ kind: 'denied', status: 401 });
 const DENIED_403: Outcome = Object.freeze({ kind: 'denied', status: 403 });
 
-/** What a subject's credential is on the wire: nothing, a user token beside the gateway's, a workload token, the push key or a tasks token. */
-type Presented = 'none' | 'user' | 'workload' | 'push-key' | 'tasks';
-
-function presentedBy(subject: RoleSubject): Presented {
-  if (subject.kind === 'anonymous') return 'none';
-  if (subject.kind === 'user') return 'user';
-  if (subject.caller === 'pubsub-invoker') return 'push-key';
-  if (subject.caller === 'tasks-invoker') return 'tasks';
-  return 'workload';
-}
-
-const GATEWAY_ROLES = rolesForService('gateway');
-
-/** The auth hooks' verdict for `subject` on `entry`, derived from the literal table only. */
+/** The auth hooks' verdict for `subject` on `entry`, derived from the literal table only; the handler-bound lists take the site check too. */
 function expectedOutcome(entry: RouteMatrixEntry, request: Probe, subject: RoleSubject): Outcome {
-  const presented = presentedBy(subject);
-  if (entry.transport === 'pubsub-push') return presented === 'push-key' ? REACHED : DENIED_401;
-  if (entry.transport === 'cloud-tasks') return presented === 'tasks' ? REACHED : DENIED_401;
-  // The service transport verifies a bearer in Authorization as a user token, so a managed-delivery token fails, public routes included.
-  if (presented === 'tasks') return DENIED_401;
-  // No credential and the push key both lack the invocation credential, which only an invocationOptional route lets be absent.
-  if ((presented === 'none' || presented === 'push-key') && entry.invocationOptional !== true) return DENIED_401;
-  if (entry.requires !== undefined) {
-    const roles =
-      presented === 'user'
-        ? [...subject.roles.filter((role) => !isServiceRole(role)), ...GATEWAY_ROLES]
-        : presented === 'workload'
-          ? [...subject.roles]
-          : [];
-    if (!hasAnyRole(roles, entry.requires)) {
-      if (presented === 'none' || presented === 'push-key') return DENIED_401;
-      if (presented === 'workload' && entry.requires.some((role) => !isServiceRole(role))) return DENIED_401;
-      return DENIED_403;
-    }
-  }
-  if (presented !== 'user' && HANDLER_USER_BOUND.has(routeKey(entry))) return DENIED_401;
-  const siteBound = request.site === true && (entry.siteCheck || HANDLER_SITE_BOUND.has(routeKey(entry)));
-  if (presented === 'user' && siteBound && subjectSiteFor(subject, SITE_A) !== SITE_A) return DENIED_403;
-  return REACHED;
+  const siteCheck = entry.siteCheck || HANDLER_SITE_BOUND.has(routeKey(entry));
+  const denial = expectedAuthDenial(entry, subject, { requestSite: request.site === true ? SITE_A : undefined, siteCheck });
+  return denial === undefined ? REACHED : denial.statusCode === 401 ? DENIED_401 : DENIED_403;
 }
 
 function observedOutcome(result: ProbeResult): Outcome {
@@ -668,31 +605,9 @@ describe('declared routes', () => {
     expect([...PROFILE_ROUTE_REQUIRES]).toEqual(PROFILE);
   });
 
-  it('probes every user role, the synthetic roles, other-tenant and each workload of the matrix', () => {
+  it('probes every user role, other-tenant and each workload of the matrix', () => {
     const names = ROLE_SET.map((subject) => subject.name);
-    const required = [
-      'anonymous',
-      Roles.member,
-      Roles.systemUser,
-      'editor',
-      Roles.siteAdmin,
-      Roles.s2,
-      'other-tenant',
-      Roles.timesheetsEmployee,
-      Roles.timesheetsPrimaryApprover,
-      Roles.timesheetsSecondaryApprover,
-      Roles.financePreparer,
-      Roles.financeApprover,
-      Roles.esignatureSigner,
-      Roles.esignatureAuditor,
-      Roles.reportingExporter,
-      Roles.surveysManager,
-      Roles.communicationsSender,
-      serviceRole('gateway'),
-      serviceRole('identity'),
-      PUBSUB_INVOKER_ROLE,
-      TASKS_INVOKER_ROLE,
-    ];
+    const required = [...MINIMUM_SUBJECTS, serviceRole('gateway'), serviceRole('identity'), PUBSUB_INVOKER_ROLE, TASKS_INVOKER_ROLE];
     expect(required.filter((name) => !names.includes(name))).toEqual([]);
     const presentedRoles = ROLE_SET.flatMap((subject) => subject.roles);
     expect([Roles.platformMigration, Roles.platformOperator].filter((role) => !presentedRoles.includes(role))).toEqual([]);

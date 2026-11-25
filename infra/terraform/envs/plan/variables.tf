@@ -167,21 +167,6 @@ variable "legacy_settings" {
   }
 }
 
-variable "smtp_host" {
-  description = "SMTP relay host (SMTP_HOST) of communications."
-  type        = string
-}
-
-variable "smtp_port" {
-  description = "SMTP relay port (SMTP_PORT) of communications."
-  type        = number
-}
-
-variable "mailpit_api_url" {
-  description = "Mail API URL (MAILPIT_API_URL) of communications."
-  type        = string
-}
-
 variable "time_zone" {
   description = "TZ of every service: the legacy server time zone."
   type        = string

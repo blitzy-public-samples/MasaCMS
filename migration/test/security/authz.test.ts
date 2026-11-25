@@ -10,30 +10,39 @@ import {
   INVOCATION_HEADER,
   PUBSUB_INVOKER_ROLE,
   Roles,
-  SYNTHETIC_ROLES,
   TASKS_INVOKER_ROLE,
   UndeclaredRouteError,
   collectRouteMatrix,
   hasAnyRole,
-  isServiceRole,
-  renderAuthDenial,
   rolesForService,
   serviceRole,
   type Opt2RouteConfig,
   type RouteMatrixEntry,
 } from '@opt2/platform/auth';
-import { createService, type FastifyInstance, type FastifyRequest } from '@opt2/platform/service-kit';
+import { createService, type FastifyInstance } from '@opt2/platform/service-kit';
 import {
+  DENIED_STATUSES,
+  MINIMUM_SUBJECTS,
   ROLE_SET,
   TENANT_A,
   TEST_PUSH_KEY,
+  authDenialProblems,
   authHeadersFor,
+  contractOperations,
+  createCredentialCache,
+  headerStrings,
+  matrixCells,
   mintServiceToken,
   mintTasksInvokerToken,
   mintUserToken,
+  parsedJson,
+  renderedDenialMatching,
+  roleSubjectNamed,
   subjectQueryFor,
   testVerifier,
-  type InjectResponse,
+  unexpectedVerdicts,
+  withQuery,
+  type MatrixCell,
   type RoleSubject,
 } from '@opt2/platform/testing';
 
@@ -46,10 +55,8 @@ type Method = 'GET' | 'POST' | 'PUT' | 'DELETE';
 
 const SERVICE_NAME = 'migration';
 const SITE_A = TENANT_A.siteId;
-const DENIED: ReadonlySet<number> = new Set([401, 403]);
 const BODY_METHODS: ReadonlySet<string> = new Set(['POST', 'PUT']);
 const JSON_HEADERS: Readonly<Headers> = Object.freeze({ 'content-type': 'application/json' });
-const MINIMUM_SUBJECTS = ['anonymous', 'member', 'system-user', 'editor', 'site-admin', 's2', 'other-tenant'] as const;
 const CONTRACT_URL = new URL('../../contracts/openapi.yaml', import.meta.url);
 const CONTRACT_METHODS = ['get', 'head', 'post', 'put', 'patch', 'delete', 'options'] as const;
 const LOOPBACK_HOSTS: ReadonlySet<string> = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
@@ -227,12 +234,6 @@ function rowNamed(operationId: string): ExpectedRoute {
   return row;
 }
 
-function subjectNamed(name: string): RoleSubject {
-  const subject = ROLE_SET.find((candidate) => candidate.name === name);
-  if (subject === undefined) throw new TypeError(`ROLE_SET has no ${name}`);
-  return subject;
-}
-
 /** `row` as the route matrix records it, `requires` sorted. */
 function matrixEntryOf(row: ExpectedRoute): RouteMatrixEntry {
   return {
@@ -329,18 +330,11 @@ async function settle(): Promise<void> {
   }
 }
 
-const credentialCache = new Map<string, { mintedAt: number; headers: Promise<Headers> }>();
-// Tokens live 300 s; re-minting after 120 s keeps a slow run from presenting an expired one.
-const CREDENTIAL_REUSE_MS = 120_000;
+const cachedCredentials = createCredentialCache<Headers>();
 
 /** `authHeadersFor(subject)` on tenant-a addressed to the migration service, reused while its tokens are fresh. */
-function credentialsOf(subject: RoleSubject): Promise<Headers> {
-  const cached = credentialCache.get(subject.name);
-  if (cached !== undefined && Date.now() - cached.mintedAt < CREDENTIAL_REUSE_MS) return cached.headers;
-  const headers = authHeadersFor(subject, { site: SITE_A, audience: SERVICE_NAME });
-  credentialCache.set(subject.name, { mintedAt: Date.now(), headers });
-  return headers;
-}
+const credentialsOf = (subject: RoleSubject): Promise<Headers> =>
+  cachedCredentials(subject.name, () => authHeadersFor(subject, { site: SITE_A, audience: SERVICE_NAME }));
 
 /** `X-Serverless-Authorization` carrying `caller`'s local service token addressed to `audience`. */
 async function invocationHeaders(caller: string, audience: string = SERVICE_NAME): Promise<Headers> {
@@ -377,15 +371,6 @@ interface Outcome {
   after: Effects;
 }
 
-function withQuery(url: string, query: Headers): string {
-  const search = new URLSearchParams(query).toString();
-  return search === '' ? url : `${url}${url.includes('?') ? '&' : '?'}${search}`;
-}
-
-function headerStrings(res: InjectResponse): Headers {
-  return Object.fromEntries(Object.entries(res.headers).map(([name, value]) => [name, Array.isArray(value) ? value.join(', ') : String(value)]));
-}
-
 /** Sends `request` with `credentials` and `query` and records its answer and effects. */
 async function send(request: ProbeRequest, credentials: Headers, query: Headers = {}): Promise<Outcome> {
   const before = effects();
@@ -398,107 +383,39 @@ async function send(request: ProbeRequest, credentials: Headers, query: Headers 
   return { status: res.statusCode, body: res.body, headers: headerStrings(res), query, before, after: effects() };
 }
 
-function parsedBody(body: string): unknown {
-  try {
-    return JSON.parse(body) as unknown;
-  } catch {
-    return undefined;
-  }
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/** Whether `body` is the legacy JSON API error envelope `{apiversion, method, params?, error: {code, message}}`; empty params are left out. */
-function isErrorEnvelope(body: unknown): boolean {
-  if (!isRecord(body) || !isRecord(body.error) || !(body.params === undefined || isRecord(body.params))) return false;
-  const { apiversion, method, error } = body;
-  return typeof apiversion === 'string' && typeof method === 'string' && typeof error.code === 'string' && typeof error.message === 'string';
-}
-
 const UNAUTHENTICATED = AuthDenial.unauthenticated('missing-credential');
 const INVALID_CREDENTIAL = AuthDenial.unauthenticated('invalid-credential');
-const DENIAL_KINDS: readonly AuthDenial[] = [UNAUTHENTICATED, AuthDenial.invalidToken(), AuthDenial.expiredToken(), AuthDenial.forbidden()];
 const UNAUTHENTICATED_CODES: ReadonlySet<unknown> = new Set(['invalid_request', 'invalid_token']);
 
-/** The response renderAuthDenial gives `denial` for a request sent with `query`. */
-function renderedFor(denial: AuthDenial, query: Headers): { status: number; body: string; headers: Record<string, string> } {
-  const rendered = renderAuthDenial(denial, { query } as unknown as FastifyRequest);
-  return { status: rendered.status, body: String(rendered.body), headers: rendered.headers };
-}
-
-/** Every way `outcome` departs from `denial` as the auth hooks answer it: status, envelope, exact body, headers and no effect. */
+/** Every way `outcome` departs from `denial` as the auth hooks answer it: status, envelope, exact body, headers, a 401's error code and no effect. */
 function denialProblems(outcome: Outcome, denial: AuthDenial): string[] {
-  const rendered = renderedFor(denial, outcome.query);
-  const problems: string[] = [];
-  if (outcome.status !== rendered.status) problems.push(`answered ${outcome.status}, expected ${rendered.status}: ${outcome.body.slice(0, 160)}`);
-  const body = parsedBody(outcome.body);
-  if (!isErrorEnvelope(body)) problems.push(`not the legacy error envelope: ${outcome.body.slice(0, 160)}`);
+  const body = parsedJson(outcome.body);
   const code = isRecord(body) && isRecord(body.error) ? body.error.code : undefined;
-  if (outcome.status === 401 && !UNAUTHENTICATED_CODES.has(code)) problems.push(`401 with error code ${String(code)}`);
-  if (outcome.body !== rendered.body) problems.push(`body ${outcome.body.slice(0, 160)} is not ${rendered.body}`);
-  for (const [name, value] of Object.entries(rendered.headers)) {
-    const sent = outcome.headers[name.toLowerCase()];
-    if (sent !== value) problems.push(`header ${name} is ${String(sent)}, not ${value}`);
-  }
   const changed = (Object.keys(outcome.after) as Array<keyof Effects>).filter((key) => outcome.after[key] !== outcome.before[key]);
-  if (changed.length > 0) problems.push(`denial changed ${changed.join(', ')}`);
-  return problems;
+  return [
+    ...authDenialProblems(outcome, denial),
+    ...(outcome.status === 401 && !UNAUTHENTICATED_CODES.has(code) ? [`401 with error code ${String(code)}`] : []),
+    ...(changed.length > 0 ? [`denial changed ${changed.join(', ')}`] : []),
+  ];
 }
 
 /** Every way an admitted `outcome` of `row` looks refused: a 401 or 403, any auth-denial body, or a health check other than 200. */
 function admissionProblems(row: ExpectedRoute, outcome: Outcome): string[] {
-  if (DENIED.has(outcome.status)) return [`expected admission, answered ${outcome.status}: ${outcome.body.slice(0, 160)}`];
+  if (DENIED_STATUSES.has(outcome.status)) return [`expected admission, answered ${outcome.status}: ${outcome.body.slice(0, 160)}`];
   const problems: string[] = [];
-  if (DENIAL_KINDS.some((denial) => renderedFor(denial, outcome.query).body === outcome.body)) {
-    problems.push(`admitted with an auth-denial body: ${outcome.body.slice(0, 160)}`);
-  }
+  if (renderedDenialMatching(outcome.body, outcome.query) !== undefined) problems.push(`admitted with an auth-denial body: ${outcome.body.slice(0, 160)}`);
   if (row.public === true && outcome.status !== 200) problems.push(`health check answered ${outcome.status}: ${outcome.body.slice(0, 160)}`);
   return problems;
 }
 
-/** The credentials a subject's headers present, as the service transport reads them. */
-interface Presented {
-  /** Roles of the verified invocation credential; absent when none reaches the route. */
-  invocation?: readonly string[];
-  /** Non-workload roles of the user token. */
-  userRoles?: readonly string[];
-  /** A bearer in `Authorization` that is no user token. */
-  foreignBearer?: true;
-}
+/** One route × subject cell of the matrix, with the denial the platform hooks owe it, if any. */
+type Cell = MatrixCell<ExpectedRoute>;
 
-/** What `authHeadersFor(subject)` presents: users arrive with the gateway's invocation credential, the push identity with none. */
-function presentedBy(subject: RoleSubject): Presented {
-  if (subject.kind === 'anonymous') return {};
-  if (subject.kind === 'user') {
-    return { invocation: rolesForService('gateway'), userRoles: subject.roles.filter((role) => !isServiceRole(role)) };
-  }
-  if (subject.caller === 'pubsub-invoker') return {};
-  if (subject.caller === 'tasks-invoker') return { foreignBearer: true };
-  return { invocation: subject.roles };
-}
-
-/** The denial the service transport and `row`'s roles give `subject`; undefined when the subject is admitted. */
-function expectedDenial(row: ExpectedRoute, subject: RoleSubject): AuthDenial | undefined {
-  const { invocation, userRoles = [], foreignBearer } = presentedBy(subject);
-  if (invocation === undefined && row.invocationOptional !== true) return UNAUTHENTICATED;
-  // The service transport verifies any Authorization bearer as a user token, so a tasks token is refused on /healthz too.
-  if (foreignBearer === true) return AuthDenial.invalidToken();
-  if (row.public === true) return undefined;
-  return hasAnyRole([...userRoles, ...(invocation ?? [])], row.requires ?? []) ? undefined : AuthDenial.forbidden();
-}
-
-/** One route × subject cell of the matrix, with the denial it must answer, if any. */
-interface Cell {
-  row: ExpectedRoute;
-  subject: RoleSubject;
-  denial: AuthDenial | undefined;
-}
-
-const CELLS: readonly Cell[] = EXPECTED_ROUTES.flatMap((row) =>
-  ROLE_SET.map((subject) => ({ row, subject, denial: expectedDenial(row, subject) })),
-);
+const CELLS: readonly Cell[] = matrixCells(EXPECTED_ROUTES);
 
 function titleOf(cell: Cell): string {
   const verdict = cell.denial === undefined ? 'allows' : `denies (${cell.denial.statusCode})`;
@@ -536,30 +453,22 @@ interface ContractOperation {
 }
 
 /** Every operation of `migration/contracts/openapi.yaml` with its `x-opt2-*` declaration, ordered by operationId. */
-async function contractOperations(): Promise<ContractOperation[]> {
-  const contract = parse(await readFile(CONTRACT_URL, 'utf8')) as { paths: Record<string, Record<string, unknown>> };
-  return Object.entries(contract.paths)
-    .flatMap(([path, item]) =>
-      CONTRACT_METHODS.flatMap((method) => {
-        const operation = item[method];
-        if (!isRecord(operation)) return [];
-        return [
-          {
-            operationId: String(operation.operationId),
-            method: method.toUpperCase(),
-            path,
-            transport: operation['x-opt2-transport'],
-            requires: operation['x-opt2-requires'],
-            public: operation['x-opt2-public'],
-            siteCheck: operation['x-opt2-site-check'] ?? true,
-          },
-        ];
-      }),
-    )
+async function contractDeclarations(): Promise<ContractOperation[]> {
+  const contract = parse(await readFile(CONTRACT_URL, 'utf8')) as object;
+  return contractOperations(contract, { methods: CONTRACT_METHODS })
+    .map(({ operationId, method, path, operation }) => ({
+      operationId,
+      method,
+      path,
+      transport: operation['x-opt2-transport'],
+      requires: operation['x-opt2-requires'],
+      public: operation['x-opt2-public'],
+      siteCheck: operation['x-opt2-site-check'] ?? true,
+    }))
     .sort((a, b) => a.operationId.localeCompare(b.operationId, 'en'));
 }
 
-/** The table's rows in the shape of {@link contractOperations}. */
+/** The table's rows in the shape of {@link contractDeclarations}. */
 function tableOperations(): ContractOperation[] {
   return EXPECTED_ROUTES.map((row) => ({
     operationId: row.operationId,
@@ -642,7 +551,7 @@ describe('route declarations', () => {
   });
 
   it('the table declares each operation as the contract does', async () => {
-    expect(tableOperations()).toEqual(await contractOperations());
+    expect(tableOperations()).toEqual(await contractDeclarations());
   });
 
   it('registered route matrix equals the expected table', () => {
@@ -654,8 +563,8 @@ describe('route declarations', () => {
 
   it('role set covers every subject class', () => {
     const names = ROLE_SET.map((subject) => subject.name);
-    expect(names).toEqual(expect.arrayContaining([...MINIMUM_SUBJECTS, ...SYNTHETIC_ROLES, GATEWAY, PROGRAMS_SITES]));
-    expect(subjectNamed('other-tenant').crossTenant).toBe(true);
+    expect(names).toEqual(expect.arrayContaining([...MINIMUM_SUBJECTS, GATEWAY, PROGRAMS_SITES]));
+    expect(roleSubjectNamed('other-tenant').crossTenant).toBe(true);
     const carrying = (role: string): string[] => ROLE_SET.filter((subject) => subject.roles.includes(role)).map((subject) => subject.name);
     expect({ operator: carrying(Roles.platformOperator), migration: carrying(Roles.platformMigration) }).toEqual({
       operator: [serviceRole('operator')],
@@ -686,14 +595,8 @@ describe('route admission matrix', () => {
   });
 
   it('zero unexpected allows and denies', () => {
-    const mismatched = (allowed: boolean): string[] =>
-      CELLS.filter((cell) => (cell.denial === undefined) === allowed)
-        .filter((cell) => DENIED.has(statusOf(cell)) === allowed)
-        .map((cell) => `${titleOf(cell)}: ${statusOf(cell)}`);
-    expect({ unexpectedAllows: mismatched(false), unexpectedDenies: mismatched(true) }).toEqual({
-      unexpectedAllows: [],
-      unexpectedDenies: [],
-    });
+    const reader = { title: titleOf, admits: (cell: Cell) => cell.denial === undefined, status: (cell: Cell) => verdicts.get(titleOf(cell))?.status };
+    expect(unexpectedVerdicts(CELLS, reader)).toEqual({ unexpectedAllows: [], unexpectedDenies: [] });
   });
 
   it.each([
@@ -703,18 +606,18 @@ describe('route admission matrix', () => {
   ] as const)('known callers are allowed: %s on %j', (subjectName, operationIds) => {
     const refused = operationIds
       .map((operationId) => cellOf(operationId, subjectName))
-      .filter((cell) => cell.denial !== undefined || DENIED.has(statusOf(cell)))
+      .filter((cell) => cell.denial !== undefined || DENIED_STATUSES.has(statusOf(cell)))
       .map((cell) => `${titleOf(cell)}: ${statusOf(cell)}`);
     expect(refused).toEqual([]);
   });
 
   // Users reach the service with the gateway's invocation credential, so only that credential may admit them.
   it('no user subject is allowed on any service route by its own roles: users are admitted exactly where the gateway credential is', () => {
-    const gatewayAdmitted = (row: ExpectedRoute): boolean => !DENIED.has(statusOf(cellOf(row.operationId, GATEWAY)));
+    const gatewayAdmitted = (row: ExpectedRoute): boolean => !DENIED_STATUSES.has(statusOf(cellOf(row.operationId, GATEWAY)));
     const departures = SERVICE_ROWS.flatMap((row) =>
       ROLE_SET.filter((subject) => subject.kind === 'user')
         .map((subject) => cellOf(row.operationId, subject.name))
-        .filter((cell) => !DENIED.has(statusOf(cell)) !== gatewayAdmitted(row))
+        .filter((cell) => !DENIED_STATUSES.has(statusOf(cell)) !== gatewayAdmitted(row))
         .map((cell) => `${titleOf(cell)}: ${statusOf(cell)}`),
     );
     expect(departures).toEqual([]);

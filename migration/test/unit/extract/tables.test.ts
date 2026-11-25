@@ -25,9 +25,10 @@ const PROGRAM_TABLE = /^Program_(\d+)\.(.+)$/i;
 const TABLES: Readonly<Record<string, FakeTable>> = {
   tusers: { owner: 'split', owners: ['identity', 'people'], keyColumns: ['UserID'] },
   tcontent: { owner: 'strategies-content', owners: ['strategies-content'], keyColumns: ['tcontent_ID'] },
-  temailstats: { owner: 'communications', owners: ['communications'], keyColumns: [] },
-  'Program_N.timesheet': { owner: 'timesheets', owners: ['timesheets'], keyColumns: ['timesheet_id'] },
-  'synthetic.timesheet_transition': { owner: 'timesheets' },
+  tsystemobjects: { owner: 'programs-sites', owners: ['programs-sites'], keyColumns: [] },
+  temailstats: { owner: 'legacy' },
+  'Program_N.enrolment': { owner: 'programs-sites', owners: ['programs-sites'], keyColumns: ['enrolment_id'] },
+  'synthetic.program_site': { owner: 'programs-sites' },
   tplugins: { owner: 'decision-list' },
   tcontenteventreminders: { owner: 'decision-list' },
   tglobals: { owner: 'retired' },
@@ -104,7 +105,7 @@ describe('partitionLegacyTables', () => {
     ['live form-builder table the catalog calls migratable', 'fb_contactus', 'decision-list'],
     ['form-builder table in upper case the catalog does not know', 'FB_Survey', 'decision-list'],
     ['retired table', 'tglobals', 'retired'],
-    ['fixture table the catalog marks unmigrated', 'synthetic.timesheet_transition', 'timesheets'],
+    ['fixture table the catalog marks unmigrated', 'synthetic.program_site', 'programs-sites'],
     ['table without an ownership entry', 'tnotinfile', 'unassigned'],
     ['program table without a folded entry', 'Program_3.unregistered', 'unassigned'],
   ])('skips a %s (%s) under owner %s', (_label, table, owner) => {
@@ -124,22 +125,22 @@ describe('partitionLegacyTables', () => {
   });
 
   it('folds Program_<id> parts fed out of order into one table ordered by program id', () => {
-    const live = refs('Program_2.timesheet', 'tcontent', 'Program_1.timesheet');
+    const live = refs('Program_2.enrolment', 'tcontent', 'Program_1.enrolment');
 
     const { migratable, skipped } = partitionLegacyTables(fakeCatalog(), live);
 
     expect(skipped).toEqual([]);
     expect(migratable).toStrictEqual([
       {
-        name: 'Program_N.timesheet',
-        owner: 'timesheets',
-        owners: ['timesheets'],
+        name: 'Program_N.enrolment',
+        owner: 'programs-sites',
+        owners: ['programs-sites'],
         physical: [
-          { ref: ref('Program_1.timesheet'), programId: 1 },
-          { ref: ref('Program_2.timesheet'), programId: 2 },
+          { ref: ref('Program_1.enrolment'), programId: 1 },
+          { ref: ref('Program_2.enrolment'), programId: 2 },
         ],
         folded: true,
-        keyColumns: ['timesheet_id'],
+        keyColumns: ['enrolment_id'],
       },
       {
         name: 'tcontent',
@@ -155,7 +156,7 @@ describe('partitionLegacyTables', () => {
   it.each<[string, DataOwner | 'split', readonly DataOwner[], readonly string[]]>([
     ['tusers', 'split', ['identity', 'people'], ['UserID']],
     ['tcontent', 'strategies-content', ['strategies-content'], ['tcontent_ID']],
-    ['temailstats', 'communications', ['communications'], []],
+    ['tsystemobjects', 'programs-sites', ['programs-sites'], []],
   ])('gives %s owner %s, its owners and its key columns', (table, owner, owners, keyColumns) => {
     const [migratable] = partitionLegacyTables(fakeCatalog(), refs(table)).migratable;
 
@@ -173,22 +174,24 @@ describe('partitionLegacyTables', () => {
     const live = refs(
       'tusers',
       'tplugins',
+      'tsystemobjects',
       'temailstats',
       'tglobals',
       'tcontent',
-      'synthetic.timesheet_transition',
-      'Program_1.timesheet',
+      'synthetic.program_site',
+      'Program_1.enrolment',
       'fb_contactus',
       'Program_3.unregistered',
     );
 
     const { migratable, skipped } = partitionLegacyTables(fakeCatalog(), live);
 
-    expect(migratable.map((table) => table.name)).toEqual(['Program_N.timesheet', 'tcontent', 'temailstats', 'tusers']);
+    expect(migratable.map((table) => table.name)).toEqual(['Program_N.enrolment', 'tcontent', 'tsystemobjects', 'tusers']);
     expect(skipped.map((table) => table.name)).toEqual([
       'Program_3.unregistered',
       'fb_contactus',
-      'synthetic.timesheet_transition',
+      'synthetic.program_site',
+      'temailstats',
       'tglobals',
       'tplugins',
     ]);
@@ -199,7 +202,7 @@ describe('partitionLegacyTables', () => {
   });
 
   it('freezes the partition, its tables and their physical parts', () => {
-    const partition = partitionLegacyTables(fakeCatalog(), refs('Program_1.timesheet', 'tusers', 'tglobals'));
+    const partition = partitionLegacyTables(fakeCatalog(), refs('Program_1.enrolment', 'tusers', 'tglobals'));
     const migratable = partition.migratable;
     const skipped = partition.skipped;
 
@@ -212,7 +215,7 @@ describe('partitionLegacyTables', () => {
 
 describe('migratableTables', () => {
   it('returns the migratable side of the partition', () => {
-    const live = refs('tusers', 'tplugins', 'Program_2.timesheet', 'Program_1.timesheet', 'tglobals');
+    const live = refs('tusers', 'tplugins', 'Program_2.enrolment', 'Program_1.enrolment', 'tglobals');
 
     expect(migratableTables(fakeCatalog(), live)).toEqual(partitionLegacyTables(fakeCatalog(), live).migratable);
   });

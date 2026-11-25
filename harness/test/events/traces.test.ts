@@ -122,8 +122,8 @@ describe('findSeamTrace', () => {
     expect(spans.map(({ name, service, found }) => ({ name, service, found }))).toEqual(
       SEAM_REQUIRED_SPANS.map(({ name, service }) => ({ name, service, found: true })),
     );
-    expect(spans.map((span) => span.service)).toEqual(['gateway', 'people', 'people', 'timesheets']);
-    expect(SEAM_SUBSCRIPTION).toBe('timesheets.people.person.archived.v1');
+    expect(spans.map((span) => span.service)).toEqual(['gateway', 'stub', 'stub', 'stub']);
+    expect(SEAM_SUBSCRIPTION).toBe('stub.stub.note.created.v1');
     expect(spans.at(-1)?.name).toBe(`events.consume ${SEAM_SUBSCRIPTION}`);
     for (const span of spans) {
       expect(span.spanId).toMatch(/^[0-9a-f]{16}$/);

@@ -13,6 +13,7 @@ import {
   type TenantFanout,
   type ValidationResult,
 } from '../events/index.js';
+import { assertLocalRefs, nonLocalRefError } from './openapi-load.js';
 
 /** One contract finding; `keyword` is ajv's keyword, or the name of the check that failed. */
 export interface ContractViolation {
@@ -248,7 +249,10 @@ function at(root: Json, pointer: readonly string[]): unknown {
 function follow(root: Json, located: Located): Located {
   let { node, pointer } = located;
   const seen = new Set<string>();
-  while (isRecord(node) && typeof node.$ref === 'string' && node.$ref.startsWith('#/') && !seen.has(node.$ref)) {
+  while (isRecord(node) && typeof node.$ref === 'string' && !seen.has(node.$ref)) {
+    if (!node.$ref.startsWith('#/')) {
+      throw nonLocalRefError(node.$ref, pointer);
+    }
     seen.add(node.$ref);
     pointer = localPointer(node.$ref);
     node = at(root, pointer);
@@ -329,6 +333,7 @@ function parsedBody(body: unknown, mediaType: string, context: string): unknown 
 function validatorAt(validators: SchemaValidators, doc: object, pointer: readonly string[]): ValidateFunction {
   let id = documentIds.get(doc);
   if (id === undefined) {
+    assertLocalRefs(doc);
     documentCount += 1;
     id = `urn:opt2:testing:openapi:${documentCount}`;
     documentIds.set(doc, id);

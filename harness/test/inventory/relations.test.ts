@@ -15,7 +15,7 @@ import type { LiveCatalogTable, TableEntry } from '../../src/inventory/tables.js
 const FIXTURE_BEAN = 'core/mura/fixture/fixtureBean.cfc';
 const JOIN_DAO = 'core/mura/fixture/joinDAO.cfc';
 const BOOTSTRAP_DDL = 'core/setup/db/mssql.sql';
-const TIMESHEETS_DIR = 'legacy-fixtures/sql/timesheets/';
+const SAMPLE_MODULE_DIR = 'legacy-fixtures/sql/sample-module/';
 
 /** Committed fixtures by their place in the temp tree. */
 const COPIED: Readonly<Record<string, string>> = {
@@ -53,30 +53,30 @@ const JOIN_DAO_TEXT = [
 const INLINE: Readonly<Record<string, string>> = { [JOIN_DAO]: JOIN_DAO_TEXT };
 
 /** Ownership entries of one program schema, in the shape of the `opt2/table-ownership.json` fixture entries. */
-function timesheetTables(schema: string): FixtureOwnership['tables'] {
+function itemTables(schema: string): FixtureOwnership['tables'] {
   return [
     {
-      table: `${schema}.timesheet`,
-      owner: 'timesheets',
-      source: { path: TIMESHEETS_DIR, lines: null },
+      table: `${schema}.item`,
+      owner: 'sample-module',
+      source: { path: SAMPLE_MODULE_DIR, lines: null },
       hasSiteId: true,
-      primaryKey: ['timesheet_id'],
-      columns: ['timesheet_id', 'person_id', 'siteID', 'period_start', 'period_end', 'due_date'],
+      primaryKey: ['item_id'],
+      columns: ['item_id', 'person_id', 'siteID', 'period_start', 'period_end', 'due_date'],
       tenantResolution: 'program_site',
     },
     {
-      table: `${schema}.timesheet_day`,
-      owner: 'timesheets',
-      source: { path: TIMESHEETS_DIR, lines: null },
+      table: `${schema}.item_day`,
+      owner: 'sample-module',
+      source: { path: SAMPLE_MODULE_DIR, lines: null },
       hasSiteId: false,
       primaryKey: ['day_id'],
-      columns: ['day_id', 'timesheet_id', 'work_date', 'hours', 'state'],
+      columns: ['day_id', 'item_id', 'work_date', 'hours', 'state'],
       tenantResolution: 'program_site',
     },
   ];
 }
 
-const OWNERSHIP: FixtureOwnership = { tables: [...timesheetTables('Program_1'), ...timesheetTables('Program_2')] };
+const OWNERSHIP: FixtureOwnership = { tables: [...itemTables('Program_1'), ...itemTables('Program_2')] };
 
 function liveTable(schema: string, name: string, columns: string[], key: string, hasSiteId: boolean): LiveCatalogTable {
   return {
@@ -93,8 +93,8 @@ function liveTable(schema: string, name: string, columns: string[], key: string,
 const LIVE: readonly LiveCatalogTable[] = [
   liveTable('dbo', 'tsettings', ['SiteID', 'Site'], 'SiteID', true),
   ...['Program_1', 'Program_2'].flatMap((schema) => [
-    liveTable(schema, 'timesheet', ['timesheet_id', 'person_id', 'siteID'], 'timesheet_id', true),
-    liveTable(schema, 'timesheet_day', ['day_id', 'timesheet_id', 'hours'], 'day_id', false),
+    liveTable(schema, 'item', ['item_id', 'person_id', 'siteID'], 'item_id', true),
+    liveTable(schema, 'item_day', ['day_id', 'item_id', 'hours'], 'day_id', false),
   ]),
 ];
 
@@ -113,14 +113,14 @@ function ids(relations: readonly Relation[]): string[] {
   return relations.map((r) => r.id);
 }
 
-function timesheetEdge(schema: string): Relation {
-  const id = `rel:${schema}.timesheet_day.timesheet_id->${schema}.timesheet.timesheet_id`.toLowerCase();
+function itemEdge(schema: string): Relation {
+  const id = `rel:${schema}.item_day.item_id->${schema}.item.item_id`.toLowerCase();
   return {
     id,
     kind: 'fixture-fk',
-    child: { table: `${schema}.timesheet_day`, columns: ['timesheet_id'] },
-    parent: { table: `${schema}.timesheet`, columns: ['timesheet_id'] },
-    source: { path: TIMESHEETS_DIR, lines: [1, 1] },
+    child: { table: `${schema}.item_day`, columns: ['item_id'] },
+    parent: { table: `${schema}.item`, columns: ['item_id'] },
+    source: { path: SAMPLE_MODULE_DIR, lines: [1, 1] },
     cfc: null,
     cardinality: null,
     orientation: 'declared',
@@ -226,8 +226,8 @@ describe('extractDaoJoins', () => {
 });
 
 describe('fixtureRelations', () => {
-  it('relates each program schema timesheet_day.timesheet_id to the timesheet of the same schema', () => {
-    expect(fixtureRelations(OWNERSHIP)).toEqual([timesheetEdge('Program_1'), timesheetEdge('Program_2')]);
+  it('relates each program schema item_day.item_id to the item of the same schema', () => {
+    expect(fixtureRelations(OWNERSHIP)).toEqual([itemEdge('Program_1'), itemEdge('Program_2')]);
   });
 
   it('yields none for an ownership file without fixture tables', async () => {
@@ -239,7 +239,7 @@ describe('fixtureRelations', () => {
 describe('extractRelations', () => {
   it('unites the ORM, DAO-join and fixture relations, folding both program schemas into one Program_N edge', () => {
     expect(ids(union.relations)).toEqual([
-      'rel:program_n.timesheet_day.timesheet_id->program_n.timesheet.timesheet_id',
+      'rel:program_n.item_day.item_id->program_n.item.item_id',
       'rel:tfixture.siteid->tsettings.siteid',
     ]);
     expect(union.relations[1]).toEqual(extractOrmRelations(extraction.entities, tree, extraction.ormIndex, tables)[0]);

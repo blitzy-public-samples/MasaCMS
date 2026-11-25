@@ -51,7 +51,7 @@ function owned(table: string, owner: string, unit: string): OwnershipEntry {
   return { table, owner, ruleSteps: [1], targets: [{ unit, owner, rowPredicate: null }] };
 }
 
-/** The mini ownership widened with the tusers group split, file, content, pattern, retired and stored-data splits. */
+/** The mini ownership widened with the tusers group split, file, content, pattern, retired, legacy and stored-data splits. */
 function wideOwnership(): TableOwnership {
   const doc = structuredClone(ctx.ownership);
   tableOf(doc, 'tusers').targets.unshift({ unit: 'identity.group_account', owner: 'identity', rowPredicate: 'Type = 1' });
@@ -61,6 +61,7 @@ function wideOwnership(): TableOwnership {
     { table: 'tclustercommands', owner: 'decision-list', ruleSteps: [5], targets: [] },
     { table: 'fb_*', owner: 'decision-list', ruleSteps: [5], targets: [] },
     { table: 'tglobals', owner: 'retired', ruleSteps: [1], targets: [] },
+    { table: 'temails', owner: 'legacy', ruleSteps: [], targets: [] },
     {
       table: 'tclassextenddata',
       owner: 'split',
@@ -311,12 +312,12 @@ describe('rule steps in order', () => {
   });
 
   it.each([
-    ['page:render', { itemKind: 'front-end', rendersCfml: true }, 'renders CFML through the theme and display-object runtime', 'reporting'],
+    ['page:render', { itemKind: 'front-end', rendersCfml: true }, 'renders CFML through the theme and display-object runtime', null],
     ['admin:cfilemanager.default', { webRootFilesystem: true }, 'depends on the legacy web-root filesystem', 'strategies-content'],
     ['admin:cplugins.list', { runtimeCategory: 'plugin' }, 'depends on the CFML runtime (plugin)', null],
-    ['admin:cemail.list', {}, 'owner communications is not a migrated domain', 'communications'],
-    ['admin:carch.emailtest', {}, 'owner communications is not a migrated domain', 'communications'],
-    [undefined, { itemKind: 'service', areaKey: 'service:emailManager' }, 'owner communications is not a migrated domain', 'communications'],
+    ['admin:cemail.list', {}, 'no service owns its area', null],
+    ['admin:carch.emailtest', {}, 'no service owns its area', null],
+    [undefined, { itemKind: 'service', areaKey: 'service:emailManager' }, 'no service owns its area', null],
     ['admin:carch.loadrepomanager', { runtimeCategory: 'framework-error' }, 'depends on the CFML runtime (framework-error)', 'strategies-content'],
     ['admin:razuna.default', { servesTable: 'tplugins' }, 'serves decision-list table tplugins, which the target never builds', 'strategies-content'],
     ['admin:scaffold.default', {}, 'no service owns its area', null],
@@ -331,9 +332,20 @@ describe('rule steps in order', () => {
     });
   });
 
+  it('serves a write of a legacy-only table from legacy, with no owner', () => {
+    expect(decide(facts({ routeKey: 'admin:cemail.update', writeSet: ['temails', 'ttrash'] }), wide)).toMatchObject({
+      disposition: 'legacy-served',
+      dispositionStep: 4,
+      basis: 'writes a legacy-only table, which no target service owns',
+      owningService: null,
+      owners: ['legacy'],
+      legacyWrite: true,
+    });
+  });
+
   it.each([
     ['the public logout under its row owner', { itemKind: 'front-end', routeKey: 'page:logout', rendersCfml: true }, 'legacy-served', 'identity', 'aap-0.3.2'],
-    ['the commented-out contact send under its row owner', { itemKind: 'front-end', routeKey: 'page:contactsend', rendersCfml: true, reachable: false }, 'retired', 'communications', 'aap-0.3.2'],
+    ['the commented-out contact send, without an owner', { itemKind: 'front-end', routeKey: 'page:contactsend', rendersCfml: true, reachable: false }, 'retired', null, 'none'],
     ['a doaction value no row names, without an owner', { itemKind: 'front-end', routeKey: 'page:forward', rendersCfml: true }, 'legacy-served', null, 'none'],
     ['a filebrowser site-asset method under its area owner', { itemKind: 'api', routeKey: 'rest:filebrowser.~browse', areaKey: 'api:filebrowser', webRootFilesystem: true }, 'legacy-served', 'strategies-content', 'aap-0.3.2'],
     ['the display-window purge step under its area owner', { itemKind: 'job-step', routeKey: undefined, areaKey: 'job:sitemonitor.cache-purge', runtimeCategory: 'theme-render' }, 'legacy-served', 'strategies-content', 'aap-0.3.2'],
@@ -475,6 +487,7 @@ describe('ownersOfWriteSet', () => {
     [['tclassextenddata'], ['people', 'strategies-content']],
     [['ttrash', 'tusersmemb'], ['identity']],
     [['ttrash', 'tclassextenddata'], ['people', 'strategies-content']],
+    [['ttrash', 'temails'], ['legacy']],
   ])('narrows stored-data splits of %j by the co-written tables', (writeSet, owners) => {
     expect(ownersOfWriteSet(writeSet, {}, wide.ownership).owners).toEqual(owners);
   });
@@ -483,7 +496,7 @@ describe('ownersOfWriteSet', () => {
 describe('exceptions, fixtures and corrections', () => {
   const upload = (routeKey: string): DispositionFacts => facts({ routeKey, fileStoreWrite: true });
 
-  it.each(['admin:carch.update{upload=image}', 'admin:carch.multifileupload{upload=image}', 'api:file.save{upload=image}'])(
+  it.each(['admin:carch.update{upload=image}', 'api:file.save{upload=image}', 'rest:file.save{upload=image}'])(
     'keeps the carried image upload %s a legacy write halted by EX-FILE-RENDITION',
     (routeKey) => {
       expect(decide(upload(routeKey), wide)).toMatchObject({
@@ -523,7 +536,6 @@ describe('exceptions, fixtures and corrections', () => {
 
   it.each([
     ['fixture:people/persons/{id}/archive@post', 'people', 'people'],
-    ['fixture:esignature/requests/{id}/sign@post', 'esignature', 'e-signature'],
   ])('carries the fixture route %s to its module service by definition', (routeKey, fixtureModule, owningService) => {
     const result = decide(facts({ itemKind: 'fixture-route', routeKey, fixtureModule }), ctx);
     expect(result).toMatchObject({
@@ -537,17 +549,17 @@ describe('exceptions, fixtures and corrections', () => {
 
   it('carries a fixture table to its owner by definition, where the rule would serve the same table from legacy', () => {
     const ownership = structuredClone(ctx.ownership);
-    ownership.tables.push(owned('Program_N.blackout', 'timesheets', 'timesheets.blackout'));
-    const table = facts({ itemKind: 'table', id: 'tbl:Program_N.blackout', routeKey: undefined, areaKey: 'table:Program_N.blackout', writeSet: ['Program_N.blackout'] });
+    ownership.tables.push(owned('synthetic.sample_record', 'sample-module', 'sample_module.record'));
+    const table = facts({ itemKind: 'table', id: 'tbl:synthetic.sample_record', routeKey: undefined, areaKey: 'table:synthetic.sample_record', writeSet: ['synthetic.sample_record'] });
     expect(decide({ ...table, fixtureTable: true }, { ...ctx, ownership })).toMatchObject({
       disposition: 'carry',
       dispositionStep: 5,
       basis: 'fixture table of a synthetic module, carried by definition',
-      owningService: 'timesheets',
+      owningService: 'sample-module',
       ownerBasis: 'table-ownership',
       withheld: false,
     });
-    expect(decide(table, { ...ctx, ownership })).toMatchObject({ disposition: 'legacy-served', dispositionStep: 4, basis: 'owner timesheets is not a migrated domain' });
+    expect(decide(table, { ...ctx, ownership })).toMatchObject({ disposition: 'legacy-served', dispositionStep: 4, basis: 'owner sample-module is not a migrated domain' });
   });
 
   it.each([
@@ -585,9 +597,9 @@ describe('exceptions, fixtures and corrections', () => {
   });
 
   it('records a correction when a doaction writes for another owner than its row names', () => {
-    const entry = facts({ itemKind: 'front-end', routeKey: 'page:subscribe', rendersCfml: true, writeSet: ['tusersmemb'] });
+    const entry = facts({ itemKind: 'front-end', routeKey: 'page:saverate', rendersCfml: true, writeSet: ['tusersmemb'] });
     expect(decide(entry, ctx).correction).toEqual({
-      expected: { owningService: 'communications' },
+      expected: { owningService: 'strategies-content' },
       computed: { disposition: 'legacy-served', owningService: 'identity' },
       step: 4,
       basis: 'renders CFML through the theme and display-object runtime',
@@ -678,7 +690,7 @@ describe('haltingExceptionId', () => {
 
   it.each([
     ['a halted entry by its route key', ctx.exceptions, 'admin:carch.update{upload=image}', 'EX-FILE-RENDITION'],
-    ['a halted entry by an authored-case appliesTo key', ctx.exceptions, 'admin:cArch.multiFileUpload{upload=image}', 'EX-FILE-RENDITION'],
+    ['a halted entry by an authored-case appliesTo key', ctx.exceptions, 'rest:File.Save{upload=image}', 'EX-FILE-RENDITION'],
     ['no open fix proposal, which holds but does not halt', ctx.exceptions, 'reload:application', null],
     ['nothing for the base key of a halted variant', ctx.exceptions, 'admin:carch.update', null],
     ['nothing for a keyless item', ctx.exceptions, null, null],
@@ -730,7 +742,7 @@ describe('expectedOutcome', () => {
     ['a group save variant under its variant area', keyed('admin:cusers.update{type=1,extdata}'), { disposition: 'carry', owningService: 'identity' }],
     ['a roster save variant under the circuit area', keyed('admin:cusers.update{type=2,action=add}'), { disposition: 'carry', owningService: 'people' }],
     ['the keyless JSON API families', { areaKey: 'api' }, { disposition: 'carry', owningService: null }],
-    ['the public page render', keyed('page:render'), { disposition: 'legacy-served', owningService: 'reporting' }],
+    ['the public page render', keyed('page:render'), { disposition: 'legacy-served', owningService: null }],
     ['a keyless route by its area', { areaKey: 'soap:v1' }, { disposition: 'retired', owningService: null }],
     ['nothing for a fixture route', keyed('fixture:people/persons@get'), null],
   ] as const)('gives %s its plan expectation', (_label, f, expected) => {

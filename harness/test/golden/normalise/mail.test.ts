@@ -335,7 +335,7 @@ describe('normaliseMail', () => {
     expect(find(out, FORGOT_SUBJECT)?.headers).toStrictEqual({ 'X-Mailer': ['ColdFusion 2023 Application Server'] });
     expect(find(out, TEMPLATE_SUBJECT)?.headers).toStrictEqual({});
 
-    const dropped = applyOverrides(compared, { dropHeaders: ['x-mailer'] }, 'GS-CM-01');
+    const dropped = applyOverrides(compared, { dropHeaders: ['x-mailer'] }, 'GS-ID-71');
     for (const mail of normaliseMail(collected, createIdOrdinals(), dropped)) {
       expect(mail).not.toHaveProperty('headers');
     }

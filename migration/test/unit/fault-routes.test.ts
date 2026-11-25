@@ -1,10 +1,8 @@
 // Unit tests for the fault toggle routes over a registry double: contract shape, the registry calls, the legacy 400 and 404, and auth.
-import { readFileSync } from 'node:fs';
-
 import { INVOCATION_HEADER, Roles, collectRouteMatrix } from '@opt2/platform/auth';
 import { createLogger } from '@opt2/platform/logging';
 import { createService, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
-import { assertResponseMatchesOpenApi, mintServiceToken, mintUserToken, testVerifier } from '@opt2/platform/testing';
+import { assertResponseMatchesOpenApi, loadOpenApiDocument, mintServiceToken, mintUserToken, testVerifier } from '@opt2/platform/testing';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { parse } from 'yaml';
 
@@ -14,7 +12,7 @@ import { FAULT_ROUTES, registerFaultRoutes } from '../../src/routes/faults.js';
 type Operation = Record<string, unknown>;
 type Method = 'PUT' | 'DELETE';
 
-const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as {
+const OPENAPI = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as {
   paths: Record<string, Record<string, Operation>>;
 };
 const FAULT_PATH = '/internal/v1/faults/{name}';

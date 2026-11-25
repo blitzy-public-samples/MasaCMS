@@ -1,11 +1,9 @@
 // Unit tests for the `unitAuthority` route over a fake authority read and catalog: answers, contract shape, the legacy 400 and 503, and auth denials.
-import { readFileSync } from 'node:fs';
-
 import { INVOCATION_HEADER, Roles, collectRouteMatrix } from '@opt2/platform/auth';
 import { LegacyServiceUnavailableError } from '@opt2/platform/legacy-compat';
 import { createLogger } from '@opt2/platform/logging';
 import { createService, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
-import { assertResponseMatchesOpenApi, mintServiceToken, mintUserToken, testVerifier } from '@opt2/platform/testing';
+import { assertResponseMatchesOpenApi, loadOpenApiDocument, mintServiceToken, mintUserToken, testVerifier } from '@opt2/platform/testing';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { parse } from 'yaml';
 
@@ -15,7 +13,7 @@ import { AUTHORITY_ROUTES, registerAuthorityRoutes, type AuthorityRouteDeps } fr
 
 type Operation = Record<string, unknown>;
 
-const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as {
+const OPENAPI = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as {
   paths: Record<string, Record<string, Operation>>;
 };
 const PATH = '/internal/v1/authority';
@@ -23,7 +21,7 @@ const CATALOG_UNITS: readonly Unit[] = [
   { id: 'people.person', owner: 'people', schema: 'people', legacyTables: ['tusers'] },
   { id: 'identity.user_account', owner: 'identity', schema: 'identity', legacyTables: ['tusers'] },
   { id: 'content.content', owner: 'strategies-content', schema: 'content', legacyTables: ['tcontent'] },
-  { id: 'timesheets.blackout', owner: 'timesheets', schema: 'timesheets', legacyTables: ['blackout'] },
+  { id: 'programs_sites.site', owner: 'programs-sites', schema: 'programs_sites', legacyTables: ['tsettings'] },
 ];
 const KNOWN_UNITS = CATALOG_UNITS.map((unit) => unit.id);
 
@@ -114,11 +112,11 @@ describe('answers', () => {
     authority.mockResolvedValue(authorityOf('v0002', ['people.person', 'identity.user_account'], ['content.content']));
     const headers = await headersFor('programs-sites');
 
-    const mixed = await get('?units=people.person,content.content,timesheets.blackout,people.person', headers);
+    const mixed = await get('?units=people.person,content.content,programs_sites.site,people.person', headers);
     expect(mixed.statusCode).toBe(200);
     expect(mixed.json()).toEqual({
       tableVersion: 'v0002',
-      units: { 'people.person': 'target', 'content.content': 'legacy', 'timesheets.blackout': 'legacy' },
+      units: { 'people.person': 'target', 'content.content': 'legacy', 'programs_sites.site': 'legacy' },
       allTarget: false,
     });
 

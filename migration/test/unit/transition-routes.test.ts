@@ -1,12 +1,10 @@
 // Unit tests for the cut-over transition routes over a fake transition service: declarations against the contract, each
 // declared answer, the background start, and auth.
-import { readFileSync } from 'node:fs';
-
 import { INVOCATION_HEADER, Roles, collectRouteMatrix } from '@opt2/platform/auth';
 import { LegacyApiError } from '@opt2/platform/legacy-compat';
 import { createLogger } from '@opt2/platform/logging';
 import { createService, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
-import { assertResponseMatchesOpenApi, findOperation, mintServiceToken, mintUserToken, testVerifier } from '@opt2/platform/testing';
+import { assertResponseMatchesOpenApi, findOperation, loadOpenApiDocument, mintServiceToken, mintUserToken, testVerifier } from '@opt2/platform/testing';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { parse } from 'yaml';
 
@@ -18,7 +16,7 @@ type Schemas = components['schemas'];
 type Operation = Record<string, unknown>;
 type Method = 'GET' | 'POST';
 
-const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as {
+const OPENAPI = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as {
   paths: Record<string, Record<string, Operation>>;
 };
 

@@ -2,13 +2,7 @@
 import { sha256Hex } from './bytes.js';
 import type { SeedConfig } from './config.js';
 import { emptyFixtureTables, type FixtureContext, type FixtureModule, type FixtureTables } from './fixture-tables.js';
-import { buildCommunicationsFixtures } from './fixtures/communications.js';
-import { buildEsignatureFixtures } from './fixtures/esignature.js';
-import { buildFinanceFixtures } from './fixtures/finance.js';
 import { buildPeopleFixtures } from './fixtures/people.js';
-import { buildReportingFixtures } from './fixtures/reporting.js';
-import { buildSurveyFixtures } from './fixtures/surveys.js';
-import { buildTimesheetFixtures } from './fixtures/timesheets.js';
 import { buildMasa, indexMasa, type MasaData } from './masa.js';
 import { createRandom } from './random.js';
 import { createCalendar } from './time.js';
@@ -26,15 +20,7 @@ export interface Dataset {
 type FixtureBuilder = (ctx: FixtureContext) => FixtureTables;
 
 /** Fixture builders in generation order. */
-const FIXTURE_BUILDERS: readonly (readonly [FixtureModule, FixtureBuilder])[] = Object.freeze([
-  ['people', buildPeopleFixtures],
-  ['timesheets', buildTimesheetFixtures],
-  ['finance', buildFinanceFixtures],
-  ['surveys', buildSurveyFixtures],
-  ['reporting', buildReportingFixtures],
-  ['communications', buildCommunicationsFixtures],
-  ['esignature', buildEsignatureFixtures],
-] as const);
+const FIXTURE_BUILDERS: readonly (readonly [FixtureModule, FixtureBuilder])[] = Object.freeze([['people', buildPeopleFixtures]] as const);
 
 type PathSegment = string | number;
 
@@ -104,16 +90,13 @@ export function buildDataset(config: SeedConfig, sourceSha: string): Dataset {
   const calendar = createCalendar(businessDate);
   const masa = buildMasa(config, random.fork('masa'), calendar);
   const index = indexMasa(masa, config);
-  const fixtures = emptyFixtureTables(config);
-  const filled = new Set<string>();
+  const fixtures = emptyFixtureTables();
   for (const [module, build] of FIXTURE_BUILDERS) {
     const tables = build({ config, random: random.fork(`fixtures/${module}`), calendar, masa, index });
     for (const [key, rows] of Object.entries(tables)) {
       if (!Object.hasOwn(fixtures, key)) {
         throw new RangeError(`fixtures/${module} returned unknown fixture key ${JSON.stringify(key)}`);
       }
-      if (filled.has(key)) throw new Error(`fixtures/${module} returned fixture key ${JSON.stringify(key)} already filled`);
-      filled.add(key);
       fixtures[key] = rows;
     }
   }

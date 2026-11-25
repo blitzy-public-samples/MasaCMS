@@ -14,7 +14,7 @@ import {
 import {
   CATALOGUE_PATH,
   FIXTURES_UNAVAILABLE,
-  SERVICES,
+  SCENARIO_SERVICES,
   decisionRefs,
   exceptionRefs,
   isRehearsalCrossing,
@@ -25,7 +25,7 @@ import {
   type Catalogue,
   type FixtureStatus,
   type Scenario,
-  type ServiceName,
+  type ScenarioService,
   type StepExpectation,
 } from './catalogue.js';
 import { GoldenConfigError, haltEvidence, type DifferenceSelector, type ExceptionEntry } from './errors.js';
@@ -64,17 +64,6 @@ export const PARITY_TABLE_VERSION = 'v0002';
 /** Cut-over version of the rollback rehearsal, which a rehearsal crossing is judged under. */
 export const REHEARSAL_TABLE_VERSION = 'v0003';
 
-/** Services with a Masa legacy oracle: the only ones parity covers without the legacy fixtures. */
-export const MIGRATED_SERVICES = [
-  'identity',
-  'people',
-  'programs-sites',
-  'strategies-content',
-] as const satisfies readonly ServiceName[];
-
-/** Report item left unmet when the legacy fixtures are unavailable. */
-export const UNMET_WITHOUT_FIXTURES = 'all ten services pass parity';
-
 /** Result of one scenario, in report order. */
 export const PARITY_RESULTS = [
   'pass',
@@ -95,8 +84,9 @@ const DECISION_LIST_REF = 'opt2/decision-list.json';
 const DECISION_LIST_LINK = '[decision-list.md](../decision-list.md)';
 const EXCEPTIONS_LIST_LINK = '[exceptions-list.md](../exceptions-list.md)';
 const PENDING_RUN = 'pending-run';
+// Shown for an exceptions entry's absent scenario or evidence.
+const NO_POINTER = '—';
 const DIFFERENCE_KINDS = ['changed', 'missing', 'extra', 'order', 'status'] as const;
-const NUMBER_WORDS = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten'];
 
 /** A difference as reported, with the exceptions entry that excuses it. */
 export interface ParityDifference extends Difference {
@@ -118,7 +108,7 @@ export interface ScenarioVerdict {
 /** One scenario row of the parity report. */
 export interface ScenarioParity extends ScenarioVerdict {
   id: string;
-  service: ServiceName;
+  service: ScenarioService;
   /** Repository- or `${OPT2_STATE_DIR}`-relative locations of the compared sides. */
   evidence: { golden: string; replay: string };
 }
@@ -154,13 +144,6 @@ export interface PlannedParity {
   halted: { scenario: string; exceptionId: string; routeKeys: string[] }[];
 }
 
-/** Parity coverage when the legacy fixtures are unavailable. */
-export interface ParityCoverage {
-  servicesCovered: number;
-  servicesTotal: number;
-  unmet: string[];
-}
-
 /** `opt2/reports/parity.json`. */
 export interface ParityReport {
   sourceSha: string;
@@ -176,7 +159,6 @@ export interface ParityReport {
   rehearsalCrossings?: CrossingParity[];
   unmetWithheld: UnmetWithheld[];
   planned: PlannedParity;
-  coverage?: ParityCoverage;
 }
 
 const nullableString = z.string().nullable();
@@ -184,7 +166,7 @@ const count = z.number().int().nonnegative();
 
 const scenarioParitySchema = z.strictObject({
   id: z.string().min(1),
-  service: z.enum(SERVICES),
+  service: z.enum(SCENARIO_SERVICES),
   result: z.enum(PARITY_RESULTS),
   reason: nullableString,
   differences: z.array(
@@ -236,22 +218,10 @@ export const parityReportSchema = z.strictObject({
     ),
     halted: z.array(z.strictObject({ scenario: z.string(), exceptionId: z.string(), routeKeys: z.array(z.string()) })),
   }),
-  coverage: z.strictObject({ servicesCovered: count, servicesTotal: count, unmet: z.array(z.string()) }).optional(),
 });
 
 const decisionListSchema = z.looseObject({
   actionVariants: z.array(z.looseObject({ routeKey: z.string().min(1), proposal: z.string() })).default(() => []),
-  tables: z
-    .array(
-      z.looseObject({
-        table: z.string().min(1),
-        proposedOwner: z.string(),
-        reason: z.string(),
-        // Site-monitor job steps have no route key.
-        withheldEntryPoints: z.array(z.looseObject({ routeKey: z.string().min(1).nullable() })).default(() => []),
-      }),
-    )
-    .default(() => []),
 });
 /** The decision-list fields compare reads. */
 export type DecisionList = z.output<typeof decisionListSchema>;
@@ -271,7 +241,8 @@ const selectorSchema: z.ZodType<DifferenceSelector> = z.strictObject({
 
 const exceptionEntrySchema: z.ZodType<ExceptionEntry> = z.looseObject({
   id: z.string().min(1),
-  scenario: z.string().min(1),
+  // Absent once the entry's scenario and golden set were retired; the routing decision stands.
+  scenario: z.string().min(1).optional(),
   routeKey: z.string().min(1),
   appliesTo: z.array(z.string()).optional(),
   difference: z.string(),
@@ -279,7 +250,7 @@ const exceptionEntrySchema: z.ZodType<ExceptionEntry> = z.looseObject({
   decision: z.enum(['preserve', 'fix']),
   reason: z.string(),
   status: z.enum(['open', 'accepted', 'halted']),
-  evidence: z.looseObject({ golden: z.string(), replay: z.string() }),
+  evidence: z.looseObject({ golden: z.string(), replay: z.string() }).optional(),
   sourceSha: z.string(),
 });
 
@@ -436,7 +407,7 @@ export function browserResultPath(id: string, env: EnvLike = process.env): strin
 /** Step name of the console differences {@link browserDifferences} reports. */
 export const BROWSER_CONSOLE_STEP = 'console';
 
-const NO_SIDE_EFFECTS: GoldenSideEffects = { mail: [], rows: {}, tasks: [], files: [] };
+const NO_SIDE_EFFECTS: GoldenSideEffects = { mail: [], rows: {}, files: [] };
 const CONSOLE_NOT_STRINGS = `golden set's ${BROWSER_FINAL_STEP} console is not a list of strings`;
 
 /** Console errors the capture's final DOM step records: `[]` when absent, `null` when not a list of strings. */
@@ -513,27 +484,18 @@ interface RecordedStep {
 }
 
 interface DecisionIndex {
-  refsByRouteKey: Map<string, string[]>;
+  refsByRouteKey: Map<string, string>;
   proposals: Map<string, string>;
 }
 
-/** Decision-list references per route key, its action variant first, then every table withholding it. */
+/** The decision-list reference of each action variant's route key, and each reference's proposal. */
 function indexDecisionList(list: DecisionList): DecisionIndex {
-  const refsByRouteKey = new Map<string, string[]>();
+  const refsByRouteKey = new Map<string, string>();
   const proposals = new Map<string, string>();
-  const add = (routeKey: string, ref: string): void => {
-    const refs = refsByRouteKey.get(routeKey) ?? [];
-    if (!refs.includes(ref)) refsByRouteKey.set(routeKey, [...refs, ref]);
-  };
   for (const variant of list.actionVariants) {
     const ref = `${DECISION_LIST_REF}#actionVariants/${variant.routeKey}`;
-    add(variant.routeKey, ref);
+    refsByRouteKey.set(variant.routeKey, ref);
     proposals.set(ref, variant.proposal);
-  }
-  for (const table of list.tables) {
-    const ref = `${DECISION_LIST_REF}#tables/${table.table}`;
-    proposals.set(ref, `Proposed owner: ${table.proposedOwner}. ${table.reason}`);
-    for (const entry of table.withheldEntryPoints) if (entry.routeKey !== null) add(entry.routeKey, ref);
   }
   return { refsByRouteKey, proposals };
 }
@@ -542,25 +504,20 @@ function unique<T>(values: Iterable<T | undefined>): T[] {
   return [...new Set([...values].filter((value): value is T => value !== undefined))];
 }
 
-/** References of `routeKeys`; throws `GoldenConfigError` for a key the decision list does not withhold. */
+/** References of `routeKeys`; throws `GoldenConfigError` for a key that is no action variant of the decision list. */
 function resolveDecisionRefs(routeKeys: readonly string[], index: DecisionIndex, scenarioId: string): string[] {
   return unique(
-    routeKeys.flatMap((routeKey) => {
-      const refs = index.refsByRouteKey.get(routeKey);
-      if (refs === undefined) {
+    routeKeys.map((routeKey) => {
+      const ref = index.refsByRouteKey.get(routeKey);
+      if (ref === undefined) {
         throw new GoldenConfigError(
-          `${scenarioId}: decisionListRef ${routeKey} names no action variant or withheld table entry point of ` +
-            `${DECISION_LIST_REF}`,
+          `${scenarioId}: decisionListRef ${routeKey} names no action variant of ${DECISION_LIST_REF}`,
           { path: `scenario ${scenarioId}` },
         );
       }
-      return refs;
+      return ref;
     }),
   );
-}
-
-function declaresWithheld(scenario: Scenario): boolean {
-  return scenario.expected === 'withheld' || scenario.steps.some((step) => step.expected === 'withheld');
 }
 
 function declaresHalted(scenario: Scenario): boolean {
@@ -776,7 +733,7 @@ export function classifyScenario(
       haltSteps.find((step) => step.gap !== undefined)?.gap?.reason ??
       'declared halted; served by legacy')
     : null;
-  if (opts.crossing !== true && (refs.length > 0 || declaresWithheld(scenario))) {
+  if (opts.crossing !== true && refs.length > 0) {
     const reason = [unlisted, haltReason].filter((part) => part !== null).join('; ');
     return verdict('withheld', reason === '' ? null : reason, differences, exceptionId);
   }
@@ -850,9 +807,10 @@ function plannedParity(
   index: DecisionIndex,
   exceptions: readonly ExceptionEntry[],
 ): PlannedParity {
-  const withheld = scenarios.filter(declaresWithheld).map((scenario) => {
+  const withheld = scenarios.flatMap((scenario) => {
     const routeKeys = decisionRefs(scenario);
-    return { scenario: scenario.id, routeKeys, decisionListRef: resolveDecisionRefs(routeKeys, index, scenario.id) };
+    if (routeKeys.length === 0) return [];
+    return [{ scenario: scenario.id, routeKeys, decisionListRef: resolveDecisionRefs(routeKeys, index, scenario.id) }];
   });
   const halted = scenarios.flatMap((scenario) =>
     exceptionRefs(scenario).map((exceptionId) => {
@@ -865,8 +823,8 @@ function plannedParity(
 
 /**
  * The parity report of `inputs`: scenarios in catalogue order with their summary, every withheld scenario's
- * decision-list entries and proposals, the catalogue's planned outcomes, any rehearsal crossings, and the coverage
- * left when the legacy fixtures are unavailable. Throws `GoldenConfigError` for a scenario the catalogue does not hold.
+ * decision-list entries and proposals, the catalogue's planned outcomes and any rehearsal crossings. Throws
+ * `GoldenConfigError` for a scenario the catalogue does not hold.
  */
 export function buildParityReport(inputs: ParityReportInputs): ParityReport {
   const order = new Map(inputs.catalogue.scenarios.map((scenario, i) => [scenario.id, i]));
@@ -907,13 +865,6 @@ export function buildParityReport(inputs: ParityReportInputs): ParityReport {
     planned: plannedParity(inputs.catalogue.scenarios, index, inputs.exceptions),
   };
   if (crossings.length > 0) report.rehearsalCrossings = crossings;
-  if (!inputs.fixtures.available) {
-    report.coverage = {
-      servicesCovered: MIGRATED_SERVICES.length,
-      servicesTotal: SERVICES.length,
-      unmet: [UNMET_WITHOUT_FIXTURES],
-    };
-  }
   return report;
 }
 
@@ -932,10 +883,6 @@ function code(text: string): string {
 
 function codes(values: readonly string[]): string {
   return values.map(code).join(', ');
-}
-
-function numberWord(n: number): string {
-  return NUMBER_WORDS[n] ?? String(n);
 }
 
 const RESULT_LEGEND: readonly (readonly [ParityResult, string])[] = [
@@ -1077,14 +1024,6 @@ export function renderParityMarkdown(report: ParityReport, exceptionsLink: strin
       tableRow([p.scenario, code('halted'), codes(p.routeKeys), `${exceptionsLink}: ${code(p.exceptionId)}`]),
     ),
   );
-  if (report.coverage !== undefined) {
-    const { servicesCovered, servicesTotal, unmet } = report.coverage;
-    lines.push(
-      '',
-      `The legacy fixtures are unavailable, so parity covers ${numberWord(servicesCovered)} of ` +
-        `${numberWord(servicesTotal)} services, and ${unmet.map((item) => `"${item}"`).join(', ')} is unmet.`,
-    );
-  }
   return lines;
 }
 
@@ -1105,7 +1044,7 @@ const EXCEPTIONS_LEGEND = [
 ];
 
 const EXCEPTIONS_FOOTER = [
-  'Parity runs append runtime entries to this list: an `EquivalenceImpossible` halt, the GS-CO-15 500 gap, halted roster operations and a non-`fileDir` file store.',
+  'Parity runs append runtime entries to this list: an `EquivalenceImpossible` halt, a JSON API 500 gap, halted roster operations and a non-`fileDir` file store.',
   '',
   'Weaknesses reproduced on carried routes without an open entry are listed in [pre-existing-defects.md](reports/pre-existing-defects.md).',
 ];
@@ -1113,9 +1052,13 @@ const EXCEPTIONS_FOOTER = [
 const PARITY_JSON_EVIDENCE = /^opt2\/reports\/parity\.json(?=#|$)/;
 
 function evidenceCell(entry: ExceptionEntry, run: ExceptionsRunState | undefined): string {
-  const goldenState = run === undefined ? PENDING_RUN : run.captured.has(entry.scenario) ? 'captured' : 'not captured';
-  const replayState = run === undefined ? PENDING_RUN : (run.results.get(entry.scenario) ?? 'not in this run');
-  const { golden, replay } = entry.evidence;
+  const { scenario, evidence } = entry;
+  if (evidence === undefined) return NO_POINTER;
+  const captured = scenario !== undefined && run?.captured.has(scenario) === true;
+  const result = scenario === undefined ? undefined : run?.results.get(scenario);
+  const goldenState = run === undefined ? PENDING_RUN : captured ? 'captured' : 'not captured';
+  const replayState = run === undefined ? PENDING_RUN : (result ?? 'not in this run');
+  const { golden, replay } = evidence;
   const onParity = PARITY_JSON_EVIDENCE.test(replay);
   const replayPart = onParity
     ? `parity ${code(replay.replace(PARITY_JSON_EVIDENCE, 'opt2/reports/parity.md'))}`
@@ -1131,7 +1074,7 @@ export function renderExceptionsMarkdown(list: ExceptionsList, run?: ExceptionsR
   const rows = exceptionEntries(list).map((entry) =>
     tableRow([
       entry.id,
-      entry.scenario,
+      entry.scenario ?? NO_POINTER,
       codes(entryRouteKeys(entry)),
       entry.difference,
       code(entry.decision),
@@ -1298,6 +1241,8 @@ const HELP = [
   'Rehearsal scenarios are included once their replay output exists; a rehearsal crossing',
   '(golden/replay/rehearsal/<id>.json) is compared under v0003 with harness/golden/sets/rehearsal/<id>.json and',
   'listed apart, outside the summary; any unlisted difference fails it, withheld variants included.',
+  'Any other scenario without its replay output, a withheld one such as GS-ID-09 included, is reported fail',
+  '("no replay output at …"; a browser scenario: "browser flow not run"), so a run before replay exits 1.',
   '',
   'Exit: 0 no scenario or rehearsal crossing fails (withheld and skipped are reported as unmet), 1 one fails,',
   '2 usage error.',
@@ -1391,7 +1336,8 @@ export async function main(argv: string[], env: EnvLike = process.env, deps: Mai
     renderParityMarkdown(report, parityExceptionsLink(exceptionsPath, env)),
   );
   for (const { scenario } of exceptions) {
-    if (!ctx.captured.has(scenario) && (await exists(goldenSetPath(scenario)))) ctx.captured.add(scenario);
+    if (scenario === undefined || ctx.captured.has(scenario)) continue;
+    if (await exists(goldenSetPath(scenario))) ctx.captured.add(scenario);
   }
   const results = new Map(report.scenarios.map((scenario) => [scenario.id, scenario.result]));
   const exceptionsMarkdown = await writeMarkdown(

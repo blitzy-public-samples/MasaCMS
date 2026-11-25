@@ -372,7 +372,7 @@ export function parseProgramTable(name: string): { programId: number; table: str
   return { programId: Number(match[1] ?? match[2]), table: match[3] ?? match[4] ?? '' };
 }
 
-/** Lookups the orchestrator supplies: the umbrella site, parent-row sites and `synthetic.program_site`. */
+/** Lookups the orchestrator supplies: the umbrella site, parent-row sites and the program-to-site map. */
 export interface TenantLookups {
   umbrellaSiteId: string;
   parentSiteId?(parentLegacyTable: string, parentKey: Record<string, unknown>): string | null | undefined;
@@ -424,7 +424,7 @@ export function resolveTenant(
   return { tenantId: tenantIdForSite(umbrella), siteId: umbrella, orphan: true };
 }
 
-/** The `Program_<id>` of an apply batch and the `synthetic.program_site` lookup its program-sourced rows are held to. */
+/** The `Program_<id>` of an apply batch and the program-to-site lookup its program-sourced rows are held to. */
 export interface BatchProgram {
   legacyProgramId?: number | undefined;
   programSiteId?: TenantLookups['programSiteId'];

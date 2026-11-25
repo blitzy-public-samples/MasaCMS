@@ -1,5 +1,4 @@
 /** The ccategory admin routes of `routes/v1/ccategory.ts` through `app.inject` over a throwaway `content` schema and an identity CSRF double. */
-import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
@@ -24,6 +23,7 @@ import {
   TENANT_UMBRELLA,
   assertResponseMatchesOpenApi,
   createThrowawaySchema,
+  loadOpenApiDocument,
   mintServiceToken,
   mintUserToken,
   pgAvailable,
@@ -40,7 +40,7 @@ import { registerCategoryRoutes } from '../../src/routes/v1/ccategory.js';
 
 const SERVICE = 'strategies-content';
 const CLOCK = fixedClock(new Date(2026, 5, 30, 10, 0, 0, 0));
-const OPENAPI = parse(readFileSync(fileURLToPath(new URL('../../contracts/openapi.yaml', import.meta.url)), 'utf8')) as {
+const OPENAPI = loadOpenApiDocument(fileURLToPath(new URL('../../contracts/openapi.yaml', import.meta.url)), parse) as {
   paths: Record<string, Record<string, Record<string, unknown>>>;
 };
 const FORM = { 'content-type': 'application/x-www-form-urlencoded' } as const;

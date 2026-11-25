@@ -16,19 +16,11 @@ COPY services/identity/contracts/openapi.yaml /repo/services/identity/contracts/
 COPY services/people/contracts/openapi.yaml /repo/services/people/contracts/
 COPY services/programs-sites/contracts/openapi.yaml /repo/services/programs-sites/contracts/
 COPY services/strategies-content/contracts/openapi.yaml /repo/services/strategies-content/contracts/
-COPY services/communications/contracts/openapi.yaml /repo/services/communications/contracts/
-COPY services/reporting/contracts/openapi.yaml /repo/services/reporting/contracts/
-COPY services/surveys/contracts/openapi.yaml /repo/services/surveys/contracts/
-COPY services/timesheets/contracts/openapi.yaml /repo/services/timesheets/contracts/
-COPY services/finance/contracts/openapi.yaml /repo/services/finance/contracts/
-COPY services/e-signature/contracts/openapi.yaml /repo/services/e-signature/contracts/
 COPY gateway/contracts/openapi.yaml /repo/gateway/contracts/
 # Legacy resource bundles `generate:rb` reads: the admin, core-assets and global layers.
 COPY core/mura/resourceBundle/resources/ /repo/core/mura/resourceBundle/resources/
 COPY core/modules/v1/core_assets/resource_bundles/ /repo/core/modules/v1/core_assets/resource_bundles/
 COPY resource_bundles/ /repo/resource_bundles/
-# Finance's exported transition table, which the record detail's transition buttons are filtered by.
-COPY opt2/reports/state-machines/finance.json /repo/opt2/reports/state-machines/
 COPY web/tsconfig.json web/next.config.ts web/instrumentation.ts web/server.ts ./
 COPY web/app/ ./app/
 COPY web/src/ ./src/

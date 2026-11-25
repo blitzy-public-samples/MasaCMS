@@ -6,8 +6,8 @@ import {
   CSRF_HEADER_EXPIRES,
   CSRF_HEADER_TOKEN,
 } from '@opt2/platform/legacy-compat';
-import { keyedOrdinalFor, normaliseIdsInString, type IdOrdinals } from './ids.js';
-import type { NormaliseRules, OriginRules, TimestampClassRule } from './rules.js';
+import { normaliseIdsInString, type IdOrdinals } from './ids.js';
+import type { HostPathRules, NormaliseRules, OriginRules, TimestampClassRule } from './rules.js';
 
 /** Name of a timestamp format class declared in `timestamps.classes` of the rules, e.g. `serializer`, `http-date`. */
 export type TimestampClass = TimestampClassRule['name'];
@@ -67,6 +67,8 @@ interface Compiled {
   readonly foldDownloadKey: Fold;
   readonly textQueryTokens: RegExp;
   readonly origins: RegExp;
+  /** Every resolved host path in any of its forms, longest first, one group each, and each group's placeholder. */
+  readonly hostPaths: { readonly pattern: RegExp; readonly placeholders: readonly string[] } | undefined;
 }
 
 type Fold = (value: string) => string;
@@ -125,6 +127,66 @@ function originsRegExp(origins: OriginRules): RegExp {
   return new RegExp(`(?<=^|[^0-9A-Za-z.-]|%2F)(?:${forms})(?![0-9A-Za-z_-]|\\.[0-9A-Za-z]|:[0-9]|%3A[0-9])`, 'gi');
 }
 
+// Hex digits of `code`, `width` wide, in either case.
+function hexOf(code: number, width: number): string {
+  return [...code.toString(16).padStart(width, '0')].map((d) => (d >= 'a' ? `[${d}${d.toUpperCase()}]` : d)).join('');
+}
+
+// JavaScript escapes of a non-alphanumeric code unit `c`: `\c`, `\uHHHH` and, below U+0100, `\xHH`.
+function escapesOf(c: string): string[] {
+  const code = c.charCodeAt(0);
+  return [`\\\\${escapeRegExp(c)}`, `\\\\u${hexOf(code, 4)}`, ...(code < 0x100 ? [`\\\\x${hexOf(code, 2)}`] : [])];
+}
+
+// Code unit `c` as plain text or JavaScript-escaped; encodeForJavaScript writes the admin `webroot` with `\xHH`.
+function charForms(c: string): string {
+  return /^[0-9A-Za-z]$/.test(c) ? c : `(?:${[escapeRegExp(c), ...escapesOf(c)].join('|')})`;
+}
+
+// A path-name character, plain or escaped; a host path matches only where none adjoins it, so a longer or nested path
+// stays as it is. Before a path, the last hex digit of an `\xHH` or `\uHHHH` escape is no name character.
+const PLAIN_NAME_CHAR = '[\\w@%+~-]';
+const ESCAPED_NAME_CHAR = [...'@%+~-_'].flatMap(escapesOf).join('|');
+const PATH_NAME_CHAR = `(?:${PLAIN_NAME_CHAR}|${ESCAPED_NAME_CHAR})`;
+const NAME_CHAR_BEFORE = `(?:(?<!\\\\x[0-9A-Fa-f]|\\\\u[0-9A-Fa-f]{3})${PLAIN_NAME_CHAR}|${ESCAPED_NAME_CHAR})`;
+const PATH_DOT = charForms('.');
+
+function hostPathsRegExp(hostPaths: HostPathRules): Compiled['hostPaths'] {
+  const byPath = new Map<string, string>();
+  for (const { paths, placeholder } of hostPaths.roots) {
+    for (const p of paths) if (!byPath.has(p)) byPath.set(p, placeholder);
+  }
+  if (byPath.size === 0) return undefined;
+  const entries = [...byPath].sort(([a], [b]) => longestFirst(a, b));
+  const forms = entries.map(([p]) => `(${p.split('').map(charForms).join('')})`).join('|');
+  // A trailing `.` ends a sentence; one followed by a name character continues the file name.
+  const pattern = new RegExp(
+    `(?<!${NAME_CHAR_BEFORE}|${PATH_DOT})(?:${forms})(?!${PATH_NAME_CHAR}|${PATH_DOT}${PATH_NAME_CHAR})`,
+    'g',
+  );
+  return { pattern, placeholders: entries.map(([, placeholder]) => placeholder) };
+}
+
+function replaceHostPaths(s: string, compiled: Compiled): string {
+  const { hostPaths } = compiled;
+  if (hostPaths === undefined) return s;
+  return s.replace(hostPaths.pattern, (found: string, ...groups: unknown[]) => {
+    const matched = groups.slice(0, hostPaths.placeholders.length).findIndex((group) => group !== undefined);
+    return hostPaths.placeholders[matched] ?? found;
+  });
+}
+
+/** Whether a string or key at any depth of `value` still holds a host path in a form the host-path rule replaces. */
+export function holdsHostPath(value: unknown, rules: NormaliseRules): boolean {
+  const { hostPaths } = compile(rules);
+  if (hostPaths === undefined) return false;
+  const holds = (v: unknown): boolean =>
+    typeof v === 'string'
+      ? v.search(hostPaths.pattern) !== -1
+      : typeof v === 'object' && v !== null && Object.entries(v).some(([key, item]) => holds(key) || holds(item));
+  return holds(value);
+}
+
 function compileClasses(rules: NormaliseRules): Pick<Compiled, 'classes' | 'embedded' | 'embeddedNames'> {
   const { boundary, classes: declared } = rules.timestamps;
   const classes = declared.map((rule) => ({
@@ -173,6 +235,7 @@ function compile(rules: NormaliseRules): Compiled {
       tokens.queryParamMatch === 'case-insensitive' ? 'gi' : 'g',
     ),
     origins: originsRegExp(rules.origins),
+    hostPaths: hostPathsRegExp(rules.hostPaths),
   };
   compiledRules.set(rules, compiled);
   return compiled;
@@ -461,7 +524,7 @@ function normaliseParsedUrl(
     q < 0
       ? beforeFragment
       : `${beforeFragment.slice(0, q + 1)}${normaliseQuery(beforeFragment.slice(q + 1), rules, compiled, current)}`;
-  out += hash < 0 ? '' : url.slice(hash);
+  out = replaceHostPaths(out + (hash < 0 ? '' : url.slice(hash)), compiled);
   if (urlRuleApplies(rules.origins.id, rules)) out = replaceOrigins(out, rules, compiled);
   const ids = urlRuleApplies(rules.ids.id, rules) || urlRuleApplies(rules.ids.rfc4122.id, rules);
   return ids ? normaliseIdsInString(out, state, rules.ids) : out;
@@ -475,7 +538,7 @@ function textSegment(
   compiled: Compiled,
 ): string {
   if (s === '') return s;
-  let out = replaceOrigins(maskTextQueryTokens(s, rules, compiled), rules, compiled);
+  let out = replaceOrigins(maskTextQueryTokens(replaceHostPaths(s, compiled), rules, compiled), rules, compiled);
   if (timestamps) out = replaceEmbeddedTimestamps(out, rules, compiled);
   return normaliseIdsInString(out, state, rules.ids);
 }
@@ -575,10 +638,7 @@ function walk(
   compiled: Compiled,
 ): unknown {
   if (key !== undefined && isTokenKeyIn(key, compiled) && !isEmpty(value)) return rules.tokens.placeholder;
-  if (typeof value === 'string') {
-    const keyed = key === undefined ? undefined : keyedOrdinalFor(key, value, state, rules.ids);
-    return keyed ?? normaliseString(value, key, state, rules, compiled);
-  }
+  if (typeof value === 'string') return normaliseString(value, key, state, rules, compiled);
   if (typeof value === 'number') return normaliseNumber(value, key, rules, compiled);
   // Array elements take the key of the array.
   if (Array.isArray(value)) return value.map((item: unknown) => walk(item, key, state, rules, compiled));
@@ -596,8 +656,7 @@ function walk(
 
 /**
  * New copy of `value` with every rule of this module applied at any depth: token keys become the token
- * placeholder, non-empty strings under keyed id keys (`mailpit_id`, …) their keyed ordinal, URL-like strings go
- * through {@link normaliseUrl}, other strings through {@link normaliseText}
+ * placeholder, URL-like strings go through {@link normaliseUrl}, other strings through {@link normaliseText}
  * (date-only fields keep their dates), object keys are visited sorted with their ids replaced. Booleans and null
  * are kept; numbers are kept unless a key-bound timestamp class matches them.
  * @param key Name `value` is stored under, when the caller knows it.

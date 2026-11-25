@@ -49,8 +49,6 @@ vi.mock('@/screens/registry', async () => {
   };
   return {
     findScreen: (circuit: string, action: string) => (circuit === 'cusers' && action === 'update' ? update : undefined),
-    findOpt2Screen: () => undefined,
-    findOpt2Action: () => undefined,
     shellHooks: { secondaryMenus: {}, contentNav: () => raw('') },
   };
 });

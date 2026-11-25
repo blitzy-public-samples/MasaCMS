@@ -1,6 +1,5 @@
 /** The members CSV over a throwaway `identity` schema: exact legacy bytes, S2 filtering, batch streaming with one photo lookup per batch, its failure answers and a client disconnect. */
 import { once } from 'node:events';
-import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import http from 'node:http';
 import type { AddressInfo, Socket } from 'node:net';
@@ -19,6 +18,7 @@ import {
   assertResponseMatchesOpenApi,
   createThrowawaySchema,
   fixedClock,
+  loadOpenApiDocument,
   mintServiceToken,
   mintUserToken,
   pgAvailable,
@@ -33,7 +33,7 @@ import { createIdentityRepository, type GroupInput, type IdentityRepository } fr
 import { IDENTITY_UNITS } from '../../src/repo/tables.js';
 import { registerAdminGroupRoutes } from '../../src/routes/admin-groups.js';
 
-const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as Parameters<typeof assertResponseMatchesOpenApi>[0];
+const OPENAPI = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as Parameters<typeof assertResponseMatchesOpenApi>[0];
 const CLOCK = fixedClock(new Date(2026, 5, 30, 12, 0, 0, 123));
 const SITE = 'tenant-a';
 const UMBRELLA = 'umbrella';

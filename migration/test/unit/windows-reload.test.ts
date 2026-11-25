@@ -54,7 +54,7 @@ const ENTRIES = [
   entry('admin:carch.list', 'legacy', 'read', ['content.content']),
   entry('reload:application', 'legacy', 'legacy-write', ['content.content']),
   entry('admin:cusers.update{type=2,action=delete}', 'legacy', 'legacy-write', ['identity.user_account', 'people.person']),
-  entry('page:render', 'legacy', 'legacy-write', ['reporting.session_tracking']),
+  entry('page:render', 'legacy', 'legacy-write', ['content.content_stats']),
   entry('admin:csettings.list', 'target', 'read', ['programs_sites.site']),
 ];
 const LEGACY_BOUND = ENTRIES.filter((item) => item.state === 'legacy')

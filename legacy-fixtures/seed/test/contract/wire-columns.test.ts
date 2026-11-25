@@ -9,6 +9,7 @@ import { loadConfig } from '../../src/config.js';
 import { buildDataset, type Dataset } from '../../src/dataset.js';
 import { FIXTURE_COLUMNS, applyRequestFor, planDirectBatches } from '../../src/direct.js';
 import { FIXTURE_TABLE_SPECS, fixtureKeys, specForKey, type FixtureRow } from '../../src/fixture-tables.js';
+import { archiveRows, withArchives } from '../helpers/archives.js';
 
 type DecodedRow = Record<string, CanonicalValue>;
 
@@ -67,7 +68,7 @@ describe('wire columns against the fixture DDL', () => {
   }
 
   /** Fixture table of a dataset key, without its schema. */
-  const tableOf = (key: string): string => key.replace(/^(?:Program_\d+|synthetic)\./, '');
+  const tableOf = (key: string): string => key.replace(/^synthetic\./, '');
 
   /** `name:<tag>` of a column, with its scale after the tag when it has one. */
   const wire = (column: CanonicalColumn | undefined): string => (column === undefined ? 'nothing' : `${column.name}:${column.type}${column.scale ?? ''}`);
@@ -86,8 +87,9 @@ describe('wire columns against the fixture DDL', () => {
   beforeAll(async () => {
     const config = await loadConfig(CONFIG_PATH);
     const { sha } = JSON.parse(await fs.readFile(PIN_PATH, 'utf8')) as { sha: string };
-    dataset = buildDataset(config, sha);
-    keys = fixtureKeys(config);
+    const seeded = buildDataset(config, sha);
+    dataset = withArchives(seeded, archiveRows(seeded, [['tenant-a', 30], ['tenant-b', 20]]));
+    keys = fixtureKeys();
     ddl = new Map();
     for (const dir of await fs.readdir(SQL_DIR, { withFileTypes: true })) {
       if (!dir.isDirectory()) continue;
@@ -115,7 +117,7 @@ describe('wire columns against the fixture DDL', () => {
   it.each(TABLES)('%s batches declare its DDL columns, and their rows decode over the DDL columns to the dataset rows', (table) => {
     const columns = ddlOf(table);
     for (const key of keys.filter((candidate) => tableOf(candidate) === table)) {
-      const pk = specForKey(key).spec.key;
+      const pk = specForKey(key).key;
       const byKey = new Map<string, DecodedRow>();
       for (const body of wireBodies.filter(({ legacyTable }) => legacyTable === key)) {
         expect(mismatches(table, body.columns, columns), key).toEqual([]);
@@ -141,7 +143,7 @@ describe('wire columns against the fixture DDL', () => {
       expect(body, body.legacyTable).toMatchObject({
         batchId: expect.stringMatching(/\S/),
         origin: 'backfill',
-        legacyTable: expect.stringMatching(/^(?:Program_\d+|synthetic)\.\w+$/),
+        legacyTable: expect.stringMatching(/^synthetic\.\w+$/),
         tenantId: expect.stringMatching(TENANT_ID),
       });
     }
@@ -167,21 +169,15 @@ describe('wire columns against the fixture DDL', () => {
   it.each<[string, string, (columns: readonly CanonicalColumn[]) => CanonicalColumn[], string[]]>([
     [
       'a wrong tag',
-      'timesheet_day',
-      (columns) => columns.map((column): CanonicalColumn => (column.name === 'hours' ? { name: column.name, type: 's' } : column)),
-      ['timesheet_day.hours #4: sent hours:s, DDL hours:d4'],
-    ],
-    [
-      'a wrong scale',
-      'finance_record',
-      (columns) => columns.map((column): CanonicalColumn => (column.name === 'amount' ? { ...column, scale: 2 } : column)),
-      ['finance_record.amount #4: sent amount:d2, DDL amount:d4'],
+      'person_archive',
+      (columns) => columns.map((column): CanonicalColumn => (column.name === 'effective_from' ? { name: column.name, type: 's' } : column)),
+      ['person_archive.effective_from #4: sent effective_from:s, DDL effective_from:t'],
     ],
     [
       'swapped columns',
-      'timesheet_day',
+      'person_archive',
       (columns) => swap(columns, 2, 3),
-      ['timesheet_day.work_date #3: sent hours:d4, DDL work_date:t', 'timesheet_day.hours #4: sent work_date:t, DDL hours:d4'],
+      ['person_archive.siteID #3: sent effective_from:t, DDL siteID:s', 'person_archive.effective_from #4: sent siteID:s, DDL effective_from:t'],
     ],
   ])('flags a catalog with %s in %s, naming the column', (_label, table, mutate, expected) => {
     expect(mismatches(table, mutate(FIXTURE_COLUMNS[table] ?? []), ddlOf(table))).toEqual(expected);

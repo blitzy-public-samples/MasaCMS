@@ -2,26 +2,20 @@ import { Buffer } from 'node:buffer';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
-import ExcelJS from 'exceljs';
 import JSZip from 'jszip';
-import { cfUuid, isCfUuid } from '@opt2/platform/legacy-compat';
+import { cfUuid } from '@opt2/platform/legacy-compat';
 import { sha256Hex } from '@opt2/platform/migration-kit';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { GoldenConfigError } from '../../../src/golden/errors.js';
 import {
-  XLSX_MERGED_CELL_LIMIT,
-  XLSX_MERGED_RANGE_LIMIT,
   ZIP_NESTING_LIMIT,
   csvModel,
   exportKindFor,
   exportModel,
   fileModel,
-  pdfModel,
-  xlsxModel,
   zipModel,
   type CsvModel,
   type ExportKind,
-  type XlsxModel,
   type ZipModel,
 } from '../../../src/golden/normalise/exports.js';
 import { createIdOrdinals } from '../../../src/golden/normalise/ids.js';
@@ -34,7 +28,6 @@ const fixture = (name: string): string =>
 
 const USERS_CSV_SHA256 = 'cca9eec959ce8ce6e8542495acd16cb4115994885bcc251537b6c1b913b3b23f';
 const TINY_PDF_SHA256 = 'bb7ad3f693a1c54b3f72e48e9c3b1165b314778e28504ed2e94c15852c5a5964';
-const XLSX_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 const ZIP_TYPE = 'application/zip; charset=UTF-8';
 const TIMESTAMP_COLUMNS = ['CREATED', 'LASTUPDATE', 'LASTLOGIN', 'PASSWORDCREATED'] as const;
 const JDBC_TIMESTAMP = /(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})\.(\d+)/g;
@@ -42,7 +35,6 @@ const SHIFT_MS = 3 * 86_400_000 + 7 * 60_000;
 const CF_UUID_ANYWHERE = /[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16}/i;
 const PNG_BYTES = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48]);
 const DETAIL_ID = 'C0FFEE00-1111-4C22-9D3333333333E444';
-const DETAIL_CREATED = new Date(Date.UTC(2026, 5, 30, 9, 12, 45));
 
 let rules: NormaliseRules;
 let usersCsv: string;
@@ -82,49 +74,6 @@ function replayCopy(text: string): string {
     const shifted = new Date(at + SHIFT_MS);
     return `${shifted.toISOString().slice(0, 19).replace('T', ' ')}.${fraction}`;
   });
-}
-
-interface WorkbookProps {
-  creator: string;
-  lastModifiedBy: string;
-  created: Date;
-  modified: Date;
-}
-
-const PROPS_A: WorkbookProps = {
-  creator: 'Masa CMS',
-  lastModifiedBy: 'admin',
-  created: new Date(Date.UTC(2026, 5, 1, 8, 0, 0)),
-  modified: new Date(Date.UTC(2026, 5, 2, 8, 0, 0)),
-};
-
-const PROPS_B: WorkbookProps = {
-  creator: 'opt2-reporting',
-  lastModifiedBy: 'reporting-export-run',
-  created: new Date(Date.UTC(2026, 6, 15, 17, 30, 0)),
-  modified: new Date(Date.UTC(2026, 6, 16, 17, 30, 0)),
-};
-
-/** XLSX bytes of the two-sheet export workbook under `props`; `detailName` sets the Detail data row's NAME cell. */
-async function workbookBytes(props: WorkbookProps, detailName = 'Ines Arkin'): Promise<Buffer> {
-  const workbook = new ExcelJS.Workbook();
-  Object.assign(workbook, props);
-  const summary = workbook.addWorksheet('Summary');
-  summary.addRow(['Metric', 'Value']);
-  summary.addRow(['Users', 4]);
-  summary.addRow(['Pass rate', 0.95]);
-  summary.addRow(['Active', true]);
-  const detail = workbook.addWorksheet('Detail');
-  detail.addRow(['USERID', 'NAME', 'CREATED', 'AMOUNT', 'NOTE']);
-  detail.addRow([DETAIL_ID, detailName, DETAIL_CREATED, '1234.5000', '']);
-  detail.addRow([
-    { richText: [{ text: 'Bold ' }, { font: { bold: true }, text: 'part' }] },
-    null,
-    { formula: 'B2&"!"', result: 'computed' },
-    { text: 'Report link', hyperlink: 'https://example.test/report' },
-    { error: '#N/A' },
-  ]);
-  return Buffer.from(await workbook.xlsx.writeBuffer());
 }
 
 /** One archive member: a file's content, or null for a directory. */
@@ -219,10 +168,10 @@ describe('csvModel', () => {
   });
 
   it('ignores a byte-order mark and keeps date-only columns literal', () => {
-    const text = '\uFEFF"asOf","DUE_DATE","shippedOn"\n"2026-06-30","2026-07-01","2026-07-02"\n';
+    const text = '\uFEFF"effectiveFrom","DUE_DATE","shippedOn"\n"2026-06-30","2026-07-01","2026-07-02"\n';
 
     expect(csvModel(text, createIdOrdinals(), rules).rows).toStrictEqual([
-      ['asOf', 'DUE_DATE', 'shippedOn'],
+      ['effectiveFrom', 'DUE_DATE', 'shippedOn'],
       ['2026-06-30', '2026-07-01', normaliseTimestamp('2026-07-02', rules)],
     ]);
   });
@@ -283,319 +232,6 @@ describe('csvModel key ties', () => {
     expect(() => model(ROWS, ['LASTNAME'])).toThrow(GoldenConfigError);
     expect(() => model(ROWS, ['LASTNAME'])).toThrow('csvKeyOrder column LASTNAME is not a header of the CSV');
     expect(csvModel('', createIdOrdinals(), rules, ['LNAME'])).toStrictEqual({ kind: 'csv', rows: [] });
-  });
-});
-
-const MERGE_LIMIT_ERROR = new RangeError(
-  `XLSX merges more than ${XLSX_MERGED_RANGE_LIMIT} ranges or ${XLSX_MERGED_CELL_LIMIT} cells`,
-);
-
-/** A mergeCell element whose ref attribute text is `ref`, written as is. */
-const mergeCell = (ref: string): string => `<mergeCell ref="${ref}"/>`;
-
-/** The export workbook with worksheet n given the mergeCell elements `merges[n]` and XML version `version`. */
-async function withMerges(merges: readonly (readonly string[])[], version = '1.0'): Promise<Buffer> {
-  const zip = await JSZip.loadAsync(await workbookBytes(PROPS_A));
-  for (const [n, elements] of merges.entries()) {
-    const name = `xl/worksheets/sheet${n + 1}.xml`;
-    const xml = (await zip.file(name)?.async('string')) ?? '';
-    expect(xml, name).toContain('</sheetData>');
-    const mergeList = `<mergeCells count="${elements.length}">${elements.join('')}</mergeCells>`;
-    const versioned = xml.replace('version="1.0"', `version="${version}"`);
-    zip.file(name, versioned.replace('</sheetData>', `</sheetData>${mergeList}`));
-  }
-  return zip.generateAsync({ type: 'nodebuffer' });
-}
-
-/** The export workbook with part `name` set to its first worksheet's XML as `patch` rewrites it. */
-async function withSheetPart(name: string, patch: (xml: string) => string): Promise<Buffer> {
-  const zip = await JSZip.loadAsync(await workbookBytes(PROPS_A));
-  const xml = (await zip.file('xl/worksheets/sheet1.xml')?.async('string')) ?? '';
-  const patched = patch(xml);
-  expect(patched, name).not.toBe(xml);
-  zip.file(name, patched);
-  return zip.generateAsync({ type: 'nodebuffer' });
-}
-
-// A whole-sheet mergeCell in a foreign namespace: extension content exceljs skips.
-const FOREIGN_EXT =
-  '<extLst><ext uri="urn:opt2:synthetic:metadata">' +
-  '<mergeCell xmlns="urn:opt2:synthetic:metadata" ref="A1:XFD1048576"/></ext></extLst>';
-
-describe('xlsxModel', () => {
-  it('compares cell values per sheet, never workbook metadata or bytes', async () => {
-    const a = await workbookBytes(PROPS_A);
-    const b = await workbookBytes(PROPS_B);
-
-    expect(Buffer.compare(a, b)).not.toBe(0);
-    const modelA = await xlsxModel(a, createIdOrdinals(), rules);
-    expect(await xlsxModel(b, createIdOrdinals(), rules)).toStrictEqual(modelA);
-    expect(modelA.sheets.map((sheet) => sheet.name)).toStrictEqual(['Summary', 'Detail']);
-  });
-
-  it('reads each cell kind as its displayed value, ids and dates normalised', async () => {
-    const model: XlsxModel = await xlsxModel(await workbookBytes(PROPS_A), createIdOrdinals(), rules);
-
-    expect(model).toStrictEqual({
-      kind: 'xlsx',
-      sheets: [
-        {
-          name: 'Summary',
-          rows: [
-            ['Metric', 'Value'],
-            ['Users', 4],
-            ['Pass rate', 0.95],
-            ['Active', true],
-          ],
-        },
-        {
-          name: 'Detail',
-          rows: [
-            ['USERID', 'NAME', 'CREATED', 'AMOUNT', 'NOTE'],
-            ['<id:1>', 'Ines Arkin', normaliseTimestamp('2026-06-30T09:12:45', rules, 'CREATED'), '1234.5000'],
-            ['Bold part', null, 'computed', 'Report link', '#N/A'],
-          ],
-        },
-      ],
-    });
-    expect(isCfUuid(DETAIL_ID)).toBe(true);
-  });
-
-  it('tells workbooks apart when one cell value differs', async () => {
-    const a = await xlsxModel(await workbookBytes(PROPS_A), createIdOrdinals(), rules);
-    const b = await xlsxModel(await workbookBytes(PROPS_B, 'Theo Brandt'), createIdOrdinals(), rules);
-
-    expect(b).not.toStrictEqual(a);
-  });
-
-  it('reads each cell of a merged range as the value of its first cell', async () => {
-    const workbook = new ExcelJS.Workbook();
-    const sheet = workbook.addWorksheet('Merged');
-    sheet.addRow(['Region', null, DETAIL_ID]);
-    sheet.addRow(['North', 'South', null]);
-    sheet.mergeCells('A1:B1');
-    sheet.mergeCells('C1:C2');
-
-    const model = await xlsxModel(Buffer.from(await workbook.xlsx.writeBuffer()), createIdOrdinals(), rules);
-
-    expect(model).toStrictEqual({
-      kind: 'xlsx',
-      sheets: [
-        {
-          name: 'Merged',
-          rows: [
-            ['Region', 'Region', '<id:1>'],
-            ['North', 'South', '<id:1>'],
-          ],
-        },
-      ],
-    });
-  });
-
-  it(`reads a workbook at the limits: ${XLSX_MERGED_RANGE_LIMIT} merges, ${XLSX_MERGED_CELL_LIMIT} cells`, async () => {
-    const width = XLSX_MERGED_CELL_LIMIT / XLSX_MERGED_RANGE_LIMIT;
-    const workbook = new ExcelJS.Workbook();
-    const sheet = workbook.addWorksheet('Limits');
-    for (let r = 1; r <= XLSX_MERGED_RANGE_LIMIT; r += 1) {
-      sheet.getCell(r, 1).value = r;
-      sheet.mergeCells(r, 1, r, width);
-    }
-
-    const model = await xlsxModel(Buffer.from(await workbook.xlsx.writeBuffer()), createIdOrdinals(), rules);
-
-    const rows = Array.from({ length: XLSX_MERGED_RANGE_LIMIT }, (_, r) => Array<number>(width).fill(r + 1));
-    expect(model.sheets).toStrictEqual([{ name: 'Limits', rows }]);
-  });
-
-  const half = XLSX_MERGED_CELL_LIMIT / 2;
-
-  it.each<{ label: string; bytes: () => Promise<Buffer> }>([
-    { label: 'the merged-range-bomb.xlsx fixture', bytes: async () => readFileSync(fixture('merged-range-bomb.xlsx')) },
-    { label: 'a merge of the whole sheet', bytes: () => withMerges([[mergeCell('A1:XFD1048576')]]) },
-    {
-      label: 'merges within the cell limit per sheet but past it across sheets',
-      bytes: () => withMerges([[mergeCell(`A1:A${half}`)], [mergeCell(`A1:A${half + 1}`)]]),
-    },
-    {
-      label: `${XLSX_MERGED_RANGE_LIMIT + 1} two-cell merges`,
-      bytes: () =>
-        withMerges([Array.from({ length: XLSX_MERGED_RANGE_LIMIT + 1 }, (_, r) => mergeCell(`A${r + 1}:B${r + 1}`))]),
-    },
-    { label: 'a 400-digit row', bytes: () => withMerges([[mergeCell(`A1:B${'9'.repeat(400)}`)]]) },
-    { label: 'one row past 2^53', bytes: () => withMerges([[mergeCell('A9007199254740993:B9007199254740993')]]) },
-    { label: 'an entity-encoded ref', bytes: () => withMerges([[mergeCell('A1:XFD&#49;048576')]]) },
-    {
-      label: "a single-quoted ref after an attribute value holding '>'",
-      bytes: () => withMerges([[`<mergeCell note="a>b" ref='A1:XFD1048576'/>`]]),
-    },
-    {
-      label: 'a ref whose line separator XML 1.1 reads as a space',
-      bytes: () => withMerges([[mergeCell('A1\u2028:XFD1048576')]], '1.1'),
-    },
-    {
-      label: 'a merge in a worksheet part workbook.xml does not reference',
-      bytes: () =>
-        withSheetPart('xl/worksheets/sheet9.xml', (xml) =>
-          xml.replace('</sheetData>', `</sheetData><mergeCells count="1">${mergeCell('A1:XFD1048576')}</mergeCells>`),
-        ),
-    },
-  ])('rejects $label before exceljs expands its merges', async ({ bytes }) => {
-    const body = await bytes();
-    const response = recorded(XLSX_TYPE, { bytesBase64: body.toString('base64') }, sha256Hex(body));
-
-    await expect(exportModel(response, createIdOrdinals(), rules)).rejects.toStrictEqual(MERGE_LIMIT_ERROR);
-  });
-
-  it.each([
-    ['a column past XFD', mergeCell('A1:XFE1')],
-    ['no ref', '<mergeCell/>'],
-  ])('rejects a merge with %s as exceljs does', async (_label, element) => {
-    const body = await withMerges([[element]]);
-    const loadError = await new ExcelJS.Workbook().xlsx.load(Uint8Array.from(body).buffer).catch((err: unknown) => err);
-
-    expect(loadError).toBeInstanceOf(Error);
-    await expect(xlsxModel(body, createIdOrdinals(), rules)).rejects.toStrictEqual(loadError);
-  });
-
-  it.each([
-    ['the worksheet', (xml: string) => xml.replace('</worksheet>', `${FOREIGN_EXT}</worksheet>`)],
-    [
-      'a sheet view',
-      (xml: string) =>
-        xml.replace(
-          '<sheetFormatPr',
-          `<sheetViews><sheetView workbookViewId="0">${FOREIGN_EXT}</sheetView></sheetViews><sheetFormatPr`,
-        ),
-    ],
-  ])('reads a merge in a foreign extension of %s as metadata exceljs ignores', async (_label, patch) => {
-    const body = await withSheetPart('xl/worksheets/sheet1.xml', patch);
-    const plain = await xlsxModel(await workbookBytes(PROPS_A), createIdOrdinals(), rules);
-
-    expect(await xlsxModel(body, createIdOrdinals(), rules)).toStrictEqual(plain);
-  });
-});
-
-describe('pdfModel', () => {
-  interface PdfInfo {
-    Producer: string;
-    Creator: string;
-    CreationDate: string;
-    ModDate: string;
-    Title: string;
-  }
-
-  const pdfString = (text: string): string => `(${text.replace(/[\\()]/g, '\\$&')})`;
-
-  /**
-   * PDF 1.4 in tiny.pdf's layout: catalog, page tree, a page and content stream per text, Helvetica, optional /Info.
-   * `order` lists the page tree's kids as indexes into `texts`; by default the pages follow `texts`.
-   */
-  function pdfBytes(texts: readonly string[], options: { info?: PdfInfo; order?: readonly number[] } = {}): Buffer {
-    const fontObject = 3 + 2 * texts.length;
-    const kids = (options.order ?? texts.map((_text, i) => i)).map((i) => `${3 + 2 * i} 0 R`);
-    const bodies = [
-      '<< /Type /Catalog /Pages 2 0 R >>',
-      `<< /Type /Pages /Kids [${kids.join(' ')}] /Count ${kids.length} >>`,
-      ...texts.flatMap((text, i) => {
-        const stream = `BT /F1 12 Tf 72 720 Td ${pdfString(text)} Tj ET`;
-        return [
-          `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 ${fontObject} 0 R >> >> ` +
-            `/Contents ${4 + 2 * i} 0 R >>`,
-          `<< /Length ${Buffer.byteLength(stream, 'latin1')} >>\nstream\n${stream}\nendstream`,
-        ];
-      }),
-      '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
-    ];
-    if (options.info !== undefined) {
-      const entries = Object.entries(options.info).map(([key, value]) => `/${key} ${pdfString(value)}`);
-      bodies.push(`<< ${entries.join(' ')} >>`);
-    }
-    let pdf = '%PDF-1.4\n';
-    const offsets = bodies.map((body, i) => {
-      const offset = pdf.length;
-      pdf += `${i + 1} 0 obj\n${body}\nendobj\n`;
-      return offset;
-    });
-    const xref = pdf.length;
-    const info = options.info === undefined ? '' : ` /Info ${bodies.length} 0 R`;
-    pdf += `xref\n0 ${bodies.length + 1}\n0000000000 65535 f \n`;
-    pdf += offsets.map((offset) => `${String(offset).padStart(10, '0')} 00000 n \n`).join('');
-    pdf += `trailer\n<< /Size ${bodies.length + 1} /Root 1 0 R${info} >>\nstartxref\n${xref}\n%%EOF\n`;
-    return Buffer.from(pdf, 'latin1');
-  }
-
-  const REPORT_PAGES = ['Registrations report', 'Ines Arkin 1234.5000', 'Total registrations 4'];
-  const INFO_A: PdfInfo = {
-    Producer: 'Adobe ColdFusion cfdocument',
-    Creator: 'Masa CMS',
-    CreationDate: 'D:20260601080000Z',
-    ModDate: 'D:20260602080000Z',
-    Title: 'Registrations',
-  };
-  const INFO_B: PdfInfo = {
-    Producer: 'PDFKit',
-    Creator: 'opt2-reporting',
-    CreationDate: 'D:20260715173000Z',
-    ModDate: 'D:20260716173000Z',
-    Title: 'Registrations',
-  };
-
-  it('reads the text of each page', async () => {
-    expect(await pdfModel(tinyPdf, createIdOrdinals(), rules)).toStrictEqual({
-      kind: 'pdf',
-      pages: ['Fixture report page 1'],
-    });
-  });
-
-  it('builds tiny.pdf byte for byte from its page text', () => {
-    expect(pdfBytes(['Fixture report page 1']).equals(tinyPdf)).toBe(true);
-  });
-
-  it('reads every page of a multi-page document in order', async () => {
-    expect(await pdfModel(pdfBytes(REPORT_PAGES), createIdOrdinals(), rules)).toStrictEqual({
-      kind: 'pdf',
-      pages: ['Registrations report', 'Ines Arkin 1234.5000', 'Total registrations 4'],
-    });
-  });
-
-  it.each<{ name: string; texts: string[]; order?: number[]; pages: string[]; differing: number[] }>([
-    {
-      name: 'changed text on page 3',
-      texts: ['Registrations report', 'Ines Arkin 1234.5000', 'Total registrations 5'],
-      pages: ['Registrations report', 'Ines Arkin 1234.5000', 'Total registrations 5'],
-      differing: [2],
-    },
-    {
-      name: 'pages 2 and 3 swapped in the page tree',
-      texts: ['Registrations report', 'Ines Arkin 1234.5000', 'Total registrations 4'],
-      order: [0, 2, 1],
-      pages: ['Registrations report', 'Total registrations 4', 'Ines Arkin 1234.5000'],
-      differing: [1, 2],
-    },
-  ])('keeps $name as a difference through exportModel', async ({ texts, order, pages, differing }) => {
-    const capture = await pdfModel(pdfBytes(REPORT_PAGES), createIdOrdinals(), rules);
-    const bytes = pdfBytes(texts, { order });
-    const response = recorded('application/pdf', { bytesBase64: bytes.toString('base64') }, sha256Hex(bytes));
-    const replay = await exportModel(response, createIdOrdinals(), rules);
-
-    expect(replay).toStrictEqual({ kind: 'pdf', pages });
-    expect(replay).not.toStrictEqual(capture);
-    expect(pages.flatMap((text, i) => (text === capture.pages[i] ? [] : [i]))).toStrictEqual(differing);
-  });
-
-  it('compares extracted text, never document metadata or bytes', async () => {
-    const a = pdfBytes(REPORT_PAGES, { info: INFO_A });
-    const b = pdfBytes(REPORT_PAGES, { info: INFO_B });
-
-    expect(fileModel({ bytes: b, contentType: 'application/pdf' }).sha256).not.toBe(
-      fileModel({ bytes: a, contentType: 'application/pdf' }).sha256,
-    );
-    const modelA = await pdfModel(a, createIdOrdinals(), rules);
-    expect(modelA).toStrictEqual({
-      kind: 'pdf',
-      pages: ['Registrations report', 'Ines Arkin 1234.5000', 'Total registrations 4'],
-    });
-    expect(await pdfModel(b, createIdOrdinals(), rules)).toStrictEqual(modelA);
   });
 });
 
@@ -827,8 +463,6 @@ describe('exportKindFor', () => {
     ['text/csv', 'csv'],
     ['text/csv; charset=utf-8', 'csv'],
     ['Text/CSV;charset=UTF-8', 'csv'],
-    [XLSX_TYPE, 'xlsx'],
-    ['application/pdf', 'pdf'],
     ['application/octet-stream', 'file'],
     ['image/png', 'file'],
     ['application/zip', 'zip'],
@@ -846,22 +480,13 @@ function recorded(contentType: string, body: BodyRepresentation, sha256: string)
 
 describe('exportModel', () => {
   it('builds the model its content type selects, equal to the direct call', async () => {
-    const workbook = await workbookBytes(PROPS_A);
     const csv = recorded('text/csv; charset=utf-8', { text: usersCsv }, USERS_CSV_SHA256);
-    const xlsx = recorded(XLSX_TYPE, { bytesBase64: workbook.toString('base64') }, sha256Hex(workbook));
-    const pdf = recorded('application/pdf', { bytesBase64: tinyPdf.toString('base64') }, TINY_PDF_SHA256);
     const png = recorded('image/png', { bytesBase64: PNG_BYTES.toString('base64') }, sha256Hex(PNG_BYTES));
     const bundle = await bundleBytes(ZIP_DATE_A);
     const zip = recorded(ZIP_TYPE, { bytesBase64: bundle.toString('base64') }, sha256Hex(bundle));
 
     expect(await exportModel(csv, createIdOrdinals(), rules)).toStrictEqual(
       csvModel(usersCsv, createIdOrdinals(), rules),
-    );
-    expect(await exportModel(xlsx, createIdOrdinals(), rules)).toStrictEqual(
-      await xlsxModel(workbook, createIdOrdinals(), rules),
-    );
-    expect(await exportModel(pdf, createIdOrdinals(), rules)).toStrictEqual(
-      await pdfModel(tinyPdf, createIdOrdinals(), rules),
     );
     expect(await exportModel(png, createIdOrdinals(), rules)).toStrictEqual(
       fileModel({ bytes: PNG_BYTES, contentType: 'image/png' }),
@@ -945,7 +570,6 @@ describe('exportModel', () => {
       exports: {
         ...rules.exports,
         csv: { ...rules.exports.csv, whitespace: 'collapse-and-trim' },
-        xlsx: { ...rules.exports.xlsx, sheetNames: 'ignore' },
         zip: { ...rules.exports.zip, compare: ['entries', 'contentType'] },
         file: { compare: ['sha256', 'contentType'] },
       },
@@ -957,8 +581,6 @@ describe('exportModel', () => {
     zip.headers['content-disposition'] = 'attachment; filename="bundle.zip"';
 
     expect(column(csvModel(usersCsv, createIdOrdinals(), switched), 'JOBTITLE')[0]).toBe('Editor');
-    const xlsx = await xlsxModel(await workbookBytes(PROPS_A), createIdOrdinals(), switched);
-    expect(xlsx.sheets.map((sheet) => sheet.name)).toStrictEqual(['', '']);
     expect(await exportModel(png, createIdOrdinals(), switched)).toStrictEqual(
       fileModel({ bytes: PNG_BYTES, contentType: 'image/png' }),
     );

@@ -297,7 +297,7 @@ describe('createCapturingPublisher', () => {
 
   it('deadLetters lists the raw messages on the subscription .dlq topic in order, with reason only when it is a known one', async () => {
     const capturing = createCapturingPublisher();
-    const other = subscriptionName('timesheets', TOPIC);
+    const other = subscriptionName('identity', TOPIC);
     const letters: RawMessage[] = [
       { data: Buffer.from('a'), attributes: { reason: 'missing-tenant' }, orderingKey: 'k' },
       { data: Buffer.from('b'), attributes: { reason: 'schema-invalid' } },

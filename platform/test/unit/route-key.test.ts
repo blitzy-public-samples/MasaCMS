@@ -8,7 +8,6 @@ import {
   SESSION_MANAGED_CONDITION,
   SHARED_ID_SORT_CONDITIONS,
   STARTUP_SITE_CONDITION,
-  SYNTHETIC_V1_PREFIXES,
   type RouteEntryPoint,
   type RouteKeyOptions,
   type RouteKeyRequest,
@@ -98,7 +97,6 @@ describe('path normalisation', () => {
 
   it.each([
     '/index.cfm/opt2/stub/items',
-    '/index.cfm/v1/messages',
     '/index.cfm/gateway/legacy-bridge/session.cfm',
     '/index.cfm/admin/',
     '/index.cfm/core/mura/remote.cfc',
@@ -168,8 +166,8 @@ describe('X-HTTP-Method-Override', () => {
 
   it('keys a fixture route by the overriding method', () => {
     const headers = { 'X-HTTP-Method-Override': 'PATCH' };
-    expect(keyOf('POST', '/legacy-fixtures/cfml/api.cfm/finance/invoices', { headers })).toBe(
-      'fixture:finance/invoices@patch',
+    expect(keyOf('POST', '/legacy-fixtures/cfml/api.cfm/people/persons', { headers })).toBe(
+      'fixture:people/persons@patch',
     );
   });
 
@@ -177,15 +175,15 @@ describe('X-HTTP-Method-Override', () => {
     expect(resultOf('get', `${API}/content/`).httpMethod).toBe('GET');
   });
 
-  const FIXTURE = '/legacy-fixtures/cfml/api.cfm/timesheets';
-  const SUBMIT_KEY = 'fixture:timesheets/days/{id}/submit';
+  const FIXTURE = '/legacy-fixtures/cfml/api.cfm/people';
+  const SUBMIT_KEY = 'fixture:people/persons/{id}/archive';
   it.each<{ name: string; method: string; url: string; override: string | string[]; key: string; httpMethod: string }>([
-    { name: 'an empty fixture override as absent', method: 'POST', url: `${FIXTURE}/days/42/submit`, override: '', key: `${SUBMIT_KEY}@post`, httpMethod: 'POST' },
-    { name: 'an empty array fixture override as absent', method: 'POST', url: `${FIXTURE}/days/42/submit`, override: [''], key: `${SUBMIT_KEY}@post`, httpMethod: 'POST' },
-    { name: 'an empty override on a fixture read as absent', method: 'GET', url: `${FIXTURE}/sheets`, override: '', key: 'fixture:timesheets/sheets@get', httpMethod: 'GET' },
+    { name: 'an empty fixture override as absent', method: 'POST', url: `${FIXTURE}/persons/42/archive`, override: '', key: `${SUBMIT_KEY}@post`, httpMethod: 'POST' },
+    { name: 'an empty array fixture override as absent', method: 'POST', url: `${FIXTURE}/persons/42/archive`, override: [''], key: `${SUBMIT_KEY}@post`, httpMethod: 'POST' },
+    { name: 'an empty override on a fixture read as absent', method: 'GET', url: `${FIXTURE}/persons`, override: '', key: 'fixture:people/persons@get', httpMethod: 'GET' },
     { name: 'an empty override on an unrouted fixture path as absent', method: 'POST', url: FIXTURE, override: '', key: 'fixture:!notfound@post', httpMethod: 'POST' },
-    { name: 'a lower-case fixture override upper-cased', method: 'POST', url: `${FIXTURE}/days/42/submit`, override: 'get', key: `${SUBMIT_KEY}@get`, httpMethod: 'GET' },
-    { name: 'a whitespace fixture override untrimmed, as api.cfm reads it', method: 'POST', url: `${FIXTURE}/days/42/submit`, override: ' ', key: `${SUBMIT_KEY}@ `, httpMethod: ' ' },
+    { name: 'a lower-case fixture override upper-cased', method: 'POST', url: `${FIXTURE}/persons/42/archive`, override: 'get', key: `${SUBMIT_KEY}@get`, httpMethod: 'GET' },
+    { name: 'a whitespace fixture override untrimmed, as api.cfm reads it', method: 'POST', url: `${FIXTURE}/persons/42/archive`, override: ' ', key: `${SUBMIT_KEY}@ `, httpMethod: ' ' },
     { name: 'an empty API override as present, which runs no operation', method: 'POST', url: `${API}/content/`, override: '', key: 'api:content.http-', httpMethod: '' },
   ])('reads $name', ({ method, url, override, key, httpMethod }) => {
     const result = resultOf(method, url, { headers: { 'X-HTTP-Method-Override': override } });
@@ -801,18 +799,18 @@ describe('remote CFC proxies, fixtures and path families', () => {
     },
     { method: 'GET', url: '/core/mura/remote.cfc?method=doThing', key: 'cfc:/core/mura/remote.cfc?method=dothing' },
     { method: 'GET', url: '/core/mura/remote.cfc', key: 'cfc:/core/mura/remote.cfc' },
-    { method: 'GET', url: '/legacy-fixtures/cfml/api.cfm/finance/invoices', key: 'fixture:finance/invoices@get' },
+    { method: 'GET', url: '/legacy-fixtures/cfml/api.cfm/people/persons', key: 'fixture:people/persons@get' },
     {
       method: 'POST',
-      url: '/legacy-fixtures/cfml/api.cfm/finance/invoices/42/submit',
-      key: 'fixture:finance/invoices/{id}/submit@post',
+      url: '/legacy-fixtures/cfml/api.cfm/people/persons/42/archive',
+      key: 'fixture:people/persons/{id}/archive@post',
     },
     {
       method: 'PUT',
-      url: `/legacy-fixtures/cfml/api.cfm/esign/envelopes/${UUID}/signers/${RFC_UUID}`,
-      key: 'fixture:esign/envelopes/{id}/signers/{id}@put',
+      url: `/legacy-fixtures/cfml/api.cfm/people/persons/${UUID}/addresses/${RFC_UUID}`,
+      key: 'fixture:people/persons/{id}/addresses/{id}@put',
     },
-    { method: 'GET', url: '/legacy-fixtures/cfml/api.cfm/finance', key: 'fixture:!notfound@get' },
+    { method: 'GET', url: '/legacy-fixtures/cfml/api.cfm/people', key: 'fixture:!notfound@get' },
     { method: 'GET', url: '/legacy-fixtures/cfml/api.cfm/', key: 'fixture:!notfound@get' },
     { method: 'GET', url: '/legacy-fixtures/cfml/seed.cfm', key: 'cfm:/legacy-fixtures/cfml/seed.cfm' },
     { method: 'GET', url: '/core/assets/css/Admin.CSS', key: 'static:/core/assets/css/admin.css' },
@@ -824,36 +822,20 @@ describe('remote CFC proxies, fixtures and path families', () => {
     expect(ROUTE_FAMILIES).toContain(result.family);
   });
 
-  it.each(Object.entries(SYNTHETIC_V1_PREFIXES).flatMap(([service, prefixes]) => prefixes.map((prefix) => [service, prefix])))(
-    "keys %s's own %s namespace in the opt2 family, in any case and below it",
-    (_service, prefix) => {
-      for (const url of [prefix, `${prefix}/`, `${prefix.toUpperCase()}/A/B?siteid=tenant-a`]) {
-        const result = resultOf('POST', url);
-        expect(result.key, url).toBe(`opt2:${(url.split('?')[0] ?? '').toLowerCase()}`);
-        expect(result.family).toBe('opt2');
-      }
-    },
-  );
-
   it.each([
-    ['a synthetic prefix with a suffix', '/v1/messagesx'],
-    ['a file under a synthetic prefix name', '/v1/finance.json'],
     ['a migrated service /v1/ path', '/v1/users/x'],
     ['an unknown /v1/ path', '/v1/other/x'],
     ['the bare /v1/ path', '/v1/'],
-    ['a synthetic name outside /v1/', '/v2/finance/records'],
   ])('keeps %s (%s) out of the opt2 family', (_label, url) => {
     expect(resultOf('GET', url).family).not.toBe('opt2');
   });
 
   it.each<{ name: string; url: string; form?: Record<string, string>; query?: Record<string, string[]>; siteId: string | undefined }>([
-    { name: 'a synthetic /v1/ query siteid', url: '/v1/timesheets/sheets?siteid=tenant-a', siteId: 'tenant-a' },
-    { name: 'a synthetic /v1/ form siteid over the query one', url: '/v1/messages?siteid=tenant-a', form: { siteid: 'tenant-b' }, siteId: 'tenant-b' },
-    { name: 'a query siteid', url: '/opt2/admin/reporting/exports?siteid=tenant-a', siteId: 'tenant-a' },
-    { name: 'any spelling of the name, value as sent', url: '/opt2/admin/reporting/exports?SiteID=Tenant-A', siteId: 'Tenant-A' },
+    { name: 'a query siteid', url: '/opt2/stub/notes/list?siteid=tenant-a', siteId: 'tenant-a' },
+    { name: 'any spelling of the name, value as sent', url: '/opt2/stub/notes/list?SiteID=Tenant-A', siteId: 'Tenant-A' },
     {
       name: 'a form siteid over the query one',
-      url: '/opt2/admin-actions/reporting/create?siteid=tenant-a',
+      url: '/opt2/stub/notes/create?siteid=tenant-a',
       form: { SITEID: 'tenant-b' },
       siteId: 'tenant-b',
     },
@@ -863,8 +845,8 @@ describe('remote CFC proxies, fixtures and path families', () => {
       query: { siteid: ['tenant-a', 'tenant-b'] },
       siteId: 'tenant-a,tenant-b',
     },
-    { name: 'an empty siteid', url: '/opt2/admin/reporting/exports?siteid=', siteId: '' },
-    { name: 'no siteid', url: '/opt2/admin/reporting/exports?page=2', siteId: undefined },
+    { name: 'an empty siteid', url: '/opt2/stub/notes/list?siteid=', siteId: '' },
+    { name: 'no siteid', url: '/opt2/stub/notes/list?page=2', siteId: undefined },
   ])('reads the OPT-2 request site from $name, leaving the key unchanged', ({ url, form, query, siteId }) => {
     const extra: Partial<RouteKeyRequest> = {};
     if (form !== undefined) extra.form = form;
@@ -917,18 +899,18 @@ describe('remote CFC proxies, fixtures and path families', () => {
   });
 
   it('merges a fixture JSON body over query and form params', () => {
-    const result = resultOf('POST', '/legacy-fixtures/cfml/api.cfm/finance/invoices?q=1&amount=1', {
+    const result = resultOf('POST', '/legacy-fixtures/cfml/api.cfm/people/persons?q=1&amount=1', {
       form: { note: 'form' },
       jsonBody: { amount: 5 },
     });
     expect(result.params).toMatchObject({ q: '1', note: 'form', amount: '5' });
   });
 
-  const FIXTURE_RECORDS = '/legacy-fixtures/cfml/api.cfm/finance/records';
+  const FIXTURE_RECORDS = '/legacy-fixtures/cfml/api.cfm/people/persons';
   it.each<{ name: string; method: string; url: string; extra: Partial<RouteKeyRequest>; key: string }>([
-    { name: 'a JSON null on a collection POST', method: 'POST', url: '/legacy-fixtures/cfml/api.cfm/surveys/surveys', extra: { jsonBody: null, headers: JSON_TYPE }, key: 'fixture:!server_error@post' },
+    { name: 'a JSON null on a collection POST', method: 'POST', url: '/legacy-fixtures/cfml/api.cfm/people/persons', extra: { jsonBody: null, headers: JSON_TYPE }, key: 'fixture:!server_error@post' },
     { name: 'a JSON null on a GET', method: 'GET', url: `${FIXTURE_RECORDS}/${UUID}`, extra: { jsonBody: null, headers: JSON_TYPE }, key: 'fixture:!server_error@get' },
-    { name: 'a JSON null on an unrouted path', method: 'POST', url: '/legacy-fixtures/cfml/api.cfm/finance', extra: { jsonBody: null, headers: JSON_TYPE }, key: 'fixture:!server_error@post' },
+    { name: 'a JSON null on an unrouted path', method: 'POST', url: '/legacy-fixtures/cfml/api.cfm/people', extra: { jsonBody: null, headers: JSON_TYPE }, key: 'fixture:!server_error@post' },
     { name: 'a JSON null on the bare script', method: 'GET', url: '/legacy-fixtures/cfml/api.cfm', extra: { jsonBody: null, headers: JSON_TYPE }, key: 'fixture:!server_error@get' },
     {
       name: 'a JSON null under a parameterised, mixed-case JSON type and an override',
@@ -937,16 +919,16 @@ describe('remote CFC proxies, fixtures and path families', () => {
       extra: { jsonBody: null, headers: { 'content-type': 'Application/JSON; charset=UTF-8', 'X-HTTP-Method-Override': 'put' } },
       key: 'fixture:!server_error@put',
     },
-    { name: 'a JSON object', method: 'POST', url: FIXTURE_RECORDS, extra: { jsonBody: { title: 'T' }, headers: JSON_TYPE }, key: 'fixture:finance/records@post' },
-    { name: 'a JSON array', method: 'POST', url: FIXTURE_RECORDS, extra: { jsonBody: [1, 2], headers: JSON_TYPE }, key: 'fixture:finance/records@post' },
-    { name: 'a JSON string', method: 'POST', url: FIXTURE_RECORDS, extra: { jsonBody: 'null', headers: JSON_TYPE }, key: 'fixture:finance/records@post' },
-    { name: 'a JSON number', method: 'POST', url: FIXTURE_RECORDS, extra: { jsonBody: 0, headers: JSON_TYPE }, key: 'fixture:finance/records@post' },
-    { name: 'a JSON false', method: 'POST', url: FIXTURE_RECORDS, extra: { jsonBody: false, headers: JSON_TYPE }, key: 'fixture:finance/records@post' },
-    { name: 'a JSON array on an unrouted path', method: 'POST', url: '/legacy-fixtures/cfml/api.cfm/finance', extra: { jsonBody: [], headers: JSON_TYPE }, key: 'fixture:!notfound@post' },
-    { name: 'a null body under a text type', method: 'POST', url: FIXTURE_RECORDS, extra: { jsonBody: null, headers: { 'Content-Type': 'text/plain' } }, key: 'fixture:finance/records@post' },
-    { name: 'a null body under a type shorter than the JSON prefix', method: 'POST', url: FIXTURE_RECORDS, extra: { jsonBody: null, headers: { 'Content-Type': 'application/jso' } }, key: 'fixture:finance/records@post' },
-    { name: 'a null body without a type', method: 'POST', url: FIXTURE_RECORDS, extra: { jsonBody: null }, key: 'fixture:finance/records@post' },
-    { name: 'a JSON type without a parsed body', method: 'POST', url: FIXTURE_RECORDS, extra: { headers: JSON_TYPE }, key: 'fixture:finance/records@post' },
+    { name: 'a JSON object', method: 'POST', url: FIXTURE_RECORDS, extra: { jsonBody: { title: 'T' }, headers: JSON_TYPE }, key: 'fixture:people/persons@post' },
+    { name: 'a JSON array', method: 'POST', url: FIXTURE_RECORDS, extra: { jsonBody: [1, 2], headers: JSON_TYPE }, key: 'fixture:people/persons@post' },
+    { name: 'a JSON string', method: 'POST', url: FIXTURE_RECORDS, extra: { jsonBody: 'null', headers: JSON_TYPE }, key: 'fixture:people/persons@post' },
+    { name: 'a JSON number', method: 'POST', url: FIXTURE_RECORDS, extra: { jsonBody: 0, headers: JSON_TYPE }, key: 'fixture:people/persons@post' },
+    { name: 'a JSON false', method: 'POST', url: FIXTURE_RECORDS, extra: { jsonBody: false, headers: JSON_TYPE }, key: 'fixture:people/persons@post' },
+    { name: 'a JSON array on an unrouted path', method: 'POST', url: '/legacy-fixtures/cfml/api.cfm/people', extra: { jsonBody: [], headers: JSON_TYPE }, key: 'fixture:!notfound@post' },
+    { name: 'a null body under a text type', method: 'POST', url: FIXTURE_RECORDS, extra: { jsonBody: null, headers: { 'Content-Type': 'text/plain' } }, key: 'fixture:people/persons@post' },
+    { name: 'a null body under a type shorter than the JSON prefix', method: 'POST', url: FIXTURE_RECORDS, extra: { jsonBody: null, headers: { 'Content-Type': 'application/jso' } }, key: 'fixture:people/persons@post' },
+    { name: 'a null body without a type', method: 'POST', url: FIXTURE_RECORDS, extra: { jsonBody: null }, key: 'fixture:people/persons@post' },
+    { name: 'a JSON type without a parsed body', method: 'POST', url: FIXTURE_RECORDS, extra: { headers: JSON_TYPE }, key: 'fixture:people/persons@post' },
   ])('keys a fixture request with $name as api.cfm merges its body', ({ method, url, extra, key }) => {
     const result = resultOf(method, url, extra);
     expect([result.family, result.key]).toEqual(['fixture', key]);
@@ -979,59 +961,57 @@ describe('remote CFC proxies, fixtures and path families', () => {
     expect(Object.hasOwn(result, 'siteId')).toBe(siteId !== undefined);
   });
 
-  const RECORDS = '/legacy-fixtures/cfml/api.cfm/finance/records';
-  const RECORDS_KEY = 'fixture:finance/records@get';
-  const ID_KEY = 'fixture:finance/records/{id}@get';
+  const RECORDS = '/legacy-fixtures/cfml/api.cfm/people/persons';
+  const RECORDS_KEY = 'fixture:people/persons@get';
+  const ID_KEY = 'fixture:people/persons/{id}@get';
   // The container answers these paths itself, before api.cfm runs; keyed as the template, never as a fixture folder file.
   const API_CFM_KEY = 'cfm:/legacy-fixtures/cfml/api.cfm';
   it.each<[string, string, string, string | undefined, RouteKeyOptions?]>([
     ['the canonical spelling', RECORDS, RECORDS_KEY, RECORDS],
-    ['a doubled slash before the directory', '//legacy-fixtures/cfml/api.cfm/finance/records', RECORDS_KEY, RECORDS],
-    ['a doubled slash between directories', '/legacy-fixtures//cfml/api.cfm/finance/records', RECORDS_KEY, RECORDS],
-    ['doubled slashes in path_info', '/legacy-fixtures/cfml/api.cfm//finance//records', RECORDS_KEY, RECORDS],
-    ['an upper-case module and resource, which api.cfm lower-cases', '/legacy-fixtures/cfml/api.cfm/FINANCE/RECORDS', RECORDS_KEY, RECORDS],
-    ['an encoded slash in path_info, which splits it', '/legacy-fixtures/cfml/api.cfm/finance%2Frecords', RECORDS_KEY, RECORDS],
-    ['an encoded script name', '/legacy-fixtures/cfml/%61pi.cfm/finance/records', RECORDS_KEY, RECORDS],
-    ['a directory path parameter', '/legacy-fixtures;x=1/cfml/api.cfm/finance/records', RECORDS_KEY, RECORDS],
-    ['a doubled slash after the context', '/masa//legacy-fixtures/cfml/api.cfm/FINANCE/records', RECORDS_KEY, RECORDS, { context: '/masa' }],
-    ['a path_info path parameter, which api.cfm reads as part of the module', '/legacy-fixtures/cfml/api.cfm/finance;x=1/records', 'fixture:finance;x=1/records@get', '/legacy-fixtures/cfml/api.cfm/finance%3Bx%3D1/records'],
-    ['index.cfm as path_info, which api.cfm reads as the resource', '/legacy-fixtures/cfml/api.cfm/finance/index.cfm/records', 'fixture:finance/index.cfm/{id}@get', '/legacy-fixtures/cfml/api.cfm/finance/index.cfm/records'],
+    ['a doubled slash before the directory', '//legacy-fixtures/cfml/api.cfm/people/persons', RECORDS_KEY, RECORDS],
+    ['a doubled slash between directories', '/legacy-fixtures//cfml/api.cfm/people/persons', RECORDS_KEY, RECORDS],
+    ['doubled slashes in path_info', '/legacy-fixtures/cfml/api.cfm//people//persons', RECORDS_KEY, RECORDS],
+    ['an upper-case module and resource, which api.cfm lower-cases', '/legacy-fixtures/cfml/api.cfm/PEOPLE/PERSONS', RECORDS_KEY, RECORDS],
+    ['an encoded slash in path_info, which splits it', '/legacy-fixtures/cfml/api.cfm/people%2Fpersons', RECORDS_KEY, RECORDS],
+    ['an encoded script name', '/legacy-fixtures/cfml/%61pi.cfm/people/persons', RECORDS_KEY, RECORDS],
+    ['a directory path parameter', '/legacy-fixtures;x=1/cfml/api.cfm/people/persons', RECORDS_KEY, RECORDS],
+    ['a doubled slash after the context', '/masa//legacy-fixtures/cfml/api.cfm/PEOPLE/persons', RECORDS_KEY, RECORDS, { context: '/masa' }],
+    ['a path_info path parameter, which api.cfm reads as part of the module', '/legacy-fixtures/cfml/api.cfm/people;x=1/persons', 'fixture:people;x=1/persons@get', '/legacy-fixtures/cfml/api.cfm/people%3Bx%3D1/persons'],
+    ['index.cfm as path_info, which api.cfm reads as the resource', '/legacy-fixtures/cfml/api.cfm/people/index.cfm/persons', 'fixture:people/index.cfm/{id}@get', '/legacy-fixtures/cfml/api.cfm/people/index.cfm/persons'],
     ['the bare script, which api.cfm serves with no path_info', '/legacy-fixtures/cfml/api.cfm', 'fixture:!notfound@get', '/legacy-fixtures/cfml/api.cfm/'],
     ['a `..` closing the last item', `${RECORDS}/x..`, ID_KEY, `${RECORDS}/x..`],
-    ['a `..` closing an id before an action', `${RECORDS}/x../versions`, 'fixture:finance/records/{id}/versions@get', `${RECORDS}/x../versions`],
+    ['a `..` closing an id before an action', `${RECORDS}/x../versions`, 'fixture:people/persons/{id}/versions@get', `${RECORDS}/x../versions`],
     ['an encoded backslash inside an id', `${RECORDS}/a%5C..%5Cb`, ID_KEY, `${RECORDS}/a%5C..%5Cb`],
-    ['an encoded slash before a dot-led item, which the container leaves encoded', `${RECORDS}/x%2F.y`, 'fixture:finance/records/{id}/.y@get', `${RECORDS}/x/.y`],
-    ['an encoded slash before a sensitive file name', `${RECORDS}/x%2Fweb.config`, 'fixture:finance/records/{id}/web.config@get', `${RECORDS}/x/web.config`],
+    ['an encoded slash before a dot-led item, which the container leaves encoded', `${RECORDS}/x%2F.y`, 'fixture:people/persons/{id}/.y@get', `${RECORDS}/x/.y`],
+    ['an encoded slash before a sensitive file name', `${RECORDS}/x%2Fweb.config`, 'fixture:people/persons/{id}/web.config@get', `${RECORDS}/x/web.config`],
     ['a path parameter hiding a dot', `${RECORDS}/;.y`, ID_KEY, `${RECORDS}/%3B.y`],
     ['an Axis suffix followed by more', `${RECORDS}/x.jwsx`, ID_KEY, `${RECORDS}/x.jwsx`],
     ['an encoded semicolon, which the container keeps', `${RECORDS}/x.jws%3Ba`, ID_KEY, `${RECORDS}/x.jws%3Ba`],
-    ['a script path parameter, which names no script', '/legacy-fixtures/cfml/api.cfm;x=1/finance/records', 'page:render', undefined],
-    ['an encoded slash between directories, which separates nothing', '/legacy-fixtures%2Fcfml/api.cfm/finance/records', 'page:render', undefined],
-    ['a dot-dot segment, which the container refuses', '/legacy-fixtures/cfml/api.cfm/finance/../finance/records', 'page:render', undefined],
-    ['an encoded dot-dot segment', '/legacy-fixtures/cfml/api.cfm/finance/%2e%2E/finance/records', 'page:render', undefined],
-    ['a dot-dot directory segment', '/legacy-fixtures/../legacy-fixtures/cfml/api.cfm/finance/records', 'page:render', undefined],
-    ['a dot directory segment', '/legacy-fixtures/cfml/./api.cfm/finance/records', 'page:render', undefined],
-    ['an encoded dot directory segment', '/legacy-fixtures/%2E/cfml/api.cfm/finance/records', 'page:render', undefined],
+    ['a script path parameter, which names no script', '/legacy-fixtures/cfml/api.cfm;x=1/people/persons', 'page:render', undefined],
+    ['an encoded slash between directories, which separates nothing', '/legacy-fixtures%2Fcfml/api.cfm/people/persons', 'page:render', undefined],
+    ['a dot-dot segment, which the container refuses', '/legacy-fixtures/cfml/api.cfm/people/../people/persons', 'page:render', undefined],
+    ['an encoded dot-dot segment', '/legacy-fixtures/cfml/api.cfm/people/%2e%2E/people/persons', 'page:render', undefined],
+    ['a dot-dot directory segment', '/legacy-fixtures/../legacy-fixtures/cfml/api.cfm/people/persons', 'page:render', undefined],
+    ['a dot directory segment', '/legacy-fixtures/cfml/./api.cfm/people/persons', 'page:render', undefined],
+    ['an encoded dot directory segment', '/legacy-fixtures/%2E/cfml/api.cfm/people/persons', 'page:render', undefined],
     ['an encoded dot id', `${RECORDS}/%2e`, 'page:render', undefined],
     ['a dot-led id', `${RECORDS}/.x`, API_CFM_KEY, undefined],
     ['a path parameter segment before a dot-led one', `${RECORDS}/a;b/.y`, API_CFM_KEY, undefined],
     ['an encoded-backslash traversal id', `${RECORDS}/..%5C..%5Cweb.config`, API_CFM_KEY, undefined],
     ['an encoded-backslash traversal id before an action', `${RECORDS}/..%5C..%5Cweb.config/versions`, 'page:render', undefined],
-    ['an encoded-backslash traversal survey id', '/legacy-fixtures/cfml/api.cfm/surveys/surveys/..%5C..%5Cweb.config/responses', 'page:render', undefined],
-    ['an encoded-backslash traversal request id', '/legacy-fixtures/cfml/api.cfm/esignature/requests/..%5C..%5Cweb.config/audit', 'page:render', undefined],
     ['a sensitive file name in mixed case', `${RECORDS}/Web.Config`, API_CFM_KEY, undefined],
     ['a sensitive file name before an action', `${RECORDS}/x/Package-Lock.json/versions`, 'page:render', undefined],
     ['an Axis suffix in upper case', `${RECORDS}/x.JWS`, API_CFM_KEY, undefined],
     ['an Axis suffix before a path parameter', `${RECORDS}/x.jws;a`, API_CFM_KEY, undefined],
     ['a flash remoting suffix', `${RECORDS}/x.cfswf`, API_CFM_KEY, undefined],
-    ['backslash separators, which the container rejects', '/legacy-fixtures\\cfml\\api.cfm/finance/records', 'page:render', undefined],
+    ['backslash separators, which the container rejects', '/legacy-fixtures\\cfml\\api.cfm/people/persons', 'page:render', undefined],
     ['a backslash in an id', `${RECORDS}/a\\b`, 'page:render', undefined],
-    ['an encoded slash before a dot-dot item', '/legacy-fixtures/cfml/api.cfm/finance/records%2F..', 'page:render', undefined],
-    ['a malformed escape in path_info, which the container rejects', '/legacy-fixtures/cfml/api.cfm/finance/r%zz', 'page:render', undefined],
-    ['an upper-case directory', '/LEGACY-FIXTURES/cfml/api.cfm/finance/records', 'page:render', undefined],
-    ['an upper-case script', '/legacy-fixtures/cfml/API.CFM/finance/records', 'page:render', undefined],
+    ['an encoded slash before a dot-dot item', '/legacy-fixtures/cfml/api.cfm/people/persons%2F..', 'page:render', undefined],
+    ['a malformed escape in path_info, which the container rejects', '/legacy-fixtures/cfml/api.cfm/people/p%zz', 'page:render', undefined],
+    ['an upper-case directory', '/LEGACY-FIXTURES/cfml/api.cfm/people/persons', 'page:render', undefined],
+    ['an upper-case script', '/legacy-fixtures/cfml/API.CFM/people/persons', 'page:render', undefined],
     ['an upper-case bare script', '/legacy-fixtures/cfml/API.CFM', 'cfm:/legacy-fixtures/cfml/api.cfm', undefined],
-    ['index.cfm before api.cfm, which no fixture script serves', '/legacy-fixtures/cfml/index.cfm/api.cfm/finance/records', 'page:render', undefined],
+    ['index.cfm before api.cfm, which no fixture script serves', '/legacy-fixtures/cfml/index.cfm/api.cfm/people/persons', 'page:render', undefined],
   ])('keys and dispatches a fixture path with %s as legacy serves it', (_label, url, key, dispatched, opts) => {
     expect(keyOf('GET', url, {}, opts)).toBe(key);
     expect(fixtureDispatchPath(url, opts)).toBe(dispatched);
@@ -1041,15 +1021,15 @@ describe('remote CFC proxies, fixtures and path families', () => {
 describe('fixtureDispatchPath', () => {
   const FIXTURE = '/legacy-fixtures/cfml/api.cfm';
   it.each<[string, string, string | undefined, RouteKeyOptions?]>([
-    ['drops doubled and trailing slashes', '/legacy-fixtures//cfml/api.cfm//finance//records/', `${FIXTURE}/finance/records`],
-    ['lower-cases module, resource and action, keeping the id', `${FIXTURE}/FINANCE/Records/Ab-1/SUBMIT`, `${FIXTURE}/finance/records/Ab-1/submit`],
-    ['keeps a CF UUID tail', `${FIXTURE}/finance/records/R1/attachments/${UUID}`, `${FIXTURE}/finance/records/R1/attachments/${UUID}`],
-    ['lower-cases any other tail', `${FIXTURE}/Surveys/Surveys/S1/Targets/BULK`, `${FIXTURE}/surveys/surveys/S1/targets/bulk`],
-    ['re-encodes each decoded item', `${FIXTURE}/finance/records/a%20b%3F%23+`, `${FIXTURE}/finance/records/a%20b%3F%23%2B`],
-    ['removes the context', `/masa${FIXTURE}/FINANCE/records`, `${FIXTURE}/finance/records`, { context: '/masa' }],
-    ['removes the context case-insensitively', `/MASA${FIXTURE}/finance/records`, `${FIXTURE}/finance/records`, { context: 'masa/' }],
-    ['answers no path for a context the path lacks', `/other${FIXTURE}/finance/records`, undefined, { context: '/masa' }],
-    ['answers no path behind the root front controller', `/index.cfm${FIXTURE}/finance/records`, undefined],
+    ['drops doubled and trailing slashes', '/legacy-fixtures//cfml/api.cfm//people//persons/', `${FIXTURE}/people/persons`],
+    ['lower-cases module, resource and action, keeping the id', `${FIXTURE}/PEOPLE/Persons/Ab-1/ARCHIVE`, `${FIXTURE}/people/persons/Ab-1/archive`],
+    ['keeps a CF UUID tail', `${FIXTURE}/people/persons/R1/addresses/${UUID}`, `${FIXTURE}/people/persons/R1/addresses/${UUID}`],
+    ['lower-cases any other tail', `${FIXTURE}/People/Persons/S1/Addresses/BULK`, `${FIXTURE}/people/persons/S1/addresses/bulk`],
+    ['re-encodes each decoded item', `${FIXTURE}/people/persons/a%20b%3F%23+`, `${FIXTURE}/people/persons/a%20b%3F%23%2B`],
+    ['removes the context', `/masa${FIXTURE}/PEOPLE/persons`, `${FIXTURE}/people/persons`, { context: '/masa' }],
+    ['removes the context case-insensitively', `/MASA${FIXTURE}/people/persons`, `${FIXTURE}/people/persons`, { context: 'masa/' }],
+    ['answers no path for a context the path lacks', `/other${FIXTURE}/people/persons`, undefined, { context: '/masa' }],
+    ['answers no path behind the root front controller', `/index.cfm${FIXTURE}/people/persons`, undefined],
   ])('%s', (_label, path, expected, opts) => {
     expect(fixtureDispatchPath(path, opts)).toBe(expected);
     expect(resultOf('GET', path, {}, opts).family === 'fixture').toBe(expected !== undefined);
@@ -1136,8 +1116,8 @@ describe('OPT-2 folder spellings', () => {
     ['a doaction on a fixture SQL file', '/legacy-fixtures/sql/000_schemas.sql?doaction=login', 'static:/legacy-fixtures/sql/000_schemas.sql'],
     ['a fixture folder file', '/legacy-fixtures/README.md', 'static:/legacy-fixtures/readme.md'],
     ['a file name as a fixture template path info', '/legacy-fixtures/cfml/seed.cfm/x.js', 'cfm:/legacy-fixtures/cfml/seed.cfm'],
-    ['a file name as a fixture component path info', '/legacy-fixtures/cfml/modules/finance.cfc/x.js', 'cfc:/legacy-fixtures/cfml/modules/finance.cfc'],
-    ['a fixture front controller path the container answers, naming a file', '/legacy-fixtures/cfml/api.cfm/finance/records/..%5C..%5Cweb.config', 'cfm:/legacy-fixtures/cfml/api.cfm'],
+    ['a file name as a fixture component path info', '/legacy-fixtures/cfml/modules/people.cfc/x.js', 'cfc:/legacy-fixtures/cfml/modules/people.cfc'],
+    ['a fixture front controller path the container answers, naming a file', '/legacy-fixtures/cfml/api.cfm/people/persons/..%5C..%5Cweb.config', 'cfm:/legacy-fixtures/cfml/api.cfm'],
     ['a namespace file behind a doubled slash', '//opt2/source-pin.json', 'opt2:/opt2/source-pin.json'],
     ['a namespace file behind a path parameter', '/opt2;x/source-pin.json', 'opt2:/opt2/source-pin.json'],
   ])('keys %s on the file the container serves', (_label, url, key) => {
@@ -1225,7 +1205,6 @@ describe('application reload', () => {
       key: 'api:content.save',
     },
     { name: 'an OPT-2 path', url: '/opt2/stub/x?appreload', key: 'opt2:/opt2/stub/x' },
-    { name: "a synthetic service's /v1/ path", url: '/v1/surveys/x?appreload', key: 'opt2:/v1/surveys/x' },
     {
       name: 'a bridge path',
       url: '/gateway/legacy-bridge/cfml/session.cfm?appreload',
@@ -1292,9 +1271,8 @@ describe('application reload', () => {
 describe('OPT-2 namespaces keyed as legacy serves them', () => {
   it.each([
     { url: '/opt2/stub/x', legacyUrl: '/about/x', key: 'page:render' },
-    { url: '/opt2/admin/reporting/exports', legacyUrl: '/about/reporting/exports', key: 'page:render' },
-    { url: '/v1/surveys/x', legacyUrl: '/about/x', key: 'page:render' },
-    { url: '/v1/timesheets/sheets?appreload', legacyUrl: '/about/sheets?appreload', key: 'reload:application' },
+    { url: '/opt2/stub/notes/list', legacyUrl: '/about/notes/list', key: 'page:render' },
+    { url: '/opt2/stub/notes?appreload', legacyUrl: '/about/notes?appreload', key: 'reload:application' },
     { url: '/opt2/x?doaction=login', legacyUrl: '/about/x?doaction=login', key: 'page:login' },
   ])('keys $url as $key like $legacyUrl without the namespaces, and in the opt2 family with them', ({ url, legacyUrl, key }) => {
     const served = resultOf('GET', url, {}, { opt2Namespaces: false });
@@ -1728,9 +1706,9 @@ describe('routeKeyForEntryPoint', () => {
     },
     {
       name: 'a fixture route',
-      entry: { kind: 'fixture', httpMethod: 'POST', path: '/legacy-fixtures/cfml/api.cfm/finance/invoices/7/submit' },
-      req: request('POST', '/legacy-fixtures/cfml/api.cfm/finance/invoices/9/submit'),
-      key: 'fixture:finance/invoices/{id}/submit@post',
+      entry: { kind: 'fixture', httpMethod: 'POST', path: '/legacy-fixtures/cfml/api.cfm/people/persons/7/archive' },
+      req: request('POST', '/legacy-fixtures/cfml/api.cfm/people/persons/9/archive'),
+      key: 'fixture:people/persons/{id}/archive@post',
     },
     {
       name: 'a path with a query',

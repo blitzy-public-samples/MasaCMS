@@ -264,7 +264,7 @@ describe('signed and download URLs', () => {
   it('replaces an absolute or relative URL under each declared file path prefix with the URL placeholder', () => {
     expect(rules.urls.pathPrefixes.length).toBeGreaterThan(0);
     for (const prefix of rules.urls.pathPrefixes) {
-      for (const url of [`${LEGACY_ORIGIN}${prefix}content-files/about.pdf`, `${prefix}finance-attachments/receipt.pdf`]) {
+      for (const url of [`${LEGACY_ORIGIN}${prefix}content-files/about.pdf`, `${prefix}content-files/tenant-a/receipt.pdf`]) {
         expect(normaliseUrl(url, createIdOrdinals(), rules), url).toBe(URL_PLACEHOLDER);
       }
     }
@@ -273,8 +273,8 @@ describe('signed and download URLs', () => {
   it('replaces the value of each declared download field with the URL placeholder', () => {
     expect(rules.urls.downloadFields.length).toBeGreaterThan(0);
     for (const { key, whenContains } of rules.urls.downloadFields) {
-      const values = (whenContains ?? ['/v1/exports/']).map((part) =>
-        part.startsWith('/') ? `https://files.example.test${part}report.csv` : `https://${part}/reporting-exports/report.csv`,
+      const values = (whenContains ?? ['/v1/files/']).map((part) =>
+        part.startsWith('/') ? `https://files.example.test${part}report.csv` : `https://${part}/content-files/report.csv`,
       );
       for (const value of values) {
         expect(normaliseValue({ [key]: value }, createIdOrdinals(), rules), `${key}: ${value}`).toStrictEqual({

@@ -564,7 +564,7 @@ const FIXTURE_OWNERSHIP: readonly (readonly [table: string, owner: string, unit:
   ['tfixture', 'people', 'people.fixture'],
   ['tfixturemigrated', 'programs-sites', 'programs_sites.fixture_migrated'],
   ['tfixturenopk', 'strategies-content', 'content.fixture_nopk'],
-  ['tfixturestats', 'reporting', 'reporting.fixture_stats'],
+  ['tfixturestats', 'sample-module', 'sample_module.fixture_stats'],
   ['tfixtureversioned', 'strategies-content', 'content.fixture_versioned'],
 ];
 
@@ -1178,7 +1178,7 @@ describe('entry references', () => {
 
   it.each([
     ['ctl:cfixture.update{action=add}', null],
-    ['fe:render', { disposition: 'legacy-served', owningService: 'reporting', ref: REF }],
+    ['fe:render', { disposition: 'legacy-served', owningService: null, ref: REF }],
     ['api:user.delete', { disposition: 'decision', owningService: null, ref: REF }],
     ['rest:group.findone', { disposition: 'carry', owningService: 'identity', ref: REF }],
     ['rte:/tasks/widgets', { disposition: 'legacy-served', owningService: null, ref: REF }],

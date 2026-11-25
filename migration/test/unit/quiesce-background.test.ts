@@ -28,8 +28,8 @@ const RECORD: BackgroundRecord = {
   since: null,
   reason: 'golden capture',
   pushConfigs: {
-    'timesheets.people.person.archived.v1': {
-      pushEndpoint: 'http://127.0.0.1:23718/internal/v1/events/timesheets.people.person.archived.v1?key=REDACTED',
+    'identity.people.person.changed.v1': {
+      pushEndpoint: 'http://127.0.0.1:23711/internal/v1/events/identity.people.person.changed.v1?key=REDACTED',
       attributes: { 'x-goog-version': 'v1' },
       oidcToken: { serviceAccountEmail: 'pubsub-invoker@opt2-c37.iam.gserviceaccount.com', audience: 'https://x.run.app' },
     },
@@ -38,7 +38,7 @@ const RECORD: BackgroundRecord = {
     { service: 'identity', queue: 'identity-outbox-sweep' },
     { service: 'programs-sites', queue: 'programs-sites-sitemonitor' },
   ],
-  pausedTasks: ['/var/www/index.cfm/_api/sitemonitor/', 'opt2-survey-41-launch'],
+  pausedTasks: ['/var/www/index.cfm/_api/sitemonitor/'],
 };
 
 /** In-memory `migration.scheduler_state` whose values make a JSON round trip, as jsonb does. */
@@ -105,7 +105,7 @@ describe('createBackgroundState', () => {
   it('keeps the since of a repeated suspend and lets the latest record win', async () => {
     const { state } = localState();
     const first = await state.suspend(RECORD);
-    const merged = { ...first, pausedTasks: [...first.pausedTasks, 'opt2-survey-42-reminder-1'] };
+    const merged = { ...first, pausedTasks: [...first.pausedTasks, '/srv/www/index.cfm/_api/sitemonitor/'] };
     await state.suspend(merged);
     await expect(state.get()).resolves.toEqual({ ...merged, since: NOW });
   });

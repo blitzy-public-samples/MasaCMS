@@ -22,7 +22,6 @@ const GENERATOR = 'Masa CMS 7.6.1';
 const HSTS = 'max-age=1200';
 const NEXT_CACHE_CONTROL = 'private, no-cache, no-store, max-age=0, must-revalidate';
 const ADMIN_PAGE = '/admin/cusers/list?muraAction=cUsers.list';
-const OPT2_PAGE = '/opt2/admin/finance/records';
 const RAW = '/admin-raw/carch/loaddiff?muraAction=cArch.loaddiff';
 const ACTION = '/admin-actions/cusers/update?muraAction=cUsers.update';
 const ASSET = '/_next/static/chunks/main.js';
@@ -135,7 +134,7 @@ describe('normaliseWebResponseHeaders', () => {
     expect('vary' in out).toBe(expected !== undefined);
   });
 
-  it.each([ADMIN_PAGE, OPT2_PAGE])('sets the legacy HTML content type on page-mode responses (%s)', (path) => {
+  it.each([ADMIN_PAGE])('sets the legacy HTML content type on page-mode responses (%s)', (path) => {
     const out = normaliseWebResponseHeaders({ 'Content-Type': 'text/html; charset=utf-8' }, { path, statusCode: 200 });
     expect(out['content-type']).toBe(LEGACY_HTML_CONTENT_TYPE);
   });
@@ -204,7 +203,7 @@ describe('normaliseWebResponseHeaders', () => {
       location: '/admin/?muraAction=cUsers.list',
       expires: 'Thu, 01 Jan 1970 00:00:00 GMT',
     };
-    expect(normaliseWebResponseHeaders(sent, { path: OPT2_PAGE, statusCode: 200 })).toEqual({
+    expect(normaliseWebResponseHeaders(sent, { path: ADMIN_PAGE, statusCode: 200 })).toEqual({
       ...sent,
       'content-type': LEGACY_HTML_CONTENT_TYPE,
     });
@@ -216,13 +215,11 @@ describe('isWebPagePath and isWebPageRedirect', () => {
     ['/admin/cusers/list', true],
     [ADMIN_PAGE, true],
     ['/admin/cusers/list#top', true],
-    [OPT2_PAGE, true],
+    ['/opt2/admin/module/screen', false],
     ['/admin/cusers', false],
     ['/admin/cusers/list/extra', false],
     [RAW, false],
     [ACTION, false],
-    ['/opt2/admin-actions/finance/submit', false],
-    ['/opt2/admin/finance', false],
     [ASSET, false],
   ])('classifies %s as a page path: %s', (path, page) => {
     expect(isWebPagePath(path)).toBe(page);
@@ -230,7 +227,6 @@ describe('isWebPagePath and isWebPageRedirect', () => {
 
   it.each<[string, number, boolean]>([
     [ADMIN_PAGE, 307, true],
-    [OPT2_PAGE, 307, true],
     [ADMIN_PAGE, 302, false],
     [ADMIN_PAGE, 308, false],
     [ACTION, 307, false],
@@ -404,7 +400,7 @@ describe('the composed gateway under v0002', () => {
       },
       body: '<html></html>',
     });
-    const res = await gateway.app.inject({ method: 'GET', url: OPT2_PAGE });
+    const res = await gateway.app.inject({ method: 'GET', url: '/admin/?muraAction=cArch.list&siteid=tenant-a' });
     expect(res.statusCode).toBe(200);
     expect(res.body).toBe('<html></html>');
     expect(res.headers).toMatchObject({

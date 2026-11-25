@@ -152,7 +152,7 @@ describe('rebaselineRollbackSet', () => {
   it('takes a fresh snapshot, then restarts the feed for exactly R from it, and writes the record it returns', async () => {
     const h = harness(ROLLBACK_VERSION);
     const R = computeRollbackSet(h.ctx);
-    expect(R.units).toEqual(expect.arrayContaining(['people.person_archive', 'timesheets.blackout']));
+    expect(R.units).toEqual(expect.arrayContaining(['people.person', 'people.person_archive']));
 
     const record = await rebaselineRollbackSet(h.ctx, h.deps);
 

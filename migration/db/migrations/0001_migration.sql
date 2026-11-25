@@ -81,7 +81,7 @@ CREATE TABLE migration.projector_cursor (
   PRIMARY KEY (owner, tenant_id)
 );
 
--- Keys per src/scheduler/state.ts SCHEDULER_KEYS: sitemonitor (SiteMonitorRecord), nativeTasks (NativeTasksRecord), surveyTasks (SurveyTasksRecord); background is reserved for the quiesce module
+-- Keys per src/scheduler/state.ts SCHEDULER_KEYS: sitemonitor (SiteMonitorRecord), nativeTasks (NativeTasksRecord); background is reserved for the quiesce module
 CREATE TABLE migration.scheduler_state (
   key text PRIMARY KEY,
   value jsonb NOT NULL,

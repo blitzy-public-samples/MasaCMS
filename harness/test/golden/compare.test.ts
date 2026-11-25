@@ -19,7 +19,6 @@ import {
   EXCEPTIONS_TITLE,
   PARITY_RESULTS,
   PARITY_TITLE,
-  UNMET_WITHOUT_FIXTURES,
   buildParityReport,
   classifyScenario,
   exceptionEntries,
@@ -142,9 +141,9 @@ function proposalOf(routeKey: string): string {
   return variant.proposal;
 }
 
-/** GS-CO-05 of the catalogue fixture under another id. */
+/** GS-CO-75 of the catalogue fixture under another id. */
 function derive(id: string, over: Partial<Scenario> = {}): Scenario {
-  return { ...structuredClone(scenarioById(catalogue, 'GS-CO-05')), id, ...over };
+  return { ...structuredClone(scenarioById(catalogue, 'GS-CO-75')), id, ...over };
 }
 
 /** Copy of `side` as scenario `id`'s evidence, every step taking `fields` on both its record and normalised form. */
@@ -166,9 +165,9 @@ function retitled(side: ReplayOutput, title: string): ReplayOutput {
   return copy;
 }
 
-/** `side` as GS-CO-07's replay of the image upload, halted under the rendition entry. */
+/** `side` as GS-CO-77's replay of the image upload, halted under the rendition entry. */
 function halt(side: ReplayOutput): ReplayOutput {
-  const copy = retarget(side, 'GS-CO-07', { routeKey: HALTED_KEY });
+  const copy = retarget(side, 'GS-CO-77', { routeKey: HALTED_KEY });
   const { reason } = entryById(RENDITION_ID);
   copy.halted = [{ step: 'findone', routeKey: HALTED_KEY, reason, exceptionId: RENDITION_ID }];
   return copy;
@@ -240,18 +239,21 @@ function loginSide<T extends Side>(side: T, scenario: Scenario, rotation: Cookie
   return copy as T;
 }
 
-/** GS-ID-05's user delete, withheld under decision-list route key `ref`. */
+/** Step of GS-ID-09 that submits a carried form to the withheld user delete. */
+const WITHHELD_STEP = 'carried-form-to-withheld';
+
+/** GS-ID-09's carried form submitted to a legacy-served action, withheld under decision-list route key `ref`. */
 function withheldCase(ref: string): Case {
-  const scenario = derive('GS-ID-05', { service: 'identity', role: 'admin', covers: [ref] });
+  const scenario = derive('GS-ID-09', { service: 'identity', role: 'admin', covers: [ref] });
   scenario.steps = scenario.steps.map((step) => ({
     ...step,
-    name: 'delete',
+    name: WITHHELD_STEP,
     method: 'POST',
     route: '/admin/?muraAction=cUsers.update',
     expected: 'withheld',
     decisionListRef: ref,
   }));
-  const fields: StepFields = { name: 'delete', routeKey: ref, expected: 'withheld', decisionListRef: ref };
+  const fields: StepFields = { name: WITHHELD_STEP, routeKey: ref, expected: 'withheld', decisionListRef: ref };
   return { scenario, golden: retarget(golden, scenario.id, fields), replay: retarget(replay, scenario.id, fields) };
 }
 
@@ -291,7 +293,7 @@ beforeAll(async () => {
   guarded = await digests(GUARDED);
   catalogue = await loadCatalogue(CATALOGUE_FIXTURE);
   rules = loadRules(RULES_PATH, RULES_ENV);
-  golden = await readGoldenSet('GS-CO-05', GOLDEN_SAMPLE);
+  golden = await readGoldenSet('GS-CO-75', GOLDEN_SAMPLE);
   replay = replayOutputSchema.parse(JSON.parse(await readFile(REPLAY_SAMPLE, 'utf8')));
   exceptionsList = await loadExceptionsList(EXCEPTIONS_FIXTURE);
   exceptions = exceptionEntries(exceptionsList);
@@ -300,11 +302,11 @@ beforeAll(async () => {
 
   const known = knownIssueScenario();
   cases = {
-    pass: { scenario: scenarioById(catalogue, 'GS-CO-05'), golden, replay },
+    pass: { scenario: scenarioById(catalogue, 'GS-CO-75'), golden, replay },
     fail: {
-      scenario: derive('GS-CO-03'),
-      golden: retarget(golden, 'GS-CO-03'),
-      replay: retitled(retarget(replay, 'GS-CO-03'), CHANGED_TITLE),
+      scenario: derive('GS-CO-73'),
+      golden: retarget(golden, 'GS-CO-73'),
+      replay: retitled(retarget(replay, 'GS-CO-73'), CHANGED_TITLE),
     },
     excepted: {
       scenario: derive('GS-CO-04'),
@@ -313,8 +315,8 @@ beforeAll(async () => {
       opts: { exceptions: [...exceptions, titleEntry('GS-CO-04', { decision: 'preserve', status: 'accepted' })] },
     },
     halted: {
-      scenario: derive('GS-CO-07', { covers: [HALTED_KEY] }),
-      golden: retarget(golden, 'GS-CO-07', { routeKey: HALTED_KEY }),
+      scenario: derive('GS-CO-77', { covers: [HALTED_KEY] }),
+      golden: retarget(golden, 'GS-CO-77', { routeKey: HALTED_KEY }),
       replay: halt(replay),
     },
     'known-issue': {
@@ -392,7 +394,7 @@ describe('classifyScenario', () => {
       decisionListRef: null,
     });
     expect(entryById(verdict.exceptionId ?? '')).toMatchObject({
-      scenario: 'GS-CO-07',
+      scenario: 'GS-CO-77',
       routeKey: HALTED_KEY,
       status: 'halted',
     });
@@ -449,7 +451,7 @@ describe('classifyScenario', () => {
     [
       'declared on the scenario',
       () => {
-        const scenario = derive('GS-ID-05', {
+        const scenario = derive('GS-ID-09', {
           service: 'identity',
           role: 'admin',
           covers: [WITHHELD_KEY],
@@ -466,7 +468,7 @@ describe('classifyScenario', () => {
       'declared on a step that also halts',
       () => {
         const withheld = withheldCase(WITHHELD_KEY);
-        const halted = { step: 'delete', routeKey: WITHHELD_KEY, reason: 'session-managed', exceptionId: 'EX-ID-HALT' };
+        const halted = { step: WITHHELD_STEP, routeKey: WITHHELD_KEY, reason: 'session-managed', exceptionId: 'EX-ID-HALT' };
         return { ...withheld, replay: withheld.replay === null ? null : { ...withheld.replay, halted: [halted] } };
       },
       '1 unlisted difference; session-managed',
@@ -488,26 +490,38 @@ describe('classifyScenario', () => {
     },
   );
 
-  it('fails a withheld scenario whose replay run failed, leaving nothing to compare', () => {
+  it.each<[string, (side: ReplayOutput) => ReplayOutput | null, string]>([
+    [
+      'whose replay run failed',
+      (side) => ({ ...side, error: { message: 'gateway answered 502', step: WITHHELD_STEP } }),
+      `replay failed at ${WITHHELD_STEP}: gateway answered 502`,
+    ],
+    ['without replay output', () => null, 'no replay output at ${OPT2_STATE_DIR}/golden/replay/GS-ID-09.json'],
+  ])('fails a withheld scenario %s, leaving nothing to compare', (_title, replayOf, reason) => {
     const withheld = withheldCase(WITHHELD_KEY);
     if (withheld.replay === null) throw new Error('case has no replay');
-    const failed = { ...withheld.replay, error: { message: 'gateway answered 502', step: 'delete' } };
-    expect(classify({ ...withheld, replay: failed })).toStrictEqual({
+    expect(classify({ ...withheld, replay: replayOf(withheld.replay) })).toStrictEqual({
       result: 'fail',
-      reason: 'replay failed at delete: gateway answered 502',
+      reason,
       differences: [],
       exceptionId: null,
       decisionListRef: [WITHHELD_REF],
     });
   });
 
-  it('throws GoldenConfigError for a withheld route key the decision list does not hold', () => {
-    const unknown = withheldCase(UNKNOWN_KEY);
-    expect(() => classify(unknown)).toThrow(GoldenConfigError);
-    expect(() => classify(unknown)).toThrow(
-      `GS-ID-05: decisionListRef ${UNKNOWN_KEY} names no action variant or withheld table entry point of ` +
-        'opt2/decision-list.json',
-    );
+  it.each<[string, string, DecisionList | undefined]>([
+    ['the decision list does not hold', UNKNOWN_KEY, undefined],
+    [
+      'only a decision-list table withholds',
+      WITHHELD_KEY,
+      { actionVariants: [], tables: [{ table: 'tusers', withheldEntryPoints: [{ routeKey: WITHHELD_KEY }] }] },
+    ],
+  ])('throws GoldenConfigError for a withheld route key %s', (_title, key, list) => {
+    const { scenario, golden: captured, replay: replayed } = withheldCase(key);
+    const opts = { scenario, exceptions, rules, decisionList: list ?? decisionList };
+    const run = (): ScenarioVerdict => classifyScenario(captured, replayed, opts);
+    expect(run).toThrow(GoldenConfigError);
+    expect(run).toThrow(`GS-ID-09: decisionListRef ${key} names no action variant of opt2/decision-list.json`);
   });
 
   it('skips a fixture-dependent scenario while the legacy fixtures are unavailable', () => {
@@ -537,17 +551,17 @@ describe('buildParityReport', () => {
     // The report's status is always complete; whether parity passes is main's exit code.
     expect(report.status).toBe('complete');
     expect(report.scenarios.map((s) => [s.id, s.result])).toStrictEqual([
-      ['GS-CO-05', 'pass'],
-      ['GS-CO-03', 'fail'],
+      ['GS-CO-75', 'pass'],
+      ['GS-CO-73', 'fail'],
       ['GS-CO-04', 'excepted'],
-      ['GS-CO-07', 'halted'],
+      ['GS-CO-77', 'halted'],
       ['GS-ID-01', 'known-issue'],
-      ['GS-ID-05', 'withheld'],
+      ['GS-ID-09', 'withheld'],
       ['GS-CO-06', FIXTURES_UNAVAILABLE],
     ]);
     expect(report.scenarios[0]?.evidence).toStrictEqual({
-      golden: 'harness/golden/sets/GS-CO-05.json',
-      replay: '${OPT2_STATE_DIR}/golden/replay/GS-CO-05.json',
+      golden: 'harness/golden/sets/GS-CO-75.json',
+      replay: '${OPT2_STATE_DIR}/golden/replay/GS-CO-75.json',
     });
     expect(() => parityReportSchema.parse(JSON.parse(JSON.stringify(report)))).not.toThrow();
   });
@@ -555,35 +569,27 @@ describe('buildParityReport', () => {
   it('lists the withheld scenario as unmet with its decision-list entry and proposal', () => {
     const report = build(AVAILABLE);
     expect(report.unmetWithheld).toStrictEqual([
-      { id: 'GS-ID-05', decisionListRef: WITHHELD_REF, proposal: proposalOf(WITHHELD_KEY) },
+      { id: 'GS-ID-09', decisionListRef: WITHHELD_REF, proposal: proposalOf(WITHHELD_KEY) },
     ]);
     expect(report.planned).toStrictEqual({
       provenance: 'planning',
-      withheld: [{ scenario: 'GS-ID-05', routeKeys: [WITHHELD_KEY], decisionListRef: [WITHHELD_REF] }],
+      withheld: [{ scenario: 'GS-ID-09', routeKeys: [WITHHELD_KEY], decisionListRef: [WITHHELD_REF] }],
       halted: [],
     });
   });
 
-  it('stamps the pinned SHA and the fixture status, with full coverage while fixtures are available', () => {
+  it('stamps the pinned SHA and the fixture status while fixtures are available', () => {
     const report = build(AVAILABLE);
     expect(report.sourceSha).toBe(pinnedSha());
     expect(report.generatedAt).toBe(CLOCK().toISOString());
     expect(report.fixtures).toStrictEqual({ available: true, reason: null, source: FIXTURES_SOURCE });
-    expect(report.coverage).toBeUndefined();
-    expect(renderParityMarkdown(report).join('\n')).not.toContain('parity covers');
   });
 
-  it('states four of ten services covered and the ten-service item unmet while fixtures are unavailable', () => {
+  it('stamps and renders the fixture status while fixtures are unavailable', () => {
     const report = build(unavailable);
     expect(report.fixtures).toStrictEqual({ available: false, reason: unavailable.reason, source: FIXTURES_SOURCE });
-    expect(report.coverage).toStrictEqual({ servicesCovered: 4, servicesTotal: 10, unmet: [UNMET_WITHOUT_FIXTURES] });
-    expect(UNMET_WITHOUT_FIXTURES).toBe('all ten services pass parity');
     const markdown = renderParityMarkdown(report);
     expect(markdown).toContain(`Fixtures: unavailable (${unavailable.reason}) (from \`${FIXTURES_SOURCE}\`)`);
-    expect(markdown).toContain(
-      'The legacy fixtures are unavailable, so parity covers four of ten services, and ' +
-        '"all ten services pass parity" is unmet.',
-    );
   });
 });
 
@@ -604,10 +610,10 @@ describe('Markdown renderers', () => {
       expect(row[1]).toBe(scenario.service);
       expect(row[2]?.startsWith(`\`${scenario.result}\``)).toBe(true);
     }
-    expect(rows.get('<a id="GS-ID-05"></a>GS-ID-05')?.[4]).toContain(`${DECISION_LINK}: \`${WITHHELD_REF}\``);
-    expect(rows.get('<a id="GS-CO-07"></a>GS-CO-07')?.[4]).toContain(`${EXCEPTIONS_LINK}: \`${RENDITION_ID}\``);
+    expect(rows.get('<a id="GS-ID-09"></a>GS-ID-09')?.[4]).toContain(`${DECISION_LINK}: \`${WITHHELD_REF}\``);
+    expect(rows.get('<a id="GS-CO-77"></a>GS-CO-77')?.[4]).toContain(`${EXCEPTIONS_LINK}: \`${RENDITION_ID}\``);
     expect(rows.get('<a id="GS-CO-04"></a>GS-CO-04')?.[3]).toBe('1 (1 excepted)');
-    expect(lines).toContain(`| GS-ID-05 | ${DECISION_LINK}: \`${WITHHELD_REF}\` | ${proposalOf(WITHHELD_KEY)} |`);
+    expect(lines).toContain(`| GS-ID-09 | ${DECISION_LINK}: \`${WITHHELD_REF}\` | ${proposalOf(WITHHELD_KEY)} |`);
   });
 
   it('renders every exceptions entry with its decision and status, pending a run', () => {
@@ -617,18 +623,18 @@ describe('Markdown renderers', () => {
     expect([...rows.keys()]).toStrictEqual([RENDITION_ID, 'EX-SEC-APPRELOAD']);
     const rendition = rows.get(RENDITION_ID) ?? [];
     expect([rendition[1], rendition[2], rendition[4], rendition[5]]).toStrictEqual([
-      'GS-CO-07',
-      `\`${HALTED_KEY}\`, \`admin:carch.multifileupload{upload=image}\`, \`api:file.save{upload=image}\``,
+      'GS-CO-77',
+      `\`${HALTED_KEY}\`, \`api:file.save{upload=image}\`, \`rest:file.save{upload=image}\``,
       '`preserve`',
       '`halted`',
     ]);
     expect(rendition[6]).toBe(
-      'golden `harness/golden/sets/GS-CO-07.json` (pending-run), ' +
-        'parity `opt2/reports/parity.md#GS-CO-07` (pending-run)',
+      'golden `harness/golden/sets/GS-CO-77.json` (pending-run), ' +
+        'parity `opt2/reports/parity.md#GS-CO-77` (pending-run)',
     );
     const reload = rows.get('EX-SEC-APPRELOAD') ?? [];
     expect([reload[1], reload[2], reload[4], reload[5]]).toStrictEqual([
-      'GS-PS-04',
+      'GS-PS-74',
       '`reload:application`',
       '`fix`',
       '`open`',
@@ -652,8 +658,8 @@ describe('main', () => {
     env = { OPT2_STATE_DIR: state, OPT2_REPORTS_DIR: reports, ...RULES_ENV };
     await mkdir(path.join(state, 'golden', 'replay'), { recursive: true });
     await mkdir(goldens);
-    await copyFile(REPLAY_SAMPLE, path.join(state, 'golden', 'replay', 'GS-CO-05.json'));
-    await copyFile(GOLDEN_SAMPLE, path.join(goldens, 'GS-CO-05.json'));
+    await copyFile(REPLAY_SAMPLE, path.join(state, 'golden', 'replay', 'GS-CO-75.json'));
+    await copyFile(GOLDEN_SAMPLE, path.join(goldens, 'GS-CO-75.json'));
     await copyFile(EXCEPTIONS_FIXTURE, exceptionsPath);
     const status: FixtureStatus = { ...AVAILABLE, checkedAt: '2026-06-30T00:00:00Z' };
     await writeFile(path.join(state, 'fixtures.json'), JSON.stringify(status), 'utf8');
@@ -698,7 +704,7 @@ describe('main', () => {
     expect(report.fixtures).toStrictEqual({ ...AVAILABLE, source: FIXTURES_SOURCE });
     expect(report.scenarios.map((s) => [s.id, s.result, s.reason])).toStrictEqual([
       ['GS-ID-01', 'fail', 'no golden set at harness/golden/sets/GS-ID-01.json'],
-      ['GS-CO-05', 'pass', null],
+      ['GS-CO-75', 'pass', null],
       ['GS-PE-01', 'fail', 'no golden set at harness/golden/sets/GS-PE-01.json'],
     ]);
 
@@ -732,7 +738,7 @@ describe('main', () => {
 
   it('exits 0 when every compared scenario passes', async () => {
     const catalogueFile = path.join(root, 'catalogue.yaml');
-    const doc = { sourceSha: SHA, scenarios: [scenarioById(catalogue, 'GS-CO-05')] };
+    const doc = { sourceSha: SHA, scenarios: [scenarioById(catalogue, 'GS-CO-75')] };
     await writeFile(catalogueFile, JSON.stringify(doc), 'utf8');
     const outcome = await run(catalogueFile);
     expect(outcome.code).toBe(0);

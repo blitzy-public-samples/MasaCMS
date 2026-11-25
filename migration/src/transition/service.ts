@@ -209,12 +209,8 @@ function fencedOwners(owners: OwnersClient): OwnersClient {
     putObject: (...args) => fenced(() => owners.putObject(...args)),
     getObject: (...args) => fenced(() => owners.getObject(...args)),
     deleteObject: (...args) => fenced(() => owners.deleteObject(...args)),
-    getAttachmentObject: (...args) => fenced(() => owners.getAttachmentObject(...args)),
-    getExportObject: (...args) => fenced(() => owners.getExportObject(...args)),
     siteMonitorState: () => fenced(() => owners.siteMonitorState()),
     putSiteMonitorState: (...args) => fenced(() => owners.putSiteMonitorState(...args)),
-    adoptScheduledTasks: (...args) => fenced(() => owners.adoptScheduledTasks(...args)),
-    cancelAdoptedScheduledTasks: (...args) => fenced(() => owners.cancelAdoptedScheduledTasks(...args)),
     queueControl: (...args) => fenced(() => owners.queueControl(...args)),
   };
 }
@@ -248,7 +244,6 @@ function fencedScheduler(scheduler: SchedulerService): SchedulerService {
     importState: (...args) => fenced(() => scheduler.importState(...args)),
     pauseFor: (...args) => fenced(() => scheduler.pauseFor(...args)),
     handOffSiteMonitorToTarget: (...args) => fenced(() => scheduler.handOffSiteMonitorToTarget(...args)),
-    handOffSurveysToTarget: () => fenced(() => scheduler.handOffSurveysToTarget()),
     restoreToLegacy: (...args) => fenced(() => scheduler.restoreToLegacy(...args)),
     resumePaused: () => fenced(() => scheduler.resumePaused()),
     pauseAll: () => fenced(() => scheduler.pauseAll()),
@@ -691,7 +686,7 @@ export function createTransitionService(base: MigrationContext, options: Transit
     if (progress.pausedQueues.length > 0) held.push(`paused queues ${progress.pausedQueues.map((paused) => `${paused.queue} at ${paused.service}`).join(', ')}`);
     const { schedulerPause } = progress;
     if (schedulerPause !== undefined) {
-      const tasks = [...schedulerPause.siteMonitor, ...schedulerPause.surveys];
+      const tasks = schedulerPause.siteMonitor;
       held.push(`paused legacy tasks ${tasks.length === 0 ? '(none recorded)' : tasks.join(', ')}`);
     }
     return held.length === 0 ? 'nothing is held' : `still held: ${held.join('; ')}`;

@@ -35,12 +35,6 @@ const OWNER_NAMES: { readonly [K in OwnerName]: K } = Object.freeze({
   people: 'people',
   'programs-sites': 'programs-sites',
   'strategies-content': 'strategies-content',
-  communications: 'communications',
-  reporting: 'reporting',
-  surveys: 'surveys',
-  timesheets: 'timesheets',
-  finance: 'finance',
-  'e-signature': 'e-signature',
   stub: 'stub',
 });
 

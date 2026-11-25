@@ -1,5 +1,4 @@
 /** The cUsers group routes over a throwaway `identity` schema: contract shape, the cUsers gate, `before()` defaults and scrubbing, CSRF contexts, S2-record protection, members, the members CSV and a user's memberships. */
-import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -19,6 +18,7 @@ import {
   createCapturingPublisher,
   createThrowawaySchema,
   fixedClock,
+  loadOpenApiDocument,
   mintServiceToken,
   mintUserToken,
   pgAvailable,
@@ -39,7 +39,7 @@ import { registerAdminGroupRoutes } from '../../src/routes/admin-groups.js';
 
 type Method = 'GET' | 'POST' | 'PUT' | 'DELETE';
 
-const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as {
+const OPENAPI = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as {
   paths: Record<string, Record<string, Record<string, unknown>>>;
 };
 const CONTRACT_PATHS = [

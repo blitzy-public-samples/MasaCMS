@@ -476,7 +476,7 @@ describe('cArch.datamanager in-view writes', () => {
 describe('cArch.datamanager over a seeded form and its responses', () => {
   const SEEDED = '75CFADFF-8ECE-DBCF-0A633A519B114133';
   const LATER = '75CFAE21-8ECE-DBCF-0A633A519B114177';
-  const UPDATED_MESSAGE = 'GS-CO-14 updated message';
+  const UPDATED_MESSAGE = 'Data manager updated message';
   /** The edit link's query: the download form's full-day range, the sort it applies and no filter. */
   const EDIT_RC = {
     date1: '',

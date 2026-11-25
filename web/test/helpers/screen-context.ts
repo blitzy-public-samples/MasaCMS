@@ -8,7 +8,6 @@ import type { AdminRequest } from '@/lib/request-context';
 import { adminRbFor, type RbLookup } from '@/lib/resource-bundles/rb';
 import {
   shellHooks,
-  type Opt2ScreenDefinition,
   type PageScreen,
   type ScreenContext,
   type ScreenDefinition,
@@ -122,12 +121,9 @@ export type RenderedPage =
   | { kind: 'document'; html: string; doc: AdminDocument }
   | { kind: 'redirect'; location: string };
 
-/** A definition rendered inside the shell. */
-type PageDefinition = PageScreen | Opt2ScreenDefinition;
-
 /** `def` when it renders inside the shell; fragment, JSON, download and redirect screens are called directly. */
-function pageDefinition(def: ScreenDefinition | Opt2ScreenDefinition): PageDefinition {
-  if (!('mode' in def) || def.mode === 'page') return def;
+function pageDefinition(def: ScreenDefinition): PageScreen {
+  if (def.mode === 'page') return def;
   throw new Error(`${def.circuit}.${def.action} is a ${def.mode}-mode screen; call its own function instead`);
 }
 
@@ -136,16 +132,13 @@ function pageDefinition(def: ScreenDefinition | Opt2ScreenDefinition): PageDefin
  * with the access gate's redirect. Callers install `useTestEnv()` first, since the gate and shell read the settings.
  * @throws Error For a screen not in page mode, or one whose controller redirect step fires.
  */
-export async function renderScreenPage(
-  def: ScreenDefinition | Opt2ScreenDefinition,
-  ctx: ScreenContext,
-): Promise<RenderedPage> {
+export async function renderScreenPage(def: ScreenDefinition, ctx: ScreenContext): Promise<RenderedPage> {
   const page = pageDefinition(def);
   try {
     const decision = await runGate(ctx.req, page.gate);
     if (decision.kind === 'redirect') return { kind: 'redirect', location: decision.location };
     // The FW/1 redirect target is built by web's internal URL helpers, so a firing step is asserted on its own.
-    const step = 'mode' in page ? await page.redirect?.(ctx) : undefined;
+    const step = await page.redirect?.(ctx);
     if (step !== undefined) {
       const target = step.kind === 'location' ? step.location : step.action;
       throw new Error(`The page redirect step fires (to ${target}); assert on the screen's redirect(ctx) instead`);
@@ -164,10 +157,7 @@ export async function renderScreenPage(
 }
 
 /** The parity DOM model of {@link renderScreenPage}'s document, ids and tokens masked; throws on a redirect. */
-export async function renderScreenModel(
-  def: ScreenDefinition | Opt2ScreenDefinition,
-  ctx: ScreenContext,
-): Promise<DomModel> {
+export async function renderScreenModel(def: ScreenDefinition, ctx: ScreenContext): Promise<DomModel> {
   const page = await renderScreenPage(def, ctx);
   if (page.kind === 'redirect') throw new Error(`The screen redirected to ${page.location}`);
   return normaliseIds(domModel(page.html));

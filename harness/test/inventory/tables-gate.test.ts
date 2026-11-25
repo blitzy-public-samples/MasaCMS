@@ -358,7 +358,7 @@ interface OwnershipDoc {
 }
 
 const FORM_SOURCE = { path: 'core/mura/formBuilder/formBuilderManager.cfc', lines: [689, 773] as [number, number] };
-const TIMESHEET_SOURCE = { path: 'legacy-fixtures/sql/timesheets/001_timesheet.sql', lines: [3, 9] as [number, number] };
+const ARCHIVE_SOURCE = { path: 'legacy-fixtures/sql/people/100_person_archive.sql', lines: [8, 18] as [number, number] };
 
 /** Ownership document over the on-disk tree and its live catalog, carrying `sourceSha`. */
 function ownershipDoc(sourceSha: string): OwnershipDoc {
@@ -369,7 +369,7 @@ function ownershipDoc(sourceSha: string): OwnershipDoc {
       { unit: 'people.person', owner: 'people' },
       { unit: 'content.form_entity', owner: 'strategies-content' },
       { unit: 'programs_sites.program', owner: 'programs-sites' },
-      { unit: 'timesheets.timesheet', owner: 'timesheets' },
+      { unit: 'people.person_archive', owner: 'people' },
     ],
     tables: [
       {
@@ -381,7 +381,7 @@ function ownershipDoc(sourceSha: string): OwnershipDoc {
       },
       { table: 'dbo.TFixtureMigrated', owner: 'people', ruleSteps: [1, 3], targets: [{ unit: 'people.person', owner: 'people' }] },
       { table: 'tfixturenopk', owner: 'decision-list', ruleSteps: [5], targets: [], decisionRef: 'dl:tfixturenopk' },
-      { table: 'tfixturestats', owner: 'reporting', ruleSteps: [1], targets: [] },
+      { table: 'tfixturestats', owner: 'sample-module', ruleSteps: [1], targets: [] },
       { table: 'tfixtureversioned', owner: 'identity', ruleSteps: [1], targets: [], source: { path: VERSIONED_BEAN, lines: [2, 2] } },
       {
         table: 'fb_*',
@@ -399,11 +399,11 @@ function ownershipDoc(sourceSha: string): OwnershipDoc {
         source: { path: 'legacy-fixtures/sql/010_program_site.sql', lines: null },
       },
       {
-        table: 'synthetic.timesheet',
-        owner: 'timesheets',
+        table: 'synthetic.person_archive',
+        owner: 'people',
         ruleSteps: [1],
-        targets: [{ unit: 'timesheets.timesheet', owner: 'timesheets' }],
-        source: TIMESHEET_SOURCE,
+        targets: [{ unit: 'people.person_archive', owner: 'people' }],
+        source: ARCHIVE_SOURCE,
       },
     ],
     reviewedBy: 'tables gate',
@@ -442,7 +442,7 @@ function catalogRows(): CatalogRows {
       ['dbo', 'tfixturemigrated'],
       ['Program_2', 'tprogram'],
       ['Program_1', 'tprogram'],
-      ['synthetic', 'timesheet'],
+      ['synthetic', 'person_archive'],
       ['dbo', 'fb_survey'],
       ['dbo', 'tdeclaredthing'],
       ['dbo', 'tstray'],
@@ -469,8 +469,8 @@ function catalogRows(): CatalogRows {
       catalogColumn('Program_2', 'tprogram', 'programID', 'char', 35, 'NO', 1),
       catalogColumn('Program_2', 'tprogram', 'SiteID', 'nvarchar', 25, 'NO', 2),
       catalogColumn('Program_2', 'tprogram', 'extra', 'int', null, 'YES', 3),
-      catalogColumn('synthetic', 'timesheet', 'timesheetID', 'uniqueidentifier', null, 'NO', 1),
-      catalogColumn('synthetic', 'timesheet', 'siteid', 'nvarchar', 25, 'NO', 2),
+      catalogColumn('synthetic', 'person_archive', 'archive_id', 'char', 35, 'NO', 1),
+      catalogColumn('synthetic', 'person_archive', 'siteID', 'nvarchar', 50, 'NO', 2),
       catalogColumn('dbo', 'fb_survey', 'surveyID', 'char', 35, 'NO', 1),
       catalogColumn('dbo', 'tdeclaredthing', 'id', 'char', 35, 'NO', 1),
       catalogColumn('dbo', 'tstray', 'strayID', 'int', null, 'NO', 1),
@@ -484,7 +484,7 @@ function catalogRows(): CatalogRows {
       catalogKey('dbo', 'tfixturemigrated', 'siteID', 2),
       catalogKey('dbo', 'tfixturemigrated', 'migratedID', 1),
       catalogKey('Program_1', 'tprogram', 'programID', 1),
-      catalogKey('synthetic', 'timesheet', 'timesheetID', 1),
+      catalogKey('synthetic', 'person_archive', 'archive_id', 1),
       catalogKey('dbo', 'fb_survey', 'surveyID', 1),
       catalogKey('opt2_sync', 'checkpoint', 'unit', 1),
     ],
@@ -1158,9 +1158,9 @@ describe('fetchLiveCatalog', () => {
       { schema: 'dbo', name: 'tstray', columns: [c('strayID', 'int', null, false), c('SITEID', 'nvarchar', 25, true)], primaryKey: [], hasPrimaryKey: false, hasSiteId: true },
       {
         schema: 'synthetic',
-        name: 'timesheet',
-        columns: [c('timesheetID', 'uniqueidentifier', null, false), c('siteid', 'nvarchar', 25, false)],
-        primaryKey: ['timesheetID'],
+        name: 'person_archive',
+        columns: [c('archive_id', 'char', 35, false), c('siteID', 'nvarchar', 50, false)],
+        primaryKey: ['archive_id'],
         hasPrimaryKey: true,
         hasSiteId: true,
       },
@@ -1211,7 +1211,7 @@ describe('mergeLiveCatalog', () => {
     expect(merged.map((t) => [t.id, t.origin, t.schema])).toEqual([
       ['tbl:Program_N.tprogram', 'fixture', 'Program_N'],
       ['tbl:fb_survey', 'dynamic', 'dbo'],
-      ['tbl:synthetic.timesheet', 'fixture', 'synthetic'],
+      ['tbl:synthetic.person_archive', 'fixture', 'synthetic'],
       ['tbl:tdeclaredthing', 'dynamic', 'dbo'],
       ['tbl:tfixture', 'bootstrap', 'dbo'],
       ['tbl:tfixturemigrated', 'migration', 'dbo'],
@@ -1396,18 +1396,18 @@ describe('assignOwners', () => {
     expect(owned.map((t) => [t.table, t.owningService, t.ownershipRuleStep, t.targetUnits, t.split, t.decisionListRef])).toEqual([
       ['Program_N.tprogram', 'programs-sites', [1, 4], ['programs_sites.program'], null, null],
       ['fb_survey', 'strategies-content', [1], ['content.form_entity'], null, null],
-      ['synthetic.timesheet', 'timesheets', [1], ['timesheets.timesheet'], null, null],
+      ['synthetic.person_archive', 'people', [1], ['people.person_archive'], null, null],
       ['tdeclaredthing', 'decision-list', [5], [], null, 'dl:tentity'],
       ['tfixture', 'identity', [1], ['identity.fixture'], { by: 'Type', rows: { '1': 'identity' } }, null],
       ['tfixturemigrated', 'people', [1, 3], ['people.person'], null, null],
       ['tfixturenopk', 'decision-list', [5], [], null, 'dl:tfixturenopk'],
-      ['tfixturestats', 'reporting', [1], [], null, null],
+      ['tfixturestats', 'sample-module', [1], [], null, null],
       ['tfixtureversioned', 'identity', [1], [], null, null],
     ]);
     expect(owned.map((t) => [t.table, t.source])).toEqual([
       ['Program_N.tprogram', LIVE_TABLE_SOURCE],
       ['fb_survey', FORM_SOURCE],
-      ['synthetic.timesheet', TIMESHEET_SOURCE],
+      ['synthetic.person_archive', ARCHIVE_SOURCE],
       ['tdeclaredthing', LIVE_TABLE_SOURCE],
       ['tfixture', src(DDL, 2, 7)],
       ['tfixturemigrated', src(UPDATE_EXCERPT, 3, 7)],

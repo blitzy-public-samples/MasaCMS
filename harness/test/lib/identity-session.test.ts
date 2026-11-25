@@ -18,7 +18,7 @@ import {
   type SessionMode,
 } from '../../src/lib/identity-session.js';
 
-const USERNAME = 'fin-preparer-a';
+const USERNAME = 'site-admin-a';
 const USER_ID = '6F1E2A3B-0C4D-5E6F-7A8B9C0D1E2F3A4B';
 const SESSION_ID = 'MURA0123ABCD_3601_96479012';
 // Test value assembled at run time, not a secret.
@@ -29,7 +29,7 @@ function describeBody(overrides: Record<string, unknown> = {}, user: Record<stri
     sessionId: SESSION_ID,
     isLoggedIn: true,
     user: { userID: USER_ID, username: USERNAME, siteID: TENANT_A.siteId, ...user },
-    memberships: `${Roles.financePreparer};${TENANT_A.siteId};0`,
+    memberships: `${Roles.siteAdmin};${TENANT_A.siteId};0`,
     csrfSecretKey: 'not-read',
     usedTokens: [],
     siteId: TENANT_A.siteId,
@@ -45,7 +45,7 @@ function snapshotBody(overrides: Record<string, unknown> = {}, user: Record<stri
     epoch: 3,
     loginSnapshot: {
       user: { isLoggedIn: true, userID: USER_ID, username: USERNAME, siteID: TENANT_A.siteId, ...user },
-      roles: [`${Roles.financePreparer};${TENANT_A.siteId};0`],
+      roles: [`${Roles.siteAdmin};${TENANT_A.siteId};0`],
     },
     csrfSecretKey: 'not-read',
     usedTokens: [],
@@ -61,7 +61,7 @@ function claims(overrides: Record<string, unknown> = {}): Record<string, unknown
     sid: SESSION_ID,
     tid: TENANT_A.tenantId,
     site: TENANT_A.siteId,
-    roles: [Roles.systemUser, Roles.financePreparer],
+    roles: [Roles.systemUser, Roles.siteAdmin],
     s2: false,
     epoch: 2,
     iat: 1_800_000_000,
@@ -78,16 +78,16 @@ const EXPECTED = { sessionId: SESSION_ID, site: TENANT_A.siteId };
 
 describe('relayPath', () => {
   it('prefixes the callee path with the relay route and the service', () => {
-    expect(relayPath('finance', '/v1/finance/records')).toBe('/internal/v1/relay/finance/v1/finance/records');
-    expect(relayPath('e-signature', '/v1/requests')).toBe('/internal/v1/relay/e-signature/v1/requests');
+    expect(relayPath('people', '/v1/users')).toBe('/internal/v1/relay/people/v1/users');
+    expect(relayPath('programs-sites', '/v1/sites')).toBe('/internal/v1/relay/programs-sites/v1/sites');
   });
 
-  it.each(['', 'Finance', 'finance/v1', '../identity', 'service:web'])('rejects the service %j', (service) => {
+  it.each(['', 'People', 'people/v1', '../identity', 'service:web'])('rejects the service %j', (service) => {
     expect(() => relayPath(service, '/v1/x')).toThrow(`invalid relay service ${JSON.stringify(service)}`);
   });
 
   it('rejects a callee path without a leading slash', () => {
-    expect(() => relayPath('finance', 'v1/finance/records')).toThrow('relay callee path must start with /');
+    expect(() => relayPath('people', 'v1/users')).toThrow('relay callee path must start with /');
   });
 });
 

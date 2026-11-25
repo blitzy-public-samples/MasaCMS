@@ -3,13 +3,12 @@
 import { TENANT_A, TENANT_B, TENANT_UMBRELLA, type TenantFixture } from '@opt2/platform/testing';
 import { beforeAll, describe, expect, it } from 'vitest';
 
-import { FIXTURES_UNAVAILABLE, type FixtureStatus } from '../../src/golden/catalogue.js';
 import { loadSecretStore, loadSeedStore, type SecretStore, type SeedStore } from '../../src/golden/session.js';
 import {
   ACTORS,
   LEGACY_SERVED,
   ROUTE_FAMILIES,
-  SURVEY_GRANT,
+  TENANT_GRANT,
   TENANTS_BY_KEY,
   runGatewayIsolation,
   versionRouting,
@@ -24,10 +23,9 @@ import { writeEndToEndResult } from '../../src/isolation/report.js';
 import type { FetchLike } from '../../src/lib/http.js';
 import { loadCutoverVersion } from '../../src/security/gateway-reach.js';
 import { redactSecrets } from '../helpers/admin-login.js';
-import { fixtureStatus, gatewayUrl, requireTableVersion } from '../helpers/stack.js';
+import { gatewayUrl, requireTableVersion } from '../helpers/stack.js';
 
 const TABLE_VERSION = 'v0002';
-const FIXTURE_ROUTE_PREFIX = '/legacy-fixtures/cfml/api.cfm/';
 
 /** Longest run of the whole gateway matrix: serial logins and probes outlast the config's 5-minute hook bound. */
 const MATRIX_TIMEOUT_MS = 30 * 60_000;
@@ -85,10 +83,10 @@ function readsOf(c: IsolationCase): number {
   return c.kind === 'pooled-read' && c.result === 'violation' ? 1 : 0;
 }
 
-/** Cross-tenant writes `c` adds to the matrix total: one for a write violation or an accepted ungranted response. */
+/** Cross-tenant writes `c` adds to the matrix total: one for a write violation or an accepted ungranted comment. */
 function writesOf(c: IsolationCase): number {
   if (WRITE_KINDS.has(c.kind)) return c.result === 'violation' ? 1 : 0;
-  return c.kind === 'survey-grant' && c.result === 'violation' && c.observed.effect === true ? 1 : 0;
+  return c.kind === 'tenant-grant' && c.result === 'violation' && c.observed.effect === true ? 1 : 0;
 }
 
 /** `count` summed per owning service, with every route family's service listed. */
@@ -101,7 +99,7 @@ function perService(cases: readonly IsolationCase[], count: (c: IsolationCase) =
   return tally;
 }
 
-/** Seeded accounts case `c` logs in as: every family actor for a pooled read, all three respondents for the grant. */
+/** Seeded accounts case `c` logs in as: every family actor for a pooled read, all three commenters for the grant. */
 function accountsOf(c: IsolationCase): ActorAccount[] {
   const actors = ACTORS[c.family];
   const accounts = (tenants: readonly TenantKey[], refs: Partial<Record<TenantKey, ActorRef>>): ActorAccount[] =>
@@ -110,9 +108,9 @@ function accountsOf(c: IsolationCase): ActorAccount[] {
       return ref === undefined ? [] : [{ tenant, ref }];
     });
   if (c.kind === 'pooled-read') return accounts(Object.keys(actors) as TenantKey[], actors);
-  if (c.kind === 'survey-grant') {
-    const { grantor, granted, ungranted, ungrantedRespondent } = SURVEY_GRANT;
-    return [...accounts([grantor, granted], ACTORS.surveys), { tenant: ungranted, ref: ungrantedRespondent }];
+  if (c.kind === 'tenant-grant') {
+    const { grantor, granted, ungranted, ungrantedCommenter } = TENANT_GRANT;
+    return [...accounts([grantor, granted], ACTORS.notes), { tenant: ungranted, ref: ungrantedCommenter }];
   }
   return accounts([c.actor], actors);
 }
@@ -136,15 +134,13 @@ function identityOf(account: ActorAccount, secrets: SecretStore, seed: SeedStore
 }
 
 describe('tenant isolation through the gateway', () => {
-  let fixtures: FixtureStatus;
   let result: GatewayIsolationResult;
 
   beforeAll(async () => {
     await requireTableVersion(TABLE_VERSION);
-    fixtures = fixtureStatus();
     const baseUrl = gatewayUrl();
     const routing = versionRouting(await loadCutoverVersion(TABLE_VERSION));
-    result = await runGatewayIsolation({ baseUrl, fetch: guardedFetch, fixtures, routing });
+    result = await runGatewayIsolation({ baseUrl, fetch: guardedFetch, routing });
     await writeEndToEndResult(result, process.env, { baseUrl });
   }, MATRIX_TIMEOUT_MS);
 
@@ -171,21 +167,11 @@ describe('tenant isolation through the gateway', () => {
     expect(result.crossTenantWrites, message).toBe(0);
   });
 
-  it('multi-site survey responses are accepted only for granted tenants', () => {
-    const grant = result.cases.filter((c) => c.kind === 'survey-grant');
-    expect(grant.length, 'the matrix built no survey-grant case').toBeGreaterThan(0);
-    if (fixtures.available) {
-      expect(result.surveyGrantOnly, describeCases(grant)).toBe(true);
-    } else {
-      const ran = grant.filter((c) => c.result !== 'skipped' || c.reason !== FIXTURES_UNAVAILABLE);
-      expect(ran.map((c) => c.id), describeCases(ran)).toEqual([]);
-    }
-    const disallowed = result.cases.filter(
-      (c) =>
-        c.result === 'skipped' &&
-        !isLegacyServed(c) &&
-        (fixtures.available || c.reason !== FIXTURES_UNAVAILABLE || !c.route.startsWith(FIXTURE_ROUTE_PREFIX)),
-    );
+  it('multi-site note comments are accepted only for granted tenants', () => {
+    const grant = result.cases.filter((c) => c.kind === 'tenant-grant');
+    expect(grant.length, 'the matrix built no tenant-grant case').toBeGreaterThan(0);
+    expect(result.grantOnly, describeCases(grant)).toBe(true);
+    const disallowed = result.cases.filter((c) => c.result === 'skipped' && !isLegacyServed(c));
     expect(disallowed.map((c) => c.id), describeCases(disallowed)).toEqual([]);
   });
 

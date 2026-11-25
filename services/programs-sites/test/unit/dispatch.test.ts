@@ -393,7 +393,7 @@ describe('createMigrationJobsPort.runLegacyStep', () => {
     theTime: '2026-06-30 09:15:00.000',
     lastMonitored: '2026-06-30 09:00:00.125',
     siteId: 'tenant-a',
-    units: ['communications.email_stat'],
+    units: ['legacy:temailstats'],
   };
 
   const atRun = fixedClock(RUN_AT);

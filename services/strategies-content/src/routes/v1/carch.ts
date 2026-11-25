@@ -2674,7 +2674,7 @@ async function objectClassData(ctx: ContentRouteContext, actor: Actor, classid: 
     case 'remotefeed':
       return { remoteFeeds: await feedsOf('Remote') };
     case 'mailinglist':
-      throw new CarchHaltedError('loadclass', "mailing lists are communications' tmailinglist rows");
+      throw new CarchHaltedError('loadclass', 'mailing lists are legacy-only tmailinglist rows');
     case 'system':
     case 'navigation':
       throw new CarchHaltedError('loadclass', "system objects are programs-sites' tsystemobjects rows");

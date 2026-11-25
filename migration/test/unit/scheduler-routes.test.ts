@@ -1,11 +1,9 @@
 // Unit tests for the scheduler state routes over the real import and state reads on an in-memory scheduler_state: contract shape, idempotent re-import, the legacy 400 and 409, and auth.
-import { readFileSync } from 'node:fs';
-
 import { INVOCATION_HEADER, Roles, collectRouteMatrix } from '@opt2/platform/auth';
 import { createLogger } from '@opt2/platform/logging';
 import { createService, fixedClock, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
 import type { MetadataTx, QueryResult, QueryResultRow, TenantDb } from '@opt2/platform/tenancy';
-import { assertResponseMatchesOpenApi, mintServiceToken, mintUserToken, testVerifier } from '@opt2/platform/testing';
+import { assertResponseMatchesOpenApi, loadOpenApiDocument, mintServiceToken, mintUserToken, testVerifier } from '@opt2/platform/testing';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { parse } from 'yaml';
 
@@ -20,7 +18,7 @@ import { importSchedulerRequest, readSchedulerState, type SchedulerImportResult,
 
 type Operation = Record<string, unknown>;
 
-const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as {
+const OPENAPI = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as {
   paths: Record<string, Record<string, Operation>>;
 };
 const STATE_PATH = '/internal/v1/scheduler/state';
@@ -42,10 +40,10 @@ const MONITOR: ScheduledTaskDefinition = {
   paused: false,
 };
 
-const SURVEY: ScheduledTaskDefinition = {
+const OTHER: ScheduledTaskDefinition = {
   ...MONITOR,
-  task: 'opt2-survey-9C1D7E2F-3A4B-4C5D-8E9F0A1B2C3D4E5F-launch',
-  url: 'http://localhost:8100/legacy-fixtures/cfml/api.cfm/surveys/launch?siteid=tenant-a&opt2TaskToken=fixture-task-token',
+  task: 'ops-link-check',
+  url: 'http://localhost:8080/ops/link-check.cfm?siteid=tenant-a&opt2TaskToken=fixture-task-token',
   interval: 'once',
   startTime: '09:00:00',
 };
@@ -215,14 +213,13 @@ describe('schedulerStateGet', () => {
       nativeTaskExisted: false,
       siteMonitor: { state: 'none' },
       tasks: [],
-      fixtureTasks: [],
       background: { suspended: false },
     });
   });
 
-  it('reports the live paused monitor, the survey tasks without their token and the suspension', async () => {
-    await importCapture(importBody(true, MONITOR, SURVEY));
-    live = { ...live, tasks: [{ ...MONITOR, paused: true }, { ...SURVEY, paused: true }] };
+  it('reports the live paused monitor without the other tasks or their token and the suspension', async () => {
+    await importCapture(importBody(true, MONITOR, OTHER));
+    live = { ...live, tasks: [{ ...MONITOR, paused: true }, { ...OTHER, paused: true }] };
     backgroundRecord = { suspended: true, since: SUSPENDED_SINCE };
 
     const res = await call('GET', STATE_PATH, await operator());
@@ -234,16 +231,16 @@ describe('schedulerStateGet', () => {
       nativeTaskExisted: true,
       siteMonitor: { state: 'paused' },
       tasks: [{ name: MONITOR_NAME, status: 'paused', interval: '900', requestTimeOut: '600' }],
-      fixtureTasks: [{ name: SURVEY.task, status: 'paused' }],
       background: { suspended: true, since: SUSPENDED_SINCE },
     });
-    expect(body.fixtureTasks[0].url).not.toContain('opt2TaskToken');
+    expect(body.tasks).toHaveLength(1);
+    expect(JSON.stringify(body)).not.toContain('opt2TaskToken');
   });
 });
 
 describe('schedulerStateImport', () => {
   it('imports a new capture once and answers the state after it', async () => {
-    const body = importBody(true, MONITOR, SURVEY);
+    const body = importBody(true, MONITOR, OTHER);
     const res = await importCapture(body);
 
     expect(res.statusCode).toBe(200);
@@ -254,7 +251,6 @@ describe('schedulerStateImport', () => {
       nativeTaskExisted: true,
       siteMonitor: { state: 'captured' },
       tasks: [{ name: MONITOR_NAME, status: 'captured' }],
-      fixtureTasks: [],
       background: { suspended: false },
     });
   });
@@ -309,7 +305,7 @@ describe('schedulerStateImport', () => {
     store.rows.set('sitemonitor', { ...monitor, state: 'target', handedOffAt: NOW.toISOString() });
     const stored = structuredClone([...store.rows]);
 
-    const res = await importCapture(importBody(false, MONITOR, SURVEY));
+    const res = await importCapture(importBody(false, MONITOR, OTHER));
 
     expect(res.statusCode).toBe(409);
     expect(res.json()).toMatchObject({ apiversion: 'v1', error: { code: 'invalid_request', message: expect.stringContaining('handed off') } });

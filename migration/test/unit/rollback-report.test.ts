@@ -19,9 +19,8 @@ type Cells = [started: string, finished: string, result: string];
 
 const STEP_LABELS = [
   "Quiesce writers of `R`'s units",
-  'Drain the people outbox and the timesheets consumer (`people.person.archived.v1`)',
-  "Project `R`'s units to completion, including `timesheets.blackout` → `Program_N.blackout` and " +
-    '`identity.credential` → `tusers.Password`',
+  'Drain the people outbox (`people.person.archived.v1`)',
+  "Project `R`'s units to completion, including `identity.credential` → `tusers.Password`",
   'Reconcile `R` → `reconciliation/rollback-before.json`',
   'Activate `v0003` and unfreeze',
   "Re-baseline: fresh snapshot, forward feed restarted for `R`'s units",

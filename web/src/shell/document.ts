@@ -44,7 +44,6 @@ export type {
   ShellView,
   UserPrompts,
 } from './types';
-export { OPT2_NAV_MODULES } from './nav';
 
 /** The login page, whose full layout prints no inline scripts (`template.cfm` 324). */
 const LOGIN_ACTION = 'core:cLogin.main';

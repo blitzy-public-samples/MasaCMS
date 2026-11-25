@@ -170,7 +170,9 @@ write_report() {
   else
     dirty_text="yes: ${#DIRTY[@]} path(s) not committed, so not cloned"
   fi
-  values=("$(code "$CLONE")" "$(code "$CLONE_COMMIT")" "$(code "$CLONE_STATE")" "$(code "$OPT2_PRISTINE_DIR")"
+  # Directories as variable-relative labels: the report is committed, and host paths differ per run.
+  values=("$(code "\$OPT2_CLONE_PARENT/${CLONE##*/}")" "$(code "$CLONE_COMMIT")"
+    "$(code "\$OPT2_CLONE_PARENT/${CLONE_STATE##*/}")" "$(code "\$OPT2_PRISTINE_DIR")"
     "$(cell "$UP_RC")" "$(cell "$test_text")" "$digest_text" "$(code_list "${COPIED[@]}")" "$(cell "$dirty_text")")
   {
     printf '# Reproducibility — clean checkout\n\n'

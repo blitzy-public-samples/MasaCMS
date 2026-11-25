@@ -116,31 +116,7 @@ describe('tenant fixtures', () => {
   });
 });
 
-const SYNTHETIC_ROLE_NAMES = [
-  'timesheets.employee',
-  'timesheets.primary-approver',
-  'timesheets.secondary-approver',
-  'finance.preparer',
-  'finance.approver',
-  'esignature.signer',
-  'esignature.auditor',
-  'reporting.exporter',
-  'surveys.manager',
-  'communications.sender',
-];
-
-const DEPLOYED_SERVICES = [
-  'identity',
-  'people',
-  'programs-sites',
-  'strategies-content',
-  'communications',
-  'reporting',
-  'surveys',
-  'timesheets',
-  'finance',
-  'e-signature',
-];
+const DEPLOYED_SERVICES = ['identity', 'people', 'programs-sites', 'strategies-content'];
 
 describe('test tokens', () => {
   it('mintUserToken for tenant-a verifies through the test user verifier with the tenant-a tid and site', async () => {
@@ -165,19 +141,14 @@ describe('test tokens', () => {
     await expect(elsewhere).rejects.toMatchObject({ reason: 'invalid-credential' });
   });
 
-  it('ROLE_SET holds the user identities, the ten synthetic roles and a service subject per caller', () => {
+  it('ROLE_SET holds the user identities and a service subject per caller', () => {
     const byName = new Map(ROLE_SET.map((subject) => [subject.name, subject]));
     const userNames = ['member', 'system-user', 'editor', 'site-admin', 's2', 'other-tenant'];
     const serviceNames = SERVICE_CALLERS.map((caller) => `service:${caller}`);
-    expect([...byName.keys()]).toEqual(
-      expect.arrayContaining(['anonymous', ...userNames, ...SYNTHETIC_ROLE_NAMES, ...serviceNames]),
-    );
+    expect([...byName.keys()]).toEqual(['anonymous', ...userNames, ...serviceNames]);
     expect(byName.get('anonymous')).toMatchObject({ kind: 'anonymous', roles: [] });
-    for (const name of [...userNames, ...SYNTHETIC_ROLE_NAMES]) {
+    for (const name of userNames) {
       expect(byName.get(name)?.kind).toBe('user');
-    }
-    for (const role of SYNTHETIC_ROLE_NAMES) {
-      expect(byName.get(role)?.roles).toContain(role);
     }
     expect(SERVICE_CALLERS).toEqual(expect.arrayContaining([...DEPLOYED_SERVICES, 'gateway', 'migration']));
     for (const caller of SERVICE_CALLERS) {

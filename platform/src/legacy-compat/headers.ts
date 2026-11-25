@@ -129,7 +129,7 @@ export const INVALID_ACCESS_TOKEN_HEADER_SEQUENCE: readonly string[] = [
   WWW_AUTHENTICATE.bearer,
 ];
 
-// Legacy answers a bogus Bearer token with `WWW-Authenticate: Bearer`; the GS-ID-08 and GS-CO-15 golden capture decides.
+// Legacy answers a bogus Bearer token with `WWW-Authenticate: Bearer`; test/contract/legacy-wire.test.ts pins it.
 /** Header value left by successive setHeader calls, which replace each other. */
 export function effectiveWwwAuthenticate(sequence: readonly string[]): string {
   return sequence[sequence.length - 1] ?? '';

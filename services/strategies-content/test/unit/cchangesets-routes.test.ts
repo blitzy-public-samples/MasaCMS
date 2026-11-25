@@ -1,5 +1,4 @@
 /** routes/v1/cchangesets over the recording pool: declarations, the circuit gate, screen models, token-gated writes, fail-closed site settings and the tag array. */
-import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import { Roles, collectRouteMatrix, moduleRole, type Role } from '@opt2/platform/auth';
@@ -13,7 +12,7 @@ import {
   type ServiceRequest,
   type ServiceResponse,
 } from '@opt2/platform/service-kit';
-import { TENANT_A, TENANT_B, assertResponseMatchesOpenApi, type InjectResponse } from '@opt2/platform/testing';
+import { TENANT_A, TENANT_B, assertResponseMatchesOpenApi, loadOpenApiDocument, type InjectResponse } from '@opt2/platform/testing';
 import { pendingApprovalCount, rollback } from '../../src/domain/changesets.js';
 import { CONTENT_CONFIG_DEFAULTS, actorFromClaims } from '../../src/domain/context.js';
 import { createContentRepository } from '../../src/repo/repository.js';
@@ -23,7 +22,7 @@ import { TEST_CLOCK, buildContentApp, userHeaders, type ContentTestApp } from '.
 
 type Json = Record<string, unknown>;
 
-const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as {
+const OPENAPI = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as {
   paths: Record<string, Record<string, Json>>;
   'x-opt2-excluded': Array<{ key: string }>;
 };

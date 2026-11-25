@@ -92,12 +92,10 @@ const SOAP_FEED = `${SOAP_DIR}/feed.cfc`;
 const ENVELOPE = 'legacy-fixtures/cfml/lib/envelope.cfc';
 const AUDIT_TEMPLATE = 'legacy-fixtures/cfml/lib/audit.cfm';
 const PEOPLE = 'legacy-fixtures/cfml/modules/people.cfc';
-const FINANCE = 'legacy-fixtures/cfml/modules/finance.cfc';
-const REPORTING = 'legacy-fixtures/cfml/modules/reporting.cfc';
 const PEOPLE_SQL = 'legacy-fixtures/sql/people/100_person_archive.sql';
-const TIMESHEETS_SQL = 'legacy-fixtures/sql/timesheets/300_blackout.sql';
-const FINANCE_SQL = 'legacy-fixtures/sql/finance/200_finance.program.sql';
-const ESIGNATURE_SQL = 'legacy-fixtures/sql/esignature/400_audit.sql';
+const TRANSITION_SQL = 'legacy-fixtures/sql/sample/300_transition.sql';
+const PROGRAM_SQL = 'legacy-fixtures/sql/sample/200_record.program.sql';
+const AUDIT_SQL = 'legacy-fixtures/sql/sample/400_audit.sql';
 const SAMPLE_ID = '6B9B1F2C-0A1B-4C2D-9E8F70A1B2C3D4E5';
 const MODULE_PERM = '00000000000000000000000000000000000';
 
@@ -579,12 +577,124 @@ const BEANS: Readonly<Record<string, string>> = {
 
 const ORM_TABLES: Readonly<Record<string, string>> = { [FILE_BEAN]: 'tfiles' };
 
+/** A people module whose records write per-program tables and run a per-program procedure. */
+const RECORDS_PEOPLE = scriptCfc(
+  '',
+  '\tfunction init(envelope) {',
+  '\t\tvariables.envelope = arguments.envelope;',
+  '\t\tvariables.verbs = "GET,POST";',
+  '\t\treturn this;',
+  '\t}',
+  '\tfunction handle(route) {',
+  '\t\tvar verb = arguments.route.httpMethod;',
+  '\t\tif (!listFind(variables.verbs, verb)) {',
+  '\t\t\traise(route, "methodNotAllowed");',
+  '\t\t}',
+  '\t\tswitch (route.resource) {',
+  '\t\t\tcase "records":',
+  '\t\t\t\tswitch (route.action) {',
+  '\t\t\t\t\tcase "":',
+  '\t\t\t\t\t\tif (route.id == "" && route.tail == "") {',
+  '\t\t\t\t\t\t\tif (verb == "GET") return listRecords(route);',
+  '\t\t\t\t\t\t\treturn createRecord(route);',
+  '\t\t\t\t\t\t}',
+  '\t\t\t\t\t\tif (route.tail == "" && verb == "GET") return showRecord(route);',
+  '\t\t\t\t\t\tbreak;',
+  '\t\t\t\t\tcase "attachments":',
+  '\t\t\t\t\t\tif (verb == "GET") return attachment(route);',
+  '\t\t\t\t\t\tbreak;',
+  '\t\t\t\t\tdefault:',
+  '\t\t\t\t\t\traise(route, "notFound");',
+  '\t\t\t\t}',
+  '\t\t\t\tbreak;',
+  '\t\t\tcase "rollups":',
+  '\t\t\t\tif (route.id == "" && verb == "GET") return rollups(route);',
+  '\t\t\tdefault:',
+  '\t\t\t\traise(route, "notFound");',
+  '\t\t}',
+  '\t}',
+  '\tfunction listRecords(route) {',
+  '\t\treturn variables.envelope.ok([]);',
+  '\t}',
+  '\tfunction createRecord(route) {',
+  '\t\tif (listFind("GET,HEAD", arguments.route.httpMethod)) { return; }',
+  '\t\tif (!variables.envelope.validateCSRFTokens(context=route.action)) {',
+  '\t\t\treturn variables.envelope.ok({});',
+  '\t\t}',
+  '\t\tqueryExecute("INSERT INTO [#arguments.schema#].program_record (recordid) VALUES (:id)", { id = createUUID() });',
+  '\t\tqueryExecute("INSERT INTO [#arguments.schema#].program_note (recordid) VALUES (:id)", { id = createUUID() });',
+  '\t\tqueryExecute("EXEC [#arguments.schema#].usp_program_rollup @recordId = :id", { id = createUUID() });',
+  '\t\treturn variables.envelope.ok({});',
+  '\t}',
+  '\tfunction showRecord(route) {',
+  '\t\tinclude "../lib/audit.cfm";',
+  '\t\treturn variables.envelope.ok({});',
+  '\t}',
+  '\tfunction attachment(route) {',
+  '\t\treturn variables.envelope.ok({});',
+  '\t}',
+  '\tfunction rollups(route) {',
+  '\t\treturn getBean("envelope").ok([]);',
+  '\t}',
+);
+
+/** A people module whose job create writes in a cfthread. */
+const JOBS_PEOPLE = scriptCfc(
+  '',
+  '\tfunction init(envelope) {',
+  '\t\tvariables.envelope = arguments.envelope;',
+  '\t\treturn this;',
+  '\t}',
+  '\tfunction handle(route) {',
+  '\t\tvar enabled = "yes";',
+  '\t\tvar strict = true;',
+  '\t\tvar kind = len(route.id) ? "one" : "many";',
+  '\t\tvar label = "job #route.id#";',
+  '\t\tvar hashes = "####";',
+  '\t\tvar probe = variables.envelope.ok({}).data;',
+  '\t\tvar first = route.params["x"];',
+  '\t\tvar opts = { a = 1 };',
+  '\t\tvar list = [1, 2];',
+  '\t\tvar stamp = createUUID();',
+  '\t\t;',
+  '\t\tif (!enabled) {',
+  '\t\t\traise(route, "disabled");',
+  '\t\t}',
+  '\t\tif (strict && len(route.resource) >= 1 && len(route.tail) <= 0 && len(route.module) > 0 && len(route.action) < 20 && route.method != "x" && route.siteid neq "y" && kind != "") {',
+  '\t\t\tif (route.resource == "jobs" && route.action == "" && route.tail == "") {',
+  '\t\t\t\tif (route.httpMethod == "POST" && route.id == "") return startJob(route);',
+  '\t\t\t\tif (route.httpMethod == "GET" && (len(route.id) || false)) return showJob(route);',
+  '\t\t\t}',
+  '\t\t\tif (route.resource == "jobs" && (route.action == "download" or route.action == "file") && route.httpMethod == "GET" && listFind("1", "1")) return download(route);',
+  '\t\t}',
+  '\t}',
+  '\tfunction startJob(route) {',
+  '\t\tvar jobId = createUUID();',
+  '\t\tqueryExecute("INSERT INTO synthetic.sample_job (jobid, status) VALUES (:id, \'queued\')", { id = jobId });',
+  '\t\tthread name="job#jobId#" jobId=jobId {',
+  '\t\t\trunJob(attributes.jobId);',
+  '\t\t}',
+  '\t\treturn variables.envelope.ok({ id = jobId });',
+  '\t}',
+  '\tfunction runJob(jobId) {',
+  '\t\tqueryExecute("UPDATE synthetic.sample_job SET status = \'done\' WHERE jobid = :id", { id = arguments.jobId });',
+  '\t\tqueryExecute("EXEC dbo.usp_missing @id = :id", { id = arguments.jobId });',
+  '\t\tqueryExecute("EXEC usp_audit_append @entry = :id", { id = arguments.jobId });',
+  '\t}',
+  '\tfunction showJob(route) {',
+  '\t\treturn variables.envelope.ok({});',
+  '\t}',
+  '\tfunction download(route) {',
+  '\t\treturn variables.envelope.ok({});',
+  '\t}',
+);
+
 /** The fixture front controller, its modules and SQL, as the working tree holds them. */
 const FIXTURES: Readonly<Record<string, string>> = {
   [FIXTURE_API_PATH]: lines(
     '<cfscript>',
     '// SYNTHETIC: fixture front controller excerpt.',
-    'variables.fixtureModules = "people,finance,reporting";',
+    'variables.fixtureModules = "people";',
     'variables.segments = listToArray(cgi.path_info, "/");',
     'variables.segmentCount = arrayLen(variables.segments);',
     'if (variables.segmentCount >= 2 && variables.segmentCount <= 5) {',
@@ -641,7 +751,7 @@ const FIXTURES: Readonly<Record<string, string>> = {
     '\t}',
     '\tfunction archive(route, allowed) {',
     '\t\tqueryExecute("INSERT INTO synthetic.person_archive (userid, archivedat) VALUES (:userid, :now)", { userid = arguments.route.id, now = now() });',
-    '\t\tqueryExecute("EXEC synthetic.usp_person_archived_blackout @userId = :userid", { userid = arguments.route.id });',
+    '\t\tqueryExecute("EXEC synthetic.usp_person_archived_transition @userId = :userid", { userid = arguments.route.id });',
     '\t\treturn variables.envelope.ok({ archived = true });',
     '\t}',
     '\tfunction archiveStatus(route, allowed) {',
@@ -654,147 +764,44 @@ const FIXTURES: Readonly<Record<string, string>> = {
     '\t\treturn variables.envelope.ok([]);',
     '\t}',
   ),
-  [FINANCE]: scriptCfc(
-    '',
-    '\tfunction init(envelope) {',
-    '\t\tvariables.envelope = arguments.envelope;',
-    '\t\tvariables.verbs = "GET,POST";',
-    '\t\treturn this;',
-    '\t}',
-    '\tfunction handle(route) {',
-    '\t\tvar verb = arguments.route.httpMethod;',
-    '\t\tif (!listFind(variables.verbs, verb)) {',
-    '\t\t\traise(route, "methodNotAllowed");',
-    '\t\t}',
-    '\t\tswitch (route.resource) {',
-    '\t\t\tcase "records":',
-    '\t\t\t\tswitch (route.action) {',
-    '\t\t\t\t\tcase "":',
-    '\t\t\t\t\t\tif (route.id == "" && route.tail == "") {',
-    '\t\t\t\t\t\t\tif (verb == "GET") return listRecords(route);',
-    '\t\t\t\t\t\t\treturn createRecord(route);',
-    '\t\t\t\t\t\t}',
-    '\t\t\t\t\t\tif (route.tail == "" && verb == "GET") return showRecord(route);',
-    '\t\t\t\t\t\tbreak;',
-    '\t\t\t\t\tcase "attachments":',
-    '\t\t\t\t\t\tif (verb == "GET") return attachment(route);',
-    '\t\t\t\t\t\tbreak;',
-    '\t\t\t\t\tdefault:',
-    '\t\t\t\t\t\traise(route, "notFound");',
-    '\t\t\t\t}',
-    '\t\t\t\tbreak;',
-    '\t\t\tcase "rollups":',
-    '\t\t\t\tif (route.id == "" && verb == "GET") return rollups(route);',
-    '\t\t\tdefault:',
-    '\t\t\t\traise(route, "notFound");',
-    '\t\t}',
-    '\t}',
-    '\tfunction listRecords(route) {',
-    '\t\treturn variables.envelope.ok([]);',
-    '\t}',
-    '\tfunction createRecord(route) {',
-    '\t\tif (listFind("GET,HEAD", arguments.route.httpMethod)) { return; }',
-    '\t\tif (!variables.envelope.validateCSRFTokens(context=route.action)) {',
-    '\t\t\treturn variables.envelope.ok({});',
-    '\t\t}',
-    '\t\tqueryExecute("INSERT INTO [#arguments.schema#].finance_record (recordid) VALUES (:id)", { id = createUUID() });',
-    '\t\tqueryExecute("INSERT INTO [#arguments.schema#].finance_note (recordid) VALUES (:id)", { id = createUUID() });',
-    '\t\tqueryExecute("EXEC [#arguments.schema#].usp_finance_rollup @recordId = :id", { id = createUUID() });',
-    '\t\treturn variables.envelope.ok({});',
-    '\t}',
-    '\tfunction showRecord(route) {',
-    '\t\tinclude "../lib/audit.cfm";',
-    '\t\treturn variables.envelope.ok({});',
-    '\t}',
-    '\tfunction attachment(route) {',
-    '\t\treturn variables.envelope.ok({});',
-    '\t}',
-    '\tfunction rollups(route) {',
-    '\t\treturn getBean("envelope").ok([]);',
-    '\t}',
-  ),
-  [REPORTING]: scriptCfc(
-    '',
-    '\tfunction init(envelope) {',
-    '\t\tvariables.envelope = arguments.envelope;',
-    '\t\treturn this;',
-    '\t}',
-    '\tfunction handle(route) {',
-    '\t\tvar enabled = "yes";',
-    '\t\tvar strict = true;',
-    '\t\tvar kind = len(route.id) ? "one" : "many";',
-    '\t\tvar label = "export #route.id#";',
-    '\t\tvar hashes = "####";',
-    '\t\tvar probe = variables.envelope.ok({}).data;',
-    '\t\tvar first = route.params["x"];',
-    '\t\tvar opts = { a = 1 };',
-    '\t\tvar list = [1, 2];',
-    '\t\tvar stamp = createUUID();',
-    '\t\t;',
-    '\t\tif (!enabled) {',
-    '\t\t\traise(route, "disabled");',
-    '\t\t}',
-    '\t\tif (strict && len(route.resource) >= 1 && len(route.tail) <= 0 && len(route.module) > 0 && len(route.action) < 20 && route.method != "x" && route.siteid neq "y" && kind != "") {',
-    '\t\t\tif (route.resource == "exports" && route.action == "" && route.tail == "") {',
-    '\t\t\t\tif (route.httpMethod == "POST" && route.id == "") return startExport(route);',
-    '\t\t\t\tif (route.httpMethod == "GET" && (len(route.id) || false)) return showExport(route);',
-    '\t\t\t}',
-    '\t\t\tif (route.resource == "exports" && (route.action == "download" or route.action == "file") && route.httpMethod == "GET" && listFind("1", "1")) return download(route);',
-    '\t\t}',
-    '\t}',
-    '\tfunction startExport(route) {',
-    '\t\tvar jobId = createUUID();',
-    '\t\tqueryExecute("INSERT INTO synthetic.export_job (jobid, status) VALUES (:id, \'queued\')", { id = jobId });',
-    '\t\tthread name="export#jobId#" jobId=jobId {',
-    '\t\t\trunExport(attributes.jobId);',
-    '\t\t}',
-    '\t\treturn variables.envelope.ok({ id = jobId });',
-    '\t}',
-    '\tfunction runExport(jobId) {',
-    '\t\tqueryExecute("UPDATE synthetic.export_job SET status = \'done\' WHERE jobid = :id", { id = arguments.jobId });',
-    '\t\tqueryExecute("EXEC dbo.usp_missing @id = :id", { id = arguments.jobId });',
-    '\t\tqueryExecute("EXEC usp_audit_append @entry = :id", { id = arguments.jobId });',
-    '\t}',
-    '\tfunction showExport(route) {',
-    '\t\treturn variables.envelope.ok({});',
-    '\t}',
-    '\tfunction download(route) {',
-    '\t\treturn variables.envelope.ok({});',
-    '\t}',
-  ),
   [PEOPLE_SQL]: lines(
     '-- SYNTHETIC: person archive excerpt.',
     'CREATE TABLE synthetic.person_archive (userid char(35) NOT NULL, archivedat datetime2 NOT NULL);',
     'GO',
   ),
-  [TIMESHEETS_SQL]: lines(
-    'CREATE TABLE $(PROGRAM_SCHEMA).blackout (userid char(35) NOT NULL);',
+  [TRANSITION_SQL]: lines(
+    'CREATE TABLE $(PROGRAM_SCHEMA).program_day (userid char(35) NOT NULL);',
     'GO',
-    'CREATE OR ALTER PROCEDURE synthetic.usp_person_archived_blackout @userId char(35) AS',
+    'CREATE OR ALTER PROCEDURE synthetic.usp_person_archived_transition @userId char(35) AS',
     'BEGIN',
     '\t/* INSERT INTO synthetic.not_written (x) VALUES (1) */',
-    "\tINSERT INTO synthetic.timesheet_transition (userid, note) VALUES (@userId, 'it''s archived');",
+    "\tINSERT INTO synthetic.person_transition (userid, note) VALUES (@userId, 'it''s archived');",
     '\tEXEC synthetic.usp_audit_append @entry = @userId;',
     'END',
     'GO',
   ),
-  [FINANCE_SQL]: lines(
-    'CREATE TABLE $(PROGRAM_SCHEMA).finance_record (recordid char(35) NOT NULL);',
-    'CREATE TABLE [$(PROGRAM_SCHEMA)].[finance_rollup] (programid int NOT NULL, total numeric(19,4) NOT NULL);',
+  [PROGRAM_SQL]: lines(
+    'CREATE TABLE $(PROGRAM_SCHEMA).program_record (recordid char(35) NOT NULL);',
+    'CREATE TABLE [$(PROGRAM_SCHEMA)].[program_rollup] (programid int NOT NULL, total numeric(19,4) NOT NULL);',
     'GO',
-    'CREATE PROCEDURE $(PROGRAM_SCHEMA).usp_finance_rollup @recordId char(35) AS',
-    '\tDELETE FROM $(PROGRAM_SCHEMA).finance_rollup WHERE programid = 1; -- INSERT INTO synthetic.not_written',
-    '\tMERGE INTO [$(PROGRAM_SCHEMA)].[finance_rollup] AS t USING (SELECT 1 AS programid) AS s ON t.programid = s.programid WHEN NOT MATCHED THEN INSERT (programid, total) VALUES (1, 0);',
+    'CREATE PROCEDURE $(PROGRAM_SCHEMA).usp_program_rollup @recordId char(35) AS',
+    '\tDELETE FROM $(PROGRAM_SCHEMA).program_rollup WHERE programid = 1; -- INSERT INTO synthetic.not_written',
+    '\tMERGE INTO [$(PROGRAM_SCHEMA)].[program_rollup] AS t USING (SELECT 1 AS programid) AS s ON t.programid = s.programid WHEN NOT MATCHED THEN INSERT (programid, total) VALUES (1, 0);',
     '\tEXEC synthetic.usp_audit_append @entry = @recordId;',
     'GO',
   ),
-  [ESIGNATURE_SQL]: lines(
+  [AUDIT_SQL]: lines(
     'CREATE PROCEDURE synthetic.usp_audit_append @entry nvarchar(max) AS',
-    "\tDECLARE @caller sysname = N'usp_person_archived_blackout';",
+    "\tDECLARE @caller sysname = N'usp_person_archived_transition';",
     '\tINSERT INTO synthetic.audit_entry (entry) VALUES (@entry);',
     '\tUPDATE synthetic.audit_entry SET verified = 0 WHERE entry = @entry;',
   ),
 };
+
+/** The fixture tree with `module` as its people module. */
+const withPeople = (module: string): Readonly<Record<string, string>> => ({ ...FIXTURES, [PEOPLE]: module });
+const RECORDS_FIXTURES = withPeople(RECORDS_PEOPLE);
+const JOBS_FIXTURES = withPeople(JOBS_PEOPLE);
 
 const VARIANTS: readonly VariantDeclaration[] = [
   { route: 'api:user.save', variant: 'photo', when: [PHOTO_CONDITION] },
@@ -1000,9 +1007,12 @@ let guardText = '';
 let tree: SourceTree;
 let fixtureTree: SourceTree;
 let extraction: RouteExtraction;
+// Extractions whose people module is the records or the jobs sample.
+let recordsExtraction: RouteExtraction;
+let jobsExtraction: RouteExtraction;
 
-function entryOf(id: string): RouteEntry {
-  const found = extraction.routes.find((r) => r.id === id);
+function entryOf(id: string, from: RouteExtraction = extraction): RouteEntry {
+  const found = from.routes.find((r) => r.id === id);
   if (found === undefined) throw new Error(`no routes[] entry ${id}`);
   return found;
 }
@@ -1034,6 +1044,9 @@ beforeAll(async () => {
   if (loaded === null) throw new Error('the fixture front controller is missing from the work tree');
   fixtureTree = loaded;
   extraction = await extractRoutes(tree, { index: indexFor(tree), overrides: OVERRIDES, variants: VARIANTS, fixtureTree });
+  const extractWith = (files: Readonly<Record<string, string>>): Promise<RouteExtraction> =>
+    extractRoutes(tree, { index: indexFor(tree), overrides: OVERRIDES, variants: VARIANTS, fixtureTree: memorySourceTree(files) });
+  [recordsExtraction, jobsExtraction] = await Promise.all([extractWith(RECORDS_FIXTURES), extractWith(JOBS_FIXTURES)]);
 });
 
 afterAll(async () => {
@@ -1042,15 +1055,7 @@ afterAll(async () => {
 
 describe('routes constants', () => {
   it('map fixture modules to services, families to request modes and OAuth endpoints to entry ids', () => {
-    expect(FIXTURE_SERVICES).toEqual({
-      people: 'people',
-      timesheets: 'timesheets',
-      finance: 'finance',
-      surveys: 'surveys',
-      reporting: 'reporting',
-      communications: 'communications',
-      esignature: 'e-signature',
-    });
+    expect(FIXTURE_SERVICES).toEqual({ people: 'people' });
     expect(FAMILY_MODES).toEqual({ api: 'json', rest: 'rest' });
     expect(OAUTH_IDS).toEqual({ oauth: 'rte:/oauth', oauth2: 'rte:/oauth2', tokeninfo: 'rte:tokeninfo' });
     expect(RUNTIME_METHODS).toEqual({ swagger: 'bean-metadata' });
@@ -1300,9 +1305,9 @@ describe('parseOAuth', () => {
 describe('extractRoutes over the archive excerpt', () => {
   it('builds every kind of entry once, sorted by id, with the fixture routes present', () => {
     const ids = extraction.routes.map((r) => r.id);
-    expect(extraction.counts).toEqual({ families: 13, apiEntityMethods: 343, apiMethods: 34, oauth: 3, soap: 2, fixture: 14 });
+    expect(extraction.counts).toEqual({ families: 13, apiEntityMethods: 343, apiMethods: 34, oauth: 3, soap: 2, fixture: 4 });
     expect(countRoutes(extraction.routes)).toEqual(extraction.counts);
-    expect(ids).toHaveLength(409);
+    expect(ids).toHaveLength(399);
     expect(new Set(ids).size).toBe(ids.length);
     expect([...ids].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))).toEqual(ids);
     expect(extraction.fixtureRoutesStatus).toBe('present');
@@ -1310,7 +1315,7 @@ describe('extractRoutes over the archive excerpt', () => {
 
   it('keys every keyed entry exactly as inventoryRouteKey keys the entry point it stands for', async () => {
     const keyed = extraction.routes.filter((r) => r.routeKey !== null && r.reachable);
-    expect(keyed).toHaveLength(402);
+    expect(keyed).toHaveLength(392);
     for (const e of keyed) {
       const { point, options } = entryPointOf(e);
       expect((await inventoryRouteKey(point, options)).key, e.id).toBe(e.routeKey);
@@ -1457,7 +1462,7 @@ describe('handleAPIRequest family entries', () => {
     ['rte:/_api/feed/v1', 'carry', 5, 'strategies-content'],
     ['rte:/_api/render/small', 'carry', 5, 'strategies-content'],
     ['rte:/_api/sitemonitor', 'carry', 5, 'programs-sites'],
-    ['rte:/_api/email/trackopen', 'legacy-served', 4, 'communications'],
+    ['rte:/_api/email/trackopen', 'legacy-served', 4, null],
     ['rte:/_api/asset/upload', 'legacy-served', 4, 'strategies-content'],
     ['rte:/_api/asset/render', 'legacy-served', 4, 'strategies-content'],
     ['rte:/tasks/widgets', 'legacy-served', 4, null],
@@ -1931,17 +1936,17 @@ describe('SOAP v1 entries', () => {
   });
 });
 
-const SURVEYS = 'legacy-fixtures/cfml/modules/surveys.cfc';
+const SAMPLE_MODULE = 'legacy-fixtures/cfml/modules/sample.cfc';
 
-const SURVEY_CONTROLLER: FixtureController = { modules: ['surveys'], minSegments: 2, maxSegments: 4, modulePackage: 'modules', method: 'handle', helpers: {} };
+const SAMPLE_CONTROLLER: FixtureController = { modules: ['sample'], minSegments: 2, maxSegments: 4, modulePackage: 'modules', method: 'handle', helpers: {} };
 
-/** A surveys module whose `handle` runs `body`. */
-function surveysModule(...body: string[]): SourceTree {
+/** A sample module whose `handle` runs `body`. */
+function sampleModule(...body: string[]): SourceTree {
   return memorySourceTree({
-    [SURVEYS]: scriptCfc(
+    [SAMPLE_MODULE]: scriptCfc(
       '',
       '\tfunction init() {',
-      "\t\tvariables.kinds = 'launch,reminder';",
+      "\t\tvariables.kinds = 'open,close';",
       '\t\treturn this;',
       '\t}',
       '\tfunction handle(route) {',
@@ -1957,7 +1962,7 @@ function surveysModule(...body: string[]): SourceTree {
 describe('fixture routes', () => {
   it('parse the front controller: modules, segment grammar, module package, dispatch method and helpers', () => {
     expect(parseFixtureController(fixtureTree)).toEqual({
-      modules: ['people', 'finance', 'reporting'],
+      modules: ['people'],
       minSegments: 2,
       maxSegments: 5,
       modulePackage: 'modules',
@@ -1967,7 +1972,7 @@ describe('fixture routes', () => {
   });
 
   it.each([
-    ['variables.fixtureModules list', 'variables.fixtureModules = "people,finance,reporting";', 'variables.modules = "people";'],
+    ['variables.fixtureModules list', 'variables.fixtureModules = "people";', 'variables.modules = "people";'],
     ['segment-count grammar', 'variables.segmentCount >= 2 && variables.segmentCount <= 5', 'variables.segmentCount > 1'],
     ['module createObject', '"modules." & variables.route.module', 'variables.route.module'],
     ['module dispatch call', 'variables.module.handle(variables.route);', 'variables.module.handle(route = variables.route);'],
@@ -1984,7 +1989,7 @@ describe('fixture routes', () => {
       { module: 'people', segments: ['persons'], httpMethod: 'POST', handler: 'create', guards: [] },
       { module: 'people', segments: ['persons', SAMPLE_ID, 'archive'], httpMethod: 'POST', handler: 'archive', guards: ['gate'] },
     ]);
-    expect(fixtureModuleRoutes(fixtureTree, controller, 'finance').map((r) => `${r.httpMethod} ${r.segments.join('/')} ${r.handler}`)).toEqual([
+    expect(fixtureModuleRoutes(memorySourceTree(RECORDS_FIXTURES), controller, 'people').map((r) => `${r.httpMethod} ${r.segments.join('/')} ${r.handler}`)).toEqual([
       'GET records listRecords',
       `GET records/${SAMPLE_ID} showRecord`,
       `GET records/${SAMPLE_ID}/attachments attachment`,
@@ -1995,7 +2000,7 @@ describe('fixture routes', () => {
   });
 
   it('model the CFScript a dispatcher uses: scopes, operators, switch fall-through, calls and literals', () => {
-    const source = surveysModule(
+    const source = sampleModule(
       'var u = missing;',
       'var joined = route.resource & "/" & route.action;',
       'var unknownJoin = missing & "x";',
@@ -2003,85 +2008,85 @@ describe('fixture routes', () => {
       'var indexed = lcase(route.id)[1];',
       'var helped = variables.helper.ok(route);',
       'var kind = len(route.id) ? "one" : "many";',
-      'var label = "export #route.id#";',
+      'var label = "job #route.id#";',
       'var hashes = "####";',
       'var opts = { a = 1 };',
       'var nums = [1, 2];',
       'local.flag = "1";',
       'var on = true;',
       'switch (route.resource) {',
-      '\tcase "surveys":',
+      '\tcase "samples":',
       '\tcase "polls":',
-      '\t\tlocal.kind = "survey";',
+      '\t\tlocal.kind = "sample";',
       '}',
       'if (local.flag && on == "true" && joined != "" && kind != "") {',
-      '\tif (route.resource == "surveys" && route.action == "" && route.httpMethod == "GET") return list(route = route);',
-      '\tif (route.resource == "surveys" && listFindNoCase(variables.kinds, route.action) && route.httpMethod == "POST") {',
+      '\tif (route.resource == "samples" && route.action == "" && route.httpMethod == "GET") return list(route = route);',
+      '\tif (route.resource == "samples" && listFindNoCase(variables.kinds, route.action) && route.httpMethod == "POST") {',
       '\t\treturn list(route, !check(route), audit(route) & note(route), len(route.id) ? one(route) : many(route));',
       '\t}',
       '}',
     );
-    expect(fixtureModuleRoutes(source, SURVEY_CONTROLLER, 'surveys').map((r) => [r.httpMethod, r.segments.join('/'), r.handler, r.guards])).toEqual([
-      ['GET', 'surveys', 'list', []],
-      ['GET', `surveys/${SAMPLE_ID}`, 'list', []],
-      ['POST', `surveys/${SAMPLE_ID}/launch`, 'list', ['check', 'audit', 'note', 'len', 'one', 'many']],
-      ['POST', `surveys/${SAMPLE_ID}/reminder`, 'list', ['check', 'audit', 'note', 'len', 'one', 'many']],
+    expect(fixtureModuleRoutes(source, SAMPLE_CONTROLLER, 'sample').map((r) => [r.httpMethod, r.segments.join('/'), r.handler, r.guards])).toEqual([
+      ['GET', 'samples', 'list', []],
+      ['GET', `samples/${SAMPLE_ID}`, 'list', []],
+      ['POST', `samples/${SAMPLE_ID}/close`, 'list', ['check', 'audit', 'note', 'len', 'one', 'many']],
+      ['POST', `samples/${SAMPLE_ID}/open`, 'list', ['check', 'audit', 'note', 'len', 'one', 'many']],
     ]);
   });
 
   it.each([
-    ['an unsupported statement', ['for (var i = 1; i <= 2; i++) {', '}'], /surveys\.cfc:\d+: unsupported for statement/],
-    ['a switch label that is neither case nor default', ['switch (route.action) {', '\tother:', '}'], /surveys\.cfc:\d+: expected case or default/],
-    ['an unclosed condition', ['if (route.id == "" return list(route);'], /surveys\.cfc:\d+: expected \)/],
-    ['an assignment to a call', ['len(route.id) = 1;'], /surveys\.cfc:\d+: assignment to a non-variable/],
-    ['an operator where a value belongs', ['return ,;'], /surveys\.cfc:\d+: unexpected ,/],
-    ['an if with no statement', ['if (route.id == "")'], /surveys\.cfc:\d+: unexpected end of dispatcher/],
-    ['a value it cannot know', ['if (route.params.x == "1") return list(route);'], /surveys\.cfc:\d+: the dispatcher depends on a value it cannot know/],
-    ['a condition that is not a boolean', ['if (route.resource) return list(route);'], /surveys\.cfc:\d+: "opt2-unmatched" is not a boolean/],
-    ['a branch returning something other than a handler call', ['return route.id;'], /surveys\.cfc: a dispatcher branch returns something other than a handler call/],
-    ['a handler for any resource', ['return list(route);'], /surveys\.cfc: list accepts any resource \(GET\)/],
-    ['a handler for any action', ['if (route.resource == "surveys") return list(route);'], /surveys\.cfc: list accepts any action \(GET\)/],
+    ['an unsupported statement', ['for (var i = 1; i <= 2; i++) {', '}'], /sample\.cfc:\d+: unsupported for statement/],
+    ['a switch label that is neither case nor default', ['switch (route.action) {', '\tother:', '}'], /sample\.cfc:\d+: expected case or default/],
+    ['an unclosed condition', ['if (route.id == "" return list(route);'], /sample\.cfc:\d+: expected \)/],
+    ['an assignment to a call', ['len(route.id) = 1;'], /sample\.cfc:\d+: assignment to a non-variable/],
+    ['an operator where a value belongs', ['return ,;'], /sample\.cfc:\d+: unexpected ,/],
+    ['an if with no statement', ['if (route.id == "")'], /sample\.cfc:\d+: unexpected end of dispatcher/],
+    ['a value it cannot know', ['if (route.params.x == "1") return list(route);'], /sample\.cfc:\d+: the dispatcher depends on a value it cannot know/],
+    ['a condition that is not a boolean', ['if (route.resource) return list(route);'], /sample\.cfc:\d+: "opt2-unmatched" is not a boolean/],
+    ['a branch returning something other than a handler call', ['return route.id;'], /sample\.cfc: a dispatcher branch returns something other than a handler call/],
+    ['a handler for any resource', ['return list(route);'], /sample\.cfc: list accepts any resource \(GET\)/],
+    ['a handler for any action', ['if (route.resource == "samples") return list(route);'], /sample\.cfc: list accepts any action \(GET\)/],
   ])('fixtureModuleRoutes rejects %s', (_name, body, message) => {
-    const run = (): unknown => fixtureModuleRoutes(surveysModule(...body), SURVEY_CONTROLLER, 'surveys');
+    const run = (): unknown => fixtureModuleRoutes(sampleModule(...body), SAMPLE_CONTROLLER, 'sample');
     expect(run).toThrow(message);
     expect(run).toThrow(expect.objectContaining({ name: 'FixtureDispatchError' }));
   });
 
   it('parse the fixture SQL: schema-qualified procedures with their writes and calls, and the per-program tables', () => {
     const go = (file: string, after: number): number => textOf(FIXTURES, file).split('\n').findIndex((l, i) => i >= after && l === 'GO') + 1;
-    const rollup = lineWith(textOf(FIXTURES, FINANCE_SQL), 'CREATE PROCEDURE');
-    const blackout = lineWith(textOf(FIXTURES, TIMESHEETS_SQL), 'CREATE OR ALTER PROCEDURE');
+    const rollup = lineWith(textOf(FIXTURES, PROGRAM_SQL), 'CREATE PROCEDURE');
+    const transition = lineWith(textOf(FIXTURES, TRANSITION_SQL), 'CREATE OR ALTER PROCEDURE');
     expect(parseFixtureSql(fixtureTree)).toEqual({
       procedures: [
         {
-          name: 'Program_N.usp_finance_rollup',
-          source: src(FINANCE_SQL, rollup, go(FINANCE_SQL, rollup)),
-          writes: ['Program_N.finance_rollup'],
+          name: 'Program_N.usp_program_rollup',
+          source: src(PROGRAM_SQL, rollup, go(PROGRAM_SQL, rollup)),
+          writes: ['Program_N.program_rollup'],
           statements: [
-            { table: 'Program_N.finance_rollup', op: 'delete', source: src(FINANCE_SQL, lineWith(textOf(FIXTURES, FINANCE_SQL), 'DELETE FROM')), whereParams: [], columns: null },
-            { table: 'Program_N.finance_rollup', op: 'save', source: src(FINANCE_SQL, lineWith(textOf(FIXTURES, FINANCE_SQL), 'MERGE INTO')), whereParams: [], columns: null },
+            { table: 'Program_N.program_rollup', op: 'delete', source: src(PROGRAM_SQL, lineWith(textOf(FIXTURES, PROGRAM_SQL), 'DELETE FROM')), whereParams: [], columns: null },
+            { table: 'Program_N.program_rollup', op: 'save', source: src(PROGRAM_SQL, lineWith(textOf(FIXTURES, PROGRAM_SQL), 'MERGE INTO')), whereParams: [], columns: null },
           ],
           calls: ['synthetic.usp_audit_append'],
         },
         {
           name: 'synthetic.usp_audit_append',
-          source: src(ESIGNATURE_SQL, 1, textOf(FIXTURES, ESIGNATURE_SQL).split('\n').length),
+          source: src(AUDIT_SQL, 1, textOf(FIXTURES, AUDIT_SQL).split('\n').length),
           writes: ['synthetic.audit_entry'],
           statements: [
-            { table: 'synthetic.audit_entry', op: 'insert', source: src(ESIGNATURE_SQL, 3), whereParams: [], columns: ['entry'] },
-            { table: 'synthetic.audit_entry', op: 'update', source: src(ESIGNATURE_SQL, 4), whereParams: ['entry'], columns: ['verified'] },
+            { table: 'synthetic.audit_entry', op: 'insert', source: src(AUDIT_SQL, 3), whereParams: [], columns: ['entry'] },
+            { table: 'synthetic.audit_entry', op: 'update', source: src(AUDIT_SQL, 4), whereParams: ['entry'], columns: ['verified'] },
           ],
-          calls: ['synthetic.usp_person_archived_blackout'],
+          calls: ['synthetic.usp_person_archived_transition'],
         },
         {
-          name: 'synthetic.usp_person_archived_blackout',
-          source: src(TIMESHEETS_SQL, blackout, go(TIMESHEETS_SQL, blackout)),
-          writes: ['synthetic.timesheet_transition'],
+          name: 'synthetic.usp_person_archived_transition',
+          source: src(TRANSITION_SQL, transition, go(TRANSITION_SQL, transition)),
+          writes: ['synthetic.person_transition'],
           statements: [
             {
-              table: 'synthetic.timesheet_transition',
+              table: 'synthetic.person_transition',
               op: 'insert',
-              source: src(TIMESHEETS_SQL, lineWith(textOf(FIXTURES, TIMESHEETS_SQL), 'INSERT INTO synthetic.timesheet_transition')),
+              source: src(TRANSITION_SQL, lineWith(textOf(FIXTURES, TRANSITION_SQL), 'INSERT INTO synthetic.person_transition')),
               whereParams: [],
               columns: ['userid', 'note'],
             },
@@ -2089,7 +2094,7 @@ describe('fixture routes', () => {
           calls: ['synthetic.usp_audit_append'],
         },
       ],
-      programTables: ['blackout', 'finance_record', 'finance_rollup'],
+      programTables: ['program_day', 'program_record', 'program_rollup'],
     });
     expect(parseFixtureSql(memorySourceTree({}))).toEqual({ procedures: [], programTables: [] });
   });
@@ -2102,20 +2107,10 @@ describe('fixture routes', () => {
   it('carry every fixture route to its module service by definition, as the disposition rule does', () => {
     const fixtures = extraction.routes.filter((r) => r.kind === 'fixture');
     expect(fixtures.map((r) => r.id)).toEqual([
-      'fix:finance/records/{id}/attachments/{id}@get',
-      'fix:finance/records/{id}/attachments@get',
-      'fix:finance/records/{id}@get',
-      'fix:finance/records@get',
-      'fix:finance/records@post',
-      'fix:finance/rollups@get',
       'fix:people/persons/{id}/archive@get',
       'fix:people/persons/{id}/archive@post',
       'fix:people/persons@get',
       'fix:people/persons@post',
-      'fix:reporting/exports/{id}/download@get',
-      'fix:reporting/exports/{id}/file@get',
-      'fix:reporting/exports/{id}@get',
-      'fix:reporting/exports@post',
     ]);
     for (const r of fixtures) {
       const module = r.id.slice(4, r.id.indexOf('/'));
@@ -2135,28 +2130,28 @@ describe('fixture routes', () => {
   });
 
   it('fold per-program and procedure writes into the write set, leaving other dynamic tables unresolved', () => {
-    const createRecord = fnLines(textOf(FIXTURES, FINANCE), 'function createRecord(');
-    const exec = lineWith(textOf(FIXTURES, FINANCE), 'usp_finance_rollup @recordId');
-    expect(entryOf('fix:finance/records@post')).toMatchObject({
+    const createRecord = fnLines(RECORDS_PEOPLE, 'function createRecord(');
+    const exec = lineWith(RECORDS_PEOPLE, 'usp_program_rollup @recordId');
+    expect(entryOf('fix:people/records@post', recordsExtraction)).toMatchObject({
       method: 'createRecord',
-      source: src(FINANCE, ...createRecord),
-      roots: [`${FINANCE}#createRecord`],
-      writeSet: ['Program_N.finance_record', 'Program_N.finance_rollup', 'synthetic.audit_entry', 'synthetic.timesheet_transition'],
+      source: src(PEOPLE, ...createRecord),
+      roots: [`${PEOPLE}#createRecord`],
+      writeSet: ['Program_N.program_record', 'Program_N.program_rollup', 'synthetic.audit_entry', 'synthetic.person_transition'],
       procedureCalls: [
         {
-          procedure: '#arguments.schema#.usp_finance_rollup',
-          source: src(FINANCE, exec),
-          resolved: ['Program_N.usp_finance_rollup'],
-          writes: ['Program_N.finance_rollup', 'synthetic.audit_entry', 'synthetic.timesheet_transition'],
+          procedure: '#arguments.schema#.usp_program_rollup',
+          source: src(PEOPLE, exec),
+          resolved: ['Program_N.usp_program_rollup'],
+          writes: ['Program_N.program_rollup', 'synthetic.audit_entry', 'synthetic.person_transition'],
         },
       ],
-      unresolved: [{ expr: '[#arguments.schema#].finance_note', kind: 'table', source: src(FINANCE, lineWith(textOf(FIXTURES, FINANCE), 'finance_note')) }],
+      unresolved: [{ expr: '[#arguments.schema#].program_note', kind: 'table', source: src(PEOPLE, lineWith(RECORDS_PEOPLE, 'program_note')) }],
     });
     expect(entryOf('fix:people/persons/{id}/archive@post')).toMatchObject({
-      writeSet: ['synthetic.audit_entry', 'synthetic.person_archive', 'synthetic.timesheet_transition'],
-      procedureCalls: [{ procedure: 'synthetic.usp_person_archived_blackout', resolved: ['synthetic.usp_person_archived_blackout'] }],
+      writeSet: ['synthetic.audit_entry', 'synthetic.person_archive', 'synthetic.person_transition'],
+      procedureCalls: [{ procedure: 'synthetic.usp_person_archived_transition', resolved: ['synthetic.usp_person_archived_transition'] }],
     });
-    expect(entryOf('fix:finance/records/{id}@get')).toMatchObject({ writeSet: [], procedureCalls: [], unresolved: [] });
+    expect(entryOf('fix:people/records/{id}@get', recordsExtraction)).toMatchObject({ writeSet: [], procedureCalls: [], unresolved: [] });
   });
 
   /** A write of a fixture procedure statement as `closureEvidence` records it. */
@@ -2173,53 +2168,54 @@ describe('fixture routes', () => {
     ...extra,
   });
   const auditWrites = (trigger: string, via: readonly string[]): Array<Record<string, unknown>> => [
-    statementWrite('synthetic.audit_entry', 'insert', ESIGNATURE_SQL, 3, { trigger, columns: ['entry'], via: [...via, 'synthetic.usp_audit_append'] }),
-    statementWrite('synthetic.audit_entry', 'update', ESIGNATURE_SQL, 4, { trigger, whereParams: ['entry'], columns: ['verified'], via: [...via, 'synthetic.usp_audit_append'] }),
+    statementWrite('synthetic.audit_entry', 'insert', AUDIT_SQL, 3, { trigger, columns: ['entry'], via: [...via, 'synthetic.usp_audit_append'] }),
+    statementWrite('synthetic.audit_entry', 'update', AUDIT_SQL, 4, { trigger, whereParams: ['entry'], columns: ['verified'], via: [...via, 'synthetic.usp_audit_append'] }),
   ];
   const transitionWrite = (trigger: string, via: readonly string[]): Record<string, unknown> =>
-    statementWrite('synthetic.timesheet_transition', 'insert', TIMESHEETS_SQL, lineWith(textOf(FIXTURES, TIMESHEETS_SQL), 'INSERT INTO synthetic.timesheet_transition'), {
+    statementWrite('synthetic.person_transition', 'insert', TRANSITION_SQL, lineWith(textOf(FIXTURES, TRANSITION_SQL), 'INSERT INTO synthetic.person_transition'), {
       trigger,
       columns: ['userid', 'note'],
-      via: [...via, 'synthetic.usp_person_archived_blackout'],
+      via: [...via, 'synthetic.usp_person_archived_transition'],
     });
-  const sqlEvidence = (id: string): RouteEntry['closureEvidence'] => entryOf(id).closureEvidence.filter((w) => w.component.startsWith('legacy-fixtures/sql/'));
+  const sqlEvidence = (id: string, from: RouteExtraction = extraction): RouteEntry['closureEvidence'] =>
+    entryOf(id, from).closureEvidence.filter((w) => w.component.startsWith('legacy-fixtures/sql/'));
 
   it('record each statement of the procedures an EXEC reaches as closure evidence, through the procedures they execute', () => {
     expect(sqlEvidence('fix:people/persons/{id}/archive@post')).toEqual([
-      ...auditWrites('request', ['people.archive', 'synthetic.usp_person_archived_blackout']),
+      ...auditWrites('request', ['people.archive', 'synthetic.usp_person_archived_transition']),
       transitionWrite('request', ['people.archive']),
     ]);
     const rollup = (op: string, needle: string): Record<string, unknown> =>
-      statementWrite('Program_N.finance_rollup', op, FINANCE_SQL, lineWith(textOf(FIXTURES, FINANCE_SQL), needle), { via: ['finance.createRecord', 'Program_N.usp_finance_rollup'] });
-    expect(sqlEvidence('fix:finance/records@post')).toEqual([
+      statementWrite('Program_N.program_rollup', op, PROGRAM_SQL, lineWith(textOf(FIXTURES, PROGRAM_SQL), needle), { via: ['people.createRecord', 'Program_N.usp_program_rollup'] });
+    expect(sqlEvidence('fix:people/records@post', recordsExtraction)).toEqual([
       rollup('delete', 'DELETE FROM'),
       rollup('save', 'MERGE INTO'),
-      ...auditWrites('request', ['finance.createRecord', 'Program_N.usp_finance_rollup']),
-      transitionWrite('request', ['finance.createRecord', 'Program_N.usp_finance_rollup', 'synthetic.usp_audit_append']),
+      ...auditWrites('request', ['people.createRecord', 'Program_N.usp_program_rollup']),
+      transitionWrite('request', ['people.createRecord', 'Program_N.usp_program_rollup', 'synthetic.usp_audit_append']),
     ]);
   });
 
   it('record a procedure an EXEC runs only inside a cfthread body under the thread trigger', () => {
-    expect(sqlEvidence('fix:reporting/exports@post')).toEqual([
-      ...auditWrites('thread', ['reporting.startExport', 'reporting.runExport']),
-      transitionWrite('thread', ['reporting.startExport', 'reporting.runExport', 'synthetic.usp_audit_append']),
+    expect(sqlEvidence('fix:people/jobs@post', jobsExtraction)).toEqual([
+      ...auditWrites('thread', ['people.startJob', 'people.runJob']),
+      transitionWrite('thread', ['people.startJob', 'people.runJob', 'synthetic.usp_audit_append']),
     ]);
   });
 
   it('fold a dynamic-schema write of a per-program table to its Program_N table, leaving other dynamic writes unresolved', () => {
-    const writes = entryOf('fix:finance/records@post').closureEvidence.filter((w) => w.component === FINANCE);
-    const line = (needle: string): number => lineWith(textOf(FIXTURES, FINANCE), needle);
-    expect(writes.find((w) => w.source.lines[0] === line('].finance_record ('))).toEqual(
-      expect.objectContaining({ table: 'Program_N.finance_record', op: 'insert', method: 'createRecord', source: src(FINANCE, line('].finance_record (')), trigger: 'request' }),
+    const writes = entryOf('fix:people/records@post', recordsExtraction).closureEvidence.filter((w) => w.component === PEOPLE);
+    const line = (needle: string): number => lineWith(RECORDS_PEOPLE, needle);
+    expect(writes.find((w) => w.source.lines[0] === line('].program_record ('))).toEqual(
+      expect.objectContaining({ table: 'Program_N.program_record', op: 'insert', method: 'createRecord', source: src(PEOPLE, line('].program_record (')), trigger: 'request' }),
     );
-    expect(writes.find((w) => w.source.lines[0] === line('].finance_record ('))).not.toHaveProperty('dynamic');
-    expect(writes.find((w) => w.source.lines[0] === line('finance_note'))).toMatchObject({ table: null, dynamic: true });
+    expect(writes.find((w) => w.source.lines[0] === line('].program_record ('))).not.toHaveProperty('dynamic');
+    expect(writes.find((w) => w.source.lines[0] === line('program_note'))).toMatchObject({ table: null, dynamic: true });
   });
 
   it('give every fixture table its procedure and per-program writers through attachWriters', () => {
     // Each fixture entry's evidence in the closure shape attachWriters reads, as generate.ts hands it over.
-    const evidence = extraction.routes
-      .filter((r) => r.kind === 'fixture')
+    const evidence = [extraction, recordsExtraction, jobsExtraction]
+      .flatMap((from) => from.routes.filter((r) => r.kind === 'fixture'))
       .map((r) => ({
         entryRouteKey: r.routeKey,
         trigger: 'request' as const,
@@ -2239,14 +2235,14 @@ describe('fixture routes', () => {
     const attached = attachWriters(extractFixtureTables(fixtureTree), evidence, { sourceSha: SHA, writers: [] });
     const writersOf = (table: string): Array<[string, string, number, string, string, string[]]> =>
       (attached.tables.find((t) => t.table === table)?.writers ?? []).map((w) => [w.component, w.method, w.source.lines[0], w.op, w.trigger, w.routeKeys]);
-    expect(attached.tables.map((t) => t.table)).toEqual(['Program_N.blackout', 'Program_N.finance_record', 'Program_N.finance_rollup', 'synthetic.person_archive']);
-    expect(writersOf('Program_N.finance_rollup')).toEqual([
-      [FINANCE_SQL, '(template)', lineWith(textOf(FIXTURES, FINANCE_SQL), 'DELETE FROM'), 'delete', 'request', ['fixture:finance/records@post']],
-      [FINANCE_SQL, '(template)', lineWith(textOf(FIXTURES, FINANCE_SQL), 'MERGE INTO'), 'save', 'request', ['fixture:finance/records@post']],
+    expect(attached.tables.map((t) => t.table)).toEqual(['Program_N.program_day', 'Program_N.program_record', 'Program_N.program_rollup', 'synthetic.person_archive']);
+    expect(writersOf('Program_N.program_rollup')).toEqual([
+      [PROGRAM_SQL, '(template)', lineWith(textOf(FIXTURES, PROGRAM_SQL), 'DELETE FROM'), 'delete', 'request', ['fixture:people/records@post']],
+      [PROGRAM_SQL, '(template)', lineWith(textOf(FIXTURES, PROGRAM_SQL), 'MERGE INTO'), 'save', 'request', ['fixture:people/records@post']],
     ]);
-    expect(writersOf('Program_N.finance_record')).toEqual([[FINANCE, 'createRecord', lineWith(textOf(FIXTURES, FINANCE), '].finance_record ('), 'insert', 'request', ['fixture:finance/records@post']]]);
+    expect(writersOf('Program_N.program_record')).toEqual([[PEOPLE, 'createRecord', lineWith(RECORDS_PEOPLE, '].program_record ('), 'insert', 'request', ['fixture:people/records@post']]]);
     expect(writersOf('synthetic.person_archive')).toEqual([[PEOPLE, 'archive', lineWith(textOf(FIXTURES, PEOPLE), 'INSERT INTO synthetic.person_archive'), 'insert', 'request', ['fixture:people/persons/{id}/archive@post']]]);
-    expect([...new Set(attached.unmatched.map((u) => u.table))]).toEqual(['synthetic.audit_entry', 'synthetic.export_job', 'synthetic.timesheet_transition']);
+    expect([...new Set(attached.unmatched.map((u) => u.table))]).toEqual(['synthetic.audit_entry', 'synthetic.person_transition', 'synthetic.sample_job']);
   });
 
   it('read a guard function’s CSRF check per HTTP method and empty a context naming a segment the path lacks', () => {
@@ -2256,21 +2252,21 @@ describe('fixture routes', () => {
       csrfValidation: 'validates',
     });
     expect(entryOf('fix:people/persons/{id}/archive@get')).toMatchObject({ roots: [`${PEOPLE}#archiveStatus`, `${PEOPLE}#gate`], csrfContext: null, csrfValidation: 'none' });
-    expect(entryOf('fix:finance/records@post')).toMatchObject({ csrfContext: '', csrfValidation: 'validates' });
+    expect(entryOf('fix:people/records@post', recordsExtraction)).toMatchObject({ csrfContext: '', csrfValidation: 'validates' });
   });
 
   it('note the functions that start and run a cfthread, and resolve unqualified procedure calls by name', () => {
-    const thread = lineWith(textOf(FIXTURES, REPORTING), 'thread name=');
-    expect(entryOf('fix:reporting/exports@post')).toMatchObject({
-      conditional: 'writes in cfthread (startExport, runExport)',
-      threads: [{ name: 'export#jobId#', component: REPORTING, method: 'startExport', source: src(REPORTING, thread, thread + 2) }],
-      writeSet: ['synthetic.audit_entry', 'synthetic.export_job', 'synthetic.timesheet_transition'],
+    const thread = lineWith(JOBS_PEOPLE, 'thread name=');
+    expect(entryOf('fix:people/jobs@post', jobsExtraction)).toMatchObject({
+      conditional: 'writes in cfthread (startJob, runJob)',
+      threads: [{ name: 'job#jobId#', component: PEOPLE, method: 'startJob', source: src(PEOPLE, thread, thread + 2) }],
+      writeSet: ['synthetic.audit_entry', 'synthetic.person_transition', 'synthetic.sample_job'],
     });
-    expect(entryOf('fix:reporting/exports@post').procedureCalls.map((c) => [c.procedure, c.resolved])).toEqual([
+    expect(entryOf('fix:people/jobs@post', jobsExtraction).procedureCalls.map((c) => [c.procedure, c.resolved])).toEqual([
       ['dbo.usp_missing', []],
       ['usp_audit_append', ['synthetic.usp_audit_append']],
     ]);
-    expect(entryOf('fix:reporting/exports/{id}@get').conditional).toBeNull();
+    expect(entryOf('fix:people/jobs/{id}@get', jobsExtraction).conditional).toBeNull();
   });
 
   it('load the fixture tree from a working tree, without SQL when it has none, and report it absent without the controller', async () => {
@@ -2286,11 +2282,11 @@ describe('fixture routes', () => {
     expect(result.fixtureRoutesStatus).toBe('absent');
     expect(result.counts.fixture).toBe(0);
     expect(result.routes.some((r) => r.id.startsWith('fix:'))).toBe(false);
-    expect(result.routes).toHaveLength(extraction.routes.length - 14);
+    expect(result.routes).toHaveLength(extraction.routes.length - 4);
   });
 });
 
-const COLLIDING_FINANCE = scriptCfc(
+const COLLIDING_RECORDS = scriptCfc(
   '',
   '\tfunction init() {',
   '\t\treturn this;',
@@ -2353,13 +2349,13 @@ describe('extractRoutes errors', () => {
   it.each([
     [
       'a fixture module with no owning service',
-      { [FIXTURE_API_PATH]: replaceOnce(textOf(FIXTURES, FIXTURE_API_PATH), '"people,finance,reporting"', '"people,payroll"') },
+      { [FIXTURE_API_PATH]: replaceOnce(textOf(FIXTURES, FIXTURE_API_PATH), '"people"', '"people,payroll"') },
       `${FIXTURE_API_PATH}: fixture module payroll has no owning service`,
     ],
     [
       'two handlers behind one fixture route key',
-      { [FIXTURE_API_PATH]: replaceOnce(textOf(FIXTURES, FIXTURE_API_PATH), '"people,finance,reporting"', '"finance"'), [FINANCE]: COLLIDING_FINANCE },
-      `${FINANCE}: fixture:finance/records/{id}/{id}@get dispatches to both first and second`,
+      { [PEOPLE]: COLLIDING_RECORDS },
+      `${PEOPLE}: fixture:people/records/{id}/{id}@get dispatches to both first and second`,
     ],
   ])('rejects %s', async (_name, changes, message) => {
     const files = new Map<string, string>(Object.entries(FIXTURES));

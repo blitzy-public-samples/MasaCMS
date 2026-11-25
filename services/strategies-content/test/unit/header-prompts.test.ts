@@ -1,5 +1,4 @@
 /** `getHeaderPrompts` over a throwaway `content` schema: the five counts per role and tenant, auth denials and the contract operation. */
-import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -18,6 +17,7 @@ import {
   assertResponseMatchesOpenApi,
   createThrowawaySchema,
   fixedClock,
+  loadOpenApiDocument,
   mintServiceToken,
   mintUserToken,
   pgAvailable,
@@ -34,7 +34,7 @@ import { registerHeaderPromptRoutes } from '../../src/routes/v1/header-prompts.j
 type ContractOperation = Record<string, unknown>;
 type Row = Record<string, unknown>;
 
-const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as {
+const OPENAPI = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as {
   paths: Record<string, Record<string, ContractOperation>>;
 };
 const SERVICE = 'strategies-content';

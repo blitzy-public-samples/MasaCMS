@@ -1,5 +1,5 @@
 // SYNTHETIC: people - no Masa equivalent; legacy oracle in legacy-fixtures/
-component output="false" hint="Person archive records, with blackout of the person's open timesheet days, for the SYNTHETIC people fixture." {
+component output="false" hint="Person archive records for the SYNTHETIC people fixture." {
 
 	public any function init(required any envelope, required any auth) hint="Stores the envelope and auth helpers." {
 		variables.envelope = arguments.envelope;
@@ -20,22 +20,21 @@ component output="false" hint="Person archive records, with blackout of the pers
 		variables.envelope.raise("notFound");
 	}
 
-	private struct function archive(required struct route) hint="Archives the person from effectiveFrom, blacks out their open timesheet days through usp_person_archived_blackout, and returns the archive record." {
+	private struct function archive(required struct route) hint="Archives the person from effectiveFrom and returns the archive record." {
 		local.user = gate(arguments.route);
 		local.effectiveFrom = effectiveFromParam(arguments.route.params);
 
 		local.now = now();
 		local.archiveId = createUUID();
-		local.keys = {
+		local.record = {
 			archive_id = idParam(local.archiveId),
 			person_id = idParam(arguments.route.id),
 			siteID = {value = local.user.getSiteID(), cfsqltype = "cf_sql_nvarchar"},
 			effective_from = {value = local.effectiveFrom, cfsqltype = "cf_sql_timestamp"},
-			now = {value = local.now, cfsqltype = "cf_sql_timestamp"}
+			now = {value = local.now, cfsqltype = "cf_sql_timestamp"},
+			archived_by_id = idParam(variables.auth.userId()),
+			archived_by = {value = left(variables.auth.currentUser().getFullName(), 50), cfsqltype = "cf_sql_nvarchar"}
 		};
-		local.record = duplicate(local.keys);
-		local.record.archived_by_id = idParam(variables.auth.userId());
-		local.record.archived_by = {value = left(variables.auth.currentUser().getFullName(), 50), cfsqltype = "cf_sql_nvarchar"};
 
 		transaction {
 			// UPDLOCK, HOLDLOCK queues archives of one person here until commit; TOP (1) keeps a found row to one key lock, avoiding range-lock deadlocks.
@@ -49,10 +48,6 @@ component output="false" hint="Person archive records, with blackout of the pers
 			queryExecute(
 				"INSERT INTO synthetic.person_archive (archive_id, person_id, siteID, effective_from, archived_at, archived_by_id, archived_by) VALUES (:archive_id, :person_id, :siteID, :effective_from, :now, :archived_by_id, :archived_by)",
 				local.record
-			);
-			queryExecute(
-				"EXEC synthetic.usp_person_archived_blackout @person_id = :person_id, @siteID = :siteID, @effective_from = :effective_from, @archive_id = :archive_id, @now = :now",
-				local.keys
 			);
 		}
 		return {"data" = variables.envelope.rows(findArchives(true, local.archiveId))[1]};

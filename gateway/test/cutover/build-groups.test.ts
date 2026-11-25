@@ -138,7 +138,6 @@ const OWNERSHIP: OwnershipDoc = {
     'identity.user_account',
     'people.person',
     'people.person_archive',
-    'timesheets.blackout',
   ].map((unit) => ({ unit, owner: unit.split('.')[0] as string, legacyTables: [] })),
   tables: [
     USERS_TABLE,
@@ -304,7 +303,7 @@ describe('buildGroups', () => {
   });
 
   it('places a joining unit in the carry group of the unit it joins, whose id stays named by its own units', () => {
-    const joiner = { unit: 'communications.scheduled_task', owner: 'communications', legacyTables: [], joinsUnit: 'people.person' };
+    const joiner = { unit: 'content.sample_joiner', owner: 'strategies-content', legacyTables: [], joinsUnit: 'people.person' };
     const built = buildGroups(
       fixture(
         { variants: [variant('admin:cusers.update{type=2,action=add}', ['people.person', 'identity.user_account'])] },
@@ -313,7 +312,7 @@ describe('buildGroups', () => {
     );
     expect(groupOf(built, joiner.unit)).toEqual({
       id: 'grp:identity.user_account',
-      units: ['communications.scheduled_task', 'identity.user_account', 'people.person'],
+      units: ['content.sample_joiner', 'identity.user_account', 'people.person'],
       writeEntries: ['admin:cusers.update{type=2,action=add}'],
       hasCarryWrite: true,
     });

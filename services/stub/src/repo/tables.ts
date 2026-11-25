@@ -1,8 +1,8 @@
 /** Owned tables of schema `stub`, as the platform repository declares them. */
 import type { CanonicalColumn, TableDefinition } from '@opt2/platform/migration-kit';
 
-/** Units of write authority of schema `stub`, as `0001_stub.sql` seeds their gates. */
-export const STUB_UNITS = ['stub.note', 'stub.note_projection'] as const;
+/** Units of write authority of schema `stub`, as `0001_stub.sql` and `0004_note_comments.sql` seed their gates. */
+export const STUB_UNITS = ['stub.note', 'stub.note_projection', 'stub.note_comment', 'stub.note_activity'] as const;
 
 /** A keyed stub table definition gated by the stub unit `U`. */
 interface StubTableDefinition<U extends (typeof STUB_UNITS)[number]> extends TableDefinition {
@@ -46,5 +46,35 @@ export const NOTE_PROJECTION_TABLE: StubTableDefinition<'stub.note_projection'> 
   unit: 'stub.note_projection',
 };
 
+/** Definition of `stub.note_comment` for the platform repository. */
+export const NOTE_COMMENT_TABLE: StubTableDefinition<'stub.note_comment'> = {
+  table: 'note_comment',
+  columns: [
+    TENANT_ID,
+    { name: 'comment_id', type: 's' },
+    { name: 'note_id', type: 's' },
+    { name: 'author_site_id', type: 's' },
+    { name: 'body', type: 's' },
+    { name: 'created', type: 't' },
+  ],
+  key: ['comment_id'],
+  unit: 'stub.note_comment',
+};
+
+/** Definition of `stub.note_activity` for the platform repository. */
+export const NOTE_ACTIVITY_TABLE: StubTableDefinition<'stub.note_activity'> = {
+  table: 'note_activity',
+  columns: [
+    TENANT_ID,
+    { name: 'event_id', type: 's' },
+    { name: 'note_id', type: 's' },
+    { name: 'comment_id', type: 's' },
+    { name: 'aggregate_version', type: 'i' },
+    { name: 'applied_at', type: 't' },
+  ],
+  key: ['event_id'],
+  unit: 'stub.note_activity',
+};
+
 /** Every stub table, in `STUB_UNITS` order; the `tables` of the stub repository. */
-export const STUB_TABLES: readonly TableDefinition[] = [NOTE_TABLE, NOTE_PROJECTION_TABLE];
+export const STUB_TABLES: readonly TableDefinition[] = [NOTE_TABLE, NOTE_PROJECTION_TABLE, NOTE_COMMENT_TABLE, NOTE_ACTIVITY_TABLE];

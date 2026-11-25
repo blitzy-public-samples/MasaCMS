@@ -3,8 +3,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ADMIN_LOGIN_REDIRECT_ACTION, ADMIN_NOACCESS_ACTION, esapiUrlEncode } from '@opt2/platform/legacy-compat';
 import { applicationGate, runGate, secure, type GateDecision, type ScreenGate } from '@/lib/access-gate';
 import type { AdminRequest } from '@/lib/request-context';
-import { opt2Screens } from '@/screens/opt2';
-import { noAccessUrl } from '@/screens/opt2/shared';
 import { noSitesSession, s2PrivateMemberSession } from '../fixtures/session';
 import {
   adminS2Request,
@@ -13,11 +11,9 @@ import {
   editorRequest,
   makeAdminRequest,
   noSitesRequest,
-  opt2RoleRequest,
   type AdminRequestPartial,
 } from '../helpers/admin-request';
 import { useTestEnv } from '../helpers/env';
-import { SUBJECTS } from '../helpers/tokens';
 
 const ALLOW: GateDecision = { kind: 'allow' };
 const redirect = (location: string): GateDecision => ({ kind: 'redirect', location });
@@ -32,13 +28,6 @@ const REFERER = 'http://example.test/admin/?muraAction=cusers.list';
 function loginRedirect(returnUrl: string, compactDisplay?: string): GateDecision {
   const tail = compactDisplay === undefined ? '' : `&compactDisplay=${esapiUrlEncode(compactDisplay)}`;
   return redirect(`./?muraAction=cLogin.main&returnURL=${esapiUrlEncode(returnUrl)}${tail}`);
-}
-
-/** The same redirect with the absolute admin `path` a synthetic-module request gets. */
-function absoluteLogin(path: string, returnUrl: string, compactDisplay: string): GateDecision {
-  return redirect(
-    `${path}?muraAction=cLogin.main&returnURL=${esapiUrlEncode(returnUrl)}&compactDisplay=${esapiUrlEncode(compactDisplay)}`,
-  );
 }
 
 /** An anonymous `cusers.list` request from `example.test`, whose registry domains include that host. */
@@ -196,43 +185,6 @@ describe('secure (controller.cfc 83-92)', () => {
     expect(secure(request)).toEqual(loginRedirect('http://example.test/admin/?&muraAction=cusers.list'));
   });
 
-  it.each<[label: string, settings: Record<string, string>, partial: AdminRequestPartial, expected: GateDecision]>([
-    [
-      'a screen',
-      { MURA_PORT: '8100' },
-      { requestTarget: '/opt2/admin/finance/records?siteid=tenant-a' },
-      absoluteLogin('/admin/', 'http://example.test:8100/opt2/admin/finance/records?siteid=tenant-a', 'false'),
-    ],
-    [
-      'a screen over HTTPS on the default port',
-      { MURA_PORT: '443' },
-      { https: true, requestTarget: '/opt2/admin/e-signature/requests?siteid=tenant-a' },
-      absoluteLogin('/admin/', 'https://example.test/opt2/admin/e-signature/requests?siteid=tenant-a', 'false'),
-    ],
-    [
-      'a post action carrying compactDisplay',
-      { MURA_PORT: '8100' },
-      { requestTarget: '/opt2/admin-actions/finance/transition?id=R1', rc: { compactDisplay: 'true' } },
-      absoluteLogin('/admin/', 'http://example.test:8100/opt2/admin-actions/finance/transition?id=R1', 'true'),
-    ],
-    [
-      'a configured context and admin directory',
-      { MURA_PORT: '8100', MURA_CONTEXT: '/cms', MURA_ADMINDIR: '/manage' },
-      { requestTarget: '/opt2/admin/surveys/list' },
-      absoluteLogin('/cms/manage/', 'http://example.test:8100/opt2/admin/surveys/list', 'false'),
-    ],
-    [
-      'a host outside the registry domains',
-      { MURA_PORT: '8100' },
-      { serverName: 'evil.test', httpHost: 'evil.test:8100', requestTarget: '/opt2/admin/finance/records' },
-      absoluteLogin('/admin/', 'http://example.test:8100/opt2/admin/finance/records', 'false'),
-    ],
-  ])('sends an anonymous synthetic-module user from %s to the admin login', (_label, settings, partial, expected) => {
-    withSettings(settings);
-
-    expect(secure(anonymousListRequest({ mode: 'opt2', ...partial }))).toEqual(expected);
-  });
-
   it.each<[string, HeadersInit, string]>([
     ['the referrer', { referer: REFERER }, REFERER],
     ['./ without a referrer', {}, './'],
@@ -298,31 +250,3 @@ describe('runGate', () => {
     );
   });
 });
-
-describe('runGate on synthetic-module screens', () => {
-  // Seeded role holders are private system users whom identity lists no administered site.
-  const cases = opt2Screens.flatMap((def) => {
-    const screen = `${def.module}/${def.screen}`;
-    const holders = def.roles.map((role) => ({ screen, holder: role, def, role, allowed: true }));
-    const roleless = { screen, holder: 'a role-less system user', def, role: undefined, allowed: false };
-    return def.gate === undefined ? holders : [...holders, roleless];
-  });
-
-  it.each(cases)('answers $holder on $screen without an administered site', async ({ def, role, allowed }) => {
-    const partial = { mode: 'opt2', session: { siteid: SUBJECTS.systemUser.site, siteArray: [] } } as const;
-    const request = role === undefined ? noSitesRequest({ s2IsPrivate: true }, partial) : opt2RoleRequest(role, partial);
-
-    expect(request.session.s2IsPrivate).toBe(true);
-    expect(applicationGate({ ...request, mode: 'page' })).toEqual(redirect(NOACCESS));
-    await expect(runGate(request, def.gate)).resolves.toEqual(allowed ? ALLOW : redirect(noAccessUrl()));
-  });
-
-  it.each(opt2Screens)('sends a site-less public member on $module/$screen to clogin.logout', async (def) => {
-    const request = noSitesRequest({ s2IsPrivate: false }, { mode: 'opt2' });
-
-    expect(request.session.s2IsPrivate).toBe(false);
-    expect(applicationGate({ ...request, mode: 'page' })).toEqual(redirect(LOGOUT));
-    await expect(runGate(request, def.gate)).resolves.toEqual(redirect(LOGOUT));
-  });
-});
-

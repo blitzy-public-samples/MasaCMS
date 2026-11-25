@@ -59,7 +59,7 @@ export interface LegacyTableShape {
 /** Ports {@link streamLegacyTable} and {@link describeLegacyTable} read through. */
 export type LegacyTableDeps = Pick<MigrationContext, 'legacy' | 'catalog'>;
 
-/** A logical name (`Program_N.timesheet`), a physical name (`tcontent`, `Program_1.timesheet`) or a migratable table, with stream options. */
+/** A logical name (`Program_N.<table>`), a physical name (`tcontent`, `Program_1.<table>`) or a migratable table, with stream options. */
 export type LegacyTableOptions = Omit<StreamOptions, 'legacy' | 'table' | 'label'> & { table: string | MigratableTable };
 
 /** The parts of one folded table disagree on column names, order or canonical types, on keyed-ness or key, or there are none. */

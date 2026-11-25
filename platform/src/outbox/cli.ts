@@ -48,7 +48,6 @@ const DEFAULT_BATCH_SIZE = 500;
 const SCHEMA_BY_SERVICE: ReadonlyMap<string, string> = new Map([
   ['programs-sites', 'programs_sites'],
   ['strategies-content', 'content'],
-  ['e-signature', 'esignature'],
 ]);
 
 const PASSWORD_DB_KEYS = ['PG_HOST', 'PG_PORT', 'PG_USER', 'PG_PASSWORD'] as const;

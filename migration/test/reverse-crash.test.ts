@@ -22,7 +22,7 @@ import { CrashInjectedError, createFakeLegacyDb, type FakeLegacyDb, type Row, ty
 import { FIXTURE_GROUP_IDS, TABLES, UNITS, defineFixtureTables, fixtureVersion, mailingListMemberRow, siteRow } from './helpers/fixtures.js';
 import type { OwnerDoubleState, ScriptedChangesPage } from './helpers/owner-double.js';
 
-const OWNER = 'communications';
+const OWNER = 'programs-sites';
 const MEMBERS = TABLES.tmailinglistmembers;
 const UNIT = UNITS.mailingListMember;
 const TARGET_TABLE = UNIT.slice(UNIT.indexOf('.') + 1);
@@ -30,8 +30,8 @@ const TARGET_TABLE = UNIT.slice(UNIT.indexOf('.') + 1);
 /** Every live column of `tmailinglistmembers`, typed as the fake's multiset encodes them. */
 const COLUMNS: CanonicalColumn[] = MEMBERS.columns.map((column) => ({ name: column.name, ...canonicalTypeForSqlServer(column.type) }));
 
-/** Communications `target`-authoritative, every other group `legacy`. */
-const VERSION = fixtureVersion('v0201', { [FIXTURE_GROUP_IDS.communications]: 'target' });
+/** The mailing lists `target`-authoritative, every other group `legacy`. */
+const VERSION = fixtureVersion('v0201', { [FIXTURE_GROUP_IDS.mailingLists]: 'target' });
 
 /** Two identical rows a delete removes one occurrence of, and three identical rows an update rewrites one of. */
 const D = mailingListMemberRow({ Email: 'duplicate.delete@example.test' });
@@ -67,7 +67,7 @@ function crashAfterFirstLegacyCommit(): ProjectorHooks {
 
 const refuseGuard: StartupGuardRunner = { run: () => Promise.reject(new Error('no batch here touches tcontent')) };
 
-/** A communications changelog row of `tmailinglistmembers` at `<xid>:1`, projected for its unit. */
+/** A programs-sites changelog row of `tmailinglistmembers` at `<xid>:1`, projected for its unit. */
 function memberChange(xid: number, op: ChangeRow['op'], images: { before?: Row; after?: Row }, changed: string[] = []): ScriptedChangesPage['rows'][number] {
   const before = images.before === undefined ? null : encoded(images.before);
   const after = images.after === undefined ? null : encoded(images.after);
@@ -181,7 +181,7 @@ describe.skipIf(!PG_AVAILABLE)(SUITE, () => {
     legacy.clearLogs();
   }
 
-  /** Starts a process whose communications double answers `pages` in order, one per changes call. */
+  /** Starts a process whose programs-sites double answers `pages` in order, one per changes call. */
   async function startProcess(pages: readonly ScriptedChangesPage[], hooks: ProjectorHooks = {}): Promise<ProjectorProcess> {
     const tc = await buildTestContext({
       legacy,

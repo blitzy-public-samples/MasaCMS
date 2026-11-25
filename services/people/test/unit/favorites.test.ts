@@ -1,5 +1,4 @@
 /** The favorites templates through `app.inject` over a throwaway `people` schema and a strategies-content double. */
-import { readFileSync } from 'node:fs';
 import { connect, type AddressInfo } from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -16,6 +15,7 @@ import {
   assertResponseMatchesOpenApi,
   createThrowawaySchema,
   fixedClock,
+  loadOpenApiDocument,
   mintServiceToken,
   pgAvailable,
   seedRegistry,
@@ -49,7 +49,7 @@ import { createIdentityDouble } from '../helpers/identity-double.js';
 import { silentLogger } from '../helpers/route-app.js';
 import { DEFAULT_PEOPLE_SEED, POOLED_MEMBER_PERSON, SYSTEM_USER_A_PERSON, favoriteRow, seedPeople } from '../helpers/fixtures.js';
 
-const OPENAPI = parse(readFileSync(fileURLToPath(new URL('../../contracts/openapi.yaml', import.meta.url)), 'utf8')) as object;
+const OPENAPI = loadOpenApiDocument(fileURLToPath(new URL('../../contracts/openapi.yaml', import.meta.url)), parse) as object;
 const MIGRATIONS_DIR = fileURLToPath(new URL('../../db/migrations', import.meta.url));
 const SERVICE = 'people';
 /** The methods whose answer carries the template's body; HEAD answers their headers alone. */

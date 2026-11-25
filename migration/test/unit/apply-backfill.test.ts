@@ -104,9 +104,9 @@ const SPECS = {
   tcontent: { columns: text('ContentID', 'SiteID', 'FileID', 'Title'), keyColumns: ['ContentID'] },
   tfiles: { columns: text('fileID', 'siteID', 'filename'), keyColumns: ['fileID'] },
   temailstats: { columns: text('EmailID', 'Email', 'sent'), keyColumns: [] },
-  'Program_N.blackout': {
-    columns: [...text('blackout_id', 'reason'), { name: LEGACY_PROGRAM_ID_COLUMN, type: 'i' }],
-    keyColumns: ['blackout_id', LEGACY_PROGRAM_ID_COLUMN],
+  'Program_N.enrolment': {
+    columns: [...text('enrolment_id', 'status'), { name: LEGACY_PROGRAM_ID_COLUMN, type: 'i' }],
+    keyColumns: ['enrolment_id', LEGACY_PROGRAM_ID_COLUMN],
     programIds: [1, 2],
   },
 } satisfies Record<string, TableSpec>;
@@ -187,8 +187,8 @@ const OWNERSHIP: Ownership = {
     ]),
     ...unitsOf('tcontent', [['content.content', 'strategies-content']]),
     ...unitsOf('tfiles', [['content.file', 'strategies-content']]),
-    ...unitsOf('temailstats', [['communications.email_stat', 'communications']]),
-    ...unitsOf('Program_N.blackout', [['timesheets.blackout', 'timesheets']]),
+    ...unitsOf('temailstats', [['programs_sites.email_stat', 'programs-sites']]),
+    ...unitsOf('Program_N.enrolment', [['programs_sites.enrolment', 'programs-sites']]),
   ],
   tables: [
     splitTable('tusers', ['UserID'], 'SiteID', [
@@ -225,26 +225,26 @@ const OWNERSHIP: Ownership = {
       tenantResolution: 'siteID-or-umbrella',
       targets: [whole('content.file', 'strategies-content', ['fileID'])],
     },
-    { table: 'temailstats', owner: 'communications', primaryKey: [], targets: [whole('communications.email_stat', 'communications', [])] },
+    { table: 'temailstats', owner: 'programs-sites', primaryKey: [], targets: [whole('programs_sites.email_stat', 'programs-sites', [])] },
     {
-      table: 'Program_N.blackout',
-      owner: 'timesheets',
-      primaryKey: ['blackout_id'],
+      table: 'Program_N.enrolment',
+      owner: 'programs-sites',
+      primaryKey: ['enrolment_id'],
       programFold: true,
-      targets: [whole('timesheets.blackout', 'timesheets', ['blackout_id'])],
+      targets: [whole('programs_sites.enrolment', 'programs-sites', ['enrolment_id'])],
     },
   ],
 };
 
-/** OWNERSHIP with two communications targets taking every `temailstats` row under different class-map owners. */
+/** OWNERSHIP with two programs-sites targets taking every `temailstats` row under different class-map owners. */
 function withEmailStatsByClass(): Ownership {
   const ownership = structuredClone(OWNERSHIP);
-  ownership.units.push({ unit: 'communications.email_stat_alt', owner: 'communications', legacyTables: ['temailstats'] });
+  ownership.units.push({ unit: 'programs_sites.email_stat_alt', owner: 'programs-sites', legacyTables: ['temailstats'] });
   const stats = ownership.tables.find((table) => table.table === 'temailstats');
   if (stats === undefined) throw new Error('OWNERSHIP has no temailstats entry');
   stats.targets = [
-    whole('communications.email_stat', 'communications', [], 'classMap owner = a'),
-    whole('communications.email_stat_alt', 'communications', [], 'classMap owner = b'),
+    whole('programs_sites.email_stat', 'programs-sites', [], 'classMap owner = a'),
+    whole('programs_sites.email_stat_alt', 'programs-sites', [], 'classMap owner = b'),
   ];
   return ownership;
 }
@@ -269,7 +269,7 @@ const trash = (id: string, site: string, objectClass: string): Row => ({ objectI
 const content = (id: string, site: string, fileId: string | null): Row => ({ ContentID: id, SiteID: site, FileID: fileId, Title: `Title ${id}` });
 const file = (id: string, site: string): Row => ({ fileID: id, siteID: site, filename: `${id}.pdf` });
 const stat = (id: string, email: string): Row => ({ EmailID: id, Email: email, sent: '1' });
-const blackout = (id: string, programId: number): Row => ({ blackout_id: id, reason: 'leave', [LEGACY_PROGRAM_ID_COLUMN]: String(programId) });
+const enrolment = (id: string, programId: number): Row => ({ enrolment_id: id, status: 'enrolled', [LEGACY_PROGRAM_ID_COLUMN]: String(programId) });
 
 /** Users the split child rows belong to: one group and two users. */
 const USERS = [user('G1', 'tenant-a', '1'), user('U1', 'tenant-a', '2'), user('U2', 'tenant-b', '2')];
@@ -700,7 +700,7 @@ describe('runBackfill split routing', () => {
     seed({ temailstats: [stat('E1', 'one@example.test')] });
 
     await expect(runBackfill(contextFor(), { snapshotSeq: 0 })).rejects.toThrow(
-      'a keyless temailstats row is taken by communications targets with different discriminators',
+      'a keyless temailstats row is taken by programs-sites targets with different discriminators',
     );
     expect(world.applies).toEqual([]);
   });
@@ -833,23 +833,23 @@ describe('runBackfill deferred columns', () => {
 
 describe('runBackfill run', () => {
   it('loads tables in dependency order, folds Program_<id> parts once and appends tables the order omits by name', async () => {
-    world.order = ['Program_2.blackout', 'Program_1.blackout', 'tcontent', 'tmissing'];
-    seed({ tfiles: [], tcontent: [], 'Program_N.blackout': [blackout('B1', 1), blackout('B2', 2)] });
+    world.order = ['Program_2.enrolment', 'Program_1.enrolment', 'tcontent', 'tmissing'];
+    seed({ tfiles: [], tcontent: [], 'Program_N.enrolment': [enrolment('B1', 1), enrolment('B2', 2)] });
 
     const result = await runBackfill(contextFor(), { snapshotSeq: 0 });
 
-    expect(result.order).toEqual(['Program_N.blackout', 'tcontent', 'tfiles']);
+    expect(result.order).toEqual(['Program_N.enrolment', 'tcontent', 'tfiles']);
     expect(computeDependencyOrder).toHaveBeenCalledWith({
       inventory: CONFIG.paths.inventory,
       catalog,
       reportsOpts: { target: REPORT_TARGET, clock: CLOCK },
       programIds: [1, 2],
     });
-    expect(world.applies.filter(({ owner }) => owner === 'timesheets').map(({ request }) => [request.legacyTable, request.legacyProgramId])).toEqual([
-      ['Program_1.blackout', 1],
-      ['Program_2.blackout', 2],
+    expect(world.applies.filter(({ owner }) => owner === 'programs-sites').map(({ request }) => [request.legacyTable, request.legacyProgramId])).toEqual([
+      ['Program_1.enrolment', 1],
+      ['Program_2.enrolment', 2],
     ]);
-    expect(world.puts).toContainEqual({ owner: 'timesheets', record: forward('Program_N.blackout') });
+    expect(world.puts).toContainEqual({ owner: 'programs-sites', record: forward('Program_N.enrolment') });
   });
 
   it.each([

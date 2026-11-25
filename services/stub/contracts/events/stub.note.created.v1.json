@@ -3,8 +3,9 @@
   "$id": "urn:opt2:stub:event:stub.note.created.v1",
   "$comment": "source-sha: 696383140578f8dea3ece26f80cd7bfb370ddf0f",
   "title": "stub.note.created.v1 payload",
-  "description": "Full state of a stub note after creation.",
+  "description": "Full state of a stub note after creation; destinations are the note's tenant and every site whose registered public or private user pool it is.",
   "x-opt2-kind": "state",
+  "x-opt2-tenant-fanout": "userPool",
   "type": "object",
   "additionalProperties": false,
   "required": [

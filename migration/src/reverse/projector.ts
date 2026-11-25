@@ -46,7 +46,6 @@ import {
   type LegacyEffect,
   type RequestScope,
 } from './apply-legacy.js';
-import { bindAttachmentContent } from './attachments.js';
 import { guardOwners, type UnavailableOwners } from './availability.js';
 import { FILE_OBJECT_UNIT, executeFileOps, isFileObjectChange, planFileOps } from './files.js';
 import {
@@ -1320,10 +1319,7 @@ class ProjectorCycle {
     if (guardError !== undefined) throw guardError;
   }
 
-  /**
-   * Splits a part's rows into legacy changes and file-store rows; rows whose table has no legacy form count as target-only.
-   * Finance attachment and reporting export job changes carry their bytes, read from the owner before the batch transaction opens.
-   */
+  /** Splits a part's rows into legacy changes and file-store rows; rows whose table has no legacy form count as target-only. */
   async #decode(part: BatchPart): Promise<DecodedPart> {
     const { owner, tenantId } = part.stream;
     const changes: LegacyChange[] = [];
@@ -1341,7 +1337,7 @@ class ProjectorCycle {
       const change = decodeLegacyChange(row, { owner, tenantId, unit, columns });
       if (change === null) targetOnly += 1;
       else {
-        changes.push(await bindAttachmentContent(this.#ctx, change));
+        changes.push(change);
         sources.push(row);
       }
     }

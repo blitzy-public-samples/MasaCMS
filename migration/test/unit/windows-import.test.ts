@@ -32,7 +32,7 @@ import {
 } from '../../src/windows/import.js';
 import { DELETION_POLL_MS, DELETION_WAIT_MS, type PublishedCursors } from '../../src/windows/site-deletion.js';
 import { REGISTRATION_POLL_MS, REGISTRATION_WAIT_MS } from '../../src/windows/site-registration.js';
-import { writeInventoryFile } from '../helpers/fixtures.js';
+import { UNITS, fixtureInventoryFor, writeInventoryFile, writeOwnershipFile } from '../helpers/fixtures.js';
 
 type Row = Record<string, unknown>;
 
@@ -416,49 +416,57 @@ const TSETTINGS: TableSpec = {
   ],
 };
 
-const SURVEY_TABLE: TableSpec = {
-  columns: [int('survey_id'), varchar('siteID', 25), { name: 'title', type: 'nvarchar', maxLength: 200 }, varchar('created_by', 35)],
-  primaryKey: ['survey_id'],
+const ARCHIVE_TABLE: TableSpec = {
+  columns: [int('archive_id'), varchar('siteID', 50), { name: 'archived_by', type: 'nvarchar', maxLength: 50 }, varchar('archived_by_id', 35)],
+  primaryKey: ['archive_id'],
   rows: [
-    { survey_id: 1, siteID: 'tenant-a', title: 'Renamed', created_by: 'x' },
-    { survey_id: 3, siteID: 'tenant-a', title: 'New', created_by: 'x' },
-    { survey_id: 4, siteID: 'tenant-b', title: 'Changed out of scope', created_by: 'x' },
-    { survey_id: 5, siteID: 'tenant-a', title: 'Same', created_by: 'x' },
+    { archive_id: 1, siteID: 'tenant-a', archived_by: 'Renamed', archived_by_id: 'x' },
+    { archive_id: 3, siteID: 'tenant-a', archived_by: 'New', archived_by_id: 'x' },
+    { archive_id: 4, siteID: 'tenant-b', archived_by: 'Changed out of scope', archived_by_id: 'x' },
+    { archive_id: 5, siteID: 'tenant-a', archived_by: 'Same', archived_by_id: 'x' },
   ],
 };
 
-const SURVEY_EXPORT: UnitExportSpec = {
-  legacyTable: 'synthetic.survey',
-  columns: [i('survey_id'), s('siteID'), s('title')],
+const ARCHIVE_EXPORT: UnitExportSpec = {
+  legacyTable: 'synthetic.person_archive',
+  columns: [i('archive_id'), s('siteID'), s('archived_by')],
   rows: {
     'tenant-a': [
-      { survey_id: '1', siteID: 'tenant-a', title: 'Original' },
-      { survey_id: '2', siteID: 'tenant-a', title: 'Deleted in legacy' },
-      { survey_id: '5', siteID: 'tenant-a', title: 'Same' },
+      { archive_id: '1', siteID: 'tenant-a', archived_by: 'Original' },
+      { archive_id: '2', siteID: 'tenant-a', archived_by: 'Deleted in legacy' },
+      { archive_id: '5', siteID: 'tenant-a', archived_by: 'Same' },
     ],
-    'tenant-b': [{ survey_id: '4', siteID: 'tenant-b', title: 'Before' }],
+    'tenant-b': [{ archive_id: '4', siteID: 'tenant-b', archived_by: 'Before' }],
   },
 };
 
 let inventoryDir: string;
-let inventory: string;
+let committedInventory: string;
+let fixtureInventory: string;
+let fixtureOwnership: string;
 
 beforeAll(async () => {
   inventoryDir = await mkdtemp(join(tmpdir(), 'windows-import-inventory-'));
-  inventory = await writeInventoryFile(inventoryDir);
+  committedInventory = await writeInventoryFile(join(inventoryDir, 'committed'), fixtureInventoryFor(loadUnitCatalog(loadConfig().paths.tableOwnership)));
+  fixtureInventory = await writeInventoryFile(join(inventoryDir, 'fixture'));
+  fixtureOwnership = await writeOwnershipFile(join(inventoryDir, 'fixture'));
 });
 
 afterAll(async () => {
   await rm(inventoryDir, { recursive: true, force: true });
 });
 
-/** A window import context over the committed table ownership, ordering tables by the fixture inventory; the system clock unless `clock` is given. */
-function contextOf(parts: { legacy: LegacyDb; owners: OwnersClient; bridge?: BridgeClient; batchRows?: number; clock?: Clock }): WindowImportContext {
+/**
+ * A window import context over the committed table ownership, or the fixture's with `fixture`, ordering tables by the fixture
+ * inventory of the tables that ownership records; the system clock unless `clock` is given.
+ */
+function contextOf(parts: { legacy: LegacyDb; owners: OwnersClient; bridge?: BridgeClient; batchRows?: number; clock?: Clock; fixture?: boolean }): WindowImportContext {
   const base = loadConfig();
+  const [tableOwnership, inventory] = parts.fixture === true ? [fixtureOwnership, fixtureInventory] : [base.paths.tableOwnership, committedInventory];
   return {
-    config: { ...base, paths: { ...base.paths, inventory }, backfill: { ...base.backfill, batchRows: parts.batchRows ?? base.backfill.batchRows } },
+    config: { ...base, paths: { ...base.paths, inventory, tableOwnership }, backfill: { ...base.backfill, batchRows: parts.batchRows ?? base.backfill.batchRows } },
     legacy: parts.legacy,
-    catalog: loadUnitCatalog(base.paths.tableOwnership),
+    catalog: loadUnitCatalog(tableOwnership),
     owners: parts.owners,
     bridge: parts.bridge ?? fakeBridge({}).bridge,
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger,
@@ -575,40 +583,40 @@ describe('legacyProjector', () => {
 
 describe('importWindow', () => {
   it('sends scoped inserts, updates and deletes to the owner as legacy-window writes', async () => {
-    const { legacy, db } = fakeLegacy({ 'dbo.tsettings': TSETTINGS, 'synthetic.survey': SURVEY_TABLE });
-    const fake = fakeOwners({ 'surveys.survey': SURVEY_EXPORT });
-    const result = await importWindow(contextOf({ legacy, owners: fake.owners }), windowInput(['surveys.survey'], { keys: { siteid: 'tenant-a' } }));
+    const { legacy, db } = fakeLegacy({ 'dbo.tsettings': TSETTINGS, 'synthetic.person_archive': ARCHIVE_TABLE });
+    const fake = fakeOwners({ 'people.person_archive': ARCHIVE_EXPORT });
+    const result = await importWindow(contextOf({ legacy, owners: fake.owners }), windowInput(['people.person_archive'], { keys: { siteid: 'tenant-a' } }));
 
     // Upserts go first, the table's deletes in a later batch.
     expect(fake.applies.map(({ request }) => [request.batchId, request.rows.map((row) => row.op)])).toEqual([
-      [windowBatchId('W1', 1, 'surveys', 'synthetic.survey', 0), ['upsert', 'upsert']],
-      [windowBatchId('W1', 1, 'surveys', 'synthetic.survey', 1), ['delete']],
+      [windowBatchId('W1', 1, 'people', 'synthetic.person_archive', 0), ['upsert', 'upsert']],
+      [windowBatchId('W1', 1, 'people', 'synthetic.person_archive', 1), ['delete']],
     ]);
     for (const { owner, request } of fake.applies) {
-      expect(owner).toBe('surveys');
+      expect(owner).toBe('people');
       expect(request).toMatchObject({
         origin: 'legacy-window',
-        legacyTable: 'synthetic.survey',
+        legacyTable: 'synthetic.person_archive',
         tenantId: TENANT_A,
-        units: ['surveys.survey'],
+        units: ['people.person_archive'],
         holderId: 'W1',
-        columns: SURVEY_EXPORT.columns,
+        columns: ARCHIVE_EXPORT.columns,
       });
     }
-    expect(fake.appliedRows().map(({ op, values }) => [op, values.survey_id, values.title])).toEqual([
+    expect(fake.appliedRows().map(({ op, values }) => [op, values.archive_id, values.archived_by])).toEqual([
       ['upsert', '1', 'Renamed'],
       ['upsert', '3', 'New'],
       ['delete', '2', 'Deleted in legacy'],
     ]);
-    expect(result).toMatchObject({ rowsImported: 3, perOwner: { surveys: { batches: 2, rows: 3 } }, objectsTransferred: 0, objectsRemoved: [], touchedContent: false });
-    expect(result.writePositions.get('surveys')).toBe('102');
-    expect(db.queries.some((query) => /FROM \[synthetic\]\.\[survey\] WHERE/.test(query))).toBe(true);
+    expect(result).toMatchObject({ rowsImported: 3, perOwner: { people: { batches: 2, rows: 3 } }, objectsTransferred: 0, objectsRemoved: [], touchedContent: false });
+    expect(result.writePositions.get('people')).toBe('102');
+    expect(db.queries.some((query) => /FROM \[synthetic\]\.\[person_archive\] WHERE/.test(query))).toBe(true);
   });
 
   it('compares a tenant-b change only when the scope reaches it', async () => {
-    const { legacy } = fakeLegacy({ 'dbo.tsettings': TSETTINGS, 'synthetic.survey': SURVEY_TABLE });
-    const fake = fakeOwners({ 'surveys.survey': SURVEY_EXPORT });
-    const result = await importWindow(contextOf({ legacy, owners: fake.owners }), windowInput(['surveys.survey'], { table: true }));
+    const { legacy } = fakeLegacy({ 'dbo.tsettings': TSETTINGS, 'synthetic.person_archive': ARCHIVE_TABLE });
+    const fake = fakeOwners({ 'people.person_archive': ARCHIVE_EXPORT });
+    const result = await importWindow(contextOf({ legacy, owners: fake.owners }), windowInput(['people.person_archive'], { table: true }));
     const upserts: [string, string[]][] = [
       [TENANT_A, ['upsert', 'upsert']],
       [TENANT_B, ['upsert']],
@@ -685,14 +693,14 @@ describe('importWindow', () => {
 
   it('keeps batch ids stable within an attempt and new across attempts', async () => {
     const run = async (attempt: number): Promise<string[]> => {
-      const { legacy } = fakeLegacy({ 'dbo.tsettings': TSETTINGS, 'synthetic.survey': SURVEY_TABLE });
-      const fake = fakeOwners({ 'surveys.survey': SURVEY_EXPORT });
-      await importWindow(contextOf({ legacy, owners: fake.owners, batchRows: 2 }), windowInput(['surveys.survey'], { keys: { siteid: 'tenant-a' } }, attempt));
+      const { legacy } = fakeLegacy({ 'dbo.tsettings': TSETTINGS, 'synthetic.person_archive': ARCHIVE_TABLE });
+      const fake = fakeOwners({ 'people.person_archive': ARCHIVE_EXPORT });
+      await importWindow(contextOf({ legacy, owners: fake.owners, batchRows: 2 }), windowInput(['people.person_archive'], { keys: { siteid: 'tenant-a' } }, attempt));
       expect(fake.applies.map(({ request }) => request.rows.length)).toEqual([2, 1]);
       return fake.applies.map(({ request }) => request.batchId);
     };
     const first = await run(1);
-    expect(first).toEqual([windowBatchId('W1', 1, 'surveys', 'synthetic.survey', 0), windowBatchId('W1', 1, 'surveys', 'synthetic.survey', 1)]);
+    expect(first).toEqual([windowBatchId('W1', 1, 'people', 'synthetic.person_archive', 0), windowBatchId('W1', 1, 'people', 'synthetic.person_archive', 1)]);
     expect(await run(1)).toEqual(first);
     const retry = await run(2);
     expect(retry.some((id) => first.includes(id))).toBe(false);
@@ -703,21 +711,21 @@ describe('importWindow', () => {
     ['no match for a table scope', { table: true }, undefined],
     ['no match for a scope value too long to send', { keys: { siteid: 'x'.repeat(MAX_EXPORT_MATCH_LENGTH) } }, undefined],
   ] as [string, ImportInput['scope'], ExportParams['match']][])('reads every tenant export once with %s', async (_label, scope, match) => {
-    const { legacy } = fakeLegacy({ 'dbo.tsettings': TSETTINGS, 'synthetic.survey': SURVEY_TABLE });
-    const fake = fakeOwners({ 'surveys.survey': SURVEY_EXPORT });
-    await importWindow(contextOf({ legacy, owners: fake.owners }), windowInput(['surveys.survey'], scope));
+    const { legacy } = fakeLegacy({ 'dbo.tsettings': TSETTINGS, 'synthetic.person_archive': ARCHIVE_TABLE });
+    const fake = fakeOwners({ 'people.person_archive': ARCHIVE_EXPORT });
+    await importWindow(contextOf({ legacy, owners: fake.owners }), windowInput(['people.person_archive'], scope));
     // The scope's site is read as well, live or not.
     const sites = [...TSETTINGS.rows.map((row) => String(row.SiteID)), ...('keys' in scope && scope.keys.siteid !== undefined ? [scope.keys.siteid] : [])];
     const tenants = [...new Set(sites.map((site) => tenantIdForSite(site)))].sort();
-    expect(fake.exports).toEqual(tenants.map((tenantId) => ({ unit: 'surveys.survey', tenantId, match })));
+    expect(fake.exports).toEqual(tenants.map((tenantId) => ({ unit: 'people.person_archive', tenantId, match })));
   });
 
   it('applies the same rows whether the owner honours the match or returns more rows', async () => {
     const run = async (honourMatch: boolean) => {
-      const { legacy } = fakeLegacy({ 'dbo.tsettings': TSETTINGS, 'synthetic.survey': SURVEY_TABLE });
-      const fake = fakeOwners({ 'surveys.survey': SURVEY_EXPORT }, { honourMatch });
-      await importWindow(contextOf({ legacy, owners: fake.owners }), windowInput(['surveys.survey'], { keys: { siteid: 'TENANT-A' } }));
-      return fake.appliedRows().map(({ tenantId, op, values }) => [tenantId, op, values.survey_id]);
+      const { legacy } = fakeLegacy({ 'dbo.tsettings': TSETTINGS, 'synthetic.person_archive': ARCHIVE_TABLE });
+      const fake = fakeOwners({ 'people.person_archive': ARCHIVE_EXPORT }, { honourMatch });
+      await importWindow(contextOf({ legacy, owners: fake.owners }), windowInput(['people.person_archive'], { keys: { siteid: 'TENANT-A' } }));
+      return fake.appliedRows().map(({ tenantId, op, values }) => [tenantId, op, values.archive_id]);
     };
     const honoured = await run(true);
     expect(honoured).toEqual([
@@ -729,48 +737,48 @@ describe('importWindow', () => {
   });
 
   it('streams a folded table of two programs into full batches as each program fills, then the remainders in program order', async () => {
-    const daySpec = (days: number[]): TableSpec => ({ columns: [int('day_id'), int('hours')], primaryKey: ['day_id'], rows: days.map((day) => ({ day_id: day, hours: 8 })) });
+    const enrolmentSpec = (ids: number[]): TableSpec => ({ columns: [int('enrolment_id'), int('cohort_id')], primaryKey: ['enrolment_id'], rows: ids.map((id) => ({ enrolment_id: id, cohort_id: 8 })) });
     const run = async () => {
       const { legacy } = fakeLegacy({
         'dbo.tsettings': TSETTINGS,
         'synthetic.program_site': { columns: [int('program_id'), varchar('siteID', 25)], primaryKey: ['program_id'], rows: [{ program_id: 1, siteID: 'tenant-a' }, { program_id: 2, siteID: 'tenant-a' }] },
-        'Program_1.timesheet_day': daySpec([1, 2, 3]),
-        'Program_2.timesheet_day': daySpec([1, 2]),
+        'Program_1.enrolment': enrolmentSpec([1, 2, 3]),
+        'Program_2.enrolment': enrolmentSpec([1, 2]),
       });
-      const fake = fakeOwners({ 'timesheets.timesheet_day': { legacyTable: 'timesheet_day', columns: [i('day_id'), i('hours')], rows: { 'tenant-a': [] } } });
-      await importWindow(contextOf({ legacy, owners: fake.owners, batchRows: 2 }), windowInput(['timesheets.timesheet_day'], { table: true }));
+      const fake = fakeOwners({ [UNITS.enrolment]: { legacyTable: 'enrolment', columns: [i('enrolment_id'), i('cohort_id')], rows: { 'tenant-a': [] } } });
+      await importWindow(contextOf({ legacy, owners: fake.owners, batchRows: 2, fixture: true }), windowInput([UNITS.enrolment], { table: true }));
       return fake.applies.map(({ request }) => ({
         batchId: request.batchId,
         tenantId: request.tenantId,
         programId: request.legacyProgramId,
-        days: request.rows.map((row) => decodeRow(request.columns, row.row).day_id),
+        enrolments: request.rows.map((row) => decodeRow(request.columns, row.row).enrolment_id),
       }));
     };
     const first = await run();
-    const table = loadUnitCatalog(loadConfig().paths.tableOwnership).legacyTablesOf('timesheets.timesheet_day')[0] ?? '';
+    const table = loadUnitCatalog(fixtureOwnership).legacyTablesOf(UNITS.enrolment)[0] ?? '';
     expect(first).toEqual([
-      { batchId: windowBatchId('W1', 1, 'timesheets', table, 0), tenantId: TENANT_A, programId: 1, days: ['1', '2'] },
-      { batchId: windowBatchId('W1', 1, 'timesheets', table, 1), tenantId: TENANT_A, programId: 2, days: ['1', '2'] },
-      { batchId: windowBatchId('W1', 1, 'timesheets', table, 2), tenantId: TENANT_A, programId: 1, days: ['3'] },
+      { batchId: windowBatchId('W1', 1, 'programs-sites', table, 0), tenantId: TENANT_A, programId: 1, enrolments: ['1', '2'] },
+      { batchId: windowBatchId('W1', 1, 'programs-sites', table, 1), tenantId: TENANT_A, programId: 2, enrolments: ['1', '2'] },
+      { batchId: windowBatchId('W1', 1, 'programs-sites', table, 2), tenantId: TENANT_A, programId: 1, enrolments: ['3'] },
     ]);
     expect(await run()).toEqual(first);
   });
 
   it('wraps an owner failure in WindowImportError naming the owner and table', async () => {
-    const failure = new OwnerCallError('surveys', 'POST', '/internal/v1/migration/apply', 503, { error: 'unavailable' });
-    const { legacy } = fakeLegacy({ 'dbo.tsettings': TSETTINGS, 'synthetic.survey': SURVEY_TABLE });
-    const fake = fakeOwners({ 'surveys.survey': SURVEY_EXPORT }, { failApply: failure });
-    const error = await importWindow(contextOf({ legacy, owners: fake.owners }), windowInput(['surveys.survey'], { table: true })).catch((caught: unknown) => caught);
+    const failure = new OwnerCallError('people', 'POST', '/internal/v1/migration/apply', 503, { error: 'unavailable' });
+    const { legacy } = fakeLegacy({ 'dbo.tsettings': TSETTINGS, 'synthetic.person_archive': ARCHIVE_TABLE });
+    const fake = fakeOwners({ 'people.person_archive': ARCHIVE_EXPORT }, { failApply: failure });
+    const error = await importWindow(contextOf({ legacy, owners: fake.owners }), windowInput(['people.person_archive'], { table: true })).catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(WindowImportError);
-    expect(error).toMatchObject({ windowId: 'W1', owner: 'surveys', table: 'synthetic.survey', cause: failure });
+    expect(error).toMatchObject({ windowId: 'W1', owner: 'people', table: 'synthetic.person_archive', cause: failure });
   });
 
   it('fails the attempt with WindowImportError naming the owner whose position leaves out its registered tenants', async () => {
-    const { legacy } = fakeLegacy({ 'dbo.tsettings': TSETTINGS, 'synthetic.survey': SURVEY_TABLE });
-    const fake = fakeOwners({ 'surveys.survey': SURVEY_EXPORT }, { omitRegistered: true });
-    const error = await importWindow(contextOf({ legacy, owners: fake.owners }), windowInput(['surveys.survey'], { table: true })).catch((caught: unknown) => caught);
+    const { legacy } = fakeLegacy({ 'dbo.tsettings': TSETTINGS, 'synthetic.person_archive': ARCHIVE_TABLE });
+    const fake = fakeOwners({ 'people.person_archive': ARCHIVE_EXPORT }, { omitRegistered: true });
+    const error = await importWindow(contextOf({ legacy, owners: fake.owners }), windowInput(['people.person_archive'], { table: true })).catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(WindowImportError);
-    expect(error).toMatchObject({ windowId: 'W1', owner: 'surveys', table: 'synthetic.survey' });
+    expect(error).toMatchObject({ windowId: 'W1', owner: 'people', table: 'synthetic.person_archive' });
     expect(fake.applies).toEqual([]);
   });
 
@@ -778,22 +786,22 @@ describe('importWindow', () => {
     const GONE = tenantIdForSite('gone');
     const FRESH = tenantIdForSite('fresh');
     const LIVE = [...new Set(TSETTINGS.rows.map((row) => tenantIdForSite(String(row.SiteID))))];
-    // Unit ids sort apart from the dependency order: session tracking, a child of tsettings, sorts after programs_sites.
-    const SITE_UNITS = ['content.content', 'identity.group_account', 'programs_sites.site', 'reporting.session_tracking'];
+    // Unit ids sort apart from the dependency order: the site unit, parent of every other, sorts last.
+    const SITE_UNITS = ['content.content', 'identity.group_account', 'identity.redirect', 'programs_sites.site'];
     const group = (site: string) => ({ UserID: `G-${site}`, GroupName: 'Admin', Type: 1, SiteID: site });
     const page = (site: string) => ({ tcontent_ID: 1, SiteID: site, Title: 'Home' });
-    const visit = (site: string) => ({ trackingID: 1, siteID: site });
+    const redirect = (site: string) => ({ redirectID: `R-${site}`, siteid: site });
     const text = (row: Row): Row => Object.fromEntries(Object.entries(row).map(([name, value]) => [name, String(value)]));
     const of = <T>(site: string | undefined, rowOf: (site: string) => T): T[] => (site === undefined ? [] : [rowOf(site)]);
-    /** Live legacy holding the live sites plus `site` with its Admin group, home page and a visit. */
+    /** Live legacy holding the live sites plus `site` with its Admin group, home page and a redirect. */
     const legacyWith = (site: string | undefined) =>
       fakeLegacy({
         'dbo.tsettings': { ...TSETTINGS, rows: [...TSETTINGS.rows, ...of(site, (SiteID) => ({ SiteID, filePoolID: null }))] },
         'dbo.tusers': { columns: [varchar('UserID', 35), varchar('GroupName'), int('Type'), varchar('SiteID', 25)], primaryKey: ['UserID'], rows: of(site, group) },
         'dbo.tcontent': { columns: [int('tcontent_ID'), varchar('SiteID', 25), varchar('Title')], primaryKey: ['tcontent_ID'], rows: of(site, page) },
-        'dbo.tsessiontracking': { columns: [int('trackingID'), varchar('siteID', 25)], primaryKey: ['trackingID'], rows: of(site, visit) },
+        'dbo.tredirects': { columns: [varchar('redirectID', 35), varchar('siteid', 25)], primaryKey: ['redirectID'], rows: of(site, redirect) },
       }).legacy;
-    /** Owner exports holding the live sites plus `site` with its Admin group, home page and a visit. */
+    /** Owner exports holding the live sites plus `site` with its Admin group, home page and a redirect. */
     const exportsWith = (site: string | undefined): Record<string, UnitExportSpec> => {
       const sites = [...TSETTINGS.rows.map((row) => String(row.SiteID)), ...of(site, (id) => id)];
       const held = (rowOf: (site: string) => Row) => (site === undefined ? {} : { [site]: [text(rowOf(site))] });
@@ -801,23 +809,23 @@ describe('importWindow', () => {
         'programs_sites.site': { legacyTable: 'tsettings', columns: [s('SiteID')], rows: Object.fromEntries(sites.map((id) => [id, [{ SiteID: id }]])) },
         'identity.group_account': { legacyTable: 'tusers', columns: [s('UserID'), s('GroupName'), i('Type'), s('SiteID')], rows: held(group) },
         'content.content': { legacyTable: 'tcontent', columns: [i('tcontent_ID'), s('SiteID'), s('Title')], rows: held(page) },
-        'reporting.session_tracking': { legacyTable: 'tsessiontracking', columns: [i('trackingID'), s('siteID')], rows: held(visit) },
+        'identity.redirect': { legacyTable: 'tredirects', columns: [s('redirectID'), s('siteid')], rows: held(redirect) },
       };
     };
     const PARENTS_FIRST = [
       ['programs-sites', 'tsettings', FRESH, ['upsert']],
       ['identity', 'tusers', FRESH, ['upsert']],
+      ['identity', 'tredirects', FRESH, ['upsert']],
       ['strategies-content', 'tcontent', FRESH, ['upsert']],
-      ['reporting', 'tsessiontracking', FRESH, ['upsert']],
     ];
     const CHILDREN_FIRST = [
-      ['reporting', 'tsessiontracking', GONE, ['delete']],
       ['strategies-content', 'tcontent', GONE, ['delete']],
+      ['identity', 'tredirects', GONE, ['delete']],
       ['identity', 'tusers', GONE, ['delete']],
       ['programs-sites', 'tsettings', GONE, ['delete']],
     ];
     /** Owners consuming the site topic and a topic of identity, whose group apply follows the site table's in SITE_UNITS. */
-    const CONSUMERS = ['communications', 'people', 'strategies-content'];
+    const CONSUMERS = ['people', 'strategies-content'];
     const applied = (fake: ReturnType<typeof fakeOwners>) => fake.applies.map(({ owner, request }) => [owner, request.legacyTable, request.tenantId, request.rows.map((row) => row.op)]);
 
     /**
@@ -873,7 +881,7 @@ describe('importWindow', () => {
       ['tsettings', 'SiteID', (site) => site],
       ['tusers', 'UserID', (site) => `G-${site}`],
       ['tcontent', 'tcontent_ID', () => 1],
-      ['tsessiontracking', 'trackingID', () => 1],
+      ['tredirects', 'redirectID', (site) => `R-${site}`],
     ];
     /** Fingerprints of the site tables under `scope` holding `site`'s rows, or none of them. */
     const siteFingerprints = (site: string | undefined, scope: ExtractScope): WindowFingerprints => ({
@@ -976,7 +984,7 @@ describe('importWindow', () => {
     };
 
     it.each([
-      ['compared in full', {}, [['programs-sites', 'tsettings', TENANT_B, ['upsert']], ['identity', 'tusers', TENANT_A, ['delete']]], ['programs-sites', 'identity', 'strategies-content', 'reporting']],
+      ['compared in full', {}, [['programs-sites', 'tsettings', TENANT_B, ['upsert']], ['identity', 'tusers', TENANT_A, ['delete']]], ['programs-sites', 'identity', 'strategies-content']],
       ['skipped as unchanged by its fingerprints', groupRemoved(), [['identity', 'tusers', TENANT_A, ['delete']]], ['identity']],
     ] as [string, Partial<ImportInput>, unknown[][], string[]][])('reads no other registry when the site table, %s, adds no site', async (_label, narrowing, expected, owners) => {
       // Legacy moved tenant-b's files to the umbrella pool and removed tenant-a's Admin group.
@@ -1003,10 +1011,9 @@ describe('importWindow', () => {
     });
 
     it.each([
-      ['identity and strategies-content', SITE_UNITS, CONSUMERS],
-      ['people', ['people.person', 'programs_sites.site'], ['identity', 'timesheets']],
+      ['identity and strategies-content', ['content.content', 'identity.group_account', 'programs_sites.site'], CONSUMERS],
+      ['people', ['people.person', 'programs_sites.site'], ['identity']],
       ['strategies-content alone, whose topics no consumer subscribes to', ['content.content', 'programs_sites.site'], []],
-      ['reporting alone, which publishes no topic', ['programs_sites.site', 'reporting.session_tracking'], []],
     ])('reads, when %s follow an added site, only the registries of consumers of the site topic and their topics', async (_label, units, consumers) => {
       const registry = siteRegistry(LIVE);
       // Registry reads after the site apply: the barrier's, then one per later step's owner.
@@ -1036,7 +1043,7 @@ describe('importWindow', () => {
     /** Owners consuming the site topic and identity's group topic. */
     const GROUP_CONSUMERS = ['people', 'strategies-content'];
     /** Identity's topics that consumers of the site topic declare. */
-    const IDENTITY_TOPICS = ['identity.group.changed.v1', 'identity.login-mail.requested.v1', 'identity.membership.changed.v1', 'identity.permission.changed.v1'];
+    const IDENTITY_TOPICS = ['identity.group.changed.v1', 'identity.membership.changed.v1', 'identity.permission.changed.v1'];
     const capture = { owner: 'identity', query: { publishedTopics: IDENTITY_TOPICS, publishedAfter: '0', publishedLimit: 1 } };
     /** Identity's cursor held from before legacy executed, when its outbox was empty. */
     const HELD: PublishedCursors = new Map<DataOwner, string>([['identity', '0']]);
@@ -1055,7 +1062,7 @@ describe('importWindow', () => {
         events,
         onApply: (owner, request) => {
           askedBefore ??= events.asked.length;
-          if (owner === 'identity' && request.tenantId === GONE) published = events.publish('identity', GROUP_TOPIC, GONE);
+          if (owner === 'identity' && request.legacyTable === 'tusers' && request.tenantId === GONE) published = events.publish('identity', GROUP_TOPIC, GONE);
           if (owner === 'programs-sites') unreceived.push(GROUP_CONSUMERS.filter((consumer) => !events.received(consumer, published?.eventId)));
         },
       });
@@ -1121,7 +1128,7 @@ describe('importWindow', () => {
 
     it.each([
       ['a site add, with cursors held', SITE_UNITS, 'fresh', undefined, HELD],
-      ['deletes of a site\'s rows in a window without the site unit', ['content.content', 'identity.group_account', 'reporting.session_tracking'], undefined, 'gone', undefined],
+      ['deletes of a site\'s rows in a window without the site unit', ['content.content', 'identity.group_account', 'identity.redirect'], undefined, 'gone', undefined],
     ] as [string, string[], string | undefined, string | undefined, PublishedCursors | undefined][])(
       'lists no published event and reads no receipt for %s',
       async (_label, units, live, held, cursors) => {
@@ -1140,38 +1147,46 @@ describe('importWindow', () => {
 
   it('wraps a legacy SQL failure in WindowImportError', async () => {
     const { legacy } = fakeLegacy({ 'dbo.tsettings': TSETTINGS });
-    const fake = fakeOwners({ 'surveys.survey': SURVEY_EXPORT });
-    const error = await importWindow(contextOf({ legacy, owners: fake.owners }), windowInput(['surveys.survey'], { table: true })).catch((caught: unknown) => caught);
+    const fake = fakeOwners({ 'people.person_archive': ARCHIVE_EXPORT });
+    const error = await importWindow(contextOf({ legacy, owners: fake.owners }), windowInput(['people.person_archive'], { table: true })).catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(WindowImportError);
-    expect(error).toMatchObject({ windowId: 'W1', table: 'synthetic.survey' });
+    expect(error).toMatchObject({ windowId: 'W1', table: 'synthetic.person_archive' });
   });
 
-  it('places a child row in its parent survey\'s tenant', async () => {
-    const reminders: TableSpec = {
-      columns: [int('reminder_id'), int('survey_id'), int('offset_minutes')],
-      primaryKey: ['reminder_id'],
+  it('places a child row in its parent client\'s tenant', async () => {
+    const clients: TableSpec = {
+      columns: [varchar('clientid', 35), varchar('siteid', 25), varchar('name')],
+      primaryKey: ['clientid'],
       rows: [
-        { reminder_id: 10, survey_id: 1, offset_minutes: 60 },
-        { reminder_id: 11, survey_id: 4, offset_minutes: 30 },
+        { clientid: 'C1', siteid: 'tenant-a', name: 'Portal' },
+        { clientid: 'C4', siteid: 'tenant-b', name: 'Partner' },
+      ],
+    };
+    const tokens: TableSpec = {
+      columns: [varchar('token', 35), varchar('clientid', 35), varchar('granttype')],
+      primaryKey: ['token'],
+      rows: [
+        { token: 'T10', clientid: 'C1', granttype: 'client_credentials' },
+        { token: 'T11', clientid: 'C4', granttype: 'authorization_code' },
       ],
     };
     const fake = fakeOwners({
-      'surveys.survey_reminder': {
-        legacyTable: 'synthetic.survey_reminder',
-        columns: [i('reminder_id'), i('survey_id'), i('offset_minutes')],
-        rows: { 'tenant-b': [{ reminder_id: '11', survey_id: '4', offset_minutes: '15' }] },
+      'identity.oauth_token': {
+        legacyTable: 'toauthtokens',
+        columns: [s('token'), s('clientid'), s('granttype')],
+        rows: { 'tenant-b': [{ token: 'T11', clientid: 'C4', granttype: 'password' }] },
       },
     });
-    const { legacy, db } = fakeLegacy({ 'dbo.tsettings': TSETTINGS, 'synthetic.survey': SURVEY_TABLE, 'synthetic.survey_reminder': reminders });
-    await importWindow(contextOf({ legacy, owners: fake.owners }), windowInput(['surveys.survey_reminder'], { keys: { siteid: 'tenant-a' } }));
+    const { legacy, db } = fakeLegacy({ 'dbo.tsettings': TSETTINGS, 'dbo.toauthclients': clients, 'dbo.toauthtokens': tokens });
+    await importWindow(contextOf({ legacy, owners: fake.owners }), windowInput(['identity.oauth_token'], { keys: { siteid: 'tenant-a' } }));
 
-    expect(fake.appliedRows().map(({ op, tenantId, values }) => [tenantId, op, values.reminder_id, values.offset_minutes])).toEqual(
+    expect(fake.appliedRows().map(({ op, tenantId, values }) => [tenantId, op, values.token, values.granttype])).toEqual(
       [
-        [TENANT_A, 'upsert', '10', '60'],
-        [TENANT_B, 'upsert', '11', '30'],
+        [TENANT_A, 'upsert', 'T10', 'client_credentials'],
+        [TENANT_B, 'upsert', 'T11', 'authorization_code'],
       ].sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
     );
-    expect(db.queries.some((query) => query.includes('FROM [synthetic].[survey] WHERE [survey_id] IN'))).toBe(true);
+    expect(db.queries.some((query) => query.includes('FROM [dbo].[toauthclients] WHERE [clientid] IN'))).toBe(true);
   });
 
   it('sends a parent-typed split row to its owner with the parent type as discriminator', async () => {
@@ -1203,49 +1218,49 @@ describe('importWindow', () => {
   });
 
   it('folds Program_<id> tables into per-program batches in each program\'s site tenant', async () => {
-    const day = (dayId: number, hours: number) => ({ day_id: dayId, hours });
-    const daySpec = (rows: Row[]): TableSpec => ({ columns: [int('day_id'), int('hours')], primaryKey: ['day_id'], rows });
+    const enrolment = (enrolmentId: number, cohortId: number) => ({ enrolment_id: enrolmentId, cohort_id: cohortId });
+    const enrolmentSpec = (rows: Row[]): TableSpec => ({ columns: [int('enrolment_id'), int('cohort_id')], primaryKey: ['enrolment_id'], rows });
     const fake = fakeOwners({
-      'timesheets.timesheet_day': {
-        legacyTable: 'timesheet_day',
-        columns: [i('day_id'), i('hours')],
+      [UNITS.enrolment]: {
+        legacyTable: 'enrolment',
+        columns: [i('enrolment_id'), i('cohort_id')],
         rows: {
-          'tenant-a': [{ day_id: '1', hours: '8', [PROGRAM]: '1' }],
-          'tenant-b': [{ day_id: '1', hours: '6', [PROGRAM]: '2' }],
+          'tenant-a': [{ enrolment_id: '1', cohort_id: '8', [PROGRAM]: '1' }],
+          'tenant-b': [{ enrolment_id: '1', cohort_id: '6', [PROGRAM]: '2' }],
         },
       },
     });
     const { legacy } = fakeLegacy({
       'dbo.tsettings': TSETTINGS,
       'synthetic.program_site': { columns: [int('program_id'), varchar('siteID', 25)], primaryKey: ['program_id'], rows: [{ program_id: 1, siteID: 'tenant-a' }, { program_id: 2, siteID: 'tenant-b' }] },
-      'Program_1.timesheet_day': daySpec([day(1, 7), day(2, 4)]),
-      'Program_2.timesheet_day': daySpec([day(1, 6)]),
+      'Program_1.enrolment': enrolmentSpec([enrolment(1, 7), enrolment(2, 4)]),
+      'Program_2.enrolment': enrolmentSpec([enrolment(1, 6)]),
     });
-    await importWindow(contextOf({ legacy, owners: fake.owners }), windowInput(['timesheets.timesheet_day'], { table: true }));
+    await importWindow(contextOf({ legacy, owners: fake.owners, fixture: true }), windowInput([UNITS.enrolment], { table: true }));
 
     expect(fake.applies.map(({ request }) => [request.tenantId, request.legacyProgramId, request.legacyTable, request.columns])).toEqual([
-      [TENANT_A, 1, 'timesheet_day', [i('day_id'), i('hours')]],
+      [TENANT_A, 1, 'enrolment', [i('enrolment_id'), i('cohort_id')]],
     ]);
-    expect(fake.appliedRows().map(({ op, values }) => [op, values.day_id, values.hours])).toEqual([
+    expect(fake.appliedRows().map(({ op, values }) => [op, values.enrolment_id, values.cohort_id])).toEqual([
       ['upsert', '1', '7'],
       ['upsert', '2', '4'],
     ]);
   });
 
   it('compares the whole table when the owner does not export the scope column', async () => {
-    const { legacy } = fakeLegacy({ 'dbo.tsettings': TSETTINGS, 'synthetic.survey': SURVEY_TABLE });
+    const { legacy } = fakeLegacy({ 'dbo.tsettings': TSETTINGS, 'synthetic.person_archive': ARCHIVE_TABLE });
     const drop = (rows: Row[] = []) => rows.map(({ siteID: _site, ...rest }) => rest);
     const fake = fakeOwners({
-      'surveys.survey': {
-        ...SURVEY_EXPORT,
-        columns: [i('survey_id'), s('title')],
-        rows: { 'tenant-a': drop(SURVEY_EXPORT.rows?.['tenant-a']), 'tenant-b': drop(SURVEY_EXPORT.rows?.['tenant-b']) },
+      'people.person_archive': {
+        ...ARCHIVE_EXPORT,
+        columns: [i('archive_id'), s('archived_by')],
+        rows: { 'tenant-a': drop(ARCHIVE_EXPORT.rows?.['tenant-a']), 'tenant-b': drop(ARCHIVE_EXPORT.rows?.['tenant-b']) },
       },
     });
     const ctx = contextOf({ legacy, owners: fake.owners });
-    await importWindow(ctx, windowInput(['surveys.survey'], { keys: { siteid: 'tenant-a' } }));
+    await importWindow(ctx, windowInput(['people.person_archive'], { keys: { siteid: 'tenant-a' } }));
 
-    expect(fake.appliedRows().map(({ tenantId, op, values }) => [tenantId === TENANT_A ? 'a' : 'b', op, values.survey_id])).toEqual(
+    expect(fake.appliedRows().map(({ tenantId, op, values }) => [tenantId === TENANT_A ? 'a' : 'b', op, values.archive_id])).toEqual(
       expect.arrayContaining([
         ['a', 'upsert', '1'],
         ['a', 'delete', '2'],
@@ -1254,7 +1269,7 @@ describe('importWindow', () => {
       ]),
     );
     expect(fake.appliedRows()).toHaveLength(4);
-    expect(ctx.logger.info).toHaveBeenCalledWith(expect.stringContaining('compares all of synthetic.survey'));
+    expect(ctx.logger.info).toHaveBeenCalledWith(expect.stringContaining('compares all of synthetic.person_archive'));
   });
 
   describe('a table split by object class', () => {
@@ -1536,11 +1551,11 @@ describe('importWindow', () => {
 
 describe('importWindow with row fingerprints from before legacy executed', () => {
   const SCOPE: ImportInput['scope'] = { keys: { siteid: 'tenant-a' } };
-  const SURVEY = 'synthetic.survey';
+  const ARCHIVE = 'synthetic.person_archive';
 
-  /** A keyed survey fingerprint of `rows`, each a key and its hash, by `keyColumn`. */
-  const surveyPrint = (rows: [number | string, string][], keyColumn = 'survey_id'): TableFingerprint => ({
-    table: SURVEY,
+  /** A keyed archive fingerprint of `rows`, each a key and its hash, by `keyColumn`. */
+  const archivePrint = (rows: [number | string, string][], keyColumn = 'archive_id'): TableFingerprint => ({
+    table: ARCHIVE,
     keyed: true,
     keyColumns: [keyColumn],
     rows: new Map(rows.map(([key, hash]) => [JSON.stringify([key]), { key: [key], hash }])),
@@ -1548,14 +1563,14 @@ describe('importWindow with row fingerprints from before legacy executed', () =>
   const printsOf = (scope: ExtractScope, tables: Record<string, TableFingerprint>): WindowFingerprints => ({ scope, tables: new Map(Object.entries(tables)), elapsedMs: 7 });
   const after = (tables: Record<string, TableFingerprint>) => vi.fn<FingerprintReader>((_ctx, _tables, scope) => Promise.resolve(printsOf(scope, tables)));
   const infoLines = (ctx: WindowImportContext): unknown[] => vi.mocked(ctx.logger.info).mock.calls.map(([line]) => line);
-  /** What the attempt applied, as tenant, op and survey id, sorted. */
+  /** What the attempt applied, as tenant, op and archive id, sorted. */
   const appliedOf = (fake: ReturnType<typeof fakeOwners>): string[][] =>
     fake
       .appliedRows()
-      .map(({ tenantId, op, values }) => [tenantId === TENANT_A ? 'a' : tenantId === TENANT_B ? 'b' : String(tenantId), op, String(values.survey_id)])
+      .map(({ tenantId, op, values }) => [tenantId === TENANT_A ? 'a' : tenantId === TENANT_B ? 'b' : String(tenantId), op, String(values.archive_id)])
       .sort((x, y) => x.join().localeCompare(y.join()));
 
-  /** The survey window over SURVEY_TABLE and SURVEY_EXPORT without fingerprints, as every case below must still apply it. */
+  /** The archive window over ARCHIVE_TABLE and ARCHIVE_EXPORT without fingerprints, as every case below must still apply it. */
   const TODAY = [
     ['a', 'delete', '2'],
     ['a', 'upsert', '1'],
@@ -1563,14 +1578,14 @@ describe('importWindow with row fingerprints from before legacy executed', () =>
   ];
 
   it.each([
-    ['surveys.survey', SURVEY, { 'synthetic.survey': SURVEY_TABLE }, false],
+    ['people.person_archive', ARCHIVE, { 'synthetic.person_archive': ARCHIVE_TABLE }, false],
     ['content.content', 'tcontent', { 'dbo.tcontent': { columns: [int('tcontent_ID'), varchar('SiteID', 25), varchar('Title')], primaryKey: ['tcontent_ID'], rows: [{ tcontent_ID: 7, SiteID: 'tenant-a', Title: 'Home' }] } }, true],
   ] as [string, string, Record<string, TableSpec>, boolean][])(
     'skips %s, whose rows kept their fingerprints, without reading legacy or the owner, keeping its touched-content report and returning the fingerprints read',
     async (unit, table, tables, touchedContent) => {
       const { legacy, db } = fakeLegacy({ 'dbo.tsettings': TSETTINGS, ...tables });
-      const fake = fakeOwners({ 'surveys.survey': SURVEY_EXPORT });
-      const print = { ...surveyPrint([[1, 'a']]), table };
+      const fake = fakeOwners({ 'people.person_archive': ARCHIVE_EXPORT });
+      const print = { ...archivePrint([[1, 'a']]), table };
       const readFingerprints = after({ [table]: print });
       const ctx = contextOf({ legacy, owners: fake.owners });
       const result = await importWindow(ctx, { ...windowInput([unit], SCOPE), fingerprints: printsOf(toExtractScope(SCOPE), { [table]: print }), readFingerprints });
@@ -1588,48 +1603,48 @@ describe('importWindow with row fingerprints from before legacy executed', () =>
   );
 
   it('reads both sides of a changed table only at its changed keys, finding a row moved out of scope on each side', async () => {
-    const moved: TableSpec = { ...SURVEY_TABLE, rows: [...SURVEY_TABLE.rows, { survey_id: 6, siteID: 'tenant-b', title: 'Moved', created_by: 'x' }] };
-    const held = SURVEY_EXPORT.rows?.['tenant-a'] ?? [];
-    const exported: UnitExportSpec = { ...SURVEY_EXPORT, rows: { ...SURVEY_EXPORT.rows, 'tenant-a': [...held, { survey_id: '6', siteID: 'tenant-a', title: 'Moved' }] } };
-    const { legacy, db } = fakeLegacy({ 'dbo.tsettings': TSETTINGS, 'synthetic.survey': moved });
-    const fake = fakeOwners({ 'surveys.survey': exported }, { honourMatch: true });
-    const before = surveyPrint([[1, 'a'], [2, 'b'], [5, 'e'], [6, 'f']]);
+    const moved: TableSpec = { ...ARCHIVE_TABLE, rows: [...ARCHIVE_TABLE.rows, { archive_id: 6, siteID: 'tenant-b', archived_by: 'Moved', archived_by_id: 'x' }] };
+    const held = ARCHIVE_EXPORT.rows?.['tenant-a'] ?? [];
+    const exported: UnitExportSpec = { ...ARCHIVE_EXPORT, rows: { ...ARCHIVE_EXPORT.rows, 'tenant-a': [...held, { archive_id: '6', siteID: 'tenant-a', archived_by: 'Moved' }] } };
+    const { legacy, db } = fakeLegacy({ 'dbo.tsettings': TSETTINGS, 'synthetic.person_archive': moved });
+    const fake = fakeOwners({ 'people.person_archive': exported }, { honourMatch: true });
+    const before = archivePrint([[1, 'a'], [2, 'b'], [5, 'e'], [6, 'f']]);
     const ctx = contextOf({ legacy, owners: fake.owners });
-    await importWindow(ctx, { ...windowInput(['surveys.survey'], SCOPE), fingerprints: printsOf(toExtractScope(SCOPE), { [SURVEY]: before }), readFingerprints: after({ [SURVEY]: surveyPrint([[1, 'A'], [3, 'c'], [5, 'e']]) }) });
+    await importWindow(ctx, { ...windowInput(['people.person_archive'], SCOPE), fingerprints: printsOf(toExtractScope(SCOPE), { [ARCHIVE]: before }), readFingerprints: after({ [ARCHIVE]: archivePrint([[1, 'A'], [3, 'c'], [5, 'e']]) }) });
 
     expect(appliedOf(fake)).toEqual([...TODAY, ['a', 'delete', '6'], ['b', 'upsert', '6']].sort((x, y) => x.join().localeCompare(y.join())));
-    expect(new Set(fake.exports.map(({ match }) => JSON.stringify(match)))).toEqual(new Set([JSON.stringify({ survey_id: [1, 2, 6, 3] })]));
-    expect(db.queries.filter((query) => query.includes('FROM [synthetic].[survey]'))).toEqual([
-      expect.stringContaining('FROM [synthetic].[survey] WHERE ([survey_id] IN (@p0, @p1, @p2, @p3))'),
+    expect(new Set(fake.exports.map(({ match }) => JSON.stringify(match)))).toEqual(new Set([JSON.stringify({ archive_id: [1, 2, 6, 3] })]));
+    expect(db.queries.filter((query) => query.includes('FROM [synthetic].[person_archive]'))).toEqual([
+      expect.stringContaining('FROM [synthetic].[person_archive] WHERE ([archive_id] IN (@p0, @p1, @p2, @p3))'),
     ]);
     expect(infoLines(ctx)).toContainEqual(expect.stringContaining('skipped 0 unchanged tables, narrowed 1 to their changed keys and compared 0 whole'));
   });
 
   it.each([true, false])('splits changed keys too long for one match into several narrow export reads per tenant, honoured match %s', async (honourMatch) => {
     const added = Array.from({ length: 1500 }, (_, index) => 1000 + index);
-    const survey: TableSpec = { ...SURVEY_TABLE, rows: added.map((id) => ({ survey_id: id, siteID: 'tenant-a', title: 'New', created_by: 'x' })) };
-    const { legacy } = fakeLegacy({ 'dbo.tsettings': TSETTINGS, 'synthetic.survey': survey });
-    const fake = fakeOwners({ 'surveys.survey': SURVEY_EXPORT }, { honourMatch });
-    const prints = { fingerprints: printsOf(toExtractScope(SCOPE), { [SURVEY]: surveyPrint([[2, 'b']]) }), readFingerprints: after({ [SURVEY]: surveyPrint(added.map((id) => [id, 'n'])) }) };
-    await importWindow(contextOf({ legacy, owners: fake.owners }), { ...windowInput(['surveys.survey'], SCOPE), ...prints });
+    const archive: TableSpec = { ...ARCHIVE_TABLE, rows: added.map((id) => ({ archive_id: id, siteID: 'tenant-a', archived_by: 'New', archived_by_id: 'x' })) };
+    const { legacy } = fakeLegacy({ 'dbo.tsettings': TSETTINGS, 'synthetic.person_archive': archive });
+    const fake = fakeOwners({ 'people.person_archive': ARCHIVE_EXPORT }, { honourMatch });
+    const prints = { fingerprints: printsOf(toExtractScope(SCOPE), { [ARCHIVE]: archivePrint([[2, 'b']]) }), readFingerprints: after({ [ARCHIVE]: archivePrint(added.map((id) => [id, 'n'])) }) };
+    await importWindow(contextOf({ legacy, owners: fake.owners }), { ...windowInput(['people.person_archive'], SCOPE), ...prints });
 
     const tenantA = fake.exports.filter(({ tenantId }) => tenantId === TENANT_A);
     expect(tenantA.length).toBeGreaterThan(1);
     for (const { match } of tenantA) expect(JSON.stringify(match).length).toBeLessThanOrEqual(MAX_EXPORT_MATCH_LENGTH);
-    expect(tenantA.flatMap(({ match }) => match?.survey_id ?? [])).toEqual([2, ...added]);
+    expect(tenantA.flatMap(({ match }) => match?.archive_id ?? [])).toEqual([2, ...added]);
     expect(fake.appliedRows().map(({ op }) => op).sort()).toEqual(['delete', ...added.map(() => 'upsert')]);
-    expect(fake.appliedRows().filter(({ op }) => op === 'delete').map(({ values }) => values.survey_id)).toEqual(['2']);
+    expect(fake.appliedRows().filter(({ op }) => op === 'delete').map(({ values }) => values.archive_id)).toEqual(['2']);
   });
 
   it.each([
     ['no fingerprints', undefined],
-    ['fingerprints taken under another scope', printsOf('table', { [SURVEY]: surveyPrint([[1, 'a']]) })],
+    ['fingerprints taken under another scope', printsOf('table', { [ARCHIVE]: archivePrint([[1, 'a']]) })],
   ] as [string, WindowFingerprints | undefined][])('compares every table under the window scope with %s', async (_label, fingerprints) => {
-    const { legacy } = fakeLegacy({ 'dbo.tsettings': TSETTINGS, 'synthetic.survey': SURVEY_TABLE });
-    const fake = fakeOwners({ 'surveys.survey': SURVEY_EXPORT });
+    const { legacy } = fakeLegacy({ 'dbo.tsettings': TSETTINGS, 'synthetic.person_archive': ARCHIVE_TABLE });
+    const fake = fakeOwners({ 'people.person_archive': ARCHIVE_EXPORT });
     const readFingerprints = after({});
     const ctx = contextOf({ legacy, owners: fake.owners });
-    const result = await importWindow(ctx, { ...windowInput(['surveys.survey'], SCOPE), ...(fingerprints === undefined ? {} : { fingerprints }), readFingerprints });
+    const result = await importWindow(ctx, { ...windowInput(['people.person_archive'], SCOPE), ...(fingerprints === undefined ? {} : { fingerprints }), readFingerprints });
 
     expect(readFingerprints).not.toHaveBeenCalled();
     expect(result).not.toHaveProperty('fingerprints');
@@ -1639,13 +1654,13 @@ describe('importWindow with row fingerprints from before legacy executed', () =>
   });
 
   it('compares every table in full when reading the fingerprints after legacy executed fails', async () => {
-    const { legacy } = fakeLegacy({ 'dbo.tsettings': TSETTINGS, 'synthetic.survey': SURVEY_TABLE });
-    const fake = fakeOwners({ 'surveys.survey': SURVEY_EXPORT });
+    const { legacy } = fakeLegacy({ 'dbo.tsettings': TSETTINGS, 'synthetic.person_archive': ARCHIVE_TABLE });
+    const fake = fakeOwners({ 'people.person_archive': ARCHIVE_EXPORT });
     const failure = new Error('Login failed for user');
     const ctx = contextOf({ legacy, owners: fake.owners });
     const result = await importWindow(ctx, {
-      ...windowInput(['surveys.survey'], SCOPE),
-      fingerprints: printsOf(toExtractScope(SCOPE), { [SURVEY]: surveyPrint([[1, 'a']]) }),
+      ...windowInput(['people.person_archive'], SCOPE),
+      fingerprints: printsOf(toExtractScope(SCOPE), { [ARCHIVE]: archivePrint([[1, 'a']]) }),
       readFingerprints: () => Promise.reject(failure),
     });
 
@@ -1656,15 +1671,15 @@ describe('importWindow with row fingerprints from before legacy executed', () =>
   });
 
   it('reads a table under the window scope when its owner does not export the column its changed keys were found by', async () => {
-    const { legacy } = fakeLegacy({ 'dbo.tsettings': TSETTINGS, 'synthetic.survey': SURVEY_TABLE });
-    const fake = fakeOwners({ 'surveys.survey': SURVEY_EXPORT });
+    const { legacy } = fakeLegacy({ 'dbo.tsettings': TSETTINGS, 'synthetic.person_archive': ARCHIVE_TABLE });
+    const fake = fakeOwners({ 'people.person_archive': ARCHIVE_EXPORT });
     const ctx = contextOf({ legacy, owners: fake.owners });
-    // The live created_by column, which the owner's export lacks, has the fewest values among the changed rows.
-    const prints = { fingerprints: printsOf(toExtractScope(SCOPE), { [SURVEY]: surveyPrint([], 'created_by') }), readFingerprints: after({ [SURVEY]: surveyPrint([['x', 'n']], 'created_by') }) };
-    await importWindow(ctx, { ...windowInput(['surveys.survey'], SCOPE), ...prints });
+    // The live archived_by_id column, which the owner's export lacks, has the fewest values among the changed rows.
+    const prints = { fingerprints: printsOf(toExtractScope(SCOPE), { [ARCHIVE]: archivePrint([], 'archived_by_id') }), readFingerprints: after({ [ARCHIVE]: archivePrint([['x', 'n']], 'archived_by_id') }) };
+    await importWindow(ctx, { ...windowInput(['people.person_archive'], SCOPE), ...prints });
 
     expect(appliedOf(fake)).toEqual(TODAY);
-    expect(fake.exports[0]?.match).toEqual({ created_by: ['x'] });
+    expect(fake.exports[0]?.match).toEqual({ archived_by_id: ['x'] });
     expect(new Set(fake.exports.slice(1).map(({ match }) => JSON.stringify(match)))).toEqual(new Set([JSON.stringify({ siteID: ['tenant-a'] })]));
     expect(infoLines(ctx)).toContainEqual(expect.stringContaining('narrowed 0 to their changed keys and compared 1 whole'));
   });

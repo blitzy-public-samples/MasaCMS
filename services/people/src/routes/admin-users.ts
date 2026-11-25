@@ -88,8 +88,6 @@ type GroupOption = Schemas['GroupOption'];
 type UserListRow = Schemas['UserListRow'];
 type RouteRedirect = Schemas['RouteRedirect'];
 type CurrentUserQuery = operations['readCurrentUser']['parameters']['query'];
-type PoolUser = Schemas['PoolUser'];
-type PoolUserQuery = operations['readPoolUser']['parameters']['query'];
 type UserFeedQuery = NonNullable<operations['listUserFeed']['parameters']['query']>;
 
 /** What the cUsers reads use; `photoFileExts` is strategies-content's photo lookup, without which every `photoFileExt` is ''. */
@@ -150,19 +148,6 @@ const USER_FEED_QUERY = {
   properties: {
     siteid: { type: 'string', minLength: 1 },
     ispublic: { type: 'string', enum: ['0', '1'], default: '1' },
-  },
-} as const;
-
-// Only e-signature's signer check reads it; the auth hooks hold `siteid` to the user token's site.
-const POOL_USER_AUTH: Opt2RouteConfig = Object.freeze({ transport: 'service', requires: Object.freeze([serviceRole('e-signature')]) });
-
-// The readPoolUser query as the contract declares it; Fastify validates it once, before the handler.
-const POOL_USER_QUERY = {
-  type: 'object',
-  required: ['userid'],
-  properties: {
-    siteid: { type: 'string', minLength: 1 },
-    userid: { type: 'string', minLength: 1 },
   },
 } as const;
 
@@ -662,27 +647,6 @@ async function readCurrentUser(deps: AdminUserRouteDeps, claims: UserClaims | un
   });
 }
 
-// ---- The pool user of the e-signature fixture's poolUserId [legacy: legacy-fixtures/cfml/modules/esignature.cfc:274-285] ----
-
-/** `userManager.read(userid)` within the token site's public and private user pools, observed as every person read is; null when neither holds the id. */
-async function readPoolUser(deps: AdminUserRouteDeps, claims: UserClaims, userId: string): Promise<PoolUser | null> {
-  const entry = await tokenSite(deps.db, claims);
-  const pools = [...new Set([userPool(entry, true).tenantId, userPool(entry, false).tenantId])];
-  const read = await observePersons(
-    observerDeps(deps),
-    (observer) => findPersonRows(deps, observer, pools, userId),
-    async (stored) => {
-      // A person identity does not list (a missing or pending account) has no complete `tusers` row to read.
-      const account = stored === null ? undefined : await deps.identity.readAccount(stored.person.userid);
-      return stored === null || account === undefined ? null : { stored, account };
-    },
-  );
-  if (read === null) return null;
-  const { person, categoryIds, extend } = read.stored;
-  const values = userBeanValues({ person, account: read.account, groupIds: [], categoryIds, extend, photoFileExt: '' }, deps.clock);
-  return { userid: values.userid, siteid: values.siteid, type: cfToNumber(values.type) };
-}
-
 // ---- Advanced-search criteria and the session's retained values ----
 
 /** The session's advanced-search criteria as identity holds them, with admin request start-up's `param` defaults [legacy: admin/Application.cfc:459-466]. */
@@ -1062,21 +1026,6 @@ export async function registerAdminUserRoutes(app: FastifyInstance, deps: AdminU
     async (request, reply) => {
       const data = await readCurrentUser(deps, request.opt2Auth.user, request.query);
       return reply.type('application/json').send(createApiSerializer([...USER_ENTITY_HINTS, ...ADDRESS_ENTITY_HINTS]).serialize({ data }));
-    },
-  );
-
-  // The signer read of the e-signature fixture's `poolUserId`, for the user token's own site only.
-  app.get<{ Querystring: PoolUserQuery }>(
-    '/internal/v1/users/pool-user',
-    { schema: { querystring: POOL_USER_QUERY }, config: { opt2: POOL_USER_AUTH } },
-    async (request, reply) => {
-      const claims = request.opt2Auth.user;
-      if (claims === undefined || claims.sub === '') throw AuthDenial.unauthenticated('missing-credential');
-      const user = await readPoolUser(deps, claims, request.query.userid);
-      if (user !== null) return reply.type('application/json').send(user);
-      // The service's not-found handler answers the legacy 404 envelope.
-      reply.callNotFound();
-      return reply;
     },
   );
 }

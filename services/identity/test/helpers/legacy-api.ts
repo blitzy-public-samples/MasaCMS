@@ -10,7 +10,7 @@ import { etag } from '@opt2/platform/legacy-compat';
 import { createLogger, type LogFn, type Logger } from '@opt2/platform/logging';
 import { createService, loadEnv, type FastifyInstance, type ServiceClient, type ServiceRequest, type ServiceResponse } from '@opt2/platform/service-kit';
 import type { TenantDb } from '@opt2/platform/tenancy';
-import { assertResponseMatchesOpenApi, fixedClock, mintServiceToken, mintUserToken, testVerifier, writeTestSecrets } from '@opt2/platform/testing';
+import { assertResponseMatchesOpenApi, fixedClock, loadOpenApiDocument, mintServiceToken, mintUserToken, testVerifier, writeTestSecrets } from '@opt2/platform/testing';
 import { DEFAULT_LOGIN_SETTINGS, type LoginDeps } from '../../src/domain/login.js';
 import type { SessionDeps } from '../../src/domain/sessions.js';
 import { createIdentityEvents } from '../../src/events/publish.js';
@@ -57,7 +57,7 @@ export interface RecordingFetch {
   reply: () => Promise<Response>;
 }
 
-export const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as {
+export const OPENAPI = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as {
   paths: Record<string, Record<string, Record<string, unknown>>>;
 };
 const ORACLE = (

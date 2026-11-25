@@ -20,7 +20,7 @@ import {
   type CrossTenantPair,
   type TenantFixture,
 } from '@opt2/platform/testing';
-import { FIXTURES_UNAVAILABLE, readFixtureStatus, type FixtureStatus, type ServiceName } from '../golden/catalogue.js';
+import type { ServiceName } from '../golden/catalogue.js';
 import {
   NEUTRAL_ID,
   defaultRouteKeyOptions,
@@ -62,7 +62,7 @@ function siteOf(tenant: TenantKey): string {
 }
 
 /** Route families the matrix probes. */
-export type FamilyId = 'content' | 'user' | 'timesheets' | 'finance' | 'surveys';
+export type FamilyId = 'content' | 'user' | 'notes';
 
 /** Seeded account of one tenant for one family, as credential placeholders. */
 export interface ActorRef {
@@ -82,11 +82,12 @@ function actorRef(tenant: TenantKey, role: string, login: ActorRef['login'] = 'a
 }
 
 const SITE_ADMIN = 'site-admin';
+const SYSTEM_USER = 'system-user';
 const MEMBER = 'member';
 
 /**
- * Account per family and tenant. A synthetic-family actor holds the module role in its own site, so a refusal
- * elsewhere is attributable to tenancy.
+ * Account per family and tenant. A notes actor holds the note-create role in its own site, so a refusal elsewhere is
+ * attributable to tenancy.
  */
 export const ACTORS: Readonly<Record<FamilyId, Readonly<Partial<Record<TenantKey, ActorRef>>>>> = Object.freeze({
   content: Object.freeze({
@@ -97,18 +98,16 @@ export const ACTORS: Readonly<Record<FamilyId, Readonly<Partial<Record<TenantKey
   // Umbrella's only seeded account is a public member, whom legacy refuses every user list, so umbrella is an
   // owner here but never an actor; its records are read through the site whose public user pool it is.
   user: Object.freeze({ a: actorRef('a', SITE_ADMIN), b: actorRef('b', SITE_ADMIN) }),
-  timesheets: Object.freeze({ a: actorRef('a', 'timesheets.employee'), b: actorRef('b', 'timesheets.employee') }),
-  finance: Object.freeze({ a: actorRef('a', 'finance.preparer'), b: actorRef('b', 'finance.preparer') }),
-  surveys: Object.freeze({ a: actorRef('a', 'surveys.manager'), b: actorRef('b', 'surveys.manager') }),
+  notes: Object.freeze({ a: actorRef('a', SYSTEM_USER), b: actorRef('b', SYSTEM_USER) }),
 });
 
-/** Roles of the multi-site survey grant check: the grantor's survey targets `granted` and not `ungranted`. */
-export const SURVEY_GRANT = Object.freeze({
+/** Roles of the tenant grant check: the grantor grants its note to `granted` and not to `ungranted`. */
+export const TENANT_GRANT = Object.freeze({
   grantor: 'a' as TenantKey,
   granted: 'b' as TenantKey,
   ungranted: 'umbrella' as TenantKey,
-  /** Respondent of the ungranted site; the grantor and granted respondent are the surveys actors. */
-  ungrantedRespondent: actorRef('umbrella', MEMBER, 'jsonapi'),
+  /** Commenter of the ungranted site; the grantor and granted commenter are the notes actors. */
+  ungrantedCommenter: actorRef('umbrella', MEMBER, 'jsonapi'),
 });
 
 /** Path templates of one route family; `{site}` and `{id}` are filled per request. */
@@ -147,15 +146,14 @@ export interface ProbeTarget {
 /** One route family the matrix probes; the active cut-over version decides whether target or legacy serves it. */
 export interface RouteFamily extends RouteSet {
   id: FamilyId;
-  service: ServiceName;
+  service: ServiceName | 'stub';
   /** `public`: rows of the addressed site are anonymously readable in legacy. */
   access: 'public' | 'protected';
   pooled?: 'publicUserPool' | 'categoryPool';
-  /** Whether `list`, `byId` and `write` are legacy-fixture routes, replaced by `v1` without fixtures. */
-  fixtureRoute: boolean;
-  v1?: RouteSet;
   /** Tenants whose records are probed; default every tenant. */
   owners?: readonly TenantKey[];
+  /** Fields of the marked record each owner's actor creates through `write` before discovery, where none is seeded. */
+  seed?(marker: string): Record<string, string>;
   /** Whether the write is an id-addressed transition or edit, which `write-foreign-id` probes. */
   idAddressedWrite: boolean;
   shape: RecordShape;
@@ -163,51 +161,23 @@ export interface RouteFamily extends RouteSet {
   probe(record: Readonly<Record<string, unknown>>, recordId: string, marker: string): ProbeTarget | undefined;
 }
 
-const FIXTURE_API = '/legacy-fixtures/cfml/api.cfm';
 const PAGE = 'itemsPerPage=50';
-// Program sites only: umbrella holds no program data and no module-role account, and its members belong to
-// tenant-a's public user pool, so their writes to tenant-a member routes are legitimate.
-const PROGRAM_SITES: readonly TenantKey[] = Object.freeze(['a', 'b']);
-const DRAFT = 'DRAFT';
-
-function isTrue(value: unknown): boolean {
-  return value === true || value === 1 || (typeof value === 'string' && /^(?:true|yes|1)$/i.test(value));
-}
-
-/** A non-blackout day of the sheet, DRAFT first, by sorted day id. */
-function dayProbe(record: Readonly<Record<string, unknown>>, _id: string, marker: string): ProbeTarget | undefined {
-  const days = arrayField(record, ['days'])
-    .flatMap((value) => {
-      const day = asRecord(value);
-      const id = stringField(day, ['day_id', 'dayId']);
-      return id === undefined || isTrue(field(day, ['isblackout', 'blackout']))
-        ? []
-        : [{ id, draft: stringField(day, ['state']) === DRAFT }];
-    })
-    .sort((x, y) => compareText(x.id, y.id));
-  const pick = days.find((day) => day.draft) ?? days[0];
-  return pick === undefined ? undefined : { id: pick.id, fields: { comment: marker } };
-}
-
-/** An edit keeping the record's amount and period, so only the title would change. */
-function financeProbe(record: Readonly<Record<string, unknown>>, id: string, marker: string): ProbeTarget | undefined {
-  const amount = stringField(record, ['amount']);
-  const period = stringField(record, ['period']);
-  return amount === undefined || period === undefined ? undefined : { id, fields: { title: marker, amount, period } };
-}
+const NOTES = '/opt2/stub/notes';
+/** Largest stub note and comment page. */
+const NOTE_PAGE = 'limit=1000';
+// Note sites only: umbrella holds no system user, so it holds no notes and comments only as the ungranted site.
+const NOTE_SITES: readonly TenantKey[] = Object.freeze(['a', 'b']);
 
 /**
- * The probed families with their legacy and fixture paths and, for fixture families, the `/v1/` paths. Content and
- * user saves use the session JSON API: REST runs sessionless, so on ACF 2023 every REST credential login of a
- * registered site answers 500 before any save (core/mura/content/contentRenderer.cfc:701), as identity does, and no
- * REST probe would reach the owning service.
+ * The probed families with their paths. Content and user saves use the session JSON API: REST runs sessionless, so on
+ * ACF 2023 every REST credential login of a registered site answers 500 before any save
+ * (core/mura/content/contentRenderer.cfc:701), as identity does, and no REST probe would reach the owning service.
  */
 export const ROUTE_FAMILIES: readonly RouteFamily[] = Object.freeze([
   {
     id: 'content',
     service: 'strategies-content',
     access: 'public',
-    fixtureRoute: false,
     list: `/_api/json/v1/{site}/content?${PAGE}`,
     byId: '/_api/json/v1/{site}/content/{id}',
     write: '/_api/json/v1/{site}/content/{id}',
@@ -226,7 +196,6 @@ export const ROUTE_FAMILIES: readonly RouteFamily[] = Object.freeze([
     service: 'people',
     access: 'protected',
     pooled: 'publicUserPool',
-    fixtureRoute: false,
     list: `/_api/json/v1/{site}/user?${PAGE}`,
     byId: '/_api/json/v1/{site}/user/{id}',
     write: '/_api/json/v1/{site}/user/{id}',
@@ -244,78 +213,25 @@ export const ROUTE_FAMILIES: readonly RouteFamily[] = Object.freeze([
     probe: (_record, id, marker) => ({ id, fields: { jobtitle: marker } }),
   },
   {
-    id: 'timesheets',
-    service: 'timesheets',
+    id: 'notes',
+    service: 'stub',
     access: 'protected',
-    fixtureRoute: true,
-    owners: PROGRAM_SITES,
-    list: `${FIXTURE_API}/timesheets/sheets?siteid={site}&${PAGE}`,
-    byId: `${FIXTURE_API}/timesheets/sheets/{id}?siteid={site}`,
-    write: `${FIXTURE_API}/timesheets/days/{id}/submit?siteid={site}`,
-    encoding: 'form',
-    csrf: true,
-    v1: {
-      list: `/v1/timesheets/sheets?siteid={site}&${PAGE}`,
-      byId: '/v1/timesheets/sheets/{id}?siteid={site}',
-      write: '/v1/timesheets/days/{id}/submit?siteid={site}',
-      encoding: 'json',
-      csrf: true,
-    },
-    idAddressedWrite: true,
-    shape: {
-      idFields: ['timesheet_id', 'timesheetId'],
-      siteFields: ['siteid'],
-      identityFields: ['person_id', 'personId'],
-      personFields: ['person_id', 'personId'],
-    },
-    probe: dayProbe,
-  },
-  {
-    id: 'finance',
-    service: 'finance',
-    access: 'protected',
-    fixtureRoute: true,
-    owners: PROGRAM_SITES,
-    list: `${FIXTURE_API}/finance/records?siteid={site}&${PAGE}`,
-    byId: `${FIXTURE_API}/finance/records/{id}?siteid={site}`,
-    write: `${FIXTURE_API}/finance/records/{id}/edit?siteid={site}`,
-    encoding: 'form',
-    csrf: true,
-    v1: {
-      list: '/v1/finance/records?siteid={site}&pageSize=50',
-      byId: '/v1/finance/records/{id}?siteid={site}',
-      write: '/v1/finance/records/{id}/transitions/edit?siteid={site}',
-      encoding: 'json',
-      csrf: true,
-    },
-    idAddressedWrite: true,
-    shape: {
-      idFields: ['record_id', 'recordId'],
-      siteFields: ['siteid'],
-      identityFields: ['title', 'createdbyid', 'created'],
-    },
-    probe: financeProbe,
-  },
-  {
-    id: 'surveys',
-    service: 'surveys',
-    access: 'protected',
-    fixtureRoute: true,
-    owners: PROGRAM_SITES,
-    list: `${FIXTURE_API}/surveys/surveys?siteid={site}&${PAGE}`,
-    byId: `${FIXTURE_API}/surveys/surveys/{id}?siteid={site}`,
-    write: `${FIXTURE_API}/surveys/surveys/{id}/responses?siteid={site}`,
-    effect: `${FIXTURE_API}/surveys/surveys/{id}/responses?siteid={site}&itemsPerPage=1000`,
-    encoding: 'form',
-    csrf: true,
-    // No `v1`: the surveys contract has no /v1/ response write.
+    owners: NOTE_SITES,
+    seed: (marker) => ({ title: `${marker} owner record` }),
+    list: `${NOTES}?siteid={site}&${NOTE_PAGE}`,
+    byId: `${NOTES}/{id}?siteid={site}`,
+    write: `${NOTES}?siteid={site}`,
+    effect: `${NOTES}?siteid={site}&${NOTE_PAGE}`,
+    encoding: 'json',
+    csrf: false,
     idAddressedWrite: false,
     shape: {
-      idFields: ['survey_id', 'surveyId'],
-      siteFields: ['siteid'],
-      identityFields: ['title', 'createdbyid', 'created'],
+      idFields: ['noteid', 'noteId'],
+      // Notes carry no site; a row is attributed by an id only its owner lists.
+      siteFields: [],
+      identityFields: ['title', 'body', 'created'],
     },
-    probe: (_record, id, marker) => ({ id, fields: { answers: marker } }),
+    probe: (_record, id, marker) => ({ id, fields: { title: marker } }),
   },
 ] satisfies RouteFamily[]);
 
@@ -327,7 +243,7 @@ export type CaseKind =
   | 'write-site-mismatch'
   | 'write-foreign-id'
   | 'pooled-read'
-  | 'survey-grant';
+  | 'tenant-grant';
 
 /** Outcome of one case. */
 export type CaseResult = 'pass' | 'violation' | 'inconclusive' | 'skipped';
@@ -370,7 +286,7 @@ export interface IsolationCase {
 export interface GatewayIsolationResult {
   crossTenantReads: number;
   crossTenantWrites: number;
-  surveyGrantOnly: boolean;
+  grantOnly: boolean;
   cases: IsolationCase[];
 }
 
@@ -437,8 +353,6 @@ export interface GatewayIsolationDeps {
   baseUrl?: string;
   /** Passed to every HTTP session. */
   fetch?: FetchLike;
-  /** Default `readFixtureStatus(env)`. */
-  fixtures?: FixtureStatus;
   /** Default {@link ROUTE_FAMILIES}. */
   families?: readonly RouteFamily[];
   /** Default `reserved.rehearsal` of the seed configuration. */
@@ -451,7 +365,6 @@ export interface GatewayIsolationDeps {
 
 /** Options of {@link buildCases}. */
 export interface BuildCasesOptions {
-  fixtures: Pick<FixtureStatus, 'available'>;
   /** Default `crossTenantPairs()`; each pair's reader is the actor and its writer the owner. */
   pairs?: readonly CrossTenantPair[];
 }
@@ -471,22 +384,19 @@ const WRITE_KINDS: ReadonlySet<CaseKind> = new Set(['write-owner-site', 'write-s
 const REFUSAL_STATUSES: ReadonlySet<number> = new Set([401, 403, 404]);
 const ENVELOPE_KEYS: ReadonlySet<string> = new Set(['apiversion', 'method', 'params', 'error']);
 const VOLATILE_KEY = /csrf|token/i;
-const RESPONSES_PAGE = 1000;
 type PoolKind = Parameters<typeof poolTenantExpectation>[1];
 const POOL_KINDS: Readonly<Record<NonNullable<RouteFamily['pooled']>, readonly PoolKind[]>> = Object.freeze({
   publicUserPool: Object.freeze(['publicUser', 'privateUser'] as const),
   categoryPool: Object.freeze(['category'] as const),
 });
-const SURVEY_ROUTES = Object.freeze({
-  list: `${FIXTURE_API}/surveys/surveys?siteid={site}&itemsPerPage=${RESPONSES_PAGE}`,
-  detail: `${FIXTURE_API}/surveys/surveys/{id}?siteid={site}`,
-  create: `${FIXTURE_API}/surveys/surveys?siteid={site}`,
-  bulk: `${FIXTURE_API}/surveys/surveys/{id}/targets/bulk?siteid={site}`,
-  respond: `${FIXTURE_API}/surveys/surveys/{id}/responses?siteid={site}`,
-  responses: `${FIXTURE_API}/surveys/surveys/{id}/responses?siteid={site}&itemsPerPage=${RESPONSES_PAGE}`,
+const GRANT_ROUTES = Object.freeze({
+  create: `${NOTES}?siteid={site}`,
+  grant: `${NOTES}/{id}/grants?siteid={site}`,
+  comment: `${NOTES}/{id}/comments?siteid={site}`,
+  comments: `${NOTES}/{id}/comments?siteid={site}&${NOTE_PAGE}`,
 });
-const SURVEY_ID_FIELDS: readonly string[] = ['survey_id', 'surveyId'];
-const RESPONSE_ID_FIELDS: readonly string[] = ['response_id', 'responseId'];
+const NOTE_ID_FIELDS: readonly string[] = ['noteid', 'noteId'];
+const COMMENT_ID_FIELDS: readonly string[] = ['commentid', 'commentId'];
 
 function compareText(x: string, y: string): number {
   return x < y ? -1 : x > y ? 1 : 0;
@@ -535,11 +445,6 @@ function caseId(family: FamilyId, kind: CaseKind, actor: TenantKey, owner: Tenan
   return `${family}:${kind}:${actor}->${owner}`;
 }
 
-/** The family's routes under `fixtures`: fixture paths when available, else `v1`, else none. */
-function routesFor(family: RouteFamily, fixtures: Pick<FixtureStatus, 'available'>): RouteSet | undefined {
-  return !family.fixtureRoute || fixtures.available ? family : family.v1;
-}
-
 /** Tenants whose `pooled` pools a site of `tenant` reads, other than its own. */
 function poolTenants(family: RouteFamily, tenant: TenantKey): TenantKey[] {
   if (family.pooled === undefined) return [];
@@ -555,15 +460,13 @@ function legitimate(family: RouteFamily, actor: TenantKey, owner: TenantKey, add
 }
 
 /**
- * Every case of `families` per (actor, owner) pair, plus one `pooled-read` per pooled family and one `survey-grant`,
- * sorted by id. Cases that need absent fixtures are `skipped`; the rest are `inconclusive` with {@link NOT_RUN}.
+ * Every case of `families` per (actor, owner) pair, plus one `pooled-read` per pooled family and one `tenant-grant`,
+ * sorted by id; each is `inconclusive` with {@link NOT_RUN}.
  */
-export function buildCases(families: readonly RouteFamily[], opts: BuildCasesOptions): IsolationCase[] {
+export function buildCases(families: readonly RouteFamily[], opts: BuildCasesOptions = {}): IsolationCase[] {
   const pairs = opts.pairs ?? crossTenantPairs();
   const cases: IsolationCase[] = [];
   for (const family of families) {
-    const routes = routesFor(family, opts.fixtures);
-    const set: RouteSet = routes ?? family;
     const actors = ACTORS[family.id];
     const owners = new Set(family.owners ?? TENANT_KEYS);
     const add = (
@@ -573,7 +476,6 @@ export function buildCases(families: readonly RouteFamily[], opts: BuildCasesOpt
       template: string,
       site: string,
       expected: CaseExpectation,
-      runnable: boolean = routes !== undefined,
     ): void => {
       cases.push({
         id: caseId(family.id, kind, actor, owner),
@@ -584,9 +486,9 @@ export function buildCases(families: readonly RouteFamily[], opts: BuildCasesOpt
         method: kind === 'read-list' || kind === 'read-by-id' || kind === 'pooled-read' ? 'GET' : 'POST',
         route: fill(template, site),
         expected,
-        result: runnable ? 'inconclusive' : 'skipped',
+        result: 'inconclusive',
         observed: {},
-        reason: runnable ? NOT_RUN : FIXTURES_UNAVAILABLE,
+        reason: NOT_RUN,
       });
     };
 
@@ -594,11 +496,11 @@ export function buildCases(families: readonly RouteFamily[], opts: BuildCasesOpt
       const actor = keyOf(pair.reader);
       const owner = keyOf(pair.writer);
       if (actors[actor] === undefined || !owners.has(owner)) continue;
-      add('read-list', actor, owner, set.list, siteOf(owner), 'no-owner-rows');
-      add('read-by-id', actor, owner, set.byId, siteOf(actor), 'no-owner-record');
-      add('write-owner-site', actor, owner, set.write, siteOf(owner), 'refused-no-effect');
-      add('write-site-mismatch', actor, owner, set.write, siteOf(actor), 'refused-no-effect');
-      if (family.idAddressedWrite) add('write-foreign-id', actor, owner, set.write, siteOf(actor), 'refused-no-effect');
+      add('read-list', actor, owner, family.list, siteOf(owner), 'no-owner-rows');
+      add('read-by-id', actor, owner, family.byId, siteOf(actor), 'no-owner-record');
+      add('write-owner-site', actor, owner, family.write, siteOf(owner), 'refused-no-effect');
+      add('write-site-mismatch', actor, owner, family.write, siteOf(actor), 'refused-no-effect');
+      if (family.idAddressedWrite) add('write-foreign-id', actor, owner, family.write, siteOf(actor), 'refused-no-effect');
     }
 
     const actorKeys = TENANT_KEYS.filter((key) => actors[key] !== undefined);
@@ -606,13 +508,11 @@ export function buildCases(families: readonly RouteFamily[], opts: BuildCasesOpt
     if (family.pooled !== undefined && first !== undefined) {
       const viewer = actorKeys.find((key) => poolTenants(family, key).length > 0) ?? first;
       const pool = poolTenants(family, viewer)[0] ?? viewer;
-      add('pooled-read', viewer, pool, set.pooledList ?? set.list, siteOf(viewer), 'registry-pools-only');
+      add('pooled-read', viewer, pool, family.pooledList ?? family.list, siteOf(viewer), 'registry-pools-only');
     }
-    if (family.id === 'surveys') {
-      const { grantor, ungranted } = SURVEY_GRANT;
-      // The grant check needs the fixture create, bulk-target and response routes, which have no /v1/ equivalent.
-      const runnable = opts.fixtures.available;
-      add('survey-grant', ungranted, grantor, family.write, siteOf(ungranted), 'granted-sites-only', runnable);
+    if (family.id === 'notes') {
+      const { grantor, ungranted } = TENANT_GRANT;
+      add('tenant-grant', ungranted, grantor, GRANT_ROUTES.comment, siteOf(ungranted), 'granted-sites-only');
     }
   }
   return cases.sort((x, y) => compareText(x.id, y.id));
@@ -688,29 +588,16 @@ function hasSaveErrors(body: Record<string, unknown>): boolean {
   return errors !== undefined && Object.keys(errors).length > 0;
 }
 
-/** Options of {@link isLegacyRefusal}. */
-export interface RefusalOptions {
-  /** A legacy-fixture route, whose 400 `badRequest` is a refusal too. */
-  fixture?: boolean;
-}
-
 /**
  * Whether `result` refuses in the legacy shape: 401, 403 or 404 with the legacy JSON envelope carrying an `error`
- * (or, for 403, save errors under `data.errors`); on a fixture route also a 400 `badRequest`. A CSRF refusal never is.
+ * (or, for 403, save errors under `data.errors`). A CSRF refusal never is.
  */
-export function isLegacyRefusal(result: Pick<HttpResult, 'status' | 'text'>, opts: RefusalOptions = {}): boolean {
+export function isLegacyRefusal(result: Pick<HttpResult, 'status' | 'text'>): boolean {
   const body = legacyEnvelope(result.text);
   if (body === undefined) return false;
   const error = envelopeError(body);
   if (error?.message === LEGACY_ERROR_MAP.invalidTokens.message) return false;
-  if (REFUSAL_STATUSES.has(result.status)) return error !== undefined || (result.status === 403 && hasSaveErrors(body));
-  const { badRequest } = LEGACY_ERROR_MAP;
-  return (
-    opts.fixture === true &&
-    result.status === badRequest.status &&
-    error?.code === badRequest.code &&
-    error.message === badRequest.message
-  );
+  return REFUSAL_STATUSES.has(result.status) && (error !== undefined || (result.status === 403 && hasSaveErrors(body)));
 }
 
 /** `value` with object keys sorted and token or CSRF keys dropped, at every depth. */
@@ -768,9 +655,9 @@ interface OwnerView {
 interface FamilyRun {
   family: RouteFamily;
   routes: RouteSet;
-  /** Whether `routes` are fixture routes. */
-  fixture: boolean;
   actors: Map<TenantKey, Account>;
+  /** Status of each owner's seed create, for a family that seeds its owners. */
+  seeded: Map<TenantKey, number>;
   /** Each actor's own-site list, the control of its cases. */
   own: Map<TenantKey, ListView>;
   owners: Map<TenantKey, OwnerView>;
@@ -877,29 +764,47 @@ async function discover(rt: Runtime, run: FamilyRun, owner: TenantKey): Promise<
     const record = isOk(result) ? recordOf(result) : undefined;
     if (record !== undefined && !isReserved(rt, shape, record)) records.push({ id, record });
   }
-  const reason = records.length === 0 ? `no ${family.id} records of ${owner} found through ${viewer.site}` : undefined;
+  const seed = run.seeded.get(owner);
+  const seedNote = seed === undefined || (seed >= 200 && seed < 300) ? '' : ` (seed create answered ${seed})`;
+  const reason =
+    records.length === 0 ? `no ${family.id} records of ${owner} found through ${viewer.site}${seedNote}` : undefined;
   return { viewer, knownIds, records, reason };
 }
 
-/** Logs the family's actors in, reads their own-site lists and discovers every owner's records. */
-async function prepareFamily(rt: Runtime, family: RouteFamily, routes: RouteSet, fixture: boolean): Promise<FamilyRun> {
+/** Creates the family's marked seed record in `acct`'s own site and returns the answer's status. */
+async function seedRecord(family: RouteFamily, seed: Record<string, string>, acct: Account): Promise<number> {
+  const headers = family.csrf ? await jsonApiTokens(acct.session, acct.site, '') : {};
+  const body = family.encoding === 'json' ? { json: seed } : { form: seed };
+  const result = await acct.session.post(fill(family.write, acct.site), { headers, ...body });
+  return result.status;
+}
+
+/**
+ * Logs the family's actors in, seeds its owners where it seeds them, reads the actors' own-site lists and discovers
+ * every owner's records.
+ */
+async function prepareFamily(rt: Runtime, family: RouteFamily): Promise<FamilyRun> {
   const run: FamilyRun = {
     family,
-    routes,
-    fixture,
+    routes: family,
     actors: new Map(),
+    seeded: new Map(),
     own: new Map(),
     owners: new Map(),
     shared: new Set(),
   };
+  const owners = family.owners ?? TENANT_KEYS;
   for (const tenant of TENANT_KEYS) {
     const ref = ACTORS[family.id][tenant];
     if (ref === undefined) continue;
     const acct = await account(rt, tenant, ref);
     run.actors.set(tenant, acct);
-    if (acct.ok) run.own.set(tenant, await listView(acct.session, fill(routes.list, acct.site)));
+    if (!acct.ok) continue;
+    const seed = family.seed?.(rt.marker);
+    if (seed !== undefined && owners.includes(tenant)) run.seeded.set(tenant, await seedRecord(family, seed, acct));
+    run.own.set(tenant, await listView(acct.session, fill(family.list, acct.site)));
   }
-  for (const owner of family.owners ?? TENANT_KEYS) run.owners.set(owner, await discover(rt, run, owner));
+  for (const owner of owners) run.owners.set(owner, await discover(rt, run, owner));
   const seen = new Map<string, number>();
   for (const view of run.owners.values()) for (const id of view.knownIds) seen.set(id, (seen.get(id) ?? 0) + 1);
   for (const [id, count] of seen) if (count > 1) run.shared.add(id);
@@ -1011,12 +916,12 @@ async function readById(run: FamilyRun, c: IsolationCase, acct: Account): Promis
   readResult(c, leakedIds, worst);
 }
 
-function classifyWrite(result: HttpResult, effect: boolean, fixture: boolean): { result: CaseResult; reason?: string } {
+function classifyWrite(result: HttpResult, effect: boolean): { result: CaseResult; reason?: string } {
   if (effect) return { result: 'violation', reason: "the owner's record changed" };
   if (isOk(result)) return { result: 'violation', reason: `the write was accepted (status ${result.status})` };
   if (isCsrfRefusal(result)) return { result: 'inconclusive', reason: 'refused for CSRF, not for tenancy' };
   if (result.status >= 500) return { result: 'inconclusive', reason: `answered ${result.status}` };
-  if (isLegacyRefusal(result, { fixture })) return { result: 'pass' };
+  if (isLegacyRefusal(result)) return { result: 'pass' };
   // Neither accepted nor refused in the legacy shape: not shown to be a cross-tenant write, nor shown refused.
   return { result: 'inconclusive', reason: `answered ${result.status}, neither accepted nor a legacy refusal` };
 }
@@ -1066,7 +971,7 @@ async function writeCase(rt: Runtime, run: FamilyRun, c: IsolationCase, acct: Ac
     return;
   }
   const effect = dataDigest(before) !== dataDigest(after);
-  const outcome = classifyWrite(result, effect, run.fixture);
+  const outcome = classifyWrite(result, effect);
   settle(c, outcome.result, observe(result, { effect }), outcome.reason);
 }
 
@@ -1105,116 +1010,93 @@ async function pooledRead(run: FamilyRun, c: IsolationCase): Promise<void> {
 }
 
 
-function surveyTargets(record: Readonly<Record<string, unknown>> | undefined): string[] {
-  return arrayField(record, ['targets']).flatMap((target) => {
-    const site = stringField(asRecord(target), ['siteid']);
-    return site === undefined ? [] : [site.toLowerCase()];
+/** A fresh grantor note granted to the granted site and not the ungranted one, or why none could be set up. */
+async function grantNote(rt: Runtime, grantor: Account): Promise<{ id: string } | { reason: string }> {
+  const created = await grantor.session.post(fill(GRANT_ROUTES.create, grantor.site), {
+    json: { title: `${rt.marker} tenant-grant` },
   });
+  const id = isOk(created) ? stringField(recordOf(created), NOTE_ID_FIELDS) : undefined;
+  if (id === undefined) return { reason: `the grant note create answered ${created.status}` };
+  const grantee = siteOf(TENANT_GRANT.granted);
+  const granted = await grantor.session.post(fill(GRANT_ROUTES.grant, grantor.site, id), {
+    json: { granteesiteid: grantee },
+  });
+  return isOk(granted) ? { id } : { reason: `the grant to ${grantee} answered ${granted.status}` };
 }
 
-/** A grantor survey targeting the granted site but not the ungranted one; created and bulk-targeted if none exists. */
-async function grantSurvey(rt: Runtime, grantor: Account): Promise<{ id: string } | { reason: string }> {
-  const granted = siteOf(SURVEY_GRANT.granted).toLowerCase();
-  const ungranted = siteOf(SURVEY_GRANT.ungranted).toLowerCase();
-  const list = await grantor.session.get(fill(SURVEY_ROUTES.list, grantor.site));
-  if (!isOk(list)) return { reason: `the grantor's survey list answered ${list.status}` };
-  const ids = listItems(list).flatMap((item) => {
-    const id = stringField(item, SURVEY_ID_FIELDS);
-    return id === undefined ? [] : [id];
-  });
-  for (const id of [...new Set(ids)].sort(compareText)) {
-    const detail = await grantor.session.get(fill(SURVEY_ROUTES.detail, grantor.site, id));
-    const targets = isOk(detail) ? surveyTargets(recordOf(detail)) : [];
-    if (targets.includes(granted) && !targets.includes(ungranted)) return { id };
-  }
-  const created = await grantor.session.post(fill(SURVEY_ROUTES.create, grantor.site), {
-    headers: await jsonApiTokens(grantor.session, grantor.site, ''),
-    form: { title: `${rt.marker} survey-grant` },
-  });
-  const id = isOk(created) ? stringField(recordOf(created), SURVEY_ID_FIELDS) : undefined;
-  if (id === undefined) return { reason: `the survey create answered ${created.status}` };
-  const bulk = await grantor.session.post(fill(SURVEY_ROUTES.bulk, grantor.site, id), {
-    headers: await jsonApiTokens(grantor.session, grantor.site, id),
-    form: { targets: JSON.stringify([{ siteID: siteOf(SURVEY_GRANT.granted) }]) },
-  });
-  return isOk(bulk) ? { id } : { reason: `bulk targeting answered ${bulk.status}` };
-}
-
-/** Every page of the survey's responses as the grantor reads them. */
-async function allResponses(acct: Account, id: string): Promise<ListView> {
+/** Every page of the note's comments as the grantor reads them. */
+async function allComments(acct: Account, id: string): Promise<ListView> {
   const items: Record<string, unknown>[] = [];
-  let pages = 1;
-  for (let page = 1; page <= pages; page += 1) {
-    const result = await acct.session.get(`${fill(SURVEY_ROUTES.responses, acct.site, id)}&pageIndex=${page}`);
+  let after: string | undefined;
+  do {
+    const cursor = after === undefined ? '' : `&after=${encodeURIComponent(after)}`;
+    const result = await acct.session.get(`${fill(GRANT_ROUTES.comments, acct.site, id)}${cursor}`);
     if (!isOk(result)) return { status: result.status, items };
     items.push(...listItems(result));
-    pages = Number(stringField(asRecord(bodyData(parseJson(result.text))), ['totalpages']) ?? 1);
-  }
+    after = stringField(asRecord(bodyData(parseJson(result.text))), ['next']);
+  } while (after !== undefined);
   return { status: 200, items };
 }
 
-/** A response from the granted site is stored for the grantor; one from the ungranted site is refused and absent. */
-async function surveyGrant(rt: Runtime, c: IsolationCase): Promise<void> {
-  const grantorRef = ACTORS.surveys[SURVEY_GRANT.grantor];
-  const grantedRef = ACTORS.surveys[SURVEY_GRANT.granted];
+/** A comment from the granted site is stored on the grantor's note; one from the ungranted site is refused and absent. */
+async function tenantGrant(rt: Runtime, c: IsolationCase): Promise<void> {
+  const grantorRef = ACTORS.notes[TENANT_GRANT.grantor];
+  const grantedRef = ACTORS.notes[TENANT_GRANT.granted];
   if (grantorRef === undefined || grantedRef === undefined) {
-    settle(c, 'inconclusive', {}, 'no surveys actor of the grantor or granted site');
+    settle(c, 'inconclusive', {}, 'no notes actor of the grantor or granted site');
     return;
   }
-  const grantor = await account(rt, SURVEY_GRANT.grantor, grantorRef);
-  const granted = await account(rt, SURVEY_GRANT.granted, grantedRef);
-  const ungranted = await account(rt, SURVEY_GRANT.ungranted, SURVEY_GRANT.ungrantedRespondent);
+  const grantor = await account(rt, TENANT_GRANT.grantor, grantorRef);
+  const granted = await account(rt, TENANT_GRANT.granted, grantedRef);
+  const ungranted = await account(rt, TENANT_GRANT.ungranted, TENANT_GRANT.ungrantedCommenter);
   const failed = [grantor, granted, ungranted].find((acct) => !acct.ok);
   if (failed !== undefined) {
-    settle(c, 'inconclusive', {}, `${failed.tenant} survey respondent login failed (status ${failed.status})`);
+    settle(c, 'inconclusive', {}, `${failed.tenant} note commenter login failed (status ${failed.status})`);
     return;
   }
-  const survey = await grantSurvey(rt, grantor);
-  if ('reason' in survey) {
-    settle(c, 'inconclusive', {}, survey.reason);
+  const note = await grantNote(rt, grantor);
+  if ('reason' in note) {
+    settle(c, 'inconclusive', {}, note.reason);
     return;
   }
-  const respond = async (acct: Account, answers: string): Promise<HttpResult> =>
-    acct.session.post(fill(SURVEY_ROUTES.respond, acct.site, survey.id), {
-      headers: await jsonApiTokens(acct.session, acct.site, survey.id),
-      form: { answers },
-    });
-  const grantedAnswers = `${rt.marker} granted`;
-  const ungrantedAnswers = `${rt.marker} ungranted`;
-  const grantedResult = await respond(granted, grantedAnswers);
-  const grantedId = isOk(grantedResult) ? stringField(recordOf(grantedResult), RESPONSE_ID_FIELDS) : undefined;
-  const ungrantedResult = await respond(ungranted, ungrantedAnswers);
-  c.route = fill(SURVEY_ROUTES.respond, ungranted.site, survey.id);
-  const listed = await allResponses(grantor, survey.id);
+  const comment = (acct: Account, body: string): Promise<HttpResult> =>
+    acct.session.post(fill(GRANT_ROUTES.comment, acct.site, note.id), { json: { grantorsiteid: grantor.site, body } });
+  const grantedBody = `${rt.marker} granted`;
+  const ungrantedBody = `${rt.marker} ungranted`;
+  const grantedResult = await comment(granted, grantedBody);
+  const grantedId = isOk(grantedResult) ? stringField(recordOf(grantedResult), COMMENT_ID_FIELDS) : undefined;
+  const ungrantedResult = await comment(ungranted, ungrantedBody);
+  c.route = fill(GRANT_ROUTES.comment, ungranted.site, note.id);
+  const listed = await allComments(grantor, note.id);
   if (!isOk(listed)) {
-    settle(c, 'inconclusive', observe(ungrantedResult), `the grantor's response list answered ${listed.status}`);
+    settle(c, 'inconclusive', observe(ungrantedResult), `the grantor's comment list answered ${listed.status}`);
     return;
   }
   const grantedShown =
     grantedId !== undefined &&
     listed.items.some(
       (item) =>
-        stringField(item, RESPONSE_ID_FIELDS) === grantedId &&
-        sameSite(stringField(item, ['respondentsiteid']), granted.site),
+        stringField(item, COMMENT_ID_FIELDS) === grantedId &&
+        sameSite(stringField(item, ['authorsiteid']), granted.site),
     );
-  const ungrantedShown = listed.items.some((item) => stringField(item, ['answers']) === ungrantedAnswers);
+  const ungrantedShown = listed.items.some((item) => stringField(item, ['body']) === ungrantedBody);
   const effect = isOk(ungrantedResult) || ungrantedShown;
   const observed = observe(ungrantedResult, { effect });
-  if (effect) settle(c, 'violation', observed, `the ${ungranted.site} response was accepted`);
-  else if (isCsrfRefusal(grantedResult) || grantedResult.status >= 500) {
-    settle(c, 'inconclusive', observed, `the granted response answered ${grantedResult.status}`);
+  if (effect) settle(c, 'violation', observed, `the ${ungranted.site} comment was accepted`);
+  else if (grantedResult.status >= 500) {
+    settle(c, 'inconclusive', observed, `the granted comment answered ${grantedResult.status}`);
   } else if (!grantedShown) {
-    settle(c, 'violation', observed, `no ${granted.site} response is listed (status ${grantedResult.status})`);
-  } else if (isCsrfRefusal(ungrantedResult) || ungrantedResult.status >= 500) {
-    settle(c, 'inconclusive', observed, `the ungranted response answered ${ungrantedResult.status}`);
-  } else if (!isLegacyRefusal(ungrantedResult, { fixture: true })) {
+    settle(c, 'violation', observed, `no ${granted.site} comment is listed (status ${grantedResult.status})`);
+  } else if (ungrantedResult.status >= 500) {
+    settle(c, 'inconclusive', observed, `the ungranted comment answered ${ungrantedResult.status}`);
+  } else if (!isLegacyRefusal(ungrantedResult)) {
     const answer = `${ungrantedResult.status}, not a legacy refusal`;
-    settle(c, 'inconclusive', observed, `the ungranted response answered ${answer}`);
+    settle(c, 'inconclusive', observed, `the ungranted comment answered ${answer}`);
   } else settle(c, 'pass', observed);
 }
 
 async function runCase(rt: Runtime, run: FamilyRun, c: IsolationCase): Promise<void> {
-  if (c.kind === 'survey-grant') return surveyGrant(rt, c);
+  if (c.kind === 'tenant-grant') return tenantGrant(rt, c);
   if (c.kind === 'pooled-read') return pooledRead(run, c);
   const acct = run.actors.get(c.actor);
   const blocked = acct === undefined ? `no ${run.family.id} actor of ${c.actor}` : blocker(run, c, acct);
@@ -1231,12 +1113,12 @@ function totals(cases: IsolationCase[]): GatewayIsolationResult {
     if (READ_KINDS.has(c.kind)) crossTenantReads += c.observed.leakedIds ?? 0;
     else if (c.kind === 'pooled-read' && c.result === 'violation') crossTenantReads += 1;
     else if (WRITE_KINDS.has(c.kind) && c.result === 'violation') crossTenantWrites += 1;
-    else if (c.kind === 'survey-grant' && c.result === 'violation' && c.observed.effect === true) {
+    else if (c.kind === 'tenant-grant' && c.result === 'violation' && c.observed.effect === true) {
       crossTenantWrites += 1;
     }
   }
-  const surveyGrantOnly = cases.some((c) => c.kind === 'survey-grant' && c.result === 'pass');
-  return { crossTenantReads, crossTenantWrites, surveyGrantOnly, cases };
+  const grantOnly = cases.some((c) => c.kind === 'tenant-grant' && c.result === 'pass');
+  return { crossTenantReads, crossTenantWrites, grantOnly, cases };
 }
 
 /**
@@ -1246,7 +1128,6 @@ function totals(cases: IsolationCase[]): GatewayIsolationResult {
  */
 export async function runGatewayIsolation(deps: GatewayIsolationDeps = {}): Promise<GatewayIsolationResult> {
   const env = deps.env ?? process.env;
-  const fixtures = deps.fixtures ?? readFixtureStatus(env);
   const families = deps.families ?? ROUTE_FAMILIES;
   const ctx = createScenarioContext({ id: SCENARIO_ID }, { origin: 'gateway', env, fetch: deps.fetch });
   const reserved = deps.reserved ?? readReserved(ctx);
@@ -1260,19 +1141,16 @@ export async function runGatewayIsolation(deps: GatewayIsolationDeps = {}): Prom
     accounts: new Map(),
     routing: deps.routing,
   };
-  const cases = buildCases(families, { fixtures });
+  const cases = buildCases(families);
   for (const c of cases) {
     const probe = { method: c.method, route: c.route.replaceAll('{id}', NEUTRAL_ID) };
-    const served = c.result === 'skipped' ? undefined : legacyServed(rt.routing, probe);
+    const served = legacyServed(rt.routing, probe);
     if (served !== undefined) settle(c, 'skipped', {}, served);
   }
   const runs = new Map<FamilyId, FamilyRun>();
   for (const family of families) {
-    const routes = routesFor(family, fixtures);
     const runnable = cases.some((c) => c.family === family.id && c.result !== 'skipped');
-    if (routes !== undefined && runnable) {
-      runs.set(family.id, await prepareFamily(rt, family, routes, family.fixtureRoute && fixtures.available));
-    }
+    if (runnable) runs.set(family.id, await prepareFamily(rt, family));
   }
   for (const c of cases) {
     const run = runs.get(c.family);

@@ -1,11 +1,10 @@
 /** The cUsers download paths, legacy CSV header lines and contract-checked calls shared by the offline and PostgreSQL CSV suites. */
-import { readFileSync } from 'node:fs';
 import { parse } from 'yaml';
-import { assertResponseMatchesOpenApi } from '@opt2/platform/testing';
+import { assertResponseMatchesOpenApi, loadOpenApiDocument } from '@opt2/platform/testing';
 import { userHeaders, type TestApp, type UserHeadersInput } from './app.js';
 
 type Operation = { operationId?: string };
-const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as {
+const OPENAPI = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as {
   paths: Record<string, Record<string, Operation>>;
 };
 

@@ -28,6 +28,7 @@ import {
   TFVARS_RELATIVE_PATH,
   toTfvars,
   TopologyError,
+  type ListedSubscriptionLike,
   type LocalApplyResult,
   type PubSubLike,
   type PushSubscriptionOptions,
@@ -43,7 +44,6 @@ const FIXTURES = new URL('../fixtures/contract-samples/', import.meta.url);
 /** Fixture file, relative to FIXTURES, and its repository-relative destination in a temporary tree. */
 const FIXTURE_COPIES: readonly (readonly [string, string])[] = [
   ['openapi/people.yaml', 'services/people/contracts/openapi.yaml'],
-  ['openapi/timesheets.yaml', 'services/timesheets/contracts/openapi.yaml'],
   ['openapi/stub.yaml', 'services/stub/contracts/openapi.yaml'],
   ['openapi/identity.yaml', 'services/identity/contracts/openapi.yaml'],
   ['events/people.person.archived.v1.json', 'services/people/contracts/events/people.person.archived.v1.json'],
@@ -60,22 +60,18 @@ const SAMPLE_DEPLOYED = [
   'people',
   'programs-sites',
   'strategies-content',
-  'communications',
-  'reporting',
-  'surveys',
-  'timesheets',
-  'finance',
-  'e-signature',
   'migration',
 ];
 
 const ARCHIVED = 'people.person.archived.v1';
 const CHANGED = 'people.person.changed.v1';
 const NOTE_CREATED = 'stub.note.created.v1';
+/** The stand-in consumer of ARCHIVED; no fixture contract declares that route. */
+const ARCHIVED_CONSUMER = 'strategies-content' satisfies PackageName;
 
-/** Consumer and topic of each push route the fixture contracts declare. */
+/** Consumer and topic of each push route the fixture and stand-in contracts declare. */
 const PUSH_ROUTES: readonly (readonly [PackageName, string])[] = [
-  ['timesheets', ARCHIVED],
+  [ARCHIVED_CONSUMER, ARCHIVED],
   ['identity', CHANGED],
   ['stub', NOTE_CREATED],
 ];
@@ -171,8 +167,13 @@ async function makeRepo(reverse = false): Promise<string> {
     const text = await fixtureText(from);
     files.push([to, reverse && to === PLAN_TFVARS_RELATIVE_PATH ? reverseServiceList(text) : text]);
   }
+  const pushRoutes: Partial<Record<PackageName, string[]>> = {
+    [ARCHIVED_CONSUMER]: [pushPath(subscriptionName(ARCHIVED_CONSUMER, ARCHIVED))],
+  };
   for (const name of PACKAGE_NAMES) {
-    if (name !== 'web' && !fixtureTargets.has(contractPath(name))) files.push([contractPath(name), standInContract(name, sha)]);
+    if (name !== 'web' && !fixtureTargets.has(contractPath(name))) {
+      files.push([contractPath(name), standInContract(name, sha, { pushRoutes: pushRoutes[name] ?? [] })]);
+    }
   }
   for (const [relative, text] of reverse ? files.reverse() : files) await writeAt(root, relative, text);
   return root;
@@ -267,7 +268,7 @@ class FakeEmulator implements PubSubLike {
     this.topics.set(name, topicPath(name));
   }
 
-  topic(topic: string): { createSubscription(name: string, options?: PushSubscriptionOptions): Promise<unknown> } {
+  topic(topic: string): ReturnType<PubSubLike['topic']> {
     return {
       createSubscription: async (name: string, options?: PushSubscriptionOptions): Promise<void> => {
         this.calls += 1;
@@ -275,7 +276,24 @@ class FakeEmulator implements PubSubLike {
         if (this.subscriptions.has(name)) throw grpcError(GRPC_ALREADY_EXISTS, `subscription ${name} exists`);
         this.subscriptions.set(name, { topic: topicPath(topic), ...(options === undefined ? {} : { options }) });
       },
+      delete: async (): Promise<void> => {
+        this.calls += 1;
+        if (!this.topics.delete(topic)) throw grpcError(GRPC_NOT_FOUND, `topic ${topic} not found`);
+        for (const subscription of this.subscriptions.values()) {
+          if (subscription.topic === topicPath(topic)) subscription.topic = '_deleted-topic_';
+        }
+      },
     };
+  }
+
+  async getTopics(): Promise<[{ name: string }[]]> {
+    this.calls += 1;
+    return [[...this.topics.values()].map((name) => ({ name }))];
+  }
+
+  async getSubscriptions(): Promise<[ListedSubscriptionLike[]]> {
+    this.calls += 1;
+    return [[...this.subscriptions].map(([name, { topic }]) => ({ name: `projects/${PROJECT}/subscriptions/${name}`, metadata: { topic } }))];
   }
 
   subscription(name: string): SubscriptionHandleLike {
@@ -351,7 +369,7 @@ describe('topology derivation from the contract samples', () => {
     const deployed = deployedServices(root);
 
     expect(deployed).toEqual(SAMPLE_DEPLOYED);
-    expect(deployed).toHaveLength(13);
+    expect(deployed).toHaveLength(7);
     expect(deployed).not.toContain('stub');
   });
 
@@ -370,8 +388,8 @@ describe('topology derivation from the contract samples', () => {
     for (const [topic, entry] of Object.entries(topology.topics)) expect(entry.producer).toBe(parseTopic(topic).service);
     expect(Object.keys(topology.subscriptions).sort()).toEqual([
       'identity.people.person.changed.v1',
+      'strategies-content.people.person.archived.v1',
       'stub.stub.note.created.v1',
-      'timesheets.people.person.archived.v1',
     ]);
     expect(topology.subscriptions).toEqual(
       Object.fromEntries(PUSH_ROUTES.map(([consumer, topic]) => expectedSubscription(consumer, topic))),
@@ -430,9 +448,9 @@ describe('topology derivation from the contract samples', () => {
 
   it("drops a deployed consumer's subscription to an undeployed producer's topic from the cloud topology only", async () => {
     const root = await makeRepo();
-    const crossing = subscriptionName('timesheets', NOTE_CREATED);
-    const pushRoutes = [pushPath(subscriptionName('timesheets', ARCHIVED)), pushPath(crossing)];
-    await writeAt(root, contractPath('timesheets'), standInContract('timesheets', await fixtureSha(), { pushRoutes }));
+    const crossing = subscriptionName(ARCHIVED_CONSUMER, NOTE_CREATED);
+    const pushRoutes = [pushPath(subscriptionName(ARCHIVED_CONSUMER, ARCHIVED)), pushPath(crossing)];
+    await writeAt(root, contractPath(ARCHIVED_CONSUMER), standInContract(ARCHIVED_CONSUMER, await fixtureSha(), { pushRoutes }));
 
     expect(Object.keys(deriveTopology('local', root).subscriptions)).toContain(crossing);
     expect(Object.keys(deriveTopology('cloud', root).subscriptions)).not.toContain(crossing);
@@ -462,10 +480,10 @@ describe('topology derivation from the contract samples', () => {
     expect(await treeSnapshot(root)).toEqual(before);
   });
 
-  const timesheetsContract = contractPath('timesheets');
+  const consumerContract = contractPath(ARCHIVED_CONSUMER);
   const planListing = (list: string) => (root: string) => writeAt(root, PLAN_TFVARS_RELATIVE_PATH, `cloud_run_services = [${list}]\n`);
-  const timesheetsDeclaring = (opts: { pushRoutes?: string[]; calls?: string[] }) => async (root: string) =>
-    writeAt(root, timesheetsContract, standInContract('timesheets', await fixtureSha(), opts));
+  const consumerDeclaring = (opts: { pushRoutes?: string[]; calls?: string[] }) => async (root: string) =>
+    writeAt(root, consumerContract, standInContract(ARCHIVED_CONSUMER, await fixtureSha(), opts));
 
   const malformed: { label: string; target: TopologyTarget; file: string; reason: string; mutate: (root: string) => Promise<void> }[] = [
     {
@@ -478,10 +496,10 @@ describe('topology derivation from the contract samples', () => {
     {
       label: "an event schema in another producer's folder",
       target: 'local',
-      file: `services/timesheets/contracts/events/${ARCHIVED}.json`,
-      reason: "not to its folder's service timesheets",
+      file: `services/stub/contracts/events/${ARCHIVED}.json`,
+      reason: "not to its folder's service stub",
       mutate: async (root) =>
-        writeAt(root, `services/timesheets/contracts/events/${ARCHIVED}.json`, await fixtureText(`events/${ARCHIVED}.json`)),
+        writeAt(root, `services/stub/contracts/events/${ARCHIVED}.json`, await fixtureText(`events/${ARCHIVED}.json`)),
     },
     {
       label: 'a plan.tfvars without cloud_run_services',
@@ -515,37 +533,37 @@ describe('topology derivation from the contract samples', () => {
     {
       label: 'a push route naming a topic without an event schema',
       target: 'local',
-      file: timesheetsContract,
+      file: consumerContract,
       reason: 'which has no event schema',
-      mutate: timesheetsDeclaring({ pushRoutes: [pushPath(subscriptionName('timesheets', 'people.person.deleted.v1'))] }),
+      mutate: consumerDeclaring({ pushRoutes: [pushPath(subscriptionName(ARCHIVED_CONSUMER, 'people.person.deleted.v1'))] }),
     },
     {
       label: 'a push route of another consumer',
       target: 'local',
-      file: timesheetsContract,
-      reason: 'belongs to consumer identity, not timesheets',
-      mutate: timesheetsDeclaring({ pushRoutes: [pushPath(subscriptionName('identity', ARCHIVED))] }),
+      file: consumerContract,
+      reason: `belongs to consumer identity, not ${ARCHIVED_CONSUMER}`,
+      mutate: consumerDeclaring({ pushRoutes: [pushPath(subscriptionName('identity', ARCHIVED))] }),
     },
     {
       label: 'an x-opt2-calls entry naming an unknown package',
       target: 'local',
-      file: timesheetsContract,
+      file: consumerContract,
       reason: 'x-opt2-calls names "billing"',
-      mutate: timesheetsDeclaring({ calls: ['billing'] }),
+      mutate: consumerDeclaring({ calls: ['billing'] }),
     },
     {
       label: 'an x-opt2-calls value that is not a list',
       target: 'local',
-      file: timesheetsContract,
+      file: consumerContract,
       reason: 'does not match the contract fields the topology reads',
-      mutate: (root) => writeAt(root, timesheetsContract, 'openapi: 3.1.0\nx-opt2-calls: identity\npaths: {}\n'),
+      mutate: (root) => writeAt(root, consumerContract, 'openapi: 3.1.0\nx-opt2-calls: identity\npaths: {}\n'),
     },
     {
       label: 'a package without its contract',
       target: 'cloud',
-      file: contractPath('finance'),
-      reason: 'the contract of finance does not exist',
-      mutate: (root) => rm(path.join(root, contractPath('finance'))),
+      file: contractPath('programs-sites'),
+      reason: 'the contract of programs-sites does not exist',
+      mutate: (root) => rm(path.join(root, contractPath('programs-sites'))),
     },
   ];
 
@@ -590,6 +608,8 @@ describe('topology.auto.tfvars.json rendering', () => {
 
 describe('local topology application on an injected emulator client', () => {
   const NAMES = PUSH_ROUTES.map(([consumer, topic]) => subscriptionName(consumer, topic));
+  /** The counts of a run that finds every declared resource present and nothing to retire. */
+  const UNCHANGED = { topics: 0, dlqTopics: 0, pushSubscriptions: 0, replaySubscriptions: 0, retiredSubscriptions: 0, retiredTopics: 0 };
 
   it('creates every topic, DLQ topic, push subscription and DLQ replay subscription on the first run', async () => {
     const topology = deriveTopology('local', await makeRepo());
@@ -599,7 +619,15 @@ describe('local topology application on an injected emulator client', () => {
 
     const result = await applyLocalTopology(topology, { projectId: PROJECT, pushKey, ports, pubsub: fake });
 
-    expect(result).toEqual({ topics: 3, dlqTopics: 3, pushSubscriptions: 3, replaySubscriptions: 3, updated: 0 });
+    expect(result).toEqual({
+      topics: 3,
+      dlqTopics: 3,
+      pushSubscriptions: 3,
+      replaySubscriptions: 3,
+      updated: 0,
+      retiredSubscriptions: 0,
+      retiredTopics: 0,
+    });
     expect([...fake.topics.keys()].sort()).toEqual([ARCHIVED, CHANGED, NOTE_CREATED, ...NAMES.map(dlqTopicName)].sort());
     expect([...fake.subscriptions.keys()].sort()).toEqual([...NAMES, ...NAMES.map(dlqReplaySubscriptionName)].sort());
     for (const [consumer, topic] of PUSH_ROUTES) {
@@ -626,7 +654,7 @@ describe('local topology application on an injected emulator client', () => {
 
     const again = await applyLocalTopology(topology, opts);
 
-    expect(again).toEqual({ topics: 0, dlqTopics: 0, pushSubscriptions: 0, replaySubscriptions: 0, updated: NAMES.length });
+    expect(again).toEqual({ ...UNCHANGED, updated: NAMES.length });
     expect(fake.state()).toEqual(before);
   });
 
@@ -636,13 +664,13 @@ describe('local topology application on an injected emulator client', () => {
     const fake = new FakeEmulator();
     const opts = { projectId: PROJECT, pushKey, ports: loadPorts(), pubsub: fake };
     await applyLocalTopology(topology, opts);
-    const name = subscriptionName('timesheets', ARCHIVED);
+    const name = subscriptionName(ARCHIVED_CONSUMER, ARCHIVED);
     const options = fake.subscriptions.get(name)?.options as PushSubscriptionOptions;
     fake.subscriptions.set(name, { topic: topicPath(ARCHIVED), options: { ...options, enableMessageOrdering: false } });
 
     const again = await applyLocalTopology(topology, opts);
 
-    expect(again).toEqual({ topics: 0, dlqTopics: 0, pushSubscriptions: 0, replaySubscriptions: 0, updated: NAMES.length });
+    expect(again).toEqual({ ...UNCHANGED, updated: NAMES.length });
     expect(fake.subscriptions.get(name)).toEqual({ topic: topicPath(ARCHIVED), options });
   });
 
@@ -758,7 +786,13 @@ describe('topology CLI through runCli', () => {
     const root = await makeRepo();
     const { env, pushKey } = await generatedPushKey();
     const fake = new FakeEmulator();
-    const applied: LocalApplyResult = { topics: 3, dlqTopics: 3, pushSubscriptions: 3, replaySubscriptions: 3, updated: 0 };
+    const applied: Omit<LocalApplyResult, 'retiredSubscriptions' | 'retiredTopics'> = {
+      topics: 3,
+      dlqTopics: 3,
+      pushSubscriptions: 3,
+      replaySubscriptions: 3,
+      updated: 0,
+    };
 
     const run = await cli(['--target', 'local', '--repo-root', root], { env: { ...env, GOOGLE_CLOUD_PROJECT: PROJECT }, pubsub: fake });
 
@@ -772,6 +806,7 @@ describe('topology CLI through runCli', () => {
         target: 'local',
         projectId: PROJECT,
         created: applied,
+        retired: { subscriptions: 0, topics: 0 },
         queues: Object.keys(expectedQueues('local')).sort(),
       },
     });
@@ -784,6 +819,23 @@ describe('topology CLI through runCli', () => {
     }
   });
 
+  it('reports the undeclared topology-named subscriptions and topics it retired in the summary line', async () => {
+    const root = await makeRepo();
+    const { env } = await generatedPushKey();
+    const fake = new FakeEmulator();
+    const former = subscriptionName('former', CHANGED);
+    for (const topic of [CHANGED, dlqTopicName(former), 'former.item.changed.v1']) fake.topics.set(topic, topicPath(topic));
+    fake.subscriptions.set(former, { topic: topicPath(CHANGED) });
+    fake.subscriptions.set(dlqReplaySubscriptionName(former), { topic: topicPath(dlqTopicName(former)) });
+
+    const run = await cli(['--target', 'local', '--repo-root', root], { env: { ...env, GOOGLE_CLOUD_PROJECT: PROJECT }, pubsub: fake });
+
+    expect(run.line).toMatchObject({ ok: true, created: { topics: 2, updated: 0 }, retired: { subscriptions: 2, topics: 2 } });
+    expect(fake.subscriptions.has(former)).toBe(false);
+    const declaredDlqs = PUSH_ROUTES.map(([consumer, topic]) => dlqTopicName(subscriptionName(consumer, topic)));
+    expect([...fake.topics.keys()].sort()).toEqual([ARCHIVED, CHANGED, NOTE_CREATED, ...declaredDlqs].sort());
+  });
+
   it.each([
     { label: 'no --target', argv: [] },
     { label: 'an unknown --target', argv: ['--target', 'staging'] },
@@ -793,6 +845,21 @@ describe('topology CLI through runCli', () => {
     const run = await cli(argv);
 
     expect(run).toMatchObject({ code: 2, exits: [2], line: { command: COMMAND, ok: false, code: 2, error: { type: 'UsageError' } } });
+  });
+});
+
+describe('local topology of this checkout', () => {
+  it('keeps the identity login-mail and people archive topics with no subscription, and only package producers and consumers', () => {
+    const topology = deriveTopology('local', REPO_ROOT);
+    const packages: ReadonlySet<string> = new Set(PACKAGE_NAMES);
+    const subscribed = new Set(Object.values(topology.subscriptions).map((subscription) => subscription.topic));
+
+    expect(topology.topics['identity.login-mail.requested.v1']).toEqual({ producer: 'identity', kind: 'process' });
+    expect(topology.topics[ARCHIVED]).toEqual({ producer: 'people', kind: 'process' });
+    expect(subscribed.has('identity.login-mail.requested.v1')).toBe(false);
+    expect(subscribed.has(ARCHIVED)).toBe(false);
+    for (const entry of Object.values(topology.topics)) expect(packages.has(entry.producer), entry.producer).toBe(true);
+    for (const entry of Object.values(topology.subscriptions)) expect(packages.has(entry.consumer), entry.consumer).toBe(true);
   });
 });
 

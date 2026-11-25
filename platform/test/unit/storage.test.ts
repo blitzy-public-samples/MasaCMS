@@ -119,8 +119,8 @@ async function rawHttpGet(port: number, target: string): Promise<Buffer> {
 }
 
 describe('storage keys and constants', () => {
-  it('declares the four buckets, a 900 s URL lifetime, the /opt2/files/ prefix and the sha256 metadata key', () => {
-    expect(BUCKETS).toEqual(['content-files', 'reporting-exports', 'finance-attachments', 'esignature-documents']);
+  it('declares the content-files bucket, a 900 s URL lifetime, the /opt2/files/ prefix and the sha256 metadata key', () => {
+    expect(BUCKETS).toEqual(['content-files']);
     expect(SIGNED_URL_TTL_S).toBe(900);
     expect(LOCAL_SIGNED_URL_PREFIX).toBe('/opt2/files/');
     expect(SHA256_METADATA_KEY).toBe('sha256');
@@ -263,7 +263,7 @@ describe('storage barrel', () => {
 });
 
 describe('local storage adapter', () => {
-  const bucket: BucketName = 'finance-attachments';
+  const bucket: BucketName = 'content-files';
   const key = `${TENANT_A.tenantId}/${FILE_ID}.pdf`;
   const pdf = Buffer.from('%PDF-1.7\nsynthetic attachment\n', 'utf8');
   let stateDir: string;
@@ -549,14 +549,14 @@ describe('local signed URLs', () => {
 
   it('formats /opt2/files/<bucket>/<key>?expires=<s>&sig=<hex>', () => {
     const url = signLocalUrl(
-      { bucket: 'reporting-exports', key: `${TENANT_B.tenantId}/${FILE_ID}.csv`, expires: 1_800_000_000 },
+      { bucket: 'content-files', key: `${TENANT_B.tenantId}/${FILE_ID}.csv`, expires: 1_800_000_000 },
       HMAC_KEY,
     );
 
-    expect(url).toMatch(/^\/opt2\/files\/reporting-exports\/[^?]+\?expires=\d+&sig=[0-9a-f]{64}$/);
+    expect(url).toMatch(/^\/opt2\/files\/content-files\/[^?]+\?expires=\d+&sig=[0-9a-f]{64}$/);
     expect(url).toBe(
-      `/opt2/files/reporting-exports/${TENANT_B.tenantId}/${FILE_ID}.csv?expires=1800000000` +
-        `&sig=${hmacHex(`reporting-exports/${TENANT_B.tenantId}/${FILE_ID}.csv\n1800000000`)}`,
+      `/opt2/files/content-files/${TENANT_B.tenantId}/${FILE_ID}.csv?expires=1800000000` +
+        `&sig=${hmacHex(`content-files/${TENANT_B.tenantId}/${FILE_ID}.csv\n1800000000`)}`,
     );
   });
 
@@ -593,7 +593,7 @@ describe('local signed URLs', () => {
     expect(verifySignedUrl(url, NOW_MS, HMAC_KEY)).toEqual({ ok: false, reason: 'malformed' });
   });
 
-  it('reports a well-formed URL for a bucket outside the four as unknown-bucket', () => {
+  it('reports a well-formed URL for a bucket outside BUCKETS as unknown-bucket', () => {
     expect(verifySignedUrl(`/opt2/files/tasks/a?expires=${expires}&sig=${ANY_SIG}`, NOW_MS, HMAC_KEY)).toEqual({
       ok: false,
       reason: 'unknown-bucket',
@@ -603,7 +603,6 @@ describe('local signed URLs', () => {
   it.each<[string, (url: string) => string]>([
     ['a tampered signature', (url) => url.slice(0, -1) + (url.endsWith('0') ? '1' : '0')],
     ['a changed key', (url) => url.replace('F1_small.jpg', 'F2_small.jpg')],
-    ['a changed bucket', (url) => url.replace('/content-files/', '/reporting-exports/')],
     ['an extended expiry', (url) => url.replace(`expires=${expires}`, `expires=${expires + 3600}`)],
     ['an added disposition', (url) => `${url}&disposition=attachment`],
   ])('reports %s as bad-signature', (_case, tamper) => {
@@ -911,7 +910,7 @@ function isMediaRequest(req: IncomingMessage): boolean {
 }
 
 describe('Cloud Storage adapter', () => {
-  const bucket: BucketName = 'finance-attachments';
+  const bucket: BucketName = 'content-files';
   const key = `${TENANT_A.tenantId}/${FILE_ID}.pdf`;
   const pdf = Buffer.from('%PDF-1.7\ncloud attachment\n', 'utf8');
 
@@ -938,7 +937,7 @@ describe('Cloud Storage adapter', () => {
     const adapter = createCloudStorageAdapter({ storage: fake.storage, now: () => NOW_MS });
     const disposition = 'attachment; filename="export.xlsx"';
 
-    await adapter.signedUrl('reporting-exports', key, { expiresS: 60, disposition });
+    await adapter.signedUrl('content-files', key, { expiresS: 60, disposition });
 
     expect(fake.calls.map((c) => c.args)).toEqual([
       [{ version: 'v4', action: 'read', expires: NOW_MS + 60_000, responseDisposition: disposition }],
@@ -997,14 +996,14 @@ describe('Cloud Storage adapter', () => {
     const body = Readable.from([Buffer.from('col1,col2\n'), Buffer.from('1,2\n')]);
     const bytes = Buffer.from('col1,col2\n1,2\n');
 
-    const result = await adapter.put('reporting-exports', key, body, { contentType: 'text/csv' });
+    const result = await adapter.put('content-files', key, body, { contentType: 'text/csv' });
 
     expect(result).toEqual({ size: bytes.length, sha256: sha256Hex(bytes) });
     expect(fake.calls.map(({ op, args }) => [op, args])).toEqual([
       ['createWriteStream', [{ resumable: false, contentType: 'text/csv', metadata: { contentType: 'text/csv' } }]],
       ['setMetadata', [{ metadata: { sha256: sha256Hex(bytes) } }, { ifGenerationMatch: 1 }]],
     ]);
-    expect(await adapter.head('reporting-exports', key)).toEqual({
+    expect(await adapter.head('content-files', key)).toEqual({
       size: bytes.length,
       sha256: sha256Hex(bytes),
       contentType: 'text/csv',
@@ -1228,10 +1227,10 @@ describe('Cloud Storage adapter', () => {
         yield bytes.subarray(10);
       }
 
-      const result = await adapter.put('reporting-exports', key, Readable.from(slowRows()), { contentType: 'text/csv' });
+      const result = await adapter.put('content-files', key, Readable.from(slowRows()), { contentType: 'text/csv' });
 
       expect(result).toEqual({ size: bytes.length, sha256: sha256Hex(bytes) });
-      expect(fake.objects.get(`reporting-exports/${key}`)?.bytes).toEqual(bytes);
+      expect(fake.objects.get(`content-files/${key}`)?.bytes).toEqual(bytes);
     });
 
     it.each<[string, StorageTimeoutError['operation'], (a: StoragePort) => Promise<unknown>]>([

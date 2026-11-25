@@ -1,4 +1,4 @@
-/** Client of the owners' internal migration, object, site-monitor and scheduled-task endpoints: the package's only route to target data. */
+/** Client of the owners' internal migration, object, site-monitor and queue-control endpoints: the package's only route to target data. */
 import { Buffer } from 'node:buffer';
 import type { Readable } from 'node:stream';
 import {
@@ -21,8 +21,6 @@ import {
 } from '@opt2/platform/migration-kit';
 import { SERVICE_CALL_TIMEOUT_MS, ServiceUnavailableError, type ServiceClient, type ServiceRequest, type ServiceResponse } from '@opt2/platform/service-kit';
 import { callQueueControl, type QueueControlOp, type QueueControlResult } from '@opt2/platform/tasks';
-import type { paths as financePaths } from '../generated/clients/finance.js';
-import type { paths as reportingPaths } from '../generated/clients/reporting.js';
 import type { components, paths } from '../generated/clients/strategies-content.js';
 import type { DataOwner, UnitCatalog } from './units.js';
 
@@ -32,16 +30,11 @@ const CHANGES_PATH = `${MIGRATION_PATH_PREFIX}/changes`;
 const POSITION_PATH = `${MIGRATION_PATH_PREFIX}/position`;
 const WATERMARK_PATH = `${MIGRATION_PATH_PREFIX}/watermark`;
 const GATE_PATH = `${MIGRATION_PATH_PREFIX}/gate`;
-const OBJECTS_PATH = '/internal/v1/migration/objects' satisfies keyof paths & keyof financePaths & keyof reportingPaths;
+const OBJECTS_PATH = '/internal/v1/migration/objects' satisfies keyof paths;
 const SITEMONITOR_STATE_PATH = '/internal/v1/sitemonitor/state';
-const ADOPT_TASKS_PATH = '/internal/v1/migration/adopt-scheduled-tasks';
-const CANCEL_ADOPTED_TASKS_PATH = '/internal/v1/migration/cancel-adopted-scheduled-tasks';
 
 const CONTENT: DataOwner = 'strategies-content';
-const FINANCE: DataOwner = 'finance';
-const REPORTING: DataOwner = 'reporting';
 const PROGRAMS_SITES: DataOwner = 'programs-sites';
-const COMMUNICATIONS: DataOwner = 'communications';
 
 /** Error code of the owner's 409 answer to a refused gate compare-and-set. */
 const GATE_CONFLICT_CODE = 'gate-conflict';
@@ -60,12 +53,6 @@ type DeleteObjectParams = paths[typeof OBJECTS_PATH]['delete']['parameters']['qu
 
 /** strategies-content `DeletedFileObject`: the key, and whether a recorded object was deleted under it. */
 export type DeletedFileObject = components['schemas']['DeletedFileObject'];
-
-/** Query of finance's attachment object read: the attachment row's tenant and CF UUID. */
-export type GetAttachmentObjectParams = financePaths[typeof OBJECTS_PATH]['get']['parameters']['query'];
-
-/** Query of reporting's export output read: the export job row's tenant and CF UUID. */
-export type GetExportObjectParams = reportingPaths[typeof OBJECTS_PATH]['get']['parameters']['query'];
 
 /** An apply answer with the write positions its response header reported. */
 export type ApplyResult = ApplyResponse & { writePositions: WritePositions };
@@ -129,36 +116,6 @@ export interface SiteMonitorStateInput {
   lastMonitored: string;
 }
 
-/** One fixture survey ACF task of communications' `AdoptScheduledTasksRequest`; `scheduleTime` is legacy wall-clock time. */
-export interface AdoptScheduledTask {
-  name: string;
-  siteId: string;
-  scheduleTime: string;
-  scheduleVersion: number;
-}
-
-/** communications `AdoptScheduledTasksRequest`: the tasks as captured before their deletion. */
-export interface AdoptScheduledTasksRequest {
-  tasks: AdoptScheduledTask[];
-}
-
-/** communications `AdoptScheduledTasksResult`: tasks newly adopted, already present by name, and scheduled immediately for a past time. */
-export interface AdoptScheduledTasksResult {
-  adopted: number;
-  existing: number;
-  scheduledImmediately: number;
-}
-
-/** communications `CancelAdoptedTasksRequest`; every adopted task is cancelled when `names` is absent. */
-export interface CancelAdoptedTasksRequest {
-  names?: string[];
-}
-
-/** communications `CancelAdoptedTasksResult`. */
-export interface CancelAdoptedTasksResult {
-  cancelled: number;
-}
-
 /** Endpoints of the data owners, each called with the client's own invocation identity and never a user token. */
 export interface OwnersClient {
   /** Applies one batch, re-sent once when the owner committed it with its events left to the sweep; a repeated `batchId` answers `duplicate: true`. */
@@ -186,18 +143,10 @@ export interface OwnersClient {
   getObject(key: string): Promise<Readable>;
   /** Deletes one stored `content-files` object and its manifest row by key; a repeat answers `deleted: false`. */
   deleteObject(key: string): Promise<DeleteObjectResult>;
-  /** Streams the stored `finance-attachments` bytes of one finance attachment. */
-  getAttachmentObject(params: GetAttachmentObjectParams): Promise<Readable>;
-  /** Streams the stored `reporting-exports` output of one reporting export job. */
-  getExportObject(params: GetExportObjectParams): Promise<Readable>;
   /** Reads programs-sites' site-monitor cursor. */
   siteMonitorState(): Promise<SiteMonitorState>;
   /** Seeds programs-sites' site-monitor cursor. */
   putSiteMonitorState(input: SiteMonitorStateInput): Promise<SiteMonitorState>;
-  /** Adopts fixture survey ACF tasks as communications' Cloud Tasks, idempotent by name. */
-  adoptScheduledTasks(req: AdoptScheduledTasksRequest): Promise<AdoptScheduledTasksResult>;
-  /** Cancels communications' adopted tasks. */
-  cancelAdoptedScheduledTasks(req: CancelAdoptedTasksRequest): Promise<CancelAdoptedTasksResult>;
   /** Pauses, resumes or ensures the chain of one queue on the service that creates it. */
   queueControl(service: DataOwner, queue: string, op: QueueControlOp): Promise<QueueControlResult>;
 }
@@ -260,12 +209,8 @@ export const ENDPOINT_OWNERS = {
   putObject: CONTENT,
   getObject: CONTENT,
   deleteObject: CONTENT,
-  getAttachmentObject: FINANCE,
-  getExportObject: REPORTING,
   siteMonitorState: PROGRAMS_SITES,
   putSiteMonitorState: PROGRAMS_SITES,
-  adoptScheduledTasks: COMMUNICATIONS,
-  cancelAdoptedScheduledTasks: COMMUNICATIONS,
 } as const satisfies Partial<Record<keyof OwnersClient, DataOwner>>;
 
 interface CallOptions {
@@ -405,30 +350,12 @@ export function createOwnersClient(options: CreateOwnersClientOptions): OwnersCl
       return { ...response.body, writePositions: writePositionsOf(response.headers) };
     },
 
-    async getAttachmentObject(params) {
-      const query: GetAttachmentObjectParams = { tenantId: params.tenantId, attachmentId: params.attachmentId };
-      return (await call<Readable>(FINANCE, 'GET', OBJECTS_PATH, { query, stream: true })).body;
-    },
-
-    async getExportObject(params) {
-      const query: GetExportObjectParams = { tenantId: params.tenantId, jobId: params.jobId };
-      return (await call<Readable>(REPORTING, 'GET', OBJECTS_PATH, { query, stream: true })).body;
-    },
-
     async siteMonitorState() {
       return (await call<SiteMonitorState>(PROGRAMS_SITES, 'GET', SITEMONITOR_STATE_PATH)).body;
     },
 
     async putSiteMonitorState(input) {
       return (await call<SiteMonitorState>(PROGRAMS_SITES, 'PUT', SITEMONITOR_STATE_PATH, { json: input })).body;
-    },
-
-    async adoptScheduledTasks(req) {
-      return (await call<AdoptScheduledTasksResult>(COMMUNICATIONS, 'POST', ADOPT_TASKS_PATH, { json: req })).body;
-    },
-
-    async cancelAdoptedScheduledTasks(req) {
-      return (await call<CancelAdoptedTasksResult>(COMMUNICATIONS, 'POST', CANCEL_ADOPTED_TASKS_PATH, { json: req })).body;
     },
 
     queueControl(service, queue, op) {

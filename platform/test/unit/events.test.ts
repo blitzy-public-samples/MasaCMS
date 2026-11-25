@@ -87,7 +87,7 @@ const SUBSCRIPTION_FORM = '<consumer>.<service>.<entity>.<event>.v<major> (lower
 const MAJOR_FORM = 'a positive integer major version';
 
 const TOPIC = 'people.person.archived.v1';
-const SUBSCRIPTION = 'timesheets.people.person.archived.v1';
+const SUBSCRIPTION = 'identity.people.person.archived.v1';
 
 const CATALOGUE_TOPICS = [
   'programs-sites.site.changed.v1',
@@ -97,8 +97,6 @@ const CATALOGUE_TOPICS = [
   'identity.login-mail.requested.v1',
   'people.person.changed.v1',
   'people.person.archived.v1',
-  'surveys.survey.scheduled.v1',
-  'communications.message.delivery-status-changed.v1',
   'stub.note.created.v1',
 ];
 
@@ -121,13 +119,13 @@ const INVALID_TOPICS: ReadonlyArray<readonly [string, string]> = [
 
 const INVALID_SUBSCRIPTIONS: ReadonlyArray<readonly [string, string]> = [
   ['an empty string', ''],
-  ['a name without a dot', 'timesheets'],
+  ['a name without a dot', 'identity'],
   ['a bare topic', TOPIC],
   ['an empty consumer', `.${TOPIC}`],
-  ['an upper-case consumer', `Timesheets.${TOPIC}`],
-  ['a consumer starting with a digit', `1timesheets.${TOPIC}`],
-  ['a topic without a major', 'timesheets.people.person.archived'],
-  ['a topic with major zero', 'timesheets.people.person.archived.v0'],
+  ['an upper-case consumer', `Identity.${TOPIC}`],
+  ['a consumer starting with a digit', `1identity.${TOPIC}`],
+  ['a topic without a major', 'identity.people.person.archived'],
+  ['a topic with major zero', 'identity.people.person.archived.v0'],
   ['a dead-letter topic', `${SUBSCRIPTION}.dlq`],
   ['a push path', `${PUSH_PATH_PREFIX}${SUBSCRIPTION}`],
   ['a trailing space', `${SUBSCRIPTION} `],
@@ -138,7 +136,7 @@ const TOPIC_HELPERS: ReadonlyArray<readonly [string, (topic: string) => unknown]
   ['eventTypeOf', eventTypeOf],
   ['schemaVersionOf', schemaVersionOf],
   ['topicSchemaRelativePath', topicSchemaRelativePath],
-  ['subscriptionName', (topic) => subscriptionName('timesheets', topic)],
+  ['subscriptionName', (topic) => subscriptionName('identity', topic)],
 ];
 
 const SUBSCRIPTION_HELPERS: ReadonlyArray<readonly [string, (subscription: string) => string]> = [
@@ -170,7 +168,7 @@ describe('topicName', () => {
   });
 
   it('appends an explicit major version', () => {
-    expect(topicName('surveys', 'survey', 'scheduled', 2)).toBe('surveys.survey.scheduled.v2');
+    expect(topicName('programs-sites', 'site', 'changed', 2)).toBe('programs-sites.site.changed.v2');
   });
 
   it.each([
@@ -198,10 +196,10 @@ describe('topicName', () => {
 
 describe('parseTopic', () => {
   it('splits a topic into its segments and numeric major', () => {
-    expect(parseTopic('communications.message.delivery-status-changed.v12')).toEqual({
-      service: 'communications',
-      entity: 'message',
-      event: 'delivery-status-changed',
+    expect(parseTopic('identity.login-mail.requested.v12')).toEqual({
+      service: 'identity',
+      entity: 'login-mail',
+      event: 'requested',
       major: 12,
     });
   });
@@ -250,16 +248,16 @@ describe('topic-derived names', () => {
       'services/programs-sites/contracts/events/programs-sites.site.changed.v1.json',
     ],
     [
-      'communications.message.delivery-status-changed.v1',
-      'communications.message.delivery-status-changed',
+      'identity.login-mail.requested.v1',
+      'identity.login-mail.requested',
       '1.0.0',
-      'services/communications/contracts/events/communications.message.delivery-status-changed.v1.json',
+      'services/identity/contracts/events/identity.login-mail.requested.v1.json',
     ],
     [
-      'surveys.survey.scheduled.v12',
-      'surveys.survey.scheduled',
+      'stub.note.created.v12',
+      'stub.note.created',
       '12.0.0',
-      'services/surveys/contracts/events/surveys.survey.scheduled.v12.json',
+      'services/stub/contracts/events/stub.note.created.v12.json',
     ],
   ])('derives the event type, schema version and schema path of %s', (topic, eventType, schemaVersion, schemaPath) => {
     expect(eventTypeOf(topic)).toBe(eventType);
@@ -270,19 +268,19 @@ describe('topic-derived names', () => {
 
 describe('subscriptionName', () => {
   it('prefixes the topic with the consumer service', () => {
-    expect(subscriptionName('timesheets', TOPIC)).toBe(SUBSCRIPTION);
+    expect(subscriptionName('identity', TOPIC)).toBe(SUBSCRIPTION);
   });
 
-  it.each(['Timesheets', '', '1timesheets', 'time_sheets', 'timesheets.people'])('rejects consumer "%s"', (consumer) => {
+  it.each(['Identity', '', '1identity', 'iden_tity', 'identity.people'])('rejects consumer "%s"', (consumer) => {
     expectNameError(() => subscriptionName(consumer, TOPIC), consumer, SEGMENT_FORM);
   });
 });
 
 describe('subscription parts', () => {
   it.each([
-    ['timesheets', 'people.person.archived.v1'],
+    ['identity', 'people.person.archived.v1'],
     ['strategies-content', 'identity.group.changed.v1'],
-    ['communications', 'surveys.survey.scheduled.v2'],
+    ['people', 'programs-sites.site.changed.v2'],
   ])('splits the %s subscription to %s at its first dot', (consumer, topic) => {
     const subscription = subscriptionName(consumer, topic);
     expect(consumerOfSubscription(subscription)).toBe(consumer);
@@ -293,15 +291,15 @@ describe('subscription parts', () => {
 describe('delivery and dead-letter names', () => {
   it('mounts the push route under /internal/v1/events/', () => {
     expect(PUSH_PATH_PREFIX).toBe('/internal/v1/events/');
-    expect(pushPath(SUBSCRIPTION)).toBe('/internal/v1/events/timesheets.people.person.archived.v1');
+    expect(pushPath(SUBSCRIPTION)).toBe('/internal/v1/events/identity.people.person.archived.v1');
   });
 
   it('names the dead-letter topic <subscription>.dlq', () => {
-    expect(dlqTopicName(SUBSCRIPTION)).toBe('timesheets.people.person.archived.v1.dlq');
+    expect(dlqTopicName(SUBSCRIPTION)).toBe('identity.people.person.archived.v1.dlq');
   });
 
   it('names the replay pull subscription <subscription>.dlq.replay', () => {
-    expect(dlqReplaySubscriptionName(SUBSCRIPTION)).toBe('timesheets.people.person.archived.v1.dlq.replay');
+    expect(dlqReplaySubscriptionName(SUBSCRIPTION)).toBe('identity.people.person.archived.v1.dlq.replay');
   });
 });
 
@@ -351,10 +349,10 @@ function archivedEnvelope(overrides: Partial<BuildEnvelopeInput<ArchivedPayload>
 
 /** Upstream envelope whose consumption scopes the envelopes built inside it. */
 const CONSUMED = buildEnvelope({
-  topic: 'surveys.survey.scheduled.v1',
+  topic: 'programs-sites.site.changed.v1',
   tenantId: TENANT_A.tenantId,
-  aggregateType: 'survey',
-  aggregateId: 'survey-7',
+  aggregateType: 'site',
+  aggregateId: 'site-7',
   aggregateVersion: 2,
   payload: {},
   eventId: CONSUMED_EVENT_ID,

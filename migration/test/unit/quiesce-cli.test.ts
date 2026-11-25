@@ -48,7 +48,7 @@ const PACKAGE_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 const CLI_SOURCE = path.join(PACKAGE_DIR, 'src/quiesce/cli.ts');
 const TO = '2026-06-30T00:00:00.000Z';
 const PUSH_KEY = 'local-push-key-value';
-const PUSH_ENDPOINT = `http://127.0.0.1:21815/internal/v1/events/communications.surveys.survey.scheduled.v1?key=${PUSH_KEY}`;
+const PUSH_ENDPOINT = `http://127.0.0.1:21811/internal/v1/events/identity.people.person.changed.v1?key=${PUSH_KEY}`;
 // Assembled at run time so no credential literal sits in source.
 const SECRET = ['s3cr3t', 'ops', 'credential'].join('-');
 
@@ -58,26 +58,26 @@ const SUSPEND_RESULT: DrainAndSuspendResult = {
   alreadySuspended: false,
   drained: { owners: [{ owner: 'people', unpublished: 0, held: 0, pendingReceipts: 0 }], polls: 1, elapsedMs: 4 },
   finalDrained: { owners: [{ owner: 'people', unpublished: 0, held: 0, pendingReceipts: 0 }], polls: 2, elapsedMs: 1003 },
-  pausedTasks: ['opt2-survey-41-launch'],
+  pausedTasks: ['/var/www/index.cfm/_api/sitemonitor/'],
   pausedQueues: [{ service: 'people', queue: 'people-outbox-sweep' }],
-  switchedToPull: ['timesheets.people.person.archived.v1'],
+  switchedToPull: ['identity.people.person.changed.v1'],
   record: {
     ...EMPTY_RECORD,
     suspended: true,
     since: TO,
     reason: 'drain-and-suspend',
-    pushConfigs: { 'timesheets.people.person.archived.v1': { pushEndpoint: 'http://127.0.0.1:21818/internal/v1/events/x' } },
+    pushConfigs: { 'identity.people.person.changed.v1': { pushEndpoint: 'http://127.0.0.1:21811/internal/v1/events/x' } },
     pausedQueues: [{ service: 'people', queue: 'people-outbox-sweep' }],
-    pausedTasks: ['opt2-survey-41-launch'],
+    pausedTasks: ['/var/www/index.cfm/_api/sitemonitor/'],
   },
 };
 
 const RESUME_RESULT: ResumeResult = {
   resumed: true,
-  restoredPush: ['timesheets.people.person.archived.v1'],
+  restoredPush: ['identity.people.person.changed.v1'],
   resumedQueues: [{ service: 'people', queue: 'people-outbox-sweep' }],
   reconcile: [],
-  restoredTasks: { siteMonitor: [], surveys: ['opt2-survey-41-launch'] },
+  restoredTasks: { siteMonitor: ['/var/www/index.cfm/_api/sitemonitor/'] },
   record: { ...EMPTY_RECORD, resumedAt: TO },
 };
 
@@ -214,8 +214,8 @@ describe('main', () => {
       details: { timeoutMs: 5000, owners: [{ owner: 'people', unpublished: 2, held: 1, pendingReceipts: 0 }] },
     },
     {
-      error: new InvocationsRunningError(5000, [{ service: 'reporting', queue: 'reporting-export-run', running: 1 }]),
-      details: { timeoutMs: 5000, queues: [{ service: 'reporting', queue: 'reporting-export-run', running: 1 }] },
+      error: new InvocationsRunningError(5000, [{ service: 'programs-sites', queue: 'content-feed-import', running: 1 }]),
+      details: { timeoutMs: 5000, queues: [{ service: 'programs-sites', queue: 'content-feed-import', running: 1 }] },
     },
     {
       error: new OrphanedWritesError([
@@ -225,7 +225,7 @@ describe('main', () => {
         rows: [{ instanceId: 'gateway-dead', route: 'job:/_api/sitemonitor/', side: 'legacy', count: 1, oldestStartedAt: TO, orphaned: true }],
       },
     },
-    { error: new MissingSubscriptionError(['timesheets.people.person.archived.v1']), details: { subscriptions: ['timesheets.people.person.archived.v1'] } },
+    { error: new MissingSubscriptionError(['identity.people.person.changed.v1']), details: { subscriptions: ['identity.people.person.changed.v1'] } },
     {
       error: new ResumeReconcileError([{ queue: 'people-outbox-sweep', service: 'people', ok: false, error: 'Service people unavailable (ECONNREFUSED)' }]),
       details: { failed: [{ queue: 'people-outbox-sweep', service: 'people', ok: false, error: 'Service people unavailable (ECONNREFUSED)' }] },
@@ -376,7 +376,7 @@ describe('main', () => {
       arrange: () =>
         vi.mocked(drainAndSuspend).mockResolvedValueOnce({
           ...SUSPEND_RESULT,
-          record: { ...SUSPEND_RESULT.record, pushConfigs: { 'communications.surveys.survey.scheduled.v1': { pushEndpoint: PUSH_ENDPOINT } } },
+          record: { ...SUSPEND_RESULT.record, pushConfigs: { 'identity.people.person.changed.v1': { pushEndpoint: PUSH_ENDPOINT } } },
         }),
     },
   ])('keeps the local push key of a URL query in $where out of every output', async ({ code, arrange }) => {

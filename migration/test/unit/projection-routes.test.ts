@@ -1,5 +1,4 @@
 // Unit tests for the `projectionAwait` route over a fake projector, and over a real awaiter reading an HTTP owner: both request forms, the default budget, contract shape, the legacy 400 and 503, and auth denials.
-import { readFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 
@@ -13,7 +12,7 @@ import {
   type FastifyInstance,
   type ServiceClient,
 } from '@opt2/platform/service-kit';
-import { assertResponseMatchesOpenApi, mintServiceToken, mintUserToken, testInvocationMinter, testVerifier } from '@opt2/platform/testing';
+import { assertResponseMatchesOpenApi, loadOpenApiDocument, mintServiceToken, mintUserToken, testInvocationMinter, testVerifier } from '@opt2/platform/testing';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { parse } from 'yaml';
 
@@ -24,7 +23,7 @@ import { PROJECTION_ROUTES, registerProjectionRoutes, type ProjectionRouteDeps }
 
 type Operation = Record<string, unknown>;
 
-const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as {
+const OPENAPI = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as {
   paths: Record<string, Record<string, Operation>>;
 };
 const PATH = '/internal/v1/projection/await';

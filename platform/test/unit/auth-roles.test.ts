@@ -3,7 +3,6 @@ import {
   PUBSUB_INVOKER_ROLE,
   Roles,
   SERVICE_ROLE_GRANTS,
-  SYNTHETIC_ROLES,
   TASKS_INVOKER_ROLE,
   hasAnyRole,
   isCoreModuleId,
@@ -24,16 +23,6 @@ describe('Roles', () => {
       siteAdmin: 'site-admin',
       systemUser: 'system-user',
       member: 'member',
-      timesheetsEmployee: 'timesheets.employee',
-      timesheetsPrimaryApprover: 'timesheets.primary-approver',
-      timesheetsSecondaryApprover: 'timesheets.secondary-approver',
-      financePreparer: 'finance.preparer',
-      financeApprover: 'finance.approver',
-      esignatureSigner: 'esignature.signer',
-      esignatureAuditor: 'esignature.auditor',
-      reportingExporter: 'reporting.exporter',
-      surveysManager: 'surveys.manager',
-      communicationsSender: 'communications.sender',
       platformMigration: 'platform.migration',
       platformOperator: 'platform.operator',
     });
@@ -46,27 +35,6 @@ describe('Roles', () => {
 
   it('classifies only the platform roles as service roles', () => {
     expect(Object.values(Roles).filter(isServiceRole)).toEqual(['platform.migration', 'platform.operator']);
-  });
-});
-
-describe('SYNTHETIC_ROLES', () => {
-  it('lists the ten synthetic-module roles in declaration order', () => {
-    expect(SYNTHETIC_ROLES).toEqual([
-      'timesheets.employee',
-      'timesheets.primary-approver',
-      'timesheets.secondary-approver',
-      'finance.preparer',
-      'finance.approver',
-      'esignature.signer',
-      'esignature.auditor',
-      'reporting.exporter',
-      'surveys.manager',
-      'communications.sender',
-    ]);
-  });
-
-  it('is frozen', () => {
-    expect(Object.isFrozen(SYNTHETIC_ROLES)).toBe(true);
   });
 });
 
@@ -136,7 +104,7 @@ describe('moduleRole', () => {
 });
 
 describe('serviceRole', () => {
-  it.each(['people', 'strategies-content', 'e-signature', 'migration', 'stub'])('prefixes %s with service:', (name) => {
+  it.each(['people', 'strategies-content', 'programs-sites', 'migration', 'stub'])('prefixes %s with service:', (name) => {
     expect(serviceRole(name)).toBe(`service:${name}`);
   });
 
@@ -167,7 +135,7 @@ describe('isServiceRole', () => {
     ['system-user', false],
     ['member', false],
     ['m:008', false],
-    ['timesheets.employee', false],
+    ['people.editor', false],
     ['Service:people', false],
     ['platform', false],
     ['xservice:people', false],

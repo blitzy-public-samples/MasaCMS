@@ -149,12 +149,12 @@ function miniInventory(): RenderableInventory {
           {
             id: 'job:sitemonitor.bounces',
             source: src(SERVER, 689, 699),
-            ...carry('communications'),
+            ...carry('sample-module'),
             disposition: 'legacy-served',
             dispositionStep: 4,
             order: 4,
             call: 'emailManager.trackBounces per site',
-            targetMechanism: 'proposed communications step',
+            targetMechanism: 'legacy only; no target service owns the mail tables',
             stateThisRun: null,
           },
         ],
@@ -342,7 +342,7 @@ const EXPECTED: readonly string[] = [
   '',
   '| Order | Step | Call | Owner | Disposition (step) | Target mechanism | State this run |',
   '| --- | --- | --- | --- | --- | --- | --- |',
-  '| 4 | `job:sitemonitor.bounces` | emailManager.trackBounces per site | communications | legacy-served (4) | proposed communications step | — |',
+  '| 4 | `job:sitemonitor.bounces` | emailManager.trackBounces per site | sample-module | legacy-served (4) | legacy only; no target service owns the mail tables | — |',
   '',
   '## Write sets',
   '',
@@ -659,10 +659,10 @@ describe('renderInventoryMarkdown over the mini inventory fixture', () => {
     ]);
   });
 
-  it('renders legacy-served communications actions and JSON API entity methods in their own sections', () => {
+  it('renders legacy-served email actions and JSON API entity methods in their own sections', () => {
     const { lines } = renderInventoryMarkdown(fixture);
     expect(rowOf(section(lines, '## Admin controllers'), 'ctl:cemail.list').slice(2)).toEqual([
-      'communications',
+      'sample-module',
       'legacy-served (4)',
       'none',
       'page (text/html)',

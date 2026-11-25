@@ -1,5 +1,4 @@
 /** The admin session routes offline: clogin login and logout, the session state and sites the admin screens read, the login mail, the URL helpers, and the public routes' transport in the composed service. */
-import { readFileSync } from 'node:fs';
 import { parse } from 'yaml';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { INVOCATION_HEADER, Roles } from '@opt2/platform/auth';
@@ -8,7 +7,7 @@ import { createLogger } from '@opt2/platform/logging';
 import { registerWritePositionHeader } from '@opt2/platform/migration-kit';
 import { createService, type FastifyInstance } from '@opt2/platform/service-kit';
 import { tenantIdForSite, type QueryResultRow } from '@opt2/platform/tenancy';
-import { TENANT_A, assertResponseMatchesOpenApi, mintServiceToken, mintUserToken, registryPayloads, testVerifier } from '@opt2/platform/testing';
+import { TENANT_A, assertResponseMatchesOpenApi, loadOpenApiDocument, mintServiceToken, mintUserToken, registryPayloads, testVerifier } from '@opt2/platform/testing';
 import { DEFAULT_LOGIN_SETTINGS, type LoginSettings } from '../../src/domain/login.js';
 import { DEFAULT_LOGIN_MAIL_GLOBAL_SETTINGS, type LoginMailDeps, type LoginMailSiteSettings } from '../../src/domain/login-mail.js';
 import { ensureSession, type SessionDeps } from '../../src/domain/sessions.js';
@@ -29,7 +28,7 @@ type Headers = Record<string, string>;
 type MailPayload = Parameters<LoginMailDeps['events']['publishLoginMailRequested']>[1];
 type IssuedToken = { context: string; csrf_token: string; csrf_token_expires: string };
 
-const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
+const OPENAPI = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as object;
 const SERVICE = 'identity';
 const DEFAULT_SITE = 'default';
 const FORM_BODY = { 'content-type': 'application/x-www-form-urlencoded' };

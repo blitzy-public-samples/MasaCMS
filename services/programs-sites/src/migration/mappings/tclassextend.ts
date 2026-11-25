@@ -2,7 +2,7 @@ import { defineMapping } from '@opt2/platform/migration-kit';
 import { EXTEND_SUBTYPE } from '../../repo/tables.js';
 
 /** Base tables whose subtypes programs-sites owns, in the order of their opt2/table-ownership.json row predicate. */
-export const PROGRAMS_SITES_BASE_TABLES: readonly string[] = ['tsettings', 'synthetic.program_site', 'tdirectories', 'timagesizes', 'tsystemobjects'];
+export const PROGRAMS_SITES_BASE_TABLES: readonly string[] = ['tsettings', 'tdirectories', 'timagesizes', 'tsystemobjects'];
 
 /** Masa `tclassextend` subtypes of a PROGRAMS_SITES_BASE_TABLES base table ↔ `programs_sites.extend_subtype`; tenant from `siteID`, else the umbrella as an orphan. */
 export const tclassextendMapping = defineMapping({

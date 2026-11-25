@@ -51,7 +51,6 @@ export const COMPARE_KINDS = [
   'transitions',
   'mail',
   'rows',
-  'tasks',
   'files',
 ] as const;
 export type CompareKind = (typeof COMPARE_KINDS)[number];
@@ -61,19 +60,15 @@ export const TABLE_VERSIONS = ['v0002', 'v0003'] as const;
 export type TableVersion = (typeof TABLE_VERSIONS)[number];
 
 /** Service folder names a scenario can belong to. */
-export const SERVICES = [
-  'identity',
-  'people',
-  'programs-sites',
-  'strategies-content',
-  'communications',
-  'reporting',
-  'surveys',
-  'timesheets',
-  'finance',
-  'e-signature',
-] as const;
+export const SERVICES = ['identity', 'people', 'programs-sites', 'strategies-content'] as const;
 export type ServiceName = (typeof SERVICES)[number];
+
+/** `service` of a scenario whose routes no service owns, so legacy serves them through the gateway. */
+export const NO_SERVICE = 'none';
+
+/** What a scenario's `service` names: a service folder, or {@link NO_SERVICE}. */
+export const SCENARIO_SERVICES = [...SERVICES, NO_SERVICE] as const;
+export type ScenarioService = (typeof SCENARIO_SERVICES)[number];
 
 /** How a named session authenticates: admin login, public pages, JSON API, REST Basic or OAuth client credentials. */
 export const SESSION_VIAS = ['admin', 'public', 'jsonapi', 'rest-basic', 'client-credentials'] as const;
@@ -89,10 +84,10 @@ export type AuthMode = 'session' | 'anonymous' | `basic:${string}` | `bearer:${s
 export type CsrfMode = 'fetch-form' | 'none' | `json-api:${string}`;
 
 /** Side-effect kinds a step can wait for after its response. */
-export const SETTLE_KINDS = ['seam', 'projection', 'mail', 'tasks'] as const;
+export const SETTLE_KINDS = ['seam', 'projection', 'mail'] as const;
 export type SettleKind = (typeof SETTLE_KINDS)[number];
 
-/** A settle wait, optionally naming its target, e.g. `seam:people.person.archived.v1`. */
+/** A settle wait, optionally naming its target, e.g. `seam:programs-sites.site.changed.v1`. */
 export type SettleSpec = SettleKind | `${SettleKind}:${string}`;
 
 /** Declared outcome of a step or scenario that is not parity against a new service. */
@@ -179,8 +174,8 @@ const csrfMode = patterned<CsrfMode>(
   'must be fetch-form, none or json-api:<context>',
 );
 const settleSpec = patterned<SettleSpec>(
-  /^(?:seam|projection|mail|tasks)(?::.+)?$/s,
-  'must be seam, projection, mail or tasks, optionally followed by :<target>',
+  /^(?:seam|projection|mail)(?::.+)?$/s,
+  'must be seam, projection or mail, optionally followed by :<target>',
 );
 const sessionLogin = patterned<SessionLogin>(
   /^(?:none|admin|qa_editor|seed:[a-z0-9-]+:[\w.-]+)$/,
@@ -423,10 +418,6 @@ const browserSpec = z.strictObject({ flow: kebab, console: z.enum(['no-new-error
 /** Browser flow run by the Playwright interaction suite. */
 export type BrowserSpec = z.infer<typeof browserSpec>;
 
-const taskSpec = z.strictObject({ source: z.literal('scheduled-tasks'), prefix: z.string().min(1) });
-/** Scheduled tasks whose names start with `prefix` are compared. */
-export type TaskSpec = z.infer<typeof taskSpec>;
-
 const overrideList = z.array(z.string().min(1)).min(1);
 const normalisationOverrides = z
   .union([
@@ -460,7 +451,7 @@ export const scenarioSchema = z
   .strictObject({
     id: z.string().regex(SCENARIO_ID_PATTERN, 'must match GS-<AREA>-NN or GS-<AREA>-RH-NN'),
     title: z.string().min(1),
-    service: z.enum(SERVICES),
+    service: z.enum(SCENARIO_SERVICES),
     role: z.string().min(1),
     purpose: z.string().min(1).optional(),
     sessions: z
@@ -480,7 +471,6 @@ export const scenarioSchema = z
     acrossTransition: z.array(transitionSpec).min(1).optional(),
     replayFaults: z.array(faultSpec).min(1).optional(),
     browser: browserSpec.optional(),
-    tasks: taskSpec.optional(),
   })
   .superRefine((s, ctx) => {
     const issue = (message: string, path: PropertyKey[]): void => ctx.addIssue({ code: 'custom', message, path });
@@ -489,9 +479,6 @@ export const scenarioSchema = z
     const wanted: TableVersion = isRehearsalScenario(s.id) ? 'v0003' : 'v0002';
     if (s.tableVersion !== wanted) issue(`must be ${wanted} for ${s.id}`, ['tableVersion']);
     if (s.compare.includes('rows') !== (s.rows !== undefined)) issue('rows and compare: rows go together', ['rows']);
-    if (s.compare.includes('tasks') !== (s.tasks !== undefined)) {
-      issue('tasks and compare: tasks go together', ['tasks']);
-    }
 
     const aliases = new Set<string>();
     s.seedRefs.forEach((ref, i) => {

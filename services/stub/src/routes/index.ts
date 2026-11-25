@@ -2,6 +2,7 @@
 import type { Clock, FastifyInstance } from '@opt2/platform/service-kit';
 import type { TenantDb } from '@opt2/platform/tenancy';
 import type { StubRepository } from '../repo/repository.js';
+import { registerCommentRoutes } from './comments.js';
 import { registerNoteRoutes } from './notes.js';
 
 /** Runtime dependencies shared by every stub route module. */
@@ -11,7 +12,8 @@ export interface RouteDeps {
   clock: Clock;
 }
 
-/** Registers the stub's note routes under `/opt2/stub/notes`. */
+/** Registers the stub's note, grant and comment routes under `/opt2/stub/notes`. */
 export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Promise<void> {
   await registerNoteRoutes(app, deps);
+  await registerCommentRoutes(app, deps);
 }

@@ -34,11 +34,11 @@ const TRACEPARENT = '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01';
 const queuePathOf = (queue: string): string => `projects/${PROJECT}/locations/${LOCATION}/queues/${queue}`;
 
 const INPUT: CreateTaskInput = {
-  queue: 'surveys-launch',
-  name: 'surveys-launch-A1B2',
+  queue: 'content-feed-import',
+  name: 'content-feed-import-A1B2',
   scheduleTime: new Date(Date.UTC(2026, 5, 30, 12, 0, 0, 250)),
-  url: 'https://surveys-abc.a.run.app/internal/v1/tasks/surveys/launch',
-  body: { surveyId: 'A1B2' },
+  url: 'https://strategies-content-abc.a.run.app/internal/v1/jobs/feed-auto-import',
+  body: { feedId: 'A1B2' },
   deadlineS: 60,
   tenantId: TENANT,
 };
@@ -82,7 +82,7 @@ describe('buildCloudTask', () => {
       headers: { traceparent: TRACEPARENT, tracestate: 'rojo=00f067aa0ba902b7', authorization: 'Bearer user-token' },
     });
     expect(task).toStrictEqual({
-      name: `${queuePathOf('surveys-launch')}/tasks/surveys-launch-A1B2`,
+      name: `${queuePathOf('content-feed-import')}/tasks/content-feed-import-A1B2`,
       scheduleTime: { seconds: Math.floor(INPUT.scheduleTime.getTime() / 1000), nanos: 250_000_000 },
       dispatchDeadline: { seconds: 60 },
       httpRequest: {
@@ -92,16 +92,16 @@ describe('buildCloudTask', () => {
         body: expect.any(String),
         oidcToken: {
           serviceAccountEmail: INVOKER,
-          audience: managedAudience('https://surveys-abc.a.run.app', '/internal/v1/tasks/surveys/launch'),
+          audience: managedAudience('https://strategies-content-abc.a.run.app', '/internal/v1/jobs/feed-auto-import'),
         },
       },
     });
-    expect(task.httpRequest.oidcToken.audience).toBe('https://surveys-abc.a.run.app/internal/v1/tasks/surveys/launch');
+    expect(task.httpRequest.oidcToken.audience).toBe('https://strategies-content-abc.a.run.app/internal/v1/jobs/feed-auto-import');
     expect(decodeBody(task.httpRequest.body)).toStrictEqual({
-      queue: 'surveys-launch',
-      name: 'surveys-launch-A1B2',
+      queue: 'content-feed-import',
+      name: 'content-feed-import-A1B2',
       tenantId: TENANT,
-      payload: { surveyId: 'A1B2' },
+      payload: { feedId: 'A1B2' },
     });
   });
 
@@ -109,7 +109,7 @@ describe('buildCloudTask', () => {
     const url = `${INPUT.url}?siteid=default`;
     const task = buildCloudTask({ ...INPUT, url }, { project: PROJECT, location: LOCATION, invokerEmail: INVOKER, headers: {} });
     expect(task.httpRequest.url).toBe(url);
-    expect(task.httpRequest.oidcToken.audience).toBe('https://surveys-abc.a.run.app/internal/v1/tasks/surveys/launch');
+    expect(task.httpRequest.oidcToken.audience).toBe('https://strategies-content-abc.a.run.app/internal/v1/jobs/feed-auto-import');
   });
 
   it('uses an injected task path and encodes a system task with null tenant and payload', () => {
@@ -121,11 +121,11 @@ describe('buildCloudTask', () => {
       taskPath: (queue, name) => `custom/${queue}/${name}`,
       headers: {},
     });
-    expect(task.name).toBe('custom/surveys-launch/surveys-launch-A1B2');
+    expect(task.name).toBe('custom/content-feed-import/content-feed-import-A1B2');
     expect(task.httpRequest.headers).toStrictEqual({ 'Content-Type': 'application/json' });
     expect(decodeBody(task.httpRequest.body)).toStrictEqual({
-      queue: 'surveys-launch',
-      name: 'surveys-launch-A1B2',
+      queue: 'content-feed-import',
+      name: 'content-feed-import-A1B2',
       tenantId: null,
       payload: null,
     });
@@ -226,14 +226,14 @@ describe('createCloudTaskAdapter', () => {
 
     await expect(port.create(INPUT)).resolves.toStrictEqual({ name: INPUT.name, created: true });
     const request = client.createTask.mock.calls[0]![0];
-    expect(request.parent).toBe(queuePathOf('surveys-launch'));
-    expect(request.task.name).toBe(`${queuePathOf('surveys-launch')}/tasks/surveys-launch-A1B2`);
+    expect(request.parent).toBe(queuePathOf('content-feed-import'));
+    expect(request.task.name).toBe(`${queuePathOf('content-feed-import')}/tasks/content-feed-import-A1B2`);
     expect(request.task.httpRequest.oidcToken.serviceAccountEmail).toBe(serviceAccountEmail(TASKS_INVOKER_NAME, PROJECT));
     expect(request.task.dispatchDeadline.seconds).toBe(INPUT.deadlineS);
 
     client.createTask.mockRejectedValueOnce(grpcError(GRPC_ALREADY_EXISTS));
     await expect(port.create(INPUT)).resolves.toStrictEqual({ name: INPUT.name, created: false });
-    expect(logger.info).toHaveBeenCalledWith({ queue: 'surveys-launch', task: INPUT.name }, 'Cloud task already exists');
+    expect(logger.info).toHaveBeenCalledWith({ queue: 'content-feed-import', task: INPUT.name }, 'Cloud task already exists');
 
     client.createTask.mockRejectedValueOnce(grpcError(7));
     await expect(port.create(INPUT)).rejects.toThrow('grpc 7');
@@ -253,17 +253,17 @@ describe('createCloudTaskAdapter', () => {
   it('deletes by task path, ignores tenantId and reports NOT_FOUND as deleted:false', async () => {
     const client = fakeClient();
     const port = await createCloudTaskAdapter({ project: PROJECT, location: LOCATION, client });
-    await expect(port.delete('surveys-launch', 'task-1', { tenantId: TENANT })).resolves.toStrictEqual({
+    await expect(port.delete('content-feed-import', 'task-1', { tenantId: TENANT })).resolves.toStrictEqual({
       name: 'task-1',
       deleted: true,
     });
-    expect(client.deleteTask).toHaveBeenCalledWith({ name: `${queuePathOf('surveys-launch')}/tasks/task-1` });
+    expect(client.deleteTask).toHaveBeenCalledWith({ name: `${queuePathOf('content-feed-import')}/tasks/task-1` });
 
     client.deleteTask.mockRejectedValueOnce(grpcError(GRPC_NOT_FOUND));
-    await expect(port.delete('surveys-launch', 'task-1')).resolves.toStrictEqual({ name: 'task-1', deleted: false });
+    await expect(port.delete('content-feed-import', 'task-1')).resolves.toStrictEqual({ name: 'task-1', deleted: false });
 
     client.deleteTask.mockRejectedValueOnce(grpcError(14));
-    await expect(port.delete('surveys-launch', 'task-1')).rejects.toThrow('grpc 14');
+    await expect(port.delete('content-feed-import', 'task-1')).rejects.toThrow('grpc 14');
   });
 
   it('lists the BASIC view and maps dispatch and response counts to status', async () => {
@@ -314,15 +314,15 @@ describe('createCloudTaskAdapter', () => {
     { label: 'omits the token of a missing response', page: {}, response: undefined, request: { pageSize: DEFAULT_TASK_PAGE_SIZE }, next: {} },
   ])('lists one page without auto-pagination and $label', async ({ page, response, request, next }) => {
     const client = fakeClient();
-    const task = { name: `${queuePathOf('surveys-launch')}/tasks/t-1`, scheduleTime: { seconds: 60 } };
+    const task = { name: `${queuePathOf('content-feed-import')}/tasks/t-1`, scheduleTime: { seconds: 60 } };
     client.listTasks.mockResolvedValueOnce([[task], null, response]);
     const port = await createCloudTaskAdapter({ project: PROJECT, location: LOCATION, client });
-    await expect(port.list('surveys-launch', page)).resolves.toStrictEqual({
-      tasks: [{ queue: 'surveys-launch', name: 't-1', scheduleTime: new Date(60_000), status: 'pending', attempts: 0 }],
+    await expect(port.list('content-feed-import', page)).resolves.toStrictEqual({
+      tasks: [{ queue: 'content-feed-import', name: 't-1', scheduleTime: new Date(60_000), status: 'pending', attempts: 0 }],
       ...next,
     });
     expect(client.listTasks).toHaveBeenCalledExactlyOnceWith(
-      { parent: queuePathOf('surveys-launch'), responseView: 'BASIC', ...request },
+      { parent: queuePathOf('content-feed-import'), responseView: 'BASIC', ...request },
       { autoPaginate: false },
     );
   });
@@ -330,33 +330,33 @@ describe('createCloudTaskAdapter', () => {
   it.each([0, -1, 2.5, MAX_TASK_PAGE_SIZE + 1])('rejects pageSize %s before calling the client', async (pageSize) => {
     const client = fakeClient();
     const port = await createCloudTaskAdapter({ project: PROJECT, location: LOCATION, client });
-    await expect(port.list('surveys-launch', { pageSize })).rejects.toBeInstanceOf(RangeError);
+    await expect(port.list('content-feed-import', { pageSize })).rejects.toBeInstanceOf(RangeError);
     expect(client.listTasks).not.toHaveBeenCalled();
   });
 
   it('gets the BASIC view of a live task by task path, ignoring tenantId', async () => {
     const client = fakeClient();
     client.getTask.mockResolvedValueOnce([
-      { name: `${queuePathOf('surveys-launch')}/tasks/task-1`, scheduleTime: { seconds: '1782820800', nanos: 0 }, dispatchCount: 1, responseCount: 0 },
+      { name: `${queuePathOf('content-feed-import')}/tasks/task-1`, scheduleTime: { seconds: '1782820800', nanos: 0 }, dispatchCount: 1, responseCount: 0 },
     ]);
     const port = await createCloudTaskAdapter({ project: PROJECT, location: LOCATION, client });
-    await expect(port.get('surveys-launch', 'task-1', { tenantId: TENANT })).resolves.toStrictEqual({
-      queue: 'surveys-launch',
+    await expect(port.get('content-feed-import', 'task-1', { tenantId: TENANT })).resolves.toStrictEqual({
+      queue: 'content-feed-import',
       name: 'task-1',
       scheduleTime: new Date(1_782_820_800_000),
       status: 'running',
       attempts: 1,
     });
-    expect(client.getTask).toHaveBeenCalledExactlyOnceWith({ name: `${queuePathOf('surveys-launch')}/tasks/task-1`, responseView: 'BASIC' });
+    expect(client.getTask).toHaveBeenCalledExactlyOnceWith({ name: `${queuePathOf('content-feed-import')}/tasks/task-1`, responseView: 'BASIC' });
   });
 
   it('answers get of a missing or tombstoned task (NOT_FOUND) with undefined and rethrows other errors', async () => {
     const client = fakeClient();
     const port = await createCloudTaskAdapter({ project: PROJECT, location: LOCATION, client });
     client.getTask.mockRejectedValueOnce(grpcError(GRPC_NOT_FOUND));
-    await expect(port.get('surveys-launch', 'task-1')).resolves.toBeUndefined();
+    await expect(port.get('content-feed-import', 'task-1')).resolves.toBeUndefined();
     client.getTask.mockRejectedValueOnce(grpcError(14));
-    await expect(port.get('surveys-launch', 'task-1')).rejects.toThrow('grpc 14');
+    await expect(port.get('content-feed-import', 'task-1')).rejects.toThrow('grpc 14');
   });
 
   it.each([
@@ -394,8 +394,8 @@ describe('createCloudTaskAdapter', () => {
   });
 
   it.each([
-    ['delete', (port: Awaited<ReturnType<typeof createCloudTaskAdapter>>) => port.delete('surveys-launch', 'bad/name')],
-    ['get', (port: Awaited<ReturnType<typeof createCloudTaskAdapter>>) => port.get('surveys-launch', 'bad/name')],
+    ['delete', (port: Awaited<ReturnType<typeof createCloudTaskAdapter>>) => port.delete('content-feed-import', 'bad/name')],
+    ['get', (port: Awaited<ReturnType<typeof createCloudTaskAdapter>>) => port.get('content-feed-import', 'bad/name')],
   ])('rejects an invalid task name on %s', async (_method, call) => {
     const client = fakeClient();
     const port = await createCloudTaskAdapter({ project: PROJECT, location: LOCATION, client });
@@ -408,8 +408,8 @@ describe('createCloudTaskAdapter', () => {
     const client = fakeClient();
     const metadataFetch = vi.fn(async () => new Response('projects/1/regions/us-central1'));
     const port = await createCloudTaskAdapter({ project: PROJECT, client, metadataFetch: metadataFetch as unknown as typeof fetch });
-    await port.pauseQueue('surveys-launch');
-    expect(client.queuePath).toHaveBeenCalledWith(PROJECT, 'us-central1', 'surveys-launch');
+    await port.pauseQueue('content-feed-import');
+    expect(client.queuePath).toHaveBeenCalledWith(PROJECT, 'us-central1', 'content-feed-import');
     await port.close();
     expect(client.close).toHaveBeenCalledOnce();
   });
@@ -421,7 +421,7 @@ describe('createCloudTaskAdapter', () => {
       { cloud: { client, location: LOCATION } },
     );
     expect(port.kind).toBe('cloud');
-    await port.resumeQueue('surveys-launch');
-    expect(client.resumeQueue).toHaveBeenCalledWith({ name: queuePathOf('surveys-launch') });
+    await port.resumeQueue('content-feed-import');
+    expect(client.resumeQueue).toHaveBeenCalledWith({ name: queuePathOf('content-feed-import') });
   });
 });

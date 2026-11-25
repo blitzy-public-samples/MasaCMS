@@ -19,17 +19,11 @@ import {
   type ServiceResponse,
 } from '@opt2/platform/service-kit';
 import { activeSpanIds, withExtractedContext } from '@opt2/platform/tracing';
-import type { paths as CommunicationsPaths } from '@/generated/clients/communications';
-import type { paths as ESignaturePaths } from '@/generated/clients/e-signature';
-import type { paths as FinancePaths } from '@/generated/clients/finance';
 import type { paths as GatewayPaths } from '@/generated/clients/gateway';
 import type { paths as IdentityPaths } from '@/generated/clients/identity';
 import type { paths as PeoplePaths } from '@/generated/clients/people';
 import type { paths as ProgramsSitesPaths } from '@/generated/clients/programs-sites';
-import type { paths as ReportingPaths } from '@/generated/clients/reporting';
 import type { paths as StrategiesContentPaths } from '@/generated/clients/strategies-content';
-import type { paths as SurveysPaths } from '@/generated/clients/surveys';
-import type { paths as TimesheetsPaths } from '@/generated/clients/timesheets';
 import { webAuthRuntime } from './auth';
 import { GATEWAY_SERVICE_PREFIX, webEnv } from './env';
 
@@ -39,15 +33,9 @@ export const WEB_SERVICE_NAMES = [
   'people',
   'programs-sites',
   'strategies-content',
-  'communications',
-  'reporting',
-  'surveys',
-  'timesheets',
-  'finance',
-  'e-signature',
 ] as const;
 
-/** One of the ten services web calls through the gateway. */
+/** One of the four services web calls through the gateway. */
 export type WebServiceName = (typeof WEB_SERVICE_NAMES)[number];
 
 // The gateway is the platform client's only callee, so the invocation credential's audience is always the gateway.
@@ -652,12 +640,6 @@ export interface GatewayClient {
   readonly people: ServiceFacade<PeoplePaths>;
   readonly programsSites: ProgramsSitesFacade;
   readonly strategiesContent: ServiceFacade<StrategiesContentPaths>;
-  readonly communications: ServiceFacade<CommunicationsPaths>;
-  readonly reporting: ServiceFacade<ReportingPaths>;
-  readonly surveys: ServiceFacade<SurveysPaths>;
-  readonly timesheets: ServiceFacade<TimesheetsPaths>;
-  readonly finance: ServiceFacade<FinancePaths>;
-  readonly eSignature: ServiceFacade<ESignaturePaths>;
   /** The legacy server facts of the nav Version menu, the gateway's own `getLegacyVersionMenu`. */
   legacyVersionMenu(): Promise<OperationResponse<LegacyVersionMenuOperation>>;
   /** Legacy's installed plugins, which the Global Settings Plugins tab lists, the gateway's own `getLegacyPlugins`. */
@@ -788,12 +770,6 @@ export function createGatewayClient(ctx: GatewayCallContext, serviceClient?: Ser
     people: serviceFacade(core, 'people'),
     programsSites: programsSitesFacade(core),
     strategiesContent: serviceFacade(core, 'strategies-content'),
-    communications: serviceFacade(core, 'communications'),
-    reporting: serviceFacade(core, 'reporting'),
-    surveys: serviceFacade(core, 'surveys'),
-    timesheets: serviceFacade(core, 'timesheets'),
-    finance: serviceFacade(core, 'finance'),
-    eSignature: serviceFacade(core, 'e-signature'),
     legacyVersionMenu: async () => {
       const request: GatewayRequest = { method: 'GET', path: LEGACY_VERSION_MENU_PATH };
       const response = await send(ctx, GATEWAY_CALLEE, request, 'decoded', serviceClient);

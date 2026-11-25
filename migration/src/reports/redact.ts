@@ -12,8 +12,6 @@ const CREDENTIAL_WORD =
   /password|passwd|pwd|passphrase|secret|token|credential|authorization|cookie|sessionid|signature|hmac|salt|(?:api|access|private|signing|encryption|shared|push|bridge|master|client|auth)key/;
 const PERSONAL_WORD =
   /fname|lname|firstname|lastname|middlename|fullname|displayname|username|email|phone|mobile|fax|address|street|city|postcode|postalcode|zip|birth|dob|ssn|nationalid|passport/;
-/** Service and schema names containing a credential word, which as property names key per-owner maps. */
-const OWNER_NAMES: ReadonlySet<string> = new Set(['e-signature', 'esignature']);
 const RAW_NAMES: ReadonlySet<string> = new Set([
   'key',
   'keyValues',
@@ -98,9 +96,9 @@ function isSensitiveWord(name: string): boolean {
   return CREDENTIAL_WORD.test(normalised) || PERSONAL_WORD.test(normalised);
 }
 
-/** True when `name` is an identifier containing a credential word; dotted map keys and owner names never are. */
+/** True when `name` is an identifier containing a credential word; dotted map keys never are. */
 function isCredentialName(name: string): boolean {
-  return IDENTIFIER.test(name) && !OWNER_NAMES.has(name) && CREDENTIAL_WORD.test(normalise(name));
+  return IDENTIFIER.test(name) && CREDENTIAL_WORD.test(normalise(name));
 }
 
 /** True when `name` is an identifier containing a personal-data word; dotted map keys never are. */

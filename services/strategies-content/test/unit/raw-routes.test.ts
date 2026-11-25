@@ -1,9 +1,8 @@
 /** routes/v1/raw.ts: the contract's `/v1/raw/**` operations registered, gated, CSRF-checked and answered with the legacy bytes. */
-import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import { LegacyFaultError, legacyFaultOf } from '@opt2/platform/legacy-compat';
-import { TENANT_A, assertResponseMatchesOpenApi, type InjectResponse } from '@opt2/platform/testing';
+import { TENANT_A, assertResponseMatchesOpenApi, loadOpenApiDocument, type InjectResponse } from '@opt2/platform/testing';
 import { CONTENT } from '../../src/repo/tables.js';
 import { adminDenial, type AdminDenial } from '../../src/routes/v1/access.js';
 import { carchRawActions } from '../../src/routes/v1/carch.js';
@@ -43,7 +42,7 @@ interface ContractOperation {
   responses: Record<string, ContractResponse>;
 }
 
-const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as {
+const OPENAPI = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as {
   paths: Record<string, Record<string, ContractOperation>>;
   components: { responses: Record<string, ContractResponse> };
 };

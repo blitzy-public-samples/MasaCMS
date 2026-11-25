@@ -42,7 +42,7 @@ import {
 import type { OwnerDoubleState, ScriptedChangesPage } from './helpers/owner-double.js';
 import { PG_OWNER_ROWS_PATH, fetchPgOwnerRows, startPgOwner, type PgOwner } from './helpers/pg-owner.js';
 
-const OWNER = 'communications';
+const OWNER = 'programs-sites';
 const MEMBERS = TABLES.tmailinglistmembers;
 const LISTS = TABLES.tmailinglist;
 const MEMBER_UNIT = UNITS.mailingListMember;
@@ -50,8 +50,8 @@ const LIST_UNIT = UNITS.mailingList;
 const MEMBER_TARGET_TABLE = MEMBER_UNIT.slice(MEMBER_UNIT.indexOf('.') + 1);
 const SYNC_SQL = readFileSync(new URL('../sql/005_opt2_sync.sql', import.meta.url), 'utf8');
 
-/** Both communications units `target`-authoritative, every other group `legacy`. */
-const VERSION = fixtureVersion('v0201', { [FIXTURE_GROUP_IDS.communications]: 'target' });
+/** Both mailing-list units `target`-authoritative, every other group `legacy`. */
+const VERSION = fixtureVersion('v0201', { [FIXTURE_GROUP_IDS.mailingLists]: 'target' });
 
 /** No batch here touches `tcontent`, so the start-up guard is never entered. */
 const UNUSED_GUARD: StartupGuardRunner = { run: () => Promise.reject(new Error('no batch here touches tcontent')) };
@@ -326,7 +326,7 @@ function fakeMigrationDb(): { db: MigrationDb; mirror: Map<string, string> } {
   return { db, mirror };
 }
 
-/** The checkpoint of the communications stream of tenant-a. */
+/** The checkpoint of the programs-sites stream of tenant-a. */
 async function tenantCheckpoint(legacy: FakeLegacyDb): Promise<CheckpointRow | undefined> {
   const rows = await readCheckpoints(await legacy.live(), { owners: [OWNER] });
   return rows.find((row) => row.tenantId.toLowerCase() === TENANT_A.tenantId.toLowerCase());

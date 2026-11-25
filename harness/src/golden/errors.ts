@@ -75,10 +75,10 @@ export interface DifferenceSelector {
   actual?: unknown;
 }
 
-/** One entry of `opt2/exceptions-list.json`. */
+/** One entry of `opt2/exceptions-list.json`; `scenario` and `evidence` are absent once their scenario was retired. */
 export interface ExceptionEntry {
   id: string;
-  scenario: string;
+  scenario?: string;
   routeKey: string;
   /** Further route keys the entry covers. */
   appliesTo?: string[];
@@ -88,7 +88,7 @@ export interface ExceptionEntry {
   decision: 'preserve' | 'fix';
   reason: string;
   status: 'open' | 'accepted' | 'halted';
-  evidence: HaltEvidence;
+  evidence?: HaltEvidence;
   sourceSha: string;
 }
 
@@ -101,7 +101,10 @@ export function isRosterHaltId(id: string): boolean {
 }
 
 /** Halted `preserve` exceptions entry recording `err`. */
-export function haltedExceptionEntry(err: EquivalenceImpossible, opts: { id: string; sourceSha: string }): ExceptionEntry {
+export function haltedExceptionEntry(
+  err: EquivalenceImpossible,
+  opts: { id: string; sourceSha: string },
+): ExceptionEntry & Required<Pick<ExceptionEntry, 'scenario' | 'evidence'>> {
   return {
     id: opts.id,
     scenario: err.scenario,

@@ -1,13 +1,11 @@
 // Unit tests for the `gatesList` route over fake lease and owner-gate reads: declaration, answers, paging, owner
 // unavailability, the legacy 400, auth, and the bound reads of `gateReadsOf`.
-import { readFileSync } from 'node:fs';
-
 import { INVOCATION_HEADER, Roles, collectRouteMatrix } from '@opt2/platform/auth';
 import { createLogger } from '@opt2/platform/logging';
 import type { GateRequest, UnitGate } from '@opt2/platform/migration-kit';
 import { ServiceUnavailableError, createService, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
 import type { MetadataTx, TenantDb } from '@opt2/platform/tenancy';
-import { assertResponseMatchesOpenApi, mintServiceToken, mintUserToken, testVerifier } from '@opt2/platform/testing';
+import { assertResponseMatchesOpenApi, loadOpenApiDocument, mintServiceToken, mintUserToken, testVerifier } from '@opt2/platform/testing';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { parse } from 'yaml';
 
@@ -18,7 +16,7 @@ import type { LeaseRow } from '../../src/windows/index.js';
 
 type Operation = Record<string, unknown>;
 
-const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as {
+const OPENAPI = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as {
   paths: Record<string, Record<string, Operation>>;
 };
 const PATH = '/internal/v1/gates';
@@ -388,7 +386,7 @@ describe('gateReadsOf', () => {
   it("reads every holder's leases of the requested units, with kind and time, in one query sorted by unit", async () => {
     const log: { text: string; values: unknown[] }[][] = [];
     const reads = gateReadsOf({ db: leaseDb(log), owners: {} as OwnersClient } as Pick<MigrationContext, 'db' | 'owners'>);
-    const units = ['people.person', 'content.content', 'timesheets.blackout'];
+    const units = ['people.person', 'content.content', 'programs_sites.site'];
 
     const rows = await reads.leases(units);
 

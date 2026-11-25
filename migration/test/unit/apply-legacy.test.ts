@@ -25,9 +25,9 @@ import {
   FIXTURE_CATALOG,
   TABLES,
   UNITS,
-  blackoutRow,
   contentRow,
   defineFixtureTables,
+  enrolmentRow,
   fixtureId,
   imageSizeRow,
   mailingListMemberRow,
@@ -288,7 +288,7 @@ describe('applyLegacyChange on a table without a primary key', () => {
     const member = mailingListMemberRow();
     const fake = await legacyDb({ [TABLE]: [member] });
     const catalog = await catalogOf(fake, TABLE);
-    const insert = legacyChange('communications', {
+    const insert = legacyChange('programs-sites', {
       op: 'insert',
       unit: UNITS.mailingListMember,
       legacyTable: 'tmailinglistmembers',
@@ -450,30 +450,30 @@ describe('applyLegacyChange on an identity column and a folded program table', (
   });
 
   it('writes a folded change to its Program_<id> table without the program column, leaving the other program alone', async () => {
-    const dayId = fixtureId('timesheet_day:program-2');
-    const sameKeyInProgram1 = blackoutRow({ day_id: dayId, reason: 'program-1-original' });
-    const fake = await legacyDb({ [TABLES['Program_1.blackout'].qualified]: [sameKeyInProgram1] });
-    const catalog = await catalogOf(fake, programTableName(2, 'blackout'));
-    const blackout = blackoutRow({ day_id: dayId });
-    const insert = legacyChange('timesheets', {
+    const cohortId = fixtureId('cohort:program-2');
+    const sameKeyInProgram1 = enrolmentRow({ cohort_id: cohortId, status: 'program-1-original' });
+    const fake = await legacyDb({ [TABLES['Program_1.enrolment'].qualified]: [sameKeyInProgram1] });
+    const catalog = await catalogOf(fake, programTableName(2, 'enrolment'));
+    const enrolment = enrolmentRow({ cohort_id: cohortId });
+    const insert = legacyChange('programs-sites', {
       op: 'insert',
-      unit: UNITS.blackout,
-      legacyTable: 'Program_N.blackout',
+      unit: UNITS.enrolment,
+      legacyTable: 'Program_N.enrolment',
       columns: [...catalog.columns, { name: LEGACY_PROGRAM_ID_COLUMN, type: 'i' }],
-      keyColumns: ['blackout_id', LEGACY_PROGRAM_ID_COLUMN],
-      after: { ...canonicalForm(blackout), [LEGACY_PROGRAM_ID_COLUMN]: '2' },
+      keyColumns: ['enrolment_id', LEGACY_PROGRAM_ID_COLUMN],
+      after: { ...canonicalForm(enrolment), [LEGACY_PROGRAM_ID_COLUMN]: '2' },
     });
 
-    expect(insert).toMatchObject({ legacyTable: programTableName(2, 'blackout'), programId: 2, physicalTable: { schema: 'Program_2', table: 'blackout' } });
+    expect(insert).toMatchObject({ legacyTable: programTableName(2, 'enrolment'), programId: 2, physicalTable: { schema: 'Program_2', table: 'enrolment' } });
     expect(insert.columns).toEqual(catalog.columns);
-    expect(insert.after).toEqual(canonicalForm(blackout));
+    expect(insert.after).toEqual(canonicalForm(enrolment));
 
     await expect(applyBatch(fake, [insert])).resolves.toEqual([1]);
 
-    expect(fake.rows(TABLES['Program_2.blackout'].qualified)).toEqual([blackout]);
-    expect(fake.rows(TABLES['Program_1.blackout'].qualified)).toEqual([sameKeyInProgram1]);
+    expect(fake.rows(TABLES['Program_2.enrolment'].qualified)).toEqual([enrolment]);
+    expect(fake.rows(TABLES['Program_1.enrolment'].qualified)).toEqual([sameKeyInProgram1]);
     const statements = fake.statements.filter((statement) => statement.txId !== null).map((statement) => statement.sql);
-    expect(statements.some((sql) => sql.includes('INSERT INTO [Program_2].[blackout]'))).toBe(true);
+    expect(statements.some((sql) => sql.includes('INSERT INTO [Program_2].[enrolment]'))).toBe(true);
     expect(statements.some((sql) => sql.includes('Program_1') || sql.includes(LEGACY_PROGRAM_ID_COLUMN))).toBe(false);
   });
 });
@@ -546,7 +546,7 @@ describe('projector checkpoint', () => {
       rows.map((row) => [row.owner, row.tenantId, row.appliedHorizon]);
 
     await expect(readCheckpoint(pool, 'people', TENANT_B)).resolves.toMatchObject({ owner: 'people', tenantId: TENANT_B, appliedHorizon: '200', batchId: 'batch-1' });
-    await expect(readCheckpoint(pool, 'timesheets', TENANT_A)).resolves.toBeNull();
+    await expect(readCheckpoint(pool, 'strategies-content', TENANT_A)).resolves.toBeNull();
     expect(horizons(await readCheckpoints(pool, { owners: ['people'] }))).toEqual([
       ['people', TENANT_A, '400'],
       ['people', TENANT_B, '200'],

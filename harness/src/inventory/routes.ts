@@ -211,12 +211,6 @@ export const FIXTURE_PREFIX = '/legacy-fixtures/cfml/api.cfm';
 /** Fixture module → owning service, by definition. */
 export const FIXTURE_SERVICES: Readonly<Record<string, string>> = Object.freeze({
   people: 'people',
-  timesheets: 'timesheets',
-  finance: 'finance',
-  surveys: 'surveys',
-  reporting: 'reporting',
-  communications: 'communications',
-  esignature: 'e-signature',
 });
 
 /** JSON API request mode per family: the `processRequest` default, and the REST branch's assignment. */
@@ -3050,7 +3044,7 @@ function procedureEvidence(w: Walker, roots: readonly Root[], closure: WriteClos
   });
 }
 
-/** Per-program tables written through a dynamic schema (`#arguments.schema#.finance_attachment`), folded to `Program_N`, by the reference that names each. */
+/** Per-program tables written through a dynamic schema (`#arguments.schema#.<table>`), folded to `Program_N`, by the reference that names each. */
 function programTableWrites(unresolved: readonly UnresolvedRef[], sql: FixtureSql): { tables: string[]; resolved: Map<UnresolvedRef, string> } {
   const resolved = new Map<UnresolvedRef, string>();
   for (const u of unresolved) {

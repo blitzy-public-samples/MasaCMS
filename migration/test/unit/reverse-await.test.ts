@@ -619,11 +619,11 @@ describe('ProjectionTimeoutError safe text', () => {
     [
       'positions of several owners',
       [
-        { owner: 'timesheets', xid: '18446744073709551614', tenantsBehind: [] },
-        { owner: 'e-signature', xid: '7', tenantsBehind: [TENANT_B] },
+        { owner: 'strategies-content', xid: '18446744073709551614', tenantsBehind: [] },
+        { owner: 'identity', xid: '7', tenantsBehind: [TENANT_B] },
       ],
       TIMEOUT_MS,
-      'Projection of e-signature=7,timesheets=18446744073709551614 was not applied in legacy within 5000 ms',
+      'Projection of identity=7,strategies-content=18446744073709551614 was not applied in legacy within 5000 ms',
     ],
     ['no position read yet', [], TIMEOUT_MS, 'Projection of  was not applied in legacy within 5000 ms'],
     ['an owner name outside the allowlist', [{ owner: 'Ada Lovelace', xid: '900', tenantsBehind: [] }], 600, REDACTED],

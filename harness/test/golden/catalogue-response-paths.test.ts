@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { matchRouteKey, type RouteKeyRequest, type RouteKeyResult } from '@opt2/platform/legacy-compat';
-import { routeKeyCaseOptions } from '@opt2/platform/testing';
+import { loadOpenApiDocument, routeKeyCaseOptions } from '@opt2/platform/testing';
 import { describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import { loadCatalogue, type Step } from '../../src/golden/catalogue.js';
@@ -75,8 +75,6 @@ const CONTENT_TYPES = {
   multipart: 'multipart/form-data',
   body: 'application/json',
 };
-const COMMUNICATIONS = 'services/communications/contracts/openapi.yaml';
-const MESSAGE_DETAIL = '/legacy-fixtures/cfml/api.cfm/communications/messages/{id}';
 const CONTENT = 'services/strategies-content/contracts/openapi.yaml';
 const CONTENT_PATH = '/_api/json/v1/{siteid}/{path}';
 /** Segments before the entity a JSON API method serialises: `data`, or `data.items[n]`. */
@@ -122,7 +120,7 @@ function loadContracts(): Contract[] {
     .map((entry) => `services/${entry.name}/contracts/openapi.yaml`)
     .filter((file) => existsSync(repoPath(file)))
     .sort()
-    .map((file) => ({ file, doc: parse(readFileSync(repoPath(file), 'utf8')) as Json }));
+    .map((file) => ({ file, doc: loadOpenApiDocument(repoPath(file), parse) as Json }));
 }
 
 function operationsOf(contract: Contract): Operation[] {
@@ -607,38 +605,6 @@ function describePaths(r: CheckedRequest): string {
 
 const result = checkCatalogue();
 
-const REQUIRED: Array<[scenario: string, step: string]> = [
-  ['GS-CM-02', 'history'],
-  ['GS-RE-01', 'xlsx-poll'],
-  ['GS-RE-01', 'csv-poll'],
-  ['GS-RE-01', 'pdf-poll'],
-  ['GS-RE-02', 'poll'],
-];
-
-const COLUMN_CASES = [
-  {
-    name: 'message',
-    cfc: 'legacy-fixtures/cfml/modules/communications.cfc',
-    select: /variables\.messageColumns = "([^"]+)"/,
-    contract: COMMUNICATIONS,
-    schema: 'MessageFields',
-  },
-  {
-    name: 'delivery history',
-    cfc: 'legacy-fixtures/cfml/modules/communications.cfc',
-    select: /SELECT ([^"]+?) FROM synthetic\.delivery_status/,
-    contract: COMMUNICATIONS,
-    schema: 'DeliveryStatusEntry',
-  },
-  {
-    name: 'export job',
-    cfc: 'legacy-fixtures/cfml/modules/reporting.cfc',
-    select: /variables\.jobColumns = "([^"]+)"/,
-    contract: 'services/reporting/contracts/openapi.yaml',
-    schema: 'ExportJob',
-  },
-];
-
 describe('golden catalogue response paths', () => {
   it('reports which path-bearing steps it maps to a contract operation', async () => {
     const { checked, unchecked } = await result;
@@ -675,44 +641,7 @@ describe('golden catalogue response paths', () => {
     expect(problems, problems.join('\n')).toEqual([]);
   });
 
-  it.each(REQUIRED)('checks %s %s polling data.state against its contract', async (scenario, step) => {
-    const { checked } = await result;
-    const requests = checked.filter((r) => r.scenario === scenario && r.step === step);
-    expect(requests.length).toBeGreaterThan(0);
-    for (const request of requests) {
-      expect(request.operations.length, describeRequest(request)).toBeGreaterThan(0);
-      expect(request.paths.find((p) => p.label === 'poll')?.path).toBe('data.state');
-      expect(request.problems).toEqual([]);
-    }
-  });
-
   it.each([
-    ['GS-RE-01', 'xlsx-poll', 'done'],
-    ['GS-RE-01', 'csv-poll', 'done'],
-    ['GS-RE-01', 'pdf-poll', 'done'],
-    ['GS-RE-02', 'poll', 'failed'],
-  ])('checks %s %s lifecycle queued, running, %s timestamps against its contract', async (scenario, step, last) => {
-    const { checked } = await result;
-    const requests = checked.filter((r) => r.scenario === scenario && r.step === step);
-    expect(requests.length).toBeGreaterThan(0);
-    for (const request of requests) {
-      const lifecycle = request.paths.filter((p) => p.label.startsWith('lifecycle '));
-      expect(lifecycle.map((p) => `${p.label} ${p.path}`)).toEqual([
-        'lifecycle queued data.created',
-        'lifecycle running data.started_at',
-        `lifecycle ${last} data.finished_at`,
-      ]);
-      expect(request.problems).toEqual([]);
-    }
-  });
-
-  it.each([
-    [COMMUNICATIONS, MESSAGE_DETAIL, 'data.state', 'delivered', 'declared'],
-    [COMMUNICATIONS, MESSAGE_DETAIL, 'data.state', 'bounced', 'excluded'],
-    [COMMUNICATIONS, MESSAGE_DETAIL, 'data.history[0].status', 'delivered', 'declared'],
-    [COMMUNICATIONS, MESSAGE_DETAIL, 'data.status', 'delivered', 'excluded'],
-    [COMMUNICATIONS, MESSAGE_DETAIL, 'data.history[0].state', undefined, 'excluded'],
-    [COMMUNICATIONS, MESSAGE_DETAIL, 'data.history', undefined, 'declared'],
     [CONTENT, CONTENT_PATH, 'data.contenthistid', undefined, 'declared'],
     [CONTENT, CONTENT_PATH, 'data.fileid', undefined, 'open'],
   ] as Array<[string, string, string, Scalar | undefined, Verdict]>)(
@@ -755,16 +684,4 @@ describe('golden catalogue response paths', () => {
       expect(entityField(op as Operation, baseKey, query, path)?.served).toBe(served);
     },
   );
-
-  it.each(COLUMN_CASES)('declares the $name columns its fixture CFML selects', ({ cfc, select, contract, schema }) => {
-    const columns = select
-      .exec(readFileSync(repoPath(cfc), 'utf8'))?.[1]
-      ?.split(',')
-      .map((column) => column.trim().replace(/^\[|\]$/g, '').toLowerCase());
-    expect(columns, `${cfc} ${String(select)}`).toBeDefined();
-    const doc = CONTRACTS.find((c) => c.file === contract)?.doc ?? {};
-    const declared = resolvePointer(doc, `#/components/schemas/${schema}`);
-    const properties = isRecord(declared) && isRecord(declared.properties) ? Object.keys(declared.properties) : [];
-    expect([...properties].sort()).toEqual([...(columns ?? [])].sort());
-  });
 });

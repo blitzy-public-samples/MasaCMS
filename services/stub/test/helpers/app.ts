@@ -2,38 +2,36 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { LOCAL_USER_TOKEN } from '@opt2/platform/auth';
 import type { EventPublisher } from '@opt2/platform/events';
 import { loadEnv, type Clock, type FastifyInstance } from '@opt2/platform/service-kit';
 import type { CreateTaskInput, CreateTaskResult, DeleteTaskResult, QueueState, TaskInfo, TaskPage, TaskPort } from '@opt2/platform/tasks';
 import {
   isNonTenantTable,
-  tenantDbFromPool,
   tenantIdForSite,
-  type Pool,
-  type QueryConfig,
   type QueryResult,
   type QueryResultRow,
   type SiteChangedPayload,
   type TenantDb,
 } from '@opt2/platform/tenancy';
 import {
-  ROLE_SET,
-  TENANT_A,
   TENANT_LIST,
-  authHeadersFor,
   businessClock,
+  closingParen,
   createCapturingPublisher,
+  createHeadersFor,
+  fakePoolTenantDb,
+  localTestEnv,
   registryPayloads,
+  splitTopLevel,
   testPgConfig,
   testVerifier,
   writeTestSecrets,
   type CapturingPublisher,
-  type RoleSubject,
   type TenantFixture,
   type ThrowawaySchema,
 } from '@opt2/platform/testing';
 import { buildApp, stubEnvSchema } from '../../src/app.js';
+import type { NoteCommentRow } from '../../src/domain/comment.js';
 import type { NoteProjectionRow, NoteRow } from '../../src/domain/note.js';
 import { STUB_OWNER, STUB_SCHEMA } from '../../src/repo/repository.js';
 import { STUB_UNITS } from '../../src/repo/tables.js';
@@ -76,29 +74,17 @@ function prepareStateDir(dir: string): Promise<void> {
 
 /** Raw environment that `loadEnv(stubEnvSchema)` accepts for the stub in local mode; an override of `undefined` removes the variable. */
 export function testEnv(overrides: Readonly<Record<string, string | undefined>> = {}): Record<string, string> {
-  const merged: Record<string, string | undefined> = {
-    PORT: '8199',
-    OPT2_SERVICE_NAME: STUB_OWNER,
-    OPT2_ENV: 'local',
-    OPT2_DB_AUTH: 'password',
-    PG_HOST: process.env.PG_HOST || '127.0.0.1',
-    PG_PORT: process.env.PG_PORT || '5432',
-    PG_USER: process.env.PG_USER || 'stub_app',
-    PG_PASSWORD: process.env.PG_PASSWORD || 'unused',
-    PG_DATABASE: process.env.PG_DATABASE || 'opt2',
-    PUBSUB_EMULATOR_HOST: process.env.PUBSUB_EMULATOR_HOST || undefined,
-    GOOGLE_CLOUD_PROJECT: process.env.GOOGLE_CLOUD_PROJECT || 'opt2-local',
-    OPT2_TOKEN_ISSUER: LOCAL_USER_TOKEN.issuer,
-    OPT2_TOKEN_AUDIENCE: LOCAL_USER_TOKEN.audience,
-    // Never fetched: testVerifier() replaces JWKS verification.
-    OPT2_JWKS_URL: 'http://127.0.0.1:8111/.well-known/jwks.json',
-    OPT2_SERVICE_URLS: JSON.stringify({ [STUB_OWNER]: 'http://127.0.0.1:8199' }),
-    OPT2_STATE_DIR: 'OPT2_STATE_DIR' in overrides ? undefined : lazyStateDir(),
-    OPT2_TASKS_ADAPTER: 'local',
-    TZ: process.env.TZ || 'UTC',
-    ...overrides,
-  };
-  return Object.fromEntries(Object.entries(merged).filter((entry): entry is [string, string] => entry[1] !== undefined));
+  return localTestEnv(
+    {
+      service: STUB_OWNER,
+      database: { name: 'opt2', user: 'stub_app' },
+      pgFromProcessEnv: true,
+      callees: [STUB_OWNER],
+      stateDir: lazyStateDir,
+      extra: { PUBSUB_EMULATOR_HOST: process.env.PUBSUB_EMULATOR_HOST || undefined, GOOGLE_CLOUD_PROJECT: process.env.GOOGLE_CLOUD_PROJECT || 'opt2-local' },
+    },
+    overrides,
+  );
 }
 
 /** Clock every suite shares: local `2026-06-30T12:00:00`, the seed's business date. */
@@ -213,6 +199,7 @@ export type ResponderRows = readonly QueryResultRow[] | ((query: RecordedQuery) 
 export interface RecordingSeed {
   notes?: ReadonlyArray<{ tenantId: string; row: NoteRow }>;
   projections?: ReadonlyArray<{ tenantId: string; row: NoteProjectionRow }>;
+  comments?: ReadonlyArray<{ tenantId: string; row: NoteCommentRow }>;
   /** Fixtures registered in `tenant_registry`; defaults to TENANT_LIST, and `[]` registers none. */
   registry?: readonly TenantFixture[];
   /** Gate overrides; every stub unit otherwise starts `open`, phase `quiet`, without holder. */
@@ -220,7 +207,7 @@ export interface RecordingSeed {
 }
 
 /** Tables whose committed rows `RecordingDb.rows` returns. */
-export type RecordedTable = 'note' | 'note_projection' | 'outbox' | 'inbox';
+export type RecordedTable = 'note' | 'note_projection' | 'note_comment' | 'note_activity' | 'tenant_grant' | 'outbox' | 'inbox';
 
 /** `TenantDb` of schema `stub` over an in-memory pool, running the platform's own transactions and recording every statement. */
 export interface RecordingDb extends TenantDb {
@@ -240,7 +227,18 @@ export interface RecordingDb extends TenantDb {
 
 type Row = QueryResultRow;
 type Mutable<T> = { -readonly [K in keyof T]: T[K] };
-type StoreName = 'note' | 'note_projection' | 'outbox' | 'inbox' | 'consumer_aggregate_version' | 'changelog' | 'tenant_registry' | 'unit_gate';
+type StoreName =
+  | 'note'
+  | 'note_projection'
+  | 'note_comment'
+  | 'note_activity'
+  | 'outbox'
+  | 'inbox'
+  | 'consumer_aggregate_version'
+  | 'changelog'
+  | 'tenant_registry'
+  | 'tenant_grant'
+  | 'unit_gate';
 type Overlay = Map<StoreName, Map<string, Row | null>>;
 
 interface Answer {
@@ -258,17 +256,19 @@ interface ParsedInsert {
 const STORE_KEYS: Readonly<Record<StoreName, readonly string[]>> = {
   note: ['tenant_id', 'note_id'],
   note_projection: ['tenant_id', 'note_id'],
+  note_comment: ['tenant_id', 'comment_id'],
+  note_activity: ['tenant_id', 'event_id'],
   outbox: ['tenant_id', 'event_id'],
   inbox: ['tenant_id', 'event_id'],
   consumer_aggregate_version: ['tenant_id', 'subscription', 'aggregate_type', 'aggregate_id'],
   changelog: ['tenant_id', 'seq'],
   tenant_registry: ['tenant_id'],
+  tenant_grant: ['grantor_tenant', 'grantee_tenant', 'kind', 'resource_id'],
   unit_gate: ['unit'],
 };
 const STORE_NAMES = Object.keys(STORE_KEYS) as StoreName[];
 const TABLE_REF = new RegExp(`\\b${STUB_SCHEMA}\\.(\\w+)`);
 const TRANSACTION_CONTROL: ReadonlySet<string> = new Set(['begin', 'commit', 'rollback', 'savepoint', 'release']);
-const POOL_ENDED = 'Cannot use a pool after calling end on the pool';
 
 const isStore = (name: string): name is StoreName => Object.hasOwn(STORE_KEYS, name);
 const asArray = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
@@ -285,44 +285,6 @@ function pgError(code: string, message: string): Error {
 
 function sameValue(stored: unknown, wanted: unknown): boolean {
   return stored === null || stored === undefined ? wanted === null || wanted === undefined : String(stored) === String(wanted);
-}
-
-/** Index of the `)` closing the `(` at `open`, skipping quoted text; -1 when unbalanced. */
-function closingParen(text: string, open: number): number {
-  let depth = 0;
-  let quoted = false;
-  for (let i = open; i < text.length; i += 1) {
-    const ch = text.charAt(i);
-    if (ch === "'") quoted = !quoted;
-    if (quoted) continue;
-    if (ch === '(') depth += 1;
-    if (ch === ')') {
-      depth -= 1;
-      if (depth === 0) return i;
-    }
-  }
-  return -1;
-}
-
-/** `text` split at commas outside parentheses and quotes, each part trimmed. */
-function splitTopLevel(text: string): string[] {
-  const parts: string[] = [];
-  let depth = 0;
-  let quoted = false;
-  let start = 0;
-  for (let i = 0; i < text.length; i += 1) {
-    const ch = text.charAt(i);
-    if (ch === "'") quoted = !quoted;
-    if (quoted) continue;
-    if (ch === '(') depth += 1;
-    if (ch === ')') depth -= 1;
-    if (ch === ',' && depth === 0) {
-      parts.push(text.slice(start, i).trim());
-      start = i + 1;
-    }
-  }
-  parts.push(text.slice(start).trim());
-  return parts.filter((part) => part !== '');
 }
 
 /** Value an expression binds: a `$n` parameter (jsonb text parsed), NULL, a literal or LOCALTIMESTAMP; undefined for any other expression. */
@@ -431,11 +393,11 @@ function timeOf(value: unknown): number {
   return value instanceof Date ? value.getTime() : Date.parse(String(value).replace(' ', 'T'));
 }
 
-// `created`, then `note_id` in code-unit order, as `COLLATE "C"` sorts it.
-function compareNoteOrder(a: Row, b: Row): number {
+// `created`, then the id column `idColumn` in code-unit order, as `COLLATE "C"` sorts it.
+function compareCreatedOrder(a: Row, b: Row, idColumn: string): number {
   const byTime = timeOf(a.created) - timeOf(b.created);
   if (byTime !== 0) return byTime;
-  const [x, y] = [String(a.note_id), String(b.note_id)];
+  const [x, y] = [String(a[idColumn]), String(b[idColumn])];
   return x < y ? -1 : x > y ? 1 : 0;
 }
 
@@ -500,7 +462,6 @@ export function createRecordingDb(seed: RecordingSeed = {}): RecordingDb {
   let transactions = 0;
   let outboxSeq = 0;
   let changelogSeq = 0;
-  let ended = false;
 
   const keyOf = (store: StoreName, row: Row): string => JSON.stringify(STORE_KEYS[store].map((column) => row[column] ?? null));
   const seedRow = (store: StoreName, row: Row): void => {
@@ -516,6 +477,7 @@ export function createRecordingDb(seed: RecordingSeed = {}): RecordingDb {
   }
   for (const { tenantId, row } of seed.notes ?? []) seedRow('note', { ...row, tenant_id: tenantId.toLowerCase() });
   for (const { tenantId, row } of seed.projections ?? []) seedRow('note_projection', { ...row, tenant_id: tenantId.toLowerCase() });
+  for (const { tenantId, row } of seed.comments ?? []) seedRow('note_comment', { ...row, tenant_id: tenantId.toLowerCase() });
 
   const newTx = (ordinal: number): FakeTx => ({
     ordinal,
@@ -641,12 +603,14 @@ export function createRecordingDb(seed: RecordingSeed = {}): RecordingDb {
         for (const row of rows) counts.set(row[groupBy], (counts.get(row[groupBy]) ?? 0) + 1);
         return many([...counts].map(([value, count]) => ({ [groupBy]: value, count: String(count) })));
       }
-      const keyset = /\(created, note_id collate c\) > \(\$(\d+)[^,]*, \$(\d+)/.exec(sql);
+      const keyset = /\(created, (note_id|comment_id) collate c\) > \(\$(\d+)[^,]*, \$(\d+)/.exec(sql);
       if (keyset !== null) {
-        const after = { created: params[Number(keyset[1]) - 1], note_id: params[Number(keyset[2]) - 1] };
-        rows = rows.filter((row) => compareNoteOrder(row, after) > 0);
+        const idColumn = keyset[1] as string;
+        const after = { created: params[Number(keyset[2]) - 1], [idColumn]: params[Number(keyset[3]) - 1] };
+        rows = rows.filter((row) => compareCreatedOrder(row, after, idColumn) > 0);
       }
-      if (/ order by created, note_id/.test(sql)) rows.sort(compareNoteOrder);
+      const ordered = / order by created, (note_id|comment_id)/.exec(sql)?.[1];
+      if (ordered !== undefined) rows.sort((a, b) => compareCreatedOrder(a, b, ordered));
       const limit = / limit \$(\d+)/.exec(sql)?.[1];
       if (limit !== undefined) rows = rows.slice(0, Number(params[Number(limit) - 1]));
       const list = selectList(sql);
@@ -783,10 +747,7 @@ export function createRecordingDb(seed: RecordingSeed = {}): RecordingDb {
   }
 
 
-  async function run(connection: FakeConnection, input: string | QueryConfig, values?: unknown[]): Promise<QueryResult> {
-    if (ended) throw new Error(POOL_ENDED);
-    const text = typeof input === 'string' ? input : input.text;
-    const params: unknown[] = [...((typeof input === 'string' ? undefined : input.values) ?? values ?? [])];
+  async function run(connection: FakeConnection, text: string, params: unknown[]): Promise<QueryResult> {
     const sql = normalise(text);
     const verb = /^\w+/.exec(sql)?.[0] ?? '';
     if (verb === 'begin') {
@@ -839,30 +800,8 @@ export function createRecordingDb(seed: RecordingSeed = {}): RecordingDb {
     return { command: verb.toUpperCase(), rowCount: answer.rowCount, oid: 0, fields: [], rows: answer.rows };
   }
 
-  // Structurally the pg.Pool members tenantDbFromPool and runTransaction call.
-  const fakePool = {
-    async connect() {
-      if (ended) throw new Error(POOL_ENDED);
-      const connection: FakeConnection = { tx: undefined };
-      return {
-        query: (input: string | QueryConfig, values?: unknown[]): Promise<QueryResult> => run(connection, input, values),
-        release: (): void => undefined,
-      };
-    },
-    query: (input: string | QueryConfig, values?: unknown[]): Promise<QueryResult> => run({ tx: undefined }, input, values),
-    async end(): Promise<void> {
-      ended = true;
-    },
-    on: (): void => undefined,
-  };
-  const base = tenantDbFromPool(fakePool as unknown as Pool, { schema: STUB_SCHEMA });
-
-  // tenantDbFromPool freezes its TenantDb, so the recording members sit on an object that delegates to it.
   return {
-    schema: base.schema,
-    withTenant: (tenantId, fn) => base.withTenant(tenantId, fn),
-    withMetadata: (fn, options) => base.withMetadata(fn, options),
-    end: () => base.end(),
+    ...fakePoolTenantDb({ schema: STUB_SCHEMA, session: (): FakeConnection => ({ tx: undefined }), run }),
     queries,
     writes,
     respond(pattern, rows) {
@@ -940,16 +879,6 @@ export function buildDbApp<P extends EventPublisher = CapturingPublisher>(
   return buildReadyApp(schema.app, { ...pgEnv, ...env }, rest);
 }
 
-/** The `ROLE_SET` subject named `name`; throws TypeError when there is none. */
-function roleSubjectNamed(name: string): RoleSubject {
-  const found = ROLE_SET.find((candidate) => candidate.name === name);
-  if (found === undefined) throw new TypeError(`ROLE_SET has no subject named ${name}`);
-  return found;
-}
-
-/** `app.inject` headers presenting `subject`, or the `ROLE_SET` subject of that name, to the stub; user tokens are minted for `site`, tenant-a by default. */
-export function headersFor(subject: RoleSubject | string, { site }: { site?: string } = {}): Promise<Record<string, string>> {
-  const resolved = typeof subject === 'string' ? roleSubjectNamed(subject) : subject;
-  return authHeadersFor(resolved, { site: site ?? TENANT_A.siteId, audience: STUB_OWNER });
-}
+/** `app.inject` headers presenting a subject, or the `ROLE_SET` subject of that name, to the stub; user tokens are minted for tenant-a unless `site` is given. */
+export const headersFor = createHeadersFor({ audience: STUB_OWNER });
 

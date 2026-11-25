@@ -761,7 +761,7 @@ describe('session effects', () => {
 });
 
 describe('account operation routes', () => {
-  const OTHER_CALLERS = ['service:gateway', 'service:timesheets', 's2', 'site-admin'] as const;
+  const OTHER_CALLERS = ['service:gateway', 'service:stub', 's2', 'site-admin'] as const;
   let people: Record<string, string>;
 
   /** The contract path of `input`'s operation, with the `:action` suffix when given. */

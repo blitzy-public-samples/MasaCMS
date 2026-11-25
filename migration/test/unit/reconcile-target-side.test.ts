@@ -63,13 +63,13 @@ const CONTENT_EXPORT_COLUMNS: CanonicalColumn[] = [
 ];
 
 const PROGRAM_SHAPE: UnitTableShape = {
-  unit: 'timesheets.timesheet',
-  owner: 'timesheets',
-  legacyTable: 'Program_N.timesheet',
+  unit: 'programs_sites.enrolment',
+  owner: 'programs-sites',
+  legacyTable: 'Program_N.enrolment',
   keyed: true,
-  keyColumns: ['timesheet_id', 'legacy_program_id'],
+  keyColumns: ['enrolment_id', 'legacy_program_id'],
   columns: [
-    { name: 'timesheet_id', type: 'i' },
+    { name: 'enrolment_id', type: 'i' },
     { name: 'status', type: 's' },
     { name: 'legacy_program_id', type: 'i' },
   ],
@@ -79,13 +79,13 @@ const PROGRAM_SHAPE: UnitTableShape = {
 };
 
 const PROGRAM_EXPORT_COLUMNS: CanonicalColumn[] = [
-  { name: 'timesheet_id', type: 'i' },
+  { name: 'enrolment_id', type: 'i' },
   { name: 'status', type: 's' },
 ];
 
 const KEYLESS_SHAPE: UnitTableShape = {
-  unit: 'communications.mailing_list_member',
-  owner: 'communications',
+  unit: 'programs_sites.mailing_list_member',
+  owner: 'programs-sites',
   legacyTable: 'dbo.tmailinglistmembers',
   keyed: false,
   keyColumns: [],
@@ -98,15 +98,15 @@ const KEYLESS_SHAPE: UnitTableShape = {
   folded: false,
 };
 
-/** A folded finance-attachment share whose `content` bytes the owner stores as objects. */
-const ATTACHMENT_SHAPE: UnitTableShape = {
-  unit: 'finance.attachment',
-  owner: 'finance',
-  legacyTable: 'Program_N.finance_attachment',
+/** A folded document share whose `content` bytes the owner stores as objects. */
+const DOCUMENT_SHAPE: UnitTableShape = {
+  unit: 'people.document',
+  owner: 'people',
+  legacyTable: 'Program_N.document',
   keyed: true,
-  keyColumns: ['attachment_id', 'legacy_program_id'],
+  keyColumns: ['document_id', 'legacy_program_id'],
   columns: [
-    { name: 'attachment_id', type: 's' },
+    { name: 'document_id', type: 's' },
     { name: 'sha256', type: 's' },
     { name: 'legacy_program_id', type: 'i' },
   ],
@@ -115,9 +115,9 @@ const ATTACHMENT_SHAPE: UnitTableShape = {
   folded: true,
 };
 
-/** The owner exports the attachment columns without `content`. */
-const ATTACHMENT_EXPORT_COLUMNS: CanonicalColumn[] = [
-  { name: 'attachment_id', type: 's' },
+/** The owner exports the document columns without `content`. */
+const DOCUMENT_EXPORT_COLUMNS: CanonicalColumn[] = [
+  { name: 'document_id', type: 's' },
   { name: 'sha256', type: 's' },
 ];
 
@@ -255,18 +255,18 @@ describe('readTargetUnitRows', () => {
 
   it('matches a folded mapping by its table part and encodes legacyProgramId as the program column', async () => {
     const rows = [
-      { values: { timesheet_id: '7', status: 'DRAFT' }, legacyProgramId: 2 },
-      { values: { timesheet_id: '7', status: 'SUBMITTED' }, legacyProgramId: 1 },
+      { values: { enrolment_id: '7', status: 'DRAFT' }, legacyProgramId: 2 },
+      { values: { enrolment_id: '7', status: 'SUBMITTED' }, legacyProgramId: 1 },
     ];
-    const { deps } = ownersServing([page([exportTable('timesheet', PROGRAM_EXPORT_COLUMNS, rows)], null)]);
+    const { deps } = ownersServing([page([exportTable('enrolment', PROGRAM_EXPORT_COLUMNS, rows)], null)]);
 
     const read = await drain(await readTargetUnitRows(deps, PROGRAM_SHAPE, TENANT));
 
     expect(read).toEqual([
-      toUnitRow(PROGRAM_SHAPE, { timesheet_id: '7', status: 'SUBMITTED', legacy_program_id: '1' }, 1),
-      toUnitRow(PROGRAM_SHAPE, { timesheet_id: '7', status: 'DRAFT', legacy_program_id: '2' }, 2),
+      toUnitRow(PROGRAM_SHAPE, { enrolment_id: '7', status: 'SUBMITTED', legacy_program_id: '1' }, 1),
+      toUnitRow(PROGRAM_SHAPE, { enrolment_id: '7', status: 'DRAFT', legacy_program_id: '2' }, 2),
     ]);
-    expect(read.map((row) => row.table)).toEqual(['Program_N.timesheet', 'Program_N.timesheet']);
+    expect(read.map((row) => row.table)).toEqual(['Program_N.enrolment', 'Program_N.enrolment']);
   });
 
   it('orders keyless rows by their encoding and keys them by it', async () => {
@@ -318,7 +318,7 @@ describe('readTargetUnitRows', () => {
   });
 
   it('throws TargetShapeError for a folded row without legacyProgramId', async () => {
-    const { deps } = ownersServing([page([exportTable('timesheet', PROGRAM_EXPORT_COLUMNS, [{ values: { timesheet_id: '1', status: 'DRAFT' } }])], null)]);
+    const { deps } = ownersServing([page([exportTable('enrolment', PROGRAM_EXPORT_COLUMNS, [{ values: { enrolment_id: '1', status: 'DRAFT' } }])], null)]);
 
     await expect(readTargetUnitRows(deps, PROGRAM_SHAPE, TENANT)).rejects.toMatchObject({ missingColumns: ['legacy_program_id'] });
   });
@@ -342,33 +342,33 @@ describe('readTargetUnitRows', () => {
   it.each([undefined, false, true])(
     'reads an object-column shape from rows without its object column and keys the manifest by legacyPath (includeObjects %s)',
     async (includeObjects) => {
-      const rows = [{ values: { attachment_id: 'AT1', sha256: 'ab' }, legacyProgramId: 1 }];
+      const rows = [{ values: { document_id: 'D1', sha256: 'ab' }, legacyProgramId: 1 }];
       const { deps } = ownersServing([
-        page([exportTable('finance_attachment', ATTACHMENT_EXPORT_COLUMNS, rows)], 'cursor-1', [
-          { key: `${TENANT}/K1.pdf`, size: 3, sha256: 'AB', contentType: 'application/pdf', legacyPath: 'Program_1.finance_attachment/AT1' },
+        page([exportTable('document', DOCUMENT_EXPORT_COLUMNS, rows)], 'cursor-1', [
+          { key: `${TENANT}/K1.pdf`, size: 3, sha256: 'AB', contentType: 'application/pdf', legacyPath: 'Program_1.document/D1' },
         ]),
-        page([exportTable('finance_attachment', ATTACHMENT_EXPORT_COLUMNS, [])], null, [
-          { key: `${TENANT}/K2.pdf`, size: 0, sha256: '01', legacyPath: 'Program_2.finance_attachment/AT1' },
+        page([exportTable('document', DOCUMENT_EXPORT_COLUMNS, [])], null, [
+          { key: `${TENANT}/K2.pdf`, size: 0, sha256: '01', legacyPath: 'Program_2.document/D1' },
         ]),
       ]);
 
-      const result = await readTargetUnitRows(deps, ATTACHMENT_SHAPE, TENANT, { includeObjects });
+      const result = await readTargetUnitRows(deps, DOCUMENT_SHAPE, TENANT, { includeObjects });
 
       expect(result).toMatchObject({
         count: 1,
         objects: [
-          { key: 'Program_1.finance_attachment/AT1', size: 3, sha256: 'ab' },
-          { key: 'Program_2.finance_attachment/AT1', size: 0, sha256: '01' },
+          { key: 'Program_1.document/D1', size: 3, sha256: 'ab' },
+          { key: 'Program_2.document/D1', size: 0, sha256: '01' },
         ],
       });
-      expect(await drain(result)).toEqual([toUnitRow(ATTACHMENT_SHAPE, { attachment_id: 'AT1', sha256: 'ab', legacy_program_id: '1' }, 1)]);
+      expect(await drain(result)).toEqual([toUnitRow(DOCUMENT_SHAPE, { document_id: 'D1', sha256: 'ab', legacy_program_id: '1' }, 1)]);
     },
   );
 
   it('reads an empty object-column table as no rows and no objects', async () => {
-    const { deps } = ownersServing([page([exportTable('finance_attachment', ATTACHMENT_EXPORT_COLUMNS, [])], null)]);
+    const { deps } = ownersServing([page([exportTable('document', DOCUMENT_EXPORT_COLUMNS, [])], null)]);
 
-    const result = await readTargetUnitRows(deps, ATTACHMENT_SHAPE, TENANT);
+    const result = await readTargetUnitRows(deps, DOCUMENT_SHAPE, TENANT);
 
     expect(result).toMatchObject({ count: 0, objects: [] });
     expect(await drain(result)).toEqual([]);
@@ -376,13 +376,13 @@ describe('readTargetUnitRows', () => {
 
   it('throws TargetShapeError for an object-column manifest entry without a legacyPath', async () => {
     const { deps } = ownersServing([
-      page([exportTable('finance_attachment', ATTACHMENT_EXPORT_COLUMNS, [])], null, [{ key: `${TENANT}/K1.pdf`, size: 3, sha256: 'ab' }]),
+      page([exportTable('document', DOCUMENT_EXPORT_COLUMNS, [])], null, [{ key: `${TENANT}/K1.pdf`, size: 3, sha256: 'ab' }]),
     ]);
 
-    await expect(readTargetUnitRows(deps, ATTACHMENT_SHAPE, TENANT)).rejects.toMatchObject({
+    await expect(readTargetUnitRows(deps, DOCUMENT_SHAPE, TENANT)).rejects.toMatchObject({
       name: 'TargetShapeError',
       missingColumns: ['content'],
-      message: `Owner export of unit finance.attachment lists object ${TENANT}/K1.pdf without the legacyPath of its Program_N.finance_attachment row`,
+      message: `Owner export of unit people.document lists object ${TENANT}/K1.pdf without the legacyPath of its Program_N.document row`,
     });
   });
 
@@ -417,7 +417,7 @@ describe('readTargetObjects', () => {
 });
 
 describe('readTargetOnlyRows', () => {
-  const SOURCE = { owner: 'communications' as const, unit: 'communications.scheduled_task' };
+  const SOURCE = { owner: 'programs-sites' as const, unit: 'programs_sites.scheduled_task' };
   const TASK_COLUMNS: CanonicalColumn[] = [
     { name: 'scheduled_task_id', type: 's' },
     { name: 'status', type: 's' },
@@ -434,7 +434,7 @@ describe('readTargetOnlyRows', () => {
     const result = await readTargetOnlyRows(deps, SOURCE, TENANT, { sortRunBytes, spillDir });
     const rows = await drain(result);
 
-    expect(calls).toEqual([['communications', { unit: 'communications.scheduled_task', tenantId: TENANT }]]);
+    expect(calls).toEqual([['programs-sites', { unit: 'programs_sites.scheduled_task', tenantId: TENANT }]]);
     expect(result).toMatchObject({ count: 4, objects: null });
     const done = encodeRow(TASK_COLUMNS, task('T1', 'done'));
     const encodings = [done, done, encodeRow(TASK_COLUMNS, task('T2', 'scheduled')), encodeRow(idColumns, { id: '7' })].sort(compareEncodings);
@@ -443,7 +443,7 @@ describe('readTargetOnlyRows', () => {
   });
 
   it('removes the rows it spilled when a later export page fails', async () => {
-    const failure = new OwnerCallError('communications', 'GET', '/internal/v1/migration/export', 503, { error: 'unavailable' });
+    const failure = new OwnerCallError('programs-sites', 'GET', '/internal/v1/migration/export', 503, { error: 'unavailable' });
     async function* exportPages(): AsyncGenerator<ExportResponse> {
       yield await Promise.resolve(page([exportTable('scheduled_task', TASK_COLUMNS, [{ values: task('T1', 'done') }, { values: task('T2', 'done') }])], 'cursor-1'));
       throw failure;
@@ -470,13 +470,13 @@ describe('readTargetTenants', () => {
     const other = tenantIdForSite('tenant-b');
     const { deps, calls } = ownersAnswering({ registeredTenants: [TENANT, other] });
 
-    await expect(readTargetTenants(deps, 'timesheets')).resolves.toEqual([TENANT, other]);
-    expect(calls).toEqual([['timesheets', { registeredTenants: true }]]);
+    await expect(readTargetTenants(deps, 'programs-sites')).resolves.toEqual([TENANT, other]);
+    expect(calls).toEqual([['programs-sites', { registeredTenants: true }]]);
   });
 
   it('fails when the owner answers without the registered tenants', async () => {
     const { deps } = ownersAnswering({});
 
-    await expect(readTargetTenants(deps, 'finance')).rejects.toThrow('Owner finance answered its position without the registered tenants it was asked for');
+    await expect(readTargetTenants(deps, 'identity')).rejects.toThrow('Owner identity answered its position without the registered tenants it was asked for');
   });
 });

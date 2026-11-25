@@ -1,9 +1,8 @@
-/** Collections (GS-CO-13) over the recording pool: cfeed gate, feed writes, cfeed.update, pooled feed content, remote import and the JSON API feed entity. */
-import { readFileSync } from 'node:fs';
+/** Collections over the recording pool: cfeed gate, feed writes, cfeed.update, pooled feed content, remote import and the JSON API feed entity. */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import { LEGACY_ERROR_MAP } from '@opt2/platform/legacy-compat';
-import { TENANT_A, TENANT_B, TENANT_UMBRELLA, assertResponseMatchesOpenApi } from '@opt2/platform/testing';
+import { TENANT_A, TENANT_B, TENANT_UMBRELLA, assertResponseMatchesOpenApi, loadOpenApiDocument } from '@opt2/platform/testing';
 import type { ContentSaveSite } from '../../src/domain/content.js';
 // configBean's defaults and the actor shape exist only in domain/context; a copy here would fork them.
 import { CONTENT_CONFIG_DEFAULTS, type Actor } from '../../src/domain/context.js';
@@ -36,7 +35,7 @@ type Repository = FeedDeps['repository'];
 type FeedSeed = ReturnType<typeof feedRow>;
 type Version = Awaited<ReturnType<Repository['content']['readActiveByRemoteId']>>[number];
 
-const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
+const OPENAPI = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as object;
 const SITE = TENANT_A.siteId;
 const NOW = TEST_CLOCK.now();
 const SECTION = IDS.content.section;

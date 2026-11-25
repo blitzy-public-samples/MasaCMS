@@ -172,8 +172,6 @@ interface Call {
   readonly target?: string;
   /** The query web received; defaults to the target's query. */
   readonly received?: AdminRequestInput['searchParams'];
-  /** Path and query web received; defaults to the page-mode path with the target's query. */
-  readonly receivedTarget?: string;
   readonly headers?: Readonly<Record<string, string>>;
   readonly form?: FormData | URLSearchParams;
   readonly mode?: AdminMode;
@@ -195,7 +193,6 @@ async function build(call: Call = {}): Promise<{ request: AdminRequest; gateway:
   const request = await buildAdminRequest({
     params: { circuit: 'cusers', action: 'list' },
     searchParams: call.received ?? new URLSearchParams(query),
-    receivedTarget: call.receivedTarget ?? `/admin/cusers/list${query === '' ? '' : `?${query}`}`,
     headers,
     form: call.form,
     auth,
@@ -556,23 +553,6 @@ describe('buildAdminRequest', () => {
 
       expect(request.action).toBe('core:carch.list');
       expect(request.currentUrl).toBe('./?&siteid=default');
-    });
-
-    it.each<[string, Call, string]>([
-      [
-        'the original URL',
-        { target: '/admin/?muraAction=cUsers.list', receivedTarget: '/admin/cusers/list?muraAction=cUsers.list' },
-        '/admin/?muraAction=cUsers.list',
-      ],
-      [
-        'the received target without one',
-        { mode: 'opt2', received: new URLSearchParams('id=R1'), receivedTarget: '/opt2/admin/finance/record?id=R1' },
-        '/opt2/admin/finance/record?id=R1',
-      ],
-    ])('takes the request target from %s', async (_label, call, requestTarget) => {
-      const { request } = await build(call);
-
-      expect(request.requestTarget).toBe(requestTarget);
     });
 
     it('keeps the rc values the request supplies over the cfparam defaults', async () => {
@@ -1186,7 +1166,6 @@ describe('buildAdminRequest', () => {
         buildAdminRequest({
           params: {},
           searchParams: {},
-          receivedTarget: '/admin/home/redirect',
           headers: new Headers({ [ORIGINAL_URL_HEADER]: '/admin/' }),
           auth,
           gateway,
@@ -1851,7 +1830,7 @@ describe('admin session state', () => {
     expect(store.state()).not.toHaveProperty('mura');
   });
 
-  it.each<AdminMode>(['page', 'redirect', 'raw', 'opt2'])(
+  it.each<AdminMode>(['page', 'redirect', 'raw'])(
     'keeps the layout site entry request-local in %s mode for an answer that renders no layout',
     async (mode) => {
       const store = identityStore({ siteid: 'default' });

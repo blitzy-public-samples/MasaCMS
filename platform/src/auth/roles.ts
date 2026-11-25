@@ -4,36 +4,12 @@ export const Roles = Object.freeze({
   siteAdmin: 'site-admin',
   systemUser: 'system-user',
   member: 'member',
-  timesheetsEmployee: 'timesheets.employee',
-  timesheetsPrimaryApprover: 'timesheets.primary-approver',
-  timesheetsSecondaryApprover: 'timesheets.secondary-approver',
-  financePreparer: 'finance.preparer',
-  financeApprover: 'finance.approver',
-  esignatureSigner: 'esignature.signer',
-  esignatureAuditor: 'esignature.auditor',
-  reportingExporter: 'reporting.exporter',
-  surveysManager: 'surveys.manager',
-  communicationsSender: 'communications.sender',
   platformMigration: 'platform.migration',
   platformOperator: 'platform.operator',
 } as const);
 
 /** A role is an opaque string; module and service roles are built at runtime. */
 export type Role = string;
-
-/** Roles of the synthetic modules, granted through fixture-seeded Masa groups. */
-export const SYNTHETIC_ROLES: readonly string[] = Object.freeze([
-  Roles.timesheetsEmployee,
-  Roles.timesheetsPrimaryApprover,
-  Roles.timesheetsSecondaryApprover,
-  Roles.financePreparer,
-  Roles.financeApprover,
-  Roles.esignatureSigner,
-  Roles.esignatureAuditor,
-  Roles.reportingExporter,
-  Roles.surveysManager,
-  Roles.communicationsSender,
-]);
 
 /** Role of the managed Pub/Sub push identity. */
 export const PUBSUB_INVOKER_ROLE = 'service:pubsub-invoker';

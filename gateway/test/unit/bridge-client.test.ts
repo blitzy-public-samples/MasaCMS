@@ -1132,7 +1132,7 @@ describe('createPluginListClient', () => {
     ['a plugins object', { plugins: plugin }],
     ['a row without its directory', { plugins: [{ ...plugin, directory: undefined }] }],
     ['a null provider URL', { plugins: [{ ...plugin, providerUrl: null }] }],
-    ['a row that is no object', { plugins: ['GS-PS-10 Plugin'] }],
+    ['a row that is no object', { plugins: ['OPT-2 Utility Plugin'] }],
     ['a JSON null body', null],
   ])('fails closed on a 2xx with %s', async (_case, body) => {
     double.setHandler((_req, res) => {

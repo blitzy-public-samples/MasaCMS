@@ -1,19 +1,14 @@
 /** In-process authorisation matrix of every stub route: declarations, admitted subjects, tenant and transport boundaries. */
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import path from 'node:path';
+import { rm } from 'node:fs/promises';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
-  AuthDenial,
   INVOCATION_HEADER,
   PUBSUB_INVOKER_ROLE,
   Roles,
   TASKS_INVOKER_ROLE,
   UndeclaredRouteError,
   collectRouteMatrix,
-  renderAuthDenial,
-  type DenialResponse,
   type Role,
   type RouteMatrix,
   type RouteMatrixEntry,
@@ -23,25 +18,36 @@ import { buildPushBody, encodeEnvelope, type EventEnvelope } from '@opt2/platfor
 import { loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
 import { outboxSweepQueue } from '@opt2/platform/tasks';
 import {
+  DENIAL_KINDS,
+  DENIED_STATUSES,
+  MINIMUM_SUBJECTS,
   ROLE_SET,
   TENANT_A,
   TENANT_B,
   TEST_PUSH_KEY,
+  authDenialProblems,
   authHeadersFor,
   createCapturingPublisher,
+  createCredentialCache,
+  createTestStateDir,
+  isErrorEnvelope,
   mintServiceToken,
   mintTasksInvokerToken,
   mintUserToken,
+  parsedJson,
   pushTo,
   registryPayloads,
+  roleSubjectNamed,
   testEnvelope,
   testVerifier,
-  writeTestSecrets,
+  unexpectedVerdicts,
   type InjectResponse,
   type RoleSubject,
 } from '@opt2/platform/testing';
 import { buildApp, stubEnvSchema } from '../../src/app.js';
 import {
+  NOTE_COMMENTED_SUBSCRIPTION,
+  NOTE_COMMENTED_TOPIC,
   NOTE_CREATED_SUBSCRIPTION,
   NOTE_CREATED_TOPIC,
   SITE_CHANGED_SUBSCRIPTION,
@@ -65,44 +71,28 @@ const NOTE_ROW = { note_id: NOTE_ID, title: 'Seeded note', body: 'Seeded body', 
 const NOTE_PAYLOAD = { noteId: NOTE_ID, title: NOTE_ROW.title, body: NOTE_ROW.body, created: NOTE_CREATED, rowVersion: 1 };
 const SWEEP_QUEUE = outboxSweepQueue(SERVICE);
 const NOTE_PUSH_URL = `/internal/v1/events/${NOTE_CREATED_SUBSCRIPTION}`;
+const COMMENT_PUSH_URL = `/internal/v1/events/${NOTE_COMMENTED_SUBSCRIPTION}`;
 const SITE_PUSH_URL = `/internal/v1/events/${SITE_CHANGED_SUBSCRIPTION}`;
 const NOTE_URL = `/opt2/stub/notes/${NOTE_ID}`;
 const PROJECTION_URL = `${NOTE_URL}/projection`;
+const COMMENTS_URL = `${NOTE_URL}/comments`;
+const COMMENT_PAYLOAD = { noteId: NOTE_ID, commentId: 'B1C2D3E4-F506-1728-39ABCDEF01234567', body: 'Seeded comment', created: NOTE_CREATED };
 const JSON_HEADERS = { 'content-type': 'application/json' } as const;
 const WRONG_PUSH_KEY = 'opt2-wrong-push-key';
-const DENIED_STATUSES: ReadonlySet<number> = new Set([401, 403]);
 
 const PUSH_SUBSCRIPTIONS: Readonly<Record<string, string>> = {
   [NOTE_PUSH_URL]: NOTE_CREATED_SUBSCRIPTION,
   [SITE_PUSH_URL]: SITE_CHANGED_SUBSCRIPTION,
+  [COMMENT_PUSH_URL]: NOTE_COMMENTED_SUBSCRIPTION,
 };
 
-const SYNTHETIC = [
-  'timesheets.employee',
-  'timesheets.primary-approver',
-  'timesheets.secondary-approver',
-  'finance.preparer',
-  'finance.approver',
-  'esignature.signer',
-  'esignature.auditor',
-  'reporting.exporter',
-  'surveys.manager',
-  'communications.sender',
-] as const;
-
-const SYSTEM_USERS = ['system-user', 'editor', 'site-admin', 's2', 'other-tenant', ...SYNTHETIC] as const;
+const SYSTEM_USERS = ['system-user', 'editor', 'site-admin', 's2', 'other-tenant'] as const;
 const USERS = ['member', ...SYSTEM_USERS] as const;
 const WORKLOADS = [
   'service:identity',
   'service:people',
   'service:programs-sites',
   'service:strategies-content',
-  'service:communications',
-  'service:reporting',
-  'service:surveys',
-  'service:timesheets',
-  'service:finance',
-  'service:e-signature',
   'service:stub',
   'service:gateway',
   'service:web',
@@ -112,7 +102,6 @@ const WORKLOADS = [
   'service:tasks-invoker',
 ] as const;
 const EVERYONE: readonly string[] = ['anonymous', ...USERS, ...WORKLOADS];
-const MINIMUM_SUBJECTS = ['anonymous', 'member', 'system-user', 'editor', 'site-admin', 's2', 'other-tenant'] as const;
 
 function everyoneBut(...excluded: string[]): string[] {
   return EVERYONE.filter((name) => !excluded.includes(name));
@@ -140,6 +129,9 @@ const EXPECTED: readonly ExpectedRoute[] = [
   { method: 'GET', url: '/opt2/stub/notes', transport: 'service', requires: READERS, allow: USERS },
   { method: 'GET', url: '/opt2/stub/notes/:noteId', transport: 'service', requires: READERS, allow: USERS },
   { method: 'GET', url: '/opt2/stub/notes/:noteId/projection', transport: 'service', requires: READERS, allow: USERS },
+  { method: 'POST', url: '/opt2/stub/notes/:noteId/grants', transport: 'service', requires: [Roles.systemUser], allow: SYSTEM_USERS },
+  { method: 'POST', url: '/opt2/stub/notes/:noteId/comments', transport: 'service', requires: READERS, allow: USERS },
+  { method: 'GET', url: '/opt2/stub/notes/:noteId/comments', transport: 'service', requires: READERS, allow: USERS },
   { method: 'DELETE', url: '/opt2/stub/notes/:noteId', transport: 'service', requires: [Roles.s2], allow: ['s2'] },
   { method: 'POST', url: '/internal/v1/migration/apply', transport: 'service', requires: MIGRATION_ONLY, allow: ['service:migration'] },
   { method: 'GET', url: '/internal/v1/migration/export', transport: 'service', requires: MIGRATION_ONLY, allow: ['service:migration'] },
@@ -154,6 +146,7 @@ const EXPECTED: readonly ExpectedRoute[] = [
   { method: 'POST', url: '/internal/v1/outbox/sweep', transport: 'cloud-tasks', requires: [TASKS_INVOKER_ROLE], allow: ['service:tasks-invoker'] },
   { method: 'POST', url: NOTE_PUSH_URL, transport: 'pubsub-push', requires: [PUBSUB_INVOKER_ROLE], allow: ['service:pubsub-invoker'] },
   { method: 'POST', url: SITE_PUSH_URL, transport: 'pubsub-push', requires: [PUBSUB_INVOKER_ROLE], allow: ['service:pubsub-invoker'] },
+  { method: 'POST', url: COMMENT_PUSH_URL, transport: 'pubsub-push', requires: [PUBSUB_INVOKER_ROLE], allow: ['service:pubsub-invoker'] },
 ];
 
 /** One concrete request; a subject's credentials are added when it is sent. */
@@ -234,24 +227,11 @@ function declaredRequires(method: Method, url: string): string[] | undefined {
   return route?.requires === undefined ? undefined : [...route.requires].sort();
 }
 
-function subjectNamed(name: string): RoleSubject {
-  const subject = ROLE_SET.find((candidate) => candidate.name === name);
-  if (subject === undefined) throw new TypeError(`ROLE_SET has no subject named ${name}`);
-  return subject;
-}
-
-const credentialCache = new Map<string, { mintedAt: number; headers: Promise<Record<string, string>> }>();
-
-// Tokens live 300 s; re-minting after 120 s keeps a slow run from presenting an expired one.
-const CREDENTIAL_REUSE_MS = 120_000;
+const credentialCache = createCredentialCache<Record<string, string>>();
 
 /** `authHeadersFor(subject)` on tenant-a, reused across probes while its tokens are fresh. */
 function credentialsOf(subject: RoleSubject): Promise<Record<string, string>> {
-  const cached = credentialCache.get(subject.name);
-  if (cached !== undefined && Date.now() - cached.mintedAt < CREDENTIAL_REUSE_MS) return cached.headers;
-  const headers = authHeadersFor(subject, { site: SITE_A, audience: SERVICE });
-  credentialCache.set(subject.name, { mintedAt: Date.now(), headers });
-  return headers;
+  return credentialCache(subject.name, () => authHeadersFor(subject, { site: SITE_A, audience: SERVICE }));
 }
 
 async function tasksInvokerCredentials(): Promise<Record<string, string>> {
@@ -269,8 +249,11 @@ async function invokerClaimingUserToken(): Promise<Record<string, string>> {
   return { authorization: `Bearer ${token}` };
 }
 
-/** A contract-valid envelope of the topic `subscription` consumes: the seeded tenant-a note, or the tenant-a site. */
+/** A contract-valid envelope of the topic `subscription` consumes: the seeded tenant-a note, a comment on it, or the tenant-a site. */
 function envelopeFor(subscription: string): EventEnvelope {
+  if (subscription === NOTE_COMMENTED_SUBSCRIPTION) {
+    return testEnvelope({ topic: NOTE_COMMENTED_TOPIC, tenantId: TENANT_A.tenantId, aggregateId: NOTE_ID, aggregateVersion: 2, payload: COMMENT_PAYLOAD });
+  }
   if (subscription === NOTE_CREATED_SUBSCRIPTION) {
     return testEnvelope({
       topic: NOTE_CREATED_TOPIC,
@@ -309,17 +292,19 @@ function systemTaskBody(queue: string): Record<string, unknown> {
   return { queue, name: `${queue}-${Math.floor(TEST_CLOCK.now().getTime() / 1000)}`, tenantId: null, payload: {} };
 }
 
+/** Body of each POST route's probe; other POST routes are probed with `{}`. */
+const PROBE_PAYLOADS: Readonly<Record<string, () => Record<string, unknown>>> = {
+  '/opt2/stub/notes': () => ({ title: 'Authz probe', body: 'Probe body' }),
+  '/opt2/stub/notes/:noteId/grants': () => ({ granteesiteid: TENANT_B.siteId }),
+  '/opt2/stub/notes/:noteId/comments': () => ({ grantorsiteid: SITE_A, body: 'Probe comment' }),
+  '/internal/v1/outbox/sweep': () => systemTaskBody(SWEEP_QUEUE),
+};
+
 /** The request a route's row is probed with: tenant-a note and the stub's own sweep queue in its path. */
 function probeRequest(route: ExpectedRoute): ProbeRequest {
   const url = route.url.replace(':noteId', NOTE_ID).replace(':queue', SWEEP_QUEUE);
   if (route.method !== 'POST') return { method: route.method, url };
-  const payload =
-    route.url === '/opt2/stub/notes'
-      ? { title: 'Authz probe', body: 'Probe body' }
-      : route.url === '/internal/v1/outbox/sweep'
-        ? systemTaskBody(SWEEP_QUEUE)
-        : {};
-  return { method: 'POST', url, headers: JSON_HEADERS, payload };
+  return { method: 'POST', url, headers: JSON_HEADERS, payload: PROBE_PAYLOADS[route.url]?.() ?? {} };
 }
 
 function inject(request: ProbeRequest, credentials: Record<string, string>): Promise<InjectResponse> {
@@ -359,60 +344,14 @@ async function outcomeOf(send: () => Promise<InjectResponse>): Promise<Outcome> 
   };
 }
 
-function parsedBody(body: string): unknown {
-  try {
-    return JSON.parse(body) as unknown;
-  } catch {
-    return undefined;
-  }
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/** Whether `body` is a legacy JSON API error envelope (jsonApiUtility.cfc:1318-1340); `params` is left out when the request had none. */
-function isErrorEnvelope(body: unknown): boolean {
-  if (!isRecord(body) || !isRecord(body.error) || !(body.params === undefined || isRecord(body.params))) return false;
-  const { apiversion, method, error } = body;
-  return (
-    typeof apiversion === 'string' && typeof method === 'string' && typeof error.code === 'string' && typeof error.message === 'string'
-  );
-}
-
-const DENIAL_KINDS: readonly AuthDenial[] = [
-  AuthDenial.unauthenticated('missing-credential'),
-  AuthDenial.invalidToken(),
-  AuthDenial.expiredToken(),
-  AuthDenial.forbidden(),
-];
-
-/** Every response `renderAuthDenial` gives a request with `query` at `status`. */
-function renderedDenials(status: number, query: Record<string, string>): DenialResponse[] {
-  const request = { query } as unknown as Parameters<typeof renderAuthDenial>[1];
-  return DENIAL_KINDS.filter((denial) => denial.statusCode === status).map((denial) => renderAuthDenial(denial, request));
-}
-
 /** Every way `outcome` departs from a hook-level refusal: 401 or 403, the exact rendered envelope and headers, no handler effect. */
 function denialProblems(outcome: Outcome, at: string): string[] {
-  if (!DENIED_STATUSES.has(outcome.status)) return [`${at}: expected 401 or 403, got ${outcome.status} ${outcome.body.slice(0, 160)}`];
-  const problems: string[] = [];
-  if (!isErrorEnvelope(parsedBody(outcome.body))) {
-    problems.push(`${at}: denial is not the legacy error envelope: ${outcome.body.slice(0, 160)}`);
-  }
-  const rendered = renderedDenials(outcome.status, outcome.query).find((response) => response.body === outcome.body);
-  if (rendered === undefined) {
-    problems.push(`${at}: body is not one renderAuthDenial builds: ${outcome.body.slice(0, 160)}`);
-  } else {
-    for (const [name, value] of Object.entries(rendered.headers)) {
-      const sent = outcome.headers[name.toLowerCase()];
-      if (sent !== value) problems.push(`${at}: header ${name} is ${sent}, not ${value}`);
-    }
-  }
-  if (JSON.stringify(outcome.effects) !== JSON.stringify(NO_EFFECTS)) {
-    problems.push(`${at}: denial left effects ${JSON.stringify(outcome.effects)}`);
-  }
-  return problems;
+  const effects = JSON.stringify(outcome.effects) === JSON.stringify(NO_EFFECTS) ? [] : [`denial left effects ${JSON.stringify(outcome.effects)}`];
+  return [...authDenialProblems(outcome, DENIAL_KINDS), ...effects].map((problem) => `${at}: ${problem}`);
 }
 
 
@@ -424,14 +363,6 @@ interface Cell {
   /** Whether the cell must be admitted: any status but 401 and 403. */
   allow: boolean;
   send: () => Promise<InjectResponse>;
-}
-
-/** A refused cell that expected admission, or an admitted one that expected refusal. */
-interface Mismatch {
-  method: Method;
-  url: string;
-  subject: string;
-  status: number;
 }
 
 /** Subjects that present no credential at all, which must answer 401. */
@@ -498,8 +429,6 @@ function titleOf(cell: Pick<Cell, 'method' | 'url' | 'subject'>): string {
 }
 
 const outcomes = new Map<string, Outcome>();
-const unexpectedAllows: Mismatch[] = [];
-const unexpectedDenies: Mismatch[] = [];
 
 /** Every way a probed cell departs from its expectation. */
 function verdictOf(cell: Cell): string[] {
@@ -538,7 +467,15 @@ describe('route declarations', () => {
     expect(declaredRequires('POST', '/opt2/stub/notes')).toEqual([Roles.systemUser]);
   });
 
-  it.each(['/opt2/stub/notes', '/opt2/stub/notes/:noteId', '/opt2/stub/notes/:noteId/projection'])(
+  it('POST /opt2/stub/notes/:noteId/grants requires [system-user]', () => {
+    expect(declaredRequires('POST', '/opt2/stub/notes/:noteId/grants')).toEqual([Roles.systemUser]);
+  });
+
+  it('POST /opt2/stub/notes/:noteId/comments requires member, system-user, site-admin and s2', () => {
+    expect(declaredRequires('POST', '/opt2/stub/notes/:noteId/comments')).toEqual([Roles.member, Roles.systemUser, Roles.siteAdmin, Roles.s2].sort());
+  });
+
+  it.each(['/opt2/stub/notes', '/opt2/stub/notes/:noteId', '/opt2/stub/notes/:noteId/projection', '/opt2/stub/notes/:noteId/comments'])(
     'GET %s requires member, system-user, site-admin and s2',
     (url) => {
       expect(declaredRequires('GET', url)).toEqual([Roles.member, Roles.systemUser, Roles.siteAdmin, Roles.s2].sort());
@@ -561,7 +498,7 @@ describe('route declarations', () => {
 
   it('ROLE_SET holds the minimum subjects, with other-tenant minted for another tenant', () => {
     expect(ROLE_SET.map((subject) => subject.name)).toEqual(expect.arrayContaining([...MINIMUM_SUBJECTS]));
-    expect(subjectNamed('other-tenant').crossTenant).toBe(true);
+    expect(roleSubjectNamed('other-tenant').crossTenant).toBe(true);
   });
 
   it('literal subjects equal ROLE_SET', () => {
@@ -576,20 +513,13 @@ describe('route declarations', () => {
 
 describe('route admission', () => {
   beforeAll(async () => {
-    for (const cell of CELLS) {
-      const outcome = await outcomeOf(cell.send);
-      outcomes.set(titleOf(cell), outcome);
-      const admitted = !DENIED_STATUSES.has(outcome.status);
-      const mismatch: Mismatch = { method: cell.method, url: cell.url, subject: cell.subject, status: outcome.status };
-      if (admitted && !cell.allow) unexpectedAllows.push(mismatch);
-      if (!admitted && cell.allow) unexpectedDenies.push(mismatch);
-    }
+    for (const cell of CELLS) outcomes.set(titleOf(cell), await outcomeOf(cell.send));
   }, 300_000);
 
   it('probes each route once per ROLE_SET subject and managed credential', () => {
     const titles = CELLS.map(titleOf);
     expect(new Set(titles).size).toBe(titles.length);
-    expect(EXTRA_CELLS).toHaveLength(7);
+    expect(EXTRA_CELLS).toHaveLength(10);
     expect(CELLS).toHaveLength(EXPECTED.length * ROLE_SET.length + EXTRA_CELLS.length);
   });
 
@@ -598,7 +528,8 @@ describe('route admission', () => {
   });
 
   it('zero unexpected allows and denies', () => {
-    expect({ unexpectedAllows, unexpectedDenies }).toEqual({ unexpectedAllows: [], unexpectedDenies: [] });
+    const verdicts = unexpectedVerdicts<Cell>(CELLS, { title: titleOf, admits: (cell) => cell.allow, status: (cell) => outcomes.get(titleOf(cell))?.status });
+    expect(verdicts).toEqual({ unexpectedAllows: [], unexpectedDenies: [] });
   });
 });
 
@@ -671,11 +602,11 @@ describe('tenant visibility', () => {
 
   /** Status, parsed body and transaction tenants of one GET on the visibility app. */
   async function readAs(subject: string, url: string): Promise<{ status: number; body: unknown; tenants: string[] }> {
-    const headers = await credentialsOf(subjectNamed(subject));
+    const headers = await credentialsOf(roleSubjectNamed(subject));
     v.db.clear();
     const res = await v.app.inject({ method: 'GET', url, headers });
     const tenants = new Set(v.db.queries.flatMap((query) => (query.tenantId === null ? [] : [query.tenantId.toLowerCase()])));
-    return { status: res.statusCode, body: parsedBody(res.body), tenants: [...tenants] };
+    return { status: res.statusCode, body: parsedJson(res.body), tenants: [...tenants] };
   }
 
   it.each([NOTE_URL, PROJECTION_URL])('GET %s as site-admin', async (url) => {
@@ -684,7 +615,7 @@ describe('tenant visibility', () => {
     expect(dataOf(read.body)).toMatchObject({ noteid: NOTE_ID });
   });
 
-  it.each([NOTE_URL, PROJECTION_URL])('GET %s as other-tenant', async (url) => {
+  it.each([NOTE_URL, PROJECTION_URL, COMMENTS_URL])('GET %s as other-tenant', async (url) => {
     const read = await readAs('other-tenant', url);
     expect({ status: read.status, envelope: isErrorEnvelope(read.body), tenants: read.tenants }).toEqual({
       status: 404,
@@ -714,7 +645,7 @@ describe('transport separation', () => {
   });
 
   const CASES: ReadonlyArray<{ title: string; request: () => ProbeRequest; credentials: () => Promise<Record<string, string>> }> = [
-    ...[NOTE_CREATED_SUBSCRIPTION, SITE_CHANGED_SUBSCRIPTION].flatMap((subscription) => [
+    ...[NOTE_CREATED_SUBSCRIPTION, SITE_CHANGED_SUBSCRIPTION, NOTE_COMMENTED_SUBSCRIPTION].flatMap((subscription) => [
       { title: `user token on push ${subscription}`, request: () => pushRequest(subscription), credentials: invokerClaimingUserToken },
       {
         title: `pubsub-invoker service token on push ${subscription}`,
@@ -756,10 +687,9 @@ describe('transport separation', () => {
 describe('deny by default at start-up', () => {
   /** Builds a not-yet-ready stub app, lets `declare` add a route and awaits `ready`; the app and its state directory are always removed. */
   async function startWith(declare: (app: FastifyInstance) => unknown): Promise<void> {
-    const stateDir = await mkdtemp(path.join(tmpdir(), 'opt2-stub-authz-'));
+    const stateDir = await createTestStateDir('opt2-stub-authz-');
     let app: FastifyInstance | undefined;
     try {
-      await writeTestSecrets(stateDir);
       app = await buildApp({
         env: loadEnv(stubEnvSchema, testEnv({ OPT2_STATE_DIR: stateDir })),
         clock: TEST_CLOCK,

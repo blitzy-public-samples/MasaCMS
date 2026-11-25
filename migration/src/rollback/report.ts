@@ -198,11 +198,11 @@ const ACCEPTED: ReadonlySet<string> = new Set(['pass', 'excepted', 'known-issue'
 const SCENARIO_LABELS: Readonly<Record<string, string>> = {
   'GS-PE-RH-01': 'roster create',
   'GS-PE-RH-02': 'roster edit',
-  'GS-PE-RH-03': 'archive → blackout',
+  'GS-PE-RH-03': 'roster archive',
   [SESSION_SCENARIO]: `session step across \`${ROLLBACK_VERSION}\` activation`,
 };
 const UNMET_ARCHIVE_LEG =
-  'the rehearsal covers create and edit only; the archive-to-blackout leg (GS-PE-RH-03) is unmet (AAP 0.7.6).';
+  'the rehearsal covers create and edit only; the archive leg (GS-PE-RH-03) is unmet (AAP 0.7.6).';
 
 function oneLine(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
@@ -438,7 +438,7 @@ function groupSection({ set, groupDetails }: RollbackReportInput): string[] {
     '',
     'Computed by `opt2-migrate rollback-set` from `gateway/cutover/groups.json`: every group containing ' +
       '`cusers.update{type=2,action=Add}`, `cusers.update{type=2,action=Update}`, the fixture archive route ' +
-      '`people/persons/{userId}/archive`, or the units `people.person_archive`, `timesheets.blackout`. Also recorded in ' +
+      '`people/persons/{userId}/archive`, or the unit `people.person_archive`. Also recorded in ' +
       `\`gateway/cutover/versions/${ROLLBACK_VERSION}.json\` \`rollbackRefs\`.`,
   ];
 }
@@ -494,15 +494,8 @@ function stepsSection(input: RollbackReportInput): string[] {
   // Rows keep the committed report's runbook steps; each transition step folds into the row whose work it performs.
   const steps: [label: string, cells: StepCells][] = [
     ["Quiesce writers of `R`'s units", transitionCells(transition, ['transition-set', 'stop-new-work', 'confirm-inflight-finished'])],
-    [
-      'Drain the people outbox and the timesheets consumer (`people.person.archived.v1`)',
-      transitionCells(transition, ['drain-effects']),
-    ],
-    [
-      "Project `R`'s units to completion, including `timesheets.blackout` → `Program_N.blackout` and " +
-        '`identity.credential` → `tusers.Password`',
-      projectionCells(transition, reconciliation.before),
-    ],
+    ['Drain the people outbox (`people.person.archived.v1`)', transitionCells(transition, ['drain-effects'])],
+    ["Project `R`'s units to completion, including `identity.credential` → `tusers.Password`", projectionCells(transition, reconciliation.before)],
     [`Reconcile \`R\` → \`${RECONCILIATION_REPORTS.before}\``, reconciliationCells(reconciliation.before)],
     [`Activate \`${ROLLBACK_VERSION}\` and unfreeze`, transitionCells(transition, ['activate', 'hand-off-and-reopen'])],
     ["Re-baseline: fresh snapshot, forward feed restarted for `R`'s units", rebaselineCells(input.rebaseline)],
@@ -567,7 +560,7 @@ function fixturesLine(fixtures: FixtureStatus | undefined): string {
     const reason = fixtures.reason === undefined ? '' : ` (${oneLine(fixtures.reason)})`;
     return `Fixtures unavailable${reason}: ${UNMET_ARCHIVE_LEG}`;
   }
-  return 'Fixtures available: the rehearsal covers create, edit and the archive-to-blackout leg (GS-PE-RH-03).';
+  return 'Fixtures available: the rehearsal covers create, edit and the archive leg (GS-PE-RH-03).';
 }
 
 function replaySection(input: RollbackReportInput): string[] {

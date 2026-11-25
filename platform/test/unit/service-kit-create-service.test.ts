@@ -300,7 +300,7 @@ describe('createService options', () => {
         const response = await app.opt2.client.request({ service, method: 'GET', path: `/${service}` });
         expect(response).toMatchObject({ status: 200, body: { ok: true } });
       }
-      await expect(app.opt2.client.request({ service: 'finance', method: 'GET', path: '/' })).rejects.toBeInstanceOf(
+      await expect(app.opt2.client.request({ service: 'programs-sites', method: 'GET', path: '/' })).rejects.toBeInstanceOf(
         UnknownServiceError,
       );
       expect(received).toStrictEqual([
@@ -445,9 +445,9 @@ describe('no-case path prefixes', () => {
 
 describe('legacy fixture paths', () => {
   const API = '/legacy-fixtures/cfml/api.cfm';
-  const LIST = `${API}/surveys/surveys`;
-  const RESPONSES = `${API}/surveys/surveys/:id/responses`;
-  const TARGETS = `${API}/surveys/surveys/:id/targets/:tail`;
+  const LIST = `${API}/people/persons`;
+  const RESPONSES = `${API}/people/persons/:id/addresses`;
+  const TARGETS = `${API}/people/persons/:id/addresses/:tail`;
   const ARCHIVE = `${API}/people/persons/:id/archive`;
   const SITEMONITOR = '/_api/sitemonitor*';
   const CATCH_ALL = '/*';
@@ -469,38 +469,38 @@ describe('legacy fixture paths', () => {
   }
 
   it.each([
-    [`${API}/Surveys/SURVEYS?siteid=Tenant-A&X=%41`, LIST, `${API}/surveys/surveys?siteid=Tenant-A&X=%41`],
-    [`${API}/SURVEYS/Surveys/`, LIST, `${API}/surveys/surveys/`],
-    [`${API}/%53URVEYS/sur%76EYS`, LIST, `${API}/surveys/surveys`],
-    [`${API}/SURVEYS/surveys/AbCd-Id/RESPONSES`, RESPONSES, `${API}/surveys/surveys/AbCd-Id/responses`],
-    [`${API}/surveys/surveys/%41b%2Fc/Responses?Q=%2F`, RESPONSES, `${API}/surveys/surveys/%41b%2Fc/responses?Q=%2F`],
-    [`${API}/surveys/surveys/AbCd-Id/Targets/BULK`, TARGETS, `${API}/surveys/surveys/AbCd-Id/targets/bulk`],
-    [`${API}/surveys/surveys/X/Targets/Not%2DA%20UUID`, TARGETS, `${API}/surveys/surveys/X/targets/not-a%20uuid`],
-    [`${API}/surveys/surveys/X/Targets/${MIXED_UUID}`, TARGETS, `${API}/surveys/surveys/X/targets/${MIXED_UUID}`],
+    [`${API}/People/PERSONS?siteid=Tenant-A&X=%41`, LIST, `${API}/people/persons?siteid=Tenant-A&X=%41`],
+    [`${API}/PEOPLE/Persons/`, LIST, `${API}/people/persons/`],
+    [`${API}/%50EOPLE/per%73ONS`, LIST, `${API}/people/persons`],
+    [`${API}/PEOPLE/persons/AbCd-Id/ADDRESSES`, RESPONSES, `${API}/people/persons/AbCd-Id/addresses`],
+    [`${API}/people/persons/%41b%2Fc/Addresses?Q=%2F`, RESPONSES, `${API}/people/persons/%41b%2Fc/addresses?Q=%2F`],
+    [`${API}/people/persons/AbCd-Id/Addresses/BULK`, TARGETS, `${API}/people/persons/AbCd-Id/addresses/bulk`],
+    [`${API}/people/persons/X/Addresses/Not%2DA%20UUID`, TARGETS, `${API}/people/persons/X/addresses/not-a%20uuid`],
+    [`${API}/people/persons/X/Addresses/${MIXED_UUID}`, TARGETS, `${API}/people/persons/X/addresses/${MIXED_UUID}`],
     [`${API}/People/PERSONS/AbC/Archive/`, ARCHIVE, `${API}/people/persons/AbC/archive/`],
   ])('routes %s under %s as %s', async (url, route, rewritten) => {
     expect(await routed(await probed(), url)).toStrictEqual({ route, url: rewritten });
   });
 
   it.each([
-    ['a prefix in another case', '/LEGACY-FIXTURES/cfml/api.cfm/Surveys/surveys'],
-    ['another front-controller case', '/legacy-fixtures/cfml/API.cfm/Surveys/surveys'],
-    ['one segment', `${API}/Surveys/`],
-    ['six segments', `${API}/Surveys/surveys/X/Targets/BULK/Y`],
-    ['no path info', `${API}?Surveys/SURVEYS`],
+    ['a prefix in another case', '/LEGACY-FIXTURES/cfml/api.cfm/People/persons'],
+    ['another front-controller case', '/legacy-fixtures/cfml/API.cfm/People/persons'],
+    ['one segment', `${API}/People/`],
+    ['six segments', `${API}/People/persons/X/Addresses/BULK/Y`],
+    ['no path info', `${API}?People/PERSONS`],
   ])('leaves %s as sent: %s', async (_label, url) => {
     expect(await routed(await probed(), url)).toStrictEqual({ route: CATCH_ALL, url });
   });
 
   it.each([{}, { legacyFixturePaths: false }])('keeps fixture paths case-sensitive with %j', async (overrides) => {
     const app = await probed(overrides);
-    expect(await routed(app, `${API}/Surveys/SURVEYS`)).toStrictEqual({ route: CATCH_ALL, url: `${API}/Surveys/SURVEYS` });
+    expect(await routed(app, `${API}/People/PERSONS`)).toStrictEqual({ route: CATCH_ALL, url: `${API}/People/PERSONS` });
     expect(await routed(app, LIST)).toStrictEqual({ route: LIST, url: LIST });
   });
 
   it('rewrites fixture paths and no-case prefixes in one service', async () => {
     const app = await probed({ legacyFixturePaths: true, noCasePathPrefixes: ['/_api/sitemonitor'] });
-    expect(await routed(app, `${API}/Surveys/SURVEYS`)).toStrictEqual({ route: LIST, url: LIST });
+    expect(await routed(app, `${API}/People/PERSONS`)).toStrictEqual({ route: LIST, url: LIST });
     expect(await routed(app, '/_API/SiteMonitor?siteid=X')).toStrictEqual({ route: SITEMONITOR, url: '/_api/sitemonitor?siteid=X' });
   });
 });
@@ -731,7 +731,7 @@ describe('legacy error mapping', () => {
   it.each([
     {
       surface: 'API',
-      path: '/legacy-fixtures/cfml/api.cfm/timesheets/sheets',
+      path: '/legacy-fixtures/cfml/api.cfm/people/persons',
       contentType: LEGACY_JSON_CONTENT_TYPE,
       read: (body: string): unknown => JSON.parse(body),
       expected: { apiversion: 'v1', method: 'save', error: { code: 'server_error', message: 'Unhandled Exception' } },
@@ -1558,7 +1558,7 @@ describe('legacy script protection of params', () => {
 
   it.each([
     ['GET', '/_api/json/v1/default/echo?q=null', undefined],
-    ['GET', '/legacy-fixtures/cfml/api.cfm/finance/records?amp;-=1', undefined],
+    ['GET', '/legacy-fixtures/cfml/api.cfm/people/persons?amp;-=1', undefined],
     ['POST', '/tasks/echo', 'comment=%5B1%2C%5Bnull%5D%5D'],
   ])('answers %s %s with the legacy error page when the scan fails on a root-served path', async (method, url, payload) => {
     const { app, lines, handled } = await echo(url.split('?')[0]);
@@ -1577,7 +1577,7 @@ describe('legacy script protection of params', () => {
   });
 
   it.each([
-    ['GET', '/legacy-fixtures/cfml/api.cfm/finance/records?q=null', undefined, { q: 'null' }],
+    ['GET', '/legacy-fixtures/cfml/api.cfm/people/persons?q=null', undefined, { q: 'null' }],
     ['POST', '/tasks/echo', 'comment=%5B1%2C%5Bnull%5D%5D', { comment: '[1,[null]]' }],
   ])('passes %s %s to the route with legacyStartupScan false', async (method, url, payload, params) => {
     const { app, lines, handled } = await echo(url.split('?')[0], { legacyStartupScan: false });
@@ -1730,7 +1730,7 @@ describe('legacy script protection of params', () => {
     expect(handled()).toBe(0);
   });
 
-  it.each(['/v1/groups', '/v2/finance/rollups', '/internal/v1/lookup', '/opt2/files/b/t/o', '/.well-known/jwks.json', '/admin/x', '/_apix', '/index.cfmx', '/tasksx/y', '/legacy-fixturesx'])(
+  it.each(['/v1/groups', '/v2/people/rollups', '/internal/v1/lookup', '/opt2/files/b/t/o', '/.well-known/jwks.json', '/admin/x', '/_apix', '/index.cfmx', '/tasksx/y', '/legacy-fixturesx'])(
     'passes a failed scan on the target-native or unlisted path %s to the route',
     async (route) => {
       const { app, handled } = await echo(route);
@@ -2389,12 +2389,12 @@ describe('requests whose outbox publish was incomplete', () => {
 });
 
 describe('HTTP server span name', () => {
-  const ROUTE = '/v1/surveys/:surveyId/tasks';
+  const ROUTE = '/v1/items/:itemId/tasks';
 
   it.each([
-    { label: 'a matched route', url: '/v1/surveys/S-1/tasks', headers: AUTHENTICATED, status: 200, name: `GET ${ROUTE}` },
-    { label: 'a denied request on a declared route', url: '/v1/surveys/S-2/tasks', headers: {}, status: 401, name: `GET ${ROUTE}` },
-    { label: 'an unmatched path', url: '/v1/surveys/S-3', headers: {}, status: 404, name: 'GET' },
+    { label: 'a matched route', url: '/v1/items/S-1/tasks', headers: AUTHENTICATED, status: 200, name: `GET ${ROUTE}` },
+    { label: 'a denied request on a declared route', url: '/v1/items/S-2/tasks', headers: {}, status: 401, name: `GET ${ROUTE}` },
+    { label: 'an unmatched path', url: '/v1/items/S-3', headers: {}, status: 404, name: 'GET' },
   ])('is "$name" for $label on a real socket', async ({ url, headers, status, name }) => {
     const exporter = new MemorySpanExporter();
     await startTracing({ serviceName: 'people', version: '1.0.0', exporter });

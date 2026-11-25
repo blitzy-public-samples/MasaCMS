@@ -30,34 +30,6 @@ writers:
     preventedBy: native-sitemonitor-task
     reason: "The ACF scheduler, not an inventoried request, calls the /_api/sitemonitor handler, so the extractor cannot give its steps a scheduler trigger."
 
-  - id: wov:fixture-survey-tasks
-    tables: [synthetic.survey, synthetic.survey_reminder]
-    component: legacy-fixtures/cfml/modules/surveys.cfc
-    method: handle
-    op: update
-    source: {path: legacy-fixtures/cfml/modules/surveys.cfc, lines: [37, 42]}
-    routeKeys: ["fixture:surveys/surveys/{id}/launch@get", "fixture:surveys/surveys/{id}/remind@get"]
-    keyScope: [id]
-    trigger: scheduler
-    sessionEffects: none
-    condition: "the opt2-survey-<id>-launch and opt2-survey-<id>-reminder-<n> cfschedule tasks that scheduleSurvey creates (surveys.cfc:174-190) call launchCallback (379-388, survey status and launched_at) and remindCallback (390-417, reminder sent_at) with the survey's task credential"
-    preventedBy: fixture-survey-tasks
-    reason: "ACF tasks the fixture registers at run time issue these requests, so no inventoried entry point carries their scheduler trigger."
-
-  - id: wov:fixture-export-threads
-    tables: [synthetic.export_job]
-    component: legacy-fixtures/cfml/modules/reporting.cfc
-    method: createExport
-    op: update
-    source: {path: legacy-fixtures/cfml/modules/reporting.cfc, lines: [84, 90]}
-    routeKeys: ["fixture:reporting/exports@post"]
-    keyScope: table
-    trigger: thread
-    sessionEffects: none
-    condition: "the opt2-export-<jobId> cfthread runs runExport (reporting.cfc:136-175), which moves the job to running and then done or failed only through synthetic.usp_export_job_transition"
-    preventedBy: fixture-export-threads
-    reason: "The writes run in a cfthread that outlives the request that queued the job, so that request's closure cannot carry them."
-
   - id: wov:startup-url-conversion
     tables: [tcontent]
     columns: [Body, Filename, urltitle]
@@ -2419,43 +2391,19 @@ settledCalls:
     reason: "ioFile is the java.io.File the pseudo-constructor creates (core/mura/Zip.cfc:53); DeleteFiles removes the bundle backup archive it rewrites and its .temp copy under the bundle backup directory (core/mura/settings/settingsBundle.cfc:374, 379), writing no table and no stored file."
 
   - id: wov:fixture-auth-session-facade
-    source: {path: legacy-fixtures/cfml/lib/auth.cfc, lines: [22, 22]}
+    source: {path: legacy-fixtures/cfml/lib/auth.cfc, lines: [10, 10]}
     calls: ["new mura.user.sessionUserFacade"]
     resolution: non-write
     reason: "sessionUserFacade.init only takes the session through cfobject.getSession, which seeds a logged-out session.mura when none exists (core/mura/user/sessionUserFacade.cfc:43-46, core/mura/cfobject.cfc:419-460); the facade methods auth.cfc calls read session.mura and the registered request.siteid site (sessionUserFacade.cfc:48-62, 109-176, core/mura/permission.cfc:671-699), and validateCSRFTokens only marks the token used in session.mura.csrfusedtokens (sessionUserFacade.cfc:206-235), so no table is written and the login state never changes."
 
-  - id: wov:fixture-auth-program-query-attrs
-    source: {path: legacy-fixtures/cfml/lib/auth.cfc, lines: [46, 46]}
-    calls: [application.configBean.getReadOnlyQRYAttrs]
-    resolution: non-write
-    reason: "configBean.getReadOnlyQRYAttrs (core/mura/configBean.cfc:1833-1853) only returns the read-only datasource attributes the SELECT on synthetic.program_site at legacy-fixtures/cfml/lib/auth.cfc:43-47 runs with."
-
   - id: wov:fixture-auth-csrf-masa-scope
-    source: {path: legacy-fixtures/cfml/lib/auth.cfc, lines: [109, 113]}
+    source: {path: legacy-fixtures/cfml/lib/auth.cfc, lines: [54, 58]}
     calls: ["createObject(\"component\", \"mura.MasaScope\").init"]
     resolution: non-write
     reason: "MasaScope.init builds an in-memory mura.event from the struct, form and url (core/mura/MasaScope.cfc:82-99, core/mura/event.cfc:82-102); the empty siteid skips loadSiteRelatedObjects (event.cfc:96-97), the only path to a write, so it just fetches the contentRenderer singleton start-up created (core/appcfc/onApplicationStart_include.cfm:495-501)."
 
-  - id: wov:fixture-auth-member-public-pool
-    source: {path: legacy-fixtures/cfml/lib/auth.cfc, lines: [131, 131]}
-    calls: [application.settingsManager.getSite, "application.settingsManager.getSite(request.siteid).getPublicUserPoolID"]
-    resolution: non-write
-    reason: "request.siteid is the registered key resolveSite sets after siteExists (legacy-fixtures/cfml/lib/auth.cfc:35-38), which api.cfm:105 runs before any module handler, so getSite returns it from the registry (core/mura/settings/settingsManager.cfc:545-546) without the site load of 547-555, and the pool getter reads the settings bean's instance value (core/mura/bean/bean.cfc:168-172, core/mura/bean/beanExtendable.cfc:256-257)."
-
-  - id: wov:fixture-esignature-pool-user
-    source: {path: legacy-fixtures/cfml/modules/esignature.cfc, lines: [278, 284]}
-    calls: [application.settingsManager.getSite, application.userManager.read, local.user.getIsNew, local.user.getType, local.site.getPublicUserPoolID, local.site.getPrivateUserPoolID, local.user.getSiteID, local.user.getUserID]
-    resolution: non-write
-    reason: "siteid is route.siteid (legacy-fixtures/cfml/modules/esignature.cfc:75), the registered key auth.resolveSite returns (auth.cfc:35-38, api.cfm:105), and the stored pool siteid userBean.set looks up names a registered site too (core/mura/user/userBean.cfc:227-239), so getSite skips the site load of core/mura/settings/settingsManager.cfc:547-555, the only write path userManager.read reaches; read otherwise SELECTs tusers, tfiles, tusersmemb and tusersinterests or copies the in-memory data cache (core/mura/user/userManager.cfc:158-194, core/mura/user/userDAO.cfc:92-121, 632-644, 674-682, 924-933), and the getters read bean instance values (core/mura/bean/bean.cfc:168-172, core/mura/bean/beanExtendable.cfc:256-257, core/mura/user/userBean.cfc:266-271)."
-
   - id: wov:fixture-people-require-person
-    source: {path: legacy-fixtures/cfml/modules/people.cfc, lines: [80, 85]}
+    source: {path: legacy-fixtures/cfml/modules/people.cfc, lines: [75, 80]}
     calls: [application.userManager.read, application.settingsManager.getSite, local.user.getIsNew, local.user.getType, local.user.getSiteID, local.site.getPublicUserPoolID, local.site.getPrivateUserPoolID]
     resolution: non-write
-    reason: "route.siteid is the registered key auth.resolveSite returns (legacy-fixtures/cfml/lib/auth.cfc:35-38, api.cfm:105), and the stored pool siteid userBean.set looks up names a registered site too (core/mura/user/userBean.cfc:227-239), so getSite skips the site load of core/mura/settings/settingsManager.cfc:547-555, the only write path userManager.read reaches; read otherwise SELECTs tusers, tfiles, tusersmemb and tusersinterests or copies the in-memory data cache (core/mura/user/userManager.cfc:158-194, core/mura/user/userDAO.cfc:92-121, 632-644, 674-682, 924-933), and the getters read bean instance values (core/mura/bean/bean.cfc:168-172, core/mura/bean/beanExtendable.cfc:256-257)."
-
-  - id: wov:fixture-surveys-target-sites
-    source: {path: legacy-fixtures/cfml/modules/surveys.cfc, lines: [274, 279]}
-    calls: [application.settingsManager.siteExists, application.settingsManager.getSite, "application.settingsManager.getSite(local.target.siteID).getSiteID"]
-    resolution: non-write
-    reason: "siteExists only tests the registry key (core/mura/settings/settingsManager.cfc:568-572) and legacy-fixtures/cfml/modules/surveys.cfc:276 raises for an unknown site, so getSite at 279 returns the registered bean (settingsManager.cfc:545-546) without the site load of 547-555, and getSiteID reads its instance value (core/mura/bean/bean.cfc:168-172, core/mura/bean/beanExtendable.cfc:256-257)."
+    reason: "route.siteid is the registered key auth.resolveSite returns (legacy-fixtures/cfml/lib/auth.cfc:23-26, api.cfm:105), and the stored pool siteid userBean.set looks up names a registered site too (core/mura/user/userBean.cfc:227-239), so getSite skips the site load of core/mura/settings/settingsManager.cfc:547-555, the only write path userManager.read reaches; read otherwise SELECTs tusers, tfiles, tusersmemb and tusersinterests or copies the in-memory data cache (core/mura/user/userManager.cfc:158-194, core/mura/user/userDAO.cfc:92-121, 632-644, 674-682, 924-933), and the getters read bean instance values (core/mura/bean/bean.cfc:168-172, core/mura/bean/beanExtendable.cfc:256-257)."

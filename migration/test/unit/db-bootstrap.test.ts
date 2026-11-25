@@ -329,7 +329,7 @@ describe('statements of every configured schema', () => {
     ['local', LOCAL],
     ['cloud', { kind: 'cloud' }],
   ])('grant no %s service role SUPERUSER, BYPASSRLS, CREATEROLE, owner membership or DDL', (_target, mode) => {
-    expect(chains).toHaveLength(13);
+    expect(chains).toHaveLength(7);
     for (const roles of chains) {
       const statements = [
         ...createRolesSql(roles, mode),

@@ -134,30 +134,13 @@ function probeObjects(): ProbeObject[] {
   });
 }
 
-const SURVEYS_API = '/legacy-fixtures/cfml/api.cfm/surveys/surveys';
-const SIGNATURE_API = '/legacy-fixtures/cfml/api.cfm/esignature/requests';
-const FIXTURE_GATE = 'the fixture handler requires a login (else 401) holding an admitted role group (else 403)';
-
 /** Gates that admit fewer subjects than their routes declare; each turns a declared allow of any other subject into a deny. */
 const EDGE_GATES: readonly EdgeGate[] = [
   {
     package: 'stub',
-    routes: ['', '/:noteId', '/:noteId/projection'].map((tail) => `GET /opt2/stub/notes${tail}`),
+    routes: ['', '/:noteId', '/:noteId/projection', '/:noteId/comments'].map((tail) => `GET /opt2/stub/notes${tail}`),
     admits: [Roles.s2, 'editor'],
     because: "a path-only probe names no site, so its token is the default site's, where only s2 and editor hold roles",
-  },
-  {
-    package: 'surveys',
-    routes: ['', '/:id', '/:id/responses', '/:id/tasks'].map((tail) => `GET ${SURVEYS_API}${tail}`),
-    admits: [Roles.surveysManager],
-    because: FIXTURE_GATE,
-  },
-  { package: 'e-signature', routes: [`GET ${SIGNATURE_API}`], admits: [Roles.esignatureSigner], because: FIXTURE_GATE },
-  {
-    package: 'e-signature',
-    routes: [`GET ${SIGNATURE_API}/:id/audit`, `GET ${SIGNATURE_API}/:id/verify`],
-    admits: [Roles.esignatureSigner, Roles.esignatureAuditor],
-    because: FIXTURE_GATE,
   },
 ];
 

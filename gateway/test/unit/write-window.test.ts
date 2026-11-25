@@ -17,10 +17,11 @@ import type { OpenBehaviour } from '../helpers/migration-double.js';
 import { cutoverTable, entry } from '../helpers/versions.js';
 
 const SAVE_RATE = 'page:saverate';
-const TRACK_OPEN = 'trackopen:open';
+const FAVORITE_DELETE = 'cfm:/core/modules/v1/favorites/ajax/deleterssfavorite.cfm';
+const SAVE_FORM = 'page:saveform';
 const RATING_UNIT = 'content.content_rating';
-const EMAIL_STAT_UNIT = 'communications.email_stat';
-const MAILING_UNIT = 'communications.mailing_list_member';
+const FAVORITE_UNIT = 'people.user_favorite';
+const FORM_UNIT = 'content.form_response_packet';
 const OPEN_PATH = '/internal/v1/windows';
 const NO_FACTS: InventoryFacts = { get: () => undefined, routes: () => [] };
 
@@ -29,17 +30,17 @@ const TABLE = cutoverTable({
   tableVersion: 'v0101',
   entries: [
     entry({ route: SAVE_RATE, owningService: 'strategies-content', kind: 'legacy-write', units: [RATING_UNIT], disposition: 'legacy-served' }),
-    entry({ route: TRACK_OPEN, owningService: 'communications', kind: 'legacy-write', units: [EMAIL_STAT_UNIT], disposition: 'legacy-served' }),
-    entry({ route: 'page:subscribe', owningService: 'communications', kind: 'legacy-write', units: [MAILING_UNIT], disposition: 'legacy-served' }),
+    entry({ route: FAVORITE_DELETE, owningService: 'people', kind: 'legacy-write', units: [FAVORITE_UNIT], disposition: 'legacy-served' }),
+    entry({ route: SAVE_FORM, owningService: 'strategies-content', kind: 'legacy-write', units: [FORM_UNIT], disposition: 'legacy-served' }),
   ],
-  groupAuthority: { [`grp:${RATING_UNIT}`]: 'target', [`grp:${EMAIL_STAT_UNIT}`]: 'target', [`grp:${MAILING_UNIT}`]: 'legacy' },
+  groupAuthority: { [`grp:${RATING_UNIT}`]: 'target', [`grp:${FAVORITE_UNIT}`]: 'target', [`grp:${FORM_UNIT}`]: 'legacy' },
 });
 
 /** Form of a rating POST; the inventory scopes `page:saverate` writes by the whole table. */
 const RATE_FORM = { doaction: 'saveRate', siteid: 'tenant-a', contentid: 'C1', userid: 'U1', rate: '5' };
 
-/** An email-open tracking request; the inventory scopes `trackopen:open` writes by the email address. */
-const TRACK_OPEN_URL = '/index.cfm/_api/email/trackopen?emailid=E1&email=member%40example.com';
+/** A favorite delete; the inventory scopes its writes by the user and site. */
+const FAVORITE_URL = '/core/modules/v1/favorites/ajax/deleterssfavorite.cfm?siteid=tenant-a&userid=U1&favoriteid=F1';
 
 const CONTENT_UNIT = 'content.content';
 const TARGETING_UNIT = 'content.variation_targeting';
@@ -133,23 +134,23 @@ describe('legacy-write dispatch through the gateway', () => {
   it('opens one window, with the route key, target units and request scope, only when a unit is target-authoritative', async () => {
     const gw = await start();
 
-    const unwindowed = await post(gw, { doaction: 'subscribe', email: 'member@example.com' }, 'req-subscribe');
+    const unwindowed = await post(gw, { doaction: 'saveform', siteid: 'tenant-a' }, 'req-saveform');
     expect(unwindowed.statusCode).toBe(200);
     expect(gw.legacy.requests).toHaveLength(1);
     expect(gw.migration.requests).toEqual([]);
 
     const windowed = await post(gw, RATE_FORM, 'req-rate');
     expect(windowed.statusCode).toBe(200);
-    const keyed = await gw.app.inject({ method: 'GET', url: TRACK_OPEN_URL, headers: { 'x-request-id': 'req-open' } });
+    const keyed = await gw.app.inject({ method: 'GET', url: FAVORITE_URL, headers: { 'x-request-id': 'req-favorite' } });
     expect(keyed.statusCode).toBe(200);
     expect(gw.legacy.requests).toHaveLength(3);
     expect(gw.migration.windows).toEqual([
       expect.objectContaining({ routeKey: SAVE_RATE, units: [RATING_UNIT], scope: { table: true }, requestId: 'req-rate' }),
       expect.objectContaining({
-        routeKey: TRACK_OPEN,
-        units: [EMAIL_STAT_UNIT],
-        scope: { keys: { email: 'member@example.com' } },
-        requestId: 'req-open',
+        routeKey: FAVORITE_DELETE,
+        units: [FAVORITE_UNIT],
+        scope: { keys: { siteid: 'tenant-a', userid: 'U1' } },
+        requestId: 'req-favorite',
       }),
     ]);
   });
@@ -362,7 +363,7 @@ describe('legacy-write dispatch through the gateway', () => {
     expect(inflightRows(gw)).toEqual([]);
   });
 
-  it.each(['/opt2/admin/communications/x', '/v1/surveys/x'])(
+  it.each(['/opt2/unmatched/x'])(
     'opens the window of the legacy entry point that serves the unmatched OPT-2 namespace path %s',
     async (url) => {
       const gw = await start();

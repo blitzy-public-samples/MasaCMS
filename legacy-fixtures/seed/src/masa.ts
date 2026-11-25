@@ -1,7 +1,6 @@
 // SYNTHETIC: seed - no Masa equivalent; legacy oracle in legacy-fixtures/
-import { Roles, SYNTHETIC_ROLES, type Role } from '@opt2/platform/auth';
 import { pdfBytes, pngBytes, sha256Hex, toBase64 } from './bytes.js';
-import { SITE_ORDER, roleGroupName, type SeedConfig, type SiteKey } from './config.js';
+import { SITE_ORDER, type SeedConfig, type SiteKey } from './config.js';
 import { printable } from './errors.js';
 import { MASA_DEFAULT_MODULE_ID, MASA_FORMS_MODULE_ID, MASA_HOME_CONTENT_ID, cfUuidFrom } from './ids.js';
 import type { SeedRandom } from './random.js';
@@ -13,7 +12,6 @@ export interface SiteRow {
   site: string;
   domain: string;
   domainAlias: string;
-  programId: number | null;
   orderNo: number;
   publicUserPoolID: SiteKey;
   privateUserPoolID: SiteKey;
@@ -210,6 +208,9 @@ export interface MasaData {
   comments: CommentRow[];
 }
 
+/** Seeded role a private-pool account holds. */
+export type SeedRole = 'site-admin' | 'system-user';
+
 /** Lookups over a `MasaData`, generated or read back from disk. */
 export interface MasaIndex {
   /** Site row; throws `RangeError` for an unknown site. */
@@ -226,12 +227,10 @@ export interface MasaIndex {
   groups(siteID: SiteKey): readonly GroupRow[];
   /** UserIDs of group `groupname` stored in `siteID`, in membership order. */
   membersOf(siteID: SiteKey, groupname: string): readonly string[];
-  /** First private-pool user holding exactly the role's group, or no group for `system-user`; throws `RangeError` when absent. */
-  roleUser(siteID: SiteKey, role: Role | 'site-admin' | 'system-user'): UserRow;
+  /** First private-pool user holding exactly the `Admin` group for `site-admin`, or no group for `system-user`; throws `RangeError` when absent. */
+  roleUser(siteID: SiteKey, role: SeedRole): UserRow;
   /** First member stored in `siteID`; throws `RangeError` when none is. */
   memberUser(siteID: SiteKey): UserRow;
-  /** UserIDs in the role's group of the site's private pool; reserved persons only for `timesheets.employee`. */
-  actors(siteID: SiteKey, role: Role): readonly string[];
   /** Whether `userID` is a reserved rehearsal person. */
   isReserved(userID: string): boolean;
   /** Account connected to the site's first OAuth client; throws `RangeError` when the site has none. */
@@ -249,8 +248,8 @@ const OAUTH_CLIENT_DESCRIPTION = 'Seeded client_credentials client for the REST 
 const LOOPBACK_HOST = 'localhost';
 // Column widths of core/setup/db/mssql.sql.
 const MAX = { site: 50, person: 50, wide: 255, title: 255, category: 50, filename: 200 } as const;
-// Members of each role group other than `timesheets.employee`, whose size is `counts.timesheetEmployees`.
-const ROLE_GROUP_SIZE: Readonly<Record<SiteKey, number>> = { umbrella: 0, 'tenant-a': 5, 'tenant-b': 3 };
+// Group and system-user slots of the retired role groups, drawn and discarded so every other row keeps its seeded values.
+const RETIRED_ROLE_SLOTS = 10;
 const FOLDER_SHARE = 0.02;
 const CATEGORIES_PER_TOP = 10;
 const MAX_GENERIC_GROUPS_PER_USER = 2;
@@ -287,9 +286,7 @@ interface Build {
 /** System users of one site by their fixed role in the generation order. */
 interface SiteStaff {
   siteAdmin: UserRow;
-  roleUsers: UserRow[];
   oauthAccounts: UserRow[];
-  reserved: UserRow[];
   ordinary: UserRow[];
   all: UserRow[];
 }
@@ -368,13 +365,12 @@ function bit(value: boolean): 0 | 1 {
 }
 
 function buildSite(config: SeedConfig, siteID: SiteKey, position: number): SiteRow {
-  const { site, programId, pools, pageLimit } = config.sites[siteID];
+  const { site, pools, pageLimit } = config.sites[siteID];
   return {
     siteID,
     site: clip(site, MAX.site),
     domain: `${siteID}.${LOOPBACK_HOST}`,
     domainAlias: LOOPBACK_HOST,
-    programId,
     // The installed `default` site keeps orderNo 1.
     orderNo: position + 2,
     publicUserPoolID: pools.publicUserPoolID ?? siteID,
@@ -387,18 +383,21 @@ function buildSite(config: SeedConfig, siteID: SiteKey, position: number): SiteR
   };
 }
 
-/** Role groups then uniquely named generic groups, never `Admin`, which Masa creates with the site. */
+/** Uniquely named generic groups after the retired slots, never `Admin`, which Masa creates with the site. */
 function buildGroups(b: Build, site: SiteRow): GroupRow[] {
   const count = b.config.sites[site.siteID].counts.groups;
   if (count === 0) return [];
-  const roleNames = SYNTHETIC_ROLES.map((role) => roleGroupName(b.config, role));
-  if (count < roleNames.length) {
-    throw printable(new RangeError(`Site ${site.siteID} needs at least ${roleNames.length} groups for the role groups, got ${count}`));
+  if (count < RETIRED_ROLE_SLOTS) {
+    throw printable(new RangeError(`Site ${site.siteID} needs at least ${RETIRED_ROLE_SLOTS} group slots, got ${count}`));
   }
   const rng = fork(b, site.siteID, 'groups');
-  const taken = new Set([ADMIN_GROUP, ...roleNames]);
-  const names = [...roleNames];
-  while (names.length < count) names.push(uniqueName(taken, `${rng.faker.commerce.department()} Team`, MAX.wide));
+  const taken = new Set([ADMIN_GROUP]);
+  const names: string[] = [];
+  while (names.length < count - RETIRED_ROLE_SLOTS) names.push(uniqueName(taken, `${rng.faker.commerce.department()} Team`, MAX.wide));
+  for (let slot = 0; slot < RETIRED_ROLE_SLOTS; slot += 1) {
+    pair(b, rng);
+    newId(b, rng);
+  }
   return names.map((groupname) => {
     const [created, lastUpdate] = pair(b, rng);
     return {
@@ -409,7 +408,7 @@ function buildGroups(b: Build, site: SiteRow): GroupRow[] {
       isPublic: 0,
       perm: 0,
       subType: 'Default',
-      // The site in the slug keeps the same role group of two sites on distinct addresses.
+      // The site in the slug keeps same-named groups of two sites on distinct addresses.
       email: `${slug(`${site.siteID} ${groupname}`)}@${b.config.emailDomain}`,
       created,
       lastUpdate,
@@ -449,13 +448,13 @@ function buildUser(b: Build, rng: SeedRandom, siteID: SiteKey, isPublic: 0 | 1, 
   };
 }
 
-/** Private-pool users of a site in their fixed order: site admin, role users, plain user, OAuth accounts, reserved, ordinary. */
+/** Private-pool users of a site in their fixed order: site admin, plain user, OAuth accounts, reserved, ordinary; retired slots follow the site admin. */
 function buildStaff(b: Build, site: SiteRow): SiteStaff | null {
   const counts = b.config.sites[site.siteID].counts;
   if (counts.systemUsers === 0) return null;
   const { rehearsal } = b.config.reserved;
   const reservedIds = rehearsal.site === site.siteID ? rehearsal.persons : [];
-  const fixed = 2 + SYNTHETIC_ROLES.length + counts.oauthClients + reservedIds.length;
+  const fixed = 2 + RETIRED_ROLE_SLOTS + counts.oauthClients + reservedIds.length;
   if (counts.systemUsers < fixed) {
     throw printable(new RangeError(`Site ${site.siteID} needs at least ${fixed} system users, got ${counts.systemUsers}`));
   }
@@ -463,19 +462,12 @@ function buildStaff(b: Build, site: SiteRow): SiteStaff | null {
   const pool = site.privateUserPoolID;
   const next = (userID?: string): UserRow => buildUser(b, rng, pool, 0, userID);
   const siteAdmin = next();
-  const roleUsers = SYNTHETIC_ROLES.map(() => next());
+  for (let slot = 0; slot < RETIRED_ROLE_SLOTS; slot += 1) next();
   const plain = next();
   const oauthAccounts = Array.from({ length: counts.oauthClients }, () => next());
   const reserved = reservedIds.map((userID) => next(userID));
   const ordinary = Array.from({ length: counts.systemUsers - fixed }, () => next());
-  return {
-    siteAdmin,
-    roleUsers,
-    oauthAccounts,
-    reserved,
-    ordinary,
-    all: [siteAdmin, ...roleUsers, plain, ...oauthAccounts, ...reserved, ...ordinary],
-  };
+  return { siteAdmin, oauthAccounts, ordinary, all: [siteAdmin, plain, ...oauthAccounts, ...reserved, ...ordinary] };
 }
 
 /** Public-pool users counted for a site, stored in its public user pool. */
@@ -486,39 +478,21 @@ function buildMembers(b: Build, site: SiteRow): UserRow[] {
   );
 }
 
-/** Memberships of a site's staff in user order; ordinary members of different role groups never overlap. */
+/** Memberships of a site's staff in user order: the site admin in `Admin`, ordinary users in up to two generic groups. */
 function buildMemberships(b: Build, site: SiteRow, staff: SiteStaff, groups: readonly GroupRow[]): MembershipRow[] {
   const rng = fork(b, site.siteID, 'memberships');
   const pool = site.privateUserPoolID;
-  const counts = b.config.sites[site.siteID].counts;
   const joins = new Map<string, MembershipRow[]>(staff.all.map((user) => [user.userID, []]));
   const join = (user: UserRow, groupID: string | null, groupname: string): void => {
     (joins.get(user.userID) as MembershipRow[]).push({ userID: user.userID, groupID, groupname, groupSiteID: pool });
   };
-  const byName = new Map(groups.map((group) => [group.groupname, group]));
-  const roleNames = SYNTHETIC_ROLES.map((role) => roleGroupName(b.config, role));
 
   join(staff.siteAdmin, null, ADMIN_GROUP);
-  const candidates = rng.shuffle(staff.ordinary);
-  let cursor = 0;
-  SYNTHETIC_ROLES.forEach((role, i) => {
-    const group = byName.get(roleNames[i] as string);
-    if (group === undefined) throw new RangeError(`Site ${site.siteID} has no group for role ${role}`);
-    const employees = role === Roles.timesheetsEmployee;
-    const fixed = [staff.roleUsers[i] as UserRow, ...(employees ? staff.reserved : [])];
-    const size = employees ? counts.timesheetEmployees : ROLE_GROUP_SIZE[site.siteID];
-    const extra = size - fixed.length;
-    if (extra < 0 || cursor + extra > candidates.length) {
-      throw printable(new RangeError(`Site ${site.siteID} cannot fill group ${group.groupname} with ${size} members`));
-    }
-    for (const user of [...fixed, ...candidates.slice(cursor, cursor + extra)]) join(user, group.groupID, group.groupname);
-    cursor += extra;
-  });
-
-  const generic = groups.filter((group) => !roleNames.includes(group.groupname));
+  // Draws of the retired role-group fill.
+  rng.shuffle(staff.ordinary);
   for (const user of staff.ordinary) {
-    const n = rng.int(0, Math.min(MAX_GENERIC_GROUPS_PER_USER, generic.length));
-    for (const group of rng.pickMany(generic, n)) join(user, group.groupID, group.groupname);
+    const n = rng.int(0, Math.min(MAX_GENERIC_GROUPS_PER_USER, groups.length));
+    for (const group of rng.pickMany(groups, n)) join(user, group.groupID, group.groupname);
   }
   return staff.all.flatMap((user) => joins.get(user.userID) as MembershipRow[]);
 }
@@ -984,7 +958,7 @@ function groupBy<T>(rows: readonly T[], key: (row: T) => string): Map<string, T[
   return out;
 }
 
-/** Indexes `masa`; `config` supplies the role group names and the reserved rehearsal persons. */
+/** Indexes `masa`; `config` supplies the reserved rehearsal persons. */
 export function indexMasa(masa: MasaData, config: SeedConfig): MasaIndex {
   const none: readonly never[] = Object.freeze([]);
   const groupKey = (siteID: string, groupname: string): string => `${siteID}\u0000${groupname}`;
@@ -1021,11 +995,10 @@ export function indexMasa(masa: MasaData, config: SeedConfig): MasaIndex {
   const members = (siteID: SiteKey): readonly UserRow[] => membersBySite.get(siteID) ?? none;
   const membersOf = (siteID: SiteKey, groupname: string): readonly string[] =>
     groupMembers.get(groupKey(siteID, groupname)) ?? none;
-  const groupFor = (role: Role): string => (role === SITE_ADMIN ? ADMIN_GROUP : roleGroupName(config, role));
-
-  const roleUser = (siteID: SiteKey, role: Role): UserRow => {
+  const roleUser = (siteID: SiteKey, role: SeedRole): UserRow => {
+    if (role !== SITE_ADMIN && role !== SYSTEM_USER) throw new RangeError(`No ${String(role)} user in site ${siteID}`);
     const pool = site(siteID).privateUserPoolID;
-    const groupname = role === SYSTEM_USER ? null : groupFor(role);
+    const groupname = role === SYSTEM_USER ? null : ADMIN_GROUP;
     const found = systemUsers(pool).find((row) => {
       const held = joins.get(row.userID) ?? none;
       if (groupname === null) return held.length === 0 && !oauthUsers.has(row.userID);
@@ -1039,11 +1012,6 @@ export function indexMasa(masa: MasaData, config: SeedConfig): MasaIndex {
     const [first] = members(siteID);
     if (first === undefined) throw new RangeError(`No member stored in site ${siteID}`);
     return first;
-  };
-
-  const actors = (siteID: SiteKey, role: Role): readonly string[] => {
-    const ids = membersOf(site(siteID).privateUserPoolID, groupFor(role));
-    return role === Roles.timesheetsEmployee ? ids : ids.filter((id) => !reserved.has(id));
   };
 
   const oauthAccount = (siteID: SiteKey): UserRow => {
@@ -1062,7 +1030,6 @@ export function indexMasa(masa: MasaData, config: SeedConfig): MasaIndex {
     membersOf,
     roleUser,
     memberUser,
-    actors,
     isReserved: (userID: string): boolean => reserved.has(userID),
     oauthAccount,
   });

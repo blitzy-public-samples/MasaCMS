@@ -170,8 +170,8 @@ function fixtureUnavailable(method: string): { body: string; headers: Record<str
 
 describe('fixture routes fail closed in the fixture envelope naming the method api.cfm reads from the path', () => {
   const FIXTURE = '/legacy-fixtures/cfml/api.cfm';
-  const RECORD_ID = '00532E14-B51F-226C-36938FA3E4A6396C';
-  const ATTACHMENT_ID = 'A1B2C3D4-E5F6-0718-293A4B5C6D7E8F90';
+  const PERSON_ID = '00532E14-B51F-226C-36938FA3E4A6396C';
+  const ARCHIVE_ID = 'A1B2C3D4-E5F6-0718-293A4B5C6D7E8F90';
   let gateway: TestGateway | undefined;
 
   afterEach(async () => {
@@ -179,50 +179,43 @@ describe('fixture routes fail closed in the fixture envelope naming the method a
     gateway = undefined;
   });
 
-  const PERSON_ID = '6F1E2D3C-4B5A-6978-8796A5B4C3D2E1F0';
-  const FIXTURE_OWNERS = ['finance', 'people'] as const;
-  type FixtureOwner = (typeof FIXTURE_OWNERS)[number];
-
-  /** A version routing each finance fixture key to finance and the people archive read to people. */
+  /** A version routing each fixture key to people, the owner every case's request reaches. */
   const fixtureVersion = cutoverTable({
     tableVersion: 'v0902',
     entries: [
-      ...[
-        'fixture:finance/records@get',
-        'fixture:finance/rollups@get',
-        'fixture:finance/records/{id}/submit@get',
-        'fixture:finance/records/{id}/attachments/{id}@get',
-        'fixture:finance/records/{id}/attachments/x/y@get',
-        'fixture:nosuch/things@get',
-      ].map((route) => entry({ route, owningService: 'finance', state: 'target', kind: 'read' })),
-      entry({ route: 'fixture:people/persons/{id}/archive@get', owningService: 'people', state: 'target', kind: 'read' }),
-    ],
+      'fixture:people/persons@get',
+      'fixture:people/archives@get',
+      'fixture:people/persons/{id}/archive@get',
+      'fixture:people/persons/{id}/archive/{id}@get',
+      'fixture:people/persons/{id}/archive/x/y@get',
+      'fixture:nosuch/things@get',
+    ].map((route) => entry({ route, owningService: 'people', state: 'target', kind: 'read' })),
   });
 
-  it.each<[string, string, string, FixtureOwner]>([
-    ['a resource', `${FIXTURE}/finance/records`, 'finance.records', 'finance'],
-    ['an action after the id', `${FIXTURE}/finance/records/${RECORD_ID}/submit`, 'finance.records.submit', 'finance'],
-    ['a tail that is no CF UUID', `${FIXTURE}/finance/records/${RECORD_ID}/attachments/42`, 'finance.records.attachments.42', 'finance'],
-    ['a CF UUID tail, which is an id', `${FIXTURE}/finance/records/${RECORD_ID}/attachments/${ATTACHMENT_ID}`, 'finance.records.attachments', 'finance'],
-    ['mixed-case segments', `${FIXTURE}/Finance/Records/${RECORD_ID}/Submit`, 'finance.records.submit', 'finance'],
-    ['a percent-encoded segment', `${FIXTURE}/people/pers%6Fns/${PERSON_ID}/archive`, 'people.persons.archive', 'people'],
-    ['a doubled slash before the prefix', `//legacy-fixtures/cfml/api.cfm/people/persons/${PERSON_ID}/archive`, 'people.persons.archive', 'people'],
-    ['a doubled slash inside the prefix', `/legacy-fixtures//cfml/api.cfm/people/persons/${PERSON_ID}/archive`, 'people.persons.archive', 'people'],
-    ['a doubled slash inside path info', `${FIXTURE}/people//persons/${PERSON_ID}/archive`, 'people.persons.archive', 'people'],
-    ['a query string carrying a method', `${FIXTURE}/finance/rollups?siteid=tenant-a&method=list`, 'finance.rollups', 'finance'],
-    ['a query string turning the data namespace off', `${FIXTURE}/finance/rollups?siteid=tenant-a&useDataNamespace=false`, 'finance.rollups', 'finance'],
-    ['more than five segments', `${FIXTURE}/finance/records/${RECORD_ID}/attachments/x/y`, 'invalid', 'finance'],
-    ['a module api.cfm does not dispatch', `${FIXTURE}/nosuch/things`, 'invalid', 'finance'],
-  ])('names, for %s (%s), the fixture method %s in the fixture 503', { timeout: CASE_TIMEOUT_MS }, async (_case, url, method, owner) => {
-    gateway = await buildTestGateway({ version: fixtureVersion, services: FIXTURE_OWNERS });
-    await Promise.all(FIXTURE_OWNERS.map((name) => gateway?.targets[name]?.setMode('503')));
+  it.each([
+    ['a resource', `${FIXTURE}/people/persons`, 'people.persons'],
+    ['an action after the id', `${FIXTURE}/people/persons/${PERSON_ID}/archive`, 'people.persons.archive'],
+    ['a tail that is no CF UUID', `${FIXTURE}/people/persons/${PERSON_ID}/archive/42`, 'people.persons.archive.42'],
+    ['a CF UUID tail, which is an id', `${FIXTURE}/people/persons/${PERSON_ID}/archive/${ARCHIVE_ID}`, 'people.persons.archive'],
+    ['mixed-case segments', `${FIXTURE}/People/Persons/${PERSON_ID}/Archive`, 'people.persons.archive'],
+    ['a percent-encoded segment', `${FIXTURE}/people/pers%6Fns`, 'people.persons'],
+    ['a doubled slash before the prefix', `//legacy-fixtures/cfml/api.cfm/people/persons/${PERSON_ID}/archive`, 'people.persons.archive'],
+    ['a doubled slash inside the prefix', `/legacy-fixtures//cfml/api.cfm/people/persons/${PERSON_ID}/archive`, 'people.persons.archive'],
+    ['a doubled slash inside path info', `${FIXTURE}/people//persons/${PERSON_ID}/archive`, 'people.persons.archive'],
+    ['a query string carrying a method', `${FIXTURE}/people/archives?siteid=tenant-a&method=list`, 'people.archives'],
+    ['a query string turning the data namespace off', `${FIXTURE}/people/archives?siteid=tenant-a&useDataNamespace=false`, 'people.archives'],
+    ['more than five segments', `${FIXTURE}/people/persons/${PERSON_ID}/archive/x/y`, 'invalid'],
+    ['a module api.cfm does not dispatch', `${FIXTURE}/nosuch/things`, 'invalid'],
+  ])('names, for %s (%s), the fixture method %s in the fixture 503', { timeout: CASE_TIMEOUT_MS }, async (_case, url, method) => {
+    gateway = await buildTestGateway({ version: fixtureVersion, services: ['people'] });
+    await gateway.targets.people?.setMode('503');
     const res = await gateway.app.inject({ method: 'GET', url });
     const expected = fixtureUnavailable(method);
     expect(res.statusCode).toBe(503);
     expect(res.statusMessage).toBe(SERVICE_UNAVAILABLE_TEXT);
     expect(res.body).toBe(expected.body);
     expect(res.headers).toMatchObject(expected.headers);
-    for (const name of FIXTURE_OWNERS) expect(gateway.targets[name]?.requests, name).toHaveLength(name === owner ? 1 : 0);
+    expect(gateway.targets.people?.requests).toHaveLength(1);
     expect(gateway.legacy.requests.filter((req) => req.path !== BRIDGE_SESSION_PATH)).toEqual([]);
   });
 });

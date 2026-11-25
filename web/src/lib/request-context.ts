@@ -49,15 +49,13 @@ const HOME_CONTENT_ID = '00000000000000000000000000000000001';
 const USERS_MODULE_ID = '00000000000000000000000000000000008';
 
 /** Which web entry point is building the request. */
-export type AdminMode = 'page' | 'redirect' | 'raw' | 'opt2';
+export type AdminMode = 'page' | 'redirect' | 'raw';
 
 /** Inputs of {@link buildAdminRequest}, as the route adapters receive them. */
 export interface AdminRequestInput {
   readonly params: { readonly circuit?: string; readonly action?: string };
   /** The query web received; the URL scope only without the gateway's original-URL header. */
   readonly searchParams: URLSearchParams | Readonly<Record<string, string | readonly string[] | undefined>>;
-  /** Path and query of the request web received; the browser's own on the `/opt2` routes the gateway forwards unchanged. */
-  readonly receivedTarget: string;
   readonly headers: Headers;
   /** The parsed request body, the form scope; absent on requests whose body is not read. */
   readonly form?: FormData | URLSearchParams;
@@ -205,8 +203,6 @@ export interface AdminRequest {
   readonly ses: boolean;
   /** `rc.currentURL`: `./` plus the URL scope as `?&name=value…`. */
   readonly currentUrl: string;
-  /** The browser's request target, path and query: {@link ORIGINAL_URL_HEADER} when the gateway sent it, else web's own. */
-  readonly requestTarget: string;
   readonly session: AdminSessionState;
   readonly sessionWrites: Readonly<AdminSessionWrites>;
   /** Undefined when programs-sites does not let this user read the session site. */
@@ -1144,7 +1140,6 @@ export async function buildAdminRequest(input: AdminRequestInput): Promise<Admin
     relayScopes,
     ses: scopes.pathInfo.length > 0,
     currentUrl: currentUrlOf(url),
-    requestTarget: headers.get(ORIGINAL_URL_HEADER) ?? input.receivedTarget,
     session: { ...session, dateKey },
     sessionWrites,
     site,

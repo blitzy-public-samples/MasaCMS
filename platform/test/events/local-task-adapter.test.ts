@@ -36,8 +36,8 @@ import { testSigningKeys, writeTestSecrets } from '../../src/testing/tokens.js';
 import { REDACTED } from '../../src/logging/index.js';
 
 const SERVICE_URLS: Readonly<Record<string, string>> = {
-  surveys: 'http://127.0.0.1:8117',
-  communications: 'http://127.0.0.1:8115',
+  'strategies-content': 'http://127.0.0.1:8114',
+  'programs-sites': 'http://127.0.0.1:8113',
   stub: 'http://127.0.0.1:8199',
 };
 
@@ -144,13 +144,13 @@ describe.skipIf(!available)('local task adapter', () => {
     return { statusCode: await respond(call), body: { dump: () => Promise.resolve() } };
   }) as unknown as typeof import('undici').request;
 
-  /** Task input for the surveys launch route, named `name`, due a second ago. */
-  function launch(name: string, tenantId: string | undefined, extra: Partial<CreateTaskInput> = {}): CreateTaskInput {
+  /** Task input for the feed import route, named `name`, due a second ago. */
+  function feedImport(name: string, tenantId: string | undefined, extra: Partial<CreateTaskInput> = {}): CreateTaskInput {
     return {
-      queue: 'surveys-launch',
+      queue: 'content-feed-import',
       name,
       scheduleTime: new Date(nowMs - 1000),
-      url: `${SERVICE_URLS.surveys}/internal/v1/tasks/surveys/launch`,
+      url: `${SERVICE_URLS['strategies-content']}/internal/v1/jobs/feed-auto-import`,
       deadlineS: 60,
       ...(tenantId === undefined ? {} : { tenantId }),
       ...extra,
@@ -202,8 +202,8 @@ describe.skipIf(!available)('local task adapter', () => {
 
   it('dispatches tenant A, tenant B and system tasks, each stored under its own tenant only', async () => {
     const created = [
-      await port.create(launch('iso-a', TENANT_A.tenantId, { body: { surveyId: 'S1' } })),
-      await port.create(launch('iso-b', TENANT_B.tenantId)),
+      await port.create(feedImport('iso-a', TENANT_A.tenantId, { body: { feedId: 'F1' } })),
+      await port.create(feedImport('iso-b', TENANT_B.tenantId)),
       await port.create({
         queue: 'stub-outbox-sweep',
         name: 'stub-outbox-sweep-1',
@@ -216,7 +216,7 @@ describe.skipIf(!available)('local task adapter', () => {
     expect([await visible(TENANT_A.tenantId, 'iso-a'), await visible(TENANT_B.tenantId, 'iso-a')]).toEqual([1, 0]);
     expect([await visible(TENANT_B.tenantId, 'iso-b'), await visible(TENANT_A.tenantId, 'iso-b')]).toEqual([1, 0]);
     expect(await visible(SYSTEM_TENANT_ID, 'iso-a')).toBe(0);
-    expect((await port.list('surveys-launch')).tasks.map((task) => [task.name, task.tenantId])).toEqual([
+    expect((await port.list('content-feed-import')).tasks.map((task) => [task.name, task.tenantId])).toEqual([
       ['iso-a', TENANT_A.tenantId],
       ['iso-b', TENANT_B.tenantId],
     ]);
@@ -227,17 +227,17 @@ describe.skipIf(!available)('local task adapter', () => {
     expect(await port.dispatchDue()).toBe(3);
     expect(calls.map((call) => call.body)).toEqual(
       expect.arrayContaining([
-        { queue: 'surveys-launch', name: 'iso-a', tenantId: TENANT_A.tenantId, payload: { surveyId: 'S1' } },
-        { queue: 'surveys-launch', name: 'iso-b', tenantId: TENANT_B.tenantId, payload: null },
+        { queue: 'content-feed-import', name: 'iso-a', tenantId: TENANT_A.tenantId, payload: { feedId: 'F1' } },
+        { queue: 'content-feed-import', name: 'iso-b', tenantId: TENANT_B.tenantId, payload: null },
         { queue: 'stub-outbox-sweep', name: 'stub-outbox-sweep-1', tenantId: null, payload: null },
       ]),
     );
     expect(await rowOf(TENANT_A.tenantId, 'iso-a')).toMatchObject({ status: 'done', attempts: 1, last_status: 200, lease_until: null });
-    expect(await port.list('surveys-launch')).toEqual({ tasks: [] });
+    expect(await port.list('content-feed-import')).toEqual({ tasks: [] });
   });
 
   it('leaves no rows visible to a pooled connection reused after a tenant scan', async () => {
-    await port.create(launch('reuse-a', TENANT_A.tenantId));
+    await port.create(feedImport('reuse-a', TENANT_A.tenantId));
     await port.dispatchDue();
     for (let i = 0; i < 8; i += 1) {
       const { rows } = await handle.appPool.query<{ n: number }>(`SELECT count(*)::int AS n FROM ${handle.schema}.scheduled_task_queue`);
@@ -247,33 +247,33 @@ describe.skipIf(!available)('local task adapter', () => {
 
   it('sends the Cloud Tasks headers and a token the local cloud-tasks transport accepts for the target service', async () => {
     const scheduleTime = new Date(nowMs - 1500);
-    await port.create(launch('hdr-a', TENANT_A.tenantId, { scheduleTime, deadlineS: 45 }));
+    await port.create(feedImport('hdr-a', TENANT_A.tenantId, { scheduleTime, deadlineS: 45 }));
     expect(await port.dispatchDue()).toBe(1);
     const [call] = calls;
     expect(call?.headers).toMatchObject({
       'content-type': 'application/json',
       'x-cloudtasks-taskname': 'hdr-a',
-      'x-cloudtasks-queuename': 'surveys-launch',
+      'x-cloudtasks-queuename': 'content-feed-import',
       'x-cloudtasks-taskretrycount': '0',
       'x-cloudtasks-taskexecutioncount': '0',
       'x-cloudtasks-tasketa': String(scheduleTime.getTime() / 1000),
     });
     expect(call?.headersTimeout).toBe(45_000);
     const { publicKey } = await testSigningKeys();
-    const request = { headers: { authorization: call?.headers.authorization }, path: '/internal/v1/tasks/surveys/launch' };
-    const surveys = createLocalCloudTasksTransport({ publicKey, callee: 'surveys' });
-    expect((await surveys.authenticate(request, { optional: false })).service?.name).toBe('tasks-invoker');
-    const other = createLocalCloudTasksTransport({ publicKey, callee: 'communications' });
+    const request = { headers: { authorization: call?.headers.authorization }, path: '/internal/v1/jobs/feed-auto-import' };
+    const content = createLocalCloudTasksTransport({ publicKey, callee: 'strategies-content' });
+    expect((await content.authenticate(request, { optional: false })).service?.name).toBe('tasks-invoker');
+    const other = createLocalCloudTasksTransport({ publicKey, callee: 'programs-sites' });
     await expect(other.authenticate(request, { optional: false })).rejects.toThrow();
   });
 
   it('holds a paused queue and dispatches it after resume', async () => {
-    const queue = 'communications-reminders';
+    const queue = 'content-scheduled-publish';
     await port.create({
       queue,
       name: 'pause-b',
       scheduleTime: new Date(nowMs),
-      url: `${SERVICE_URLS.communications}/internal/v1/tasks/reminders`,
+      url: `${SERVICE_URLS['strategies-content']}/internal/v1/jobs/publish-scheduled-changesets`,
       deadlineS: 60,
       tenantId: TENANT_B.tenantId,
     });
@@ -341,12 +341,12 @@ describe.skipIf(!available)('local task adapter', () => {
   });
 
   it('answers created:false for a duplicate name and for a deleted name until its tombstone expires', async () => {
-    const input = launch('dup-a', TENANT_A.tenantId, { scheduleTime: new Date(nowMs + 600_000) });
+    const input = feedImport('dup-a', TENANT_A.tenantId, { scheduleTime: new Date(nowMs + 600_000) });
     expect(await port.create(input)).toEqual({ name: 'dup-a', created: true });
     expect(await port.create(input)).toEqual({ name: 'dup-a', created: false });
-    expect(await port.delete('surveys-launch', 'dup-a')).toEqual({ name: 'dup-a', deleted: true });
-    expect(await port.delete('surveys-launch', 'dup-a')).toEqual({ name: 'dup-a', deleted: false });
-    expect(await port.list('surveys-launch')).toEqual({ tasks: [] });
+    expect(await port.delete('content-feed-import', 'dup-a')).toEqual({ name: 'dup-a', deleted: true });
+    expect(await port.delete('content-feed-import', 'dup-a')).toEqual({ name: 'dup-a', deleted: false });
+    expect(await port.list('content-feed-import')).toEqual({ tasks: [] });
     expect(await port.create(input)).toEqual({ name: 'dup-a', created: false });
     nowMs += (LOCAL_TOMBSTONE_RETENTION_S - 10) * 1000;
     await port.dispatchDue();
@@ -355,8 +355,8 @@ describe.skipIf(!available)('local task adapter', () => {
     await port.dispatchDue();
     const again = { ...input, scheduleTime: new Date(nowMs + 600_000) };
     expect(await port.create(again)).toEqual({ name: 'dup-a', created: true });
-    expect(await port.delete('surveys-launch', 'dup-a', { tenantId: TENANT_B.tenantId })).toEqual({ name: 'dup-a', deleted: false });
-    expect(await port.delete('surveys-launch', 'dup-a', { tenantId: TENANT_A.tenantId })).toEqual({ name: 'dup-a', deleted: true });
+    expect(await port.delete('content-feed-import', 'dup-a', { tenantId: TENANT_B.tenantId })).toEqual({ name: 'dup-a', deleted: false });
+    expect(await port.delete('content-feed-import', 'dup-a', { tenantId: TENANT_A.tenantId })).toEqual({ name: 'dup-a', deleted: true });
   });
 
   describe('paged list and get', () => {
@@ -467,10 +467,10 @@ describe.skipIf(!available)('local task adapter', () => {
 
 
   it('rejects a task URL outside the configured service origins before storing it', async () => {
-    await expect(port.create(launch('unknown-a', TENANT_A.tenantId, { url: 'http://127.0.0.1:1/internal/v1/tasks/x' }))).rejects.toBeInstanceOf(
+    await expect(port.create(feedImport('unknown-a', TENANT_A.tenantId, { url: 'http://127.0.0.1:1/internal/v1/tasks/x' }))).rejects.toBeInstanceOf(
       UnknownTaskTargetError,
     );
-    await expect(port.create(launch('bad name', TENANT_A.tenantId))).rejects.toThrow('Invalid task name');
+    await expect(port.create(feedImport('bad name', TENANT_A.tenantId))).rejects.toThrow('Invalid task name');
     expect(await visible(TENANT_A.tenantId, 'unknown-a')).toBe(0);
   });
 
@@ -481,7 +481,7 @@ describe.skipIf(!available)('local task adapter', () => {
         release = () => resolve(200);
       });
     const dead = await createLocalTaskAdapter({ db, stateDir, serviceUrls: SERVICE_URLS, clock, logger, autoStart: false, request: stubRequest });
-    await port.create(launch('lease-b', TENANT_B.tenantId));
+    await port.create(feedImport('lease-b', TENANT_B.tenantId));
     const stale = dead.dispatchDue();
     for (let i = 0; i < 50 && calls.length === 0; i += 1) await new Promise((resolve) => setTimeout(resolve, 20));
     expect(await rowOf(TENANT_B.tenantId, 'lease-b')).toMatchObject({ status: 'running', attempts: 1 });
@@ -510,7 +510,7 @@ describe.skipIf(!available)('local task adapter', () => {
       end: () => db.end(),
     };
     // Created through another adapter, so only the polling adapter's start-up full scan can find it.
-    await port.create(launch('poll-a', TENANT_A.tenantId));
+    await port.create(feedImport('poll-a', TENANT_A.tenantId));
     const polling = await createLocalTaskAdapter({
       db: flaky,
       stateDir,
@@ -547,7 +547,7 @@ describe.skipIf(!available)('local task adapter', () => {
     });
     try {
       expect(() => polling.start()).toThrow('listener not ready');
-      await port.create(launch('retry-start-a', TENANT_A.tenantId));
+      await port.create(feedImport('retry-start-a', TENANT_A.tenantId));
       polling.start();
       for (let i = 0; i < 200 && calls.length === 0; i += 1) await new Promise((resolve) => setTimeout(resolve, 25));
     } finally {
@@ -582,7 +582,7 @@ describe.skipIf(!available)('local task adapter', () => {
       },
       end: () => db.end(),
     };
-    await port.create(launch('stalled-listen-a', TENANT_A.tenantId));
+    await port.create(feedImport('stalled-listen-a', TENANT_A.tenantId));
     const polling = await createLocalTaskAdapter({ db: stalling, stateDir, serviceUrls: SERVICE_URLS, clock, logger, pollIntervalMs: 25, request: stubRequest });
     try {
       for (let i = 0; i < 200 && calls.length === 0; i += 1) await new Promise((resolve) => setTimeout(resolve, 25));
@@ -613,7 +613,7 @@ describe.skipIf(!available)('local task adapter', () => {
       new Promise<number>((resolve) => {
         answer = resolve;
       });
-    await port.create(launch('close-failure-a', TENANT_A.tenantId));
+    await port.create(feedImport('close-failure-a', TENANT_A.tenantId));
     const polling = await createLocalTaskAdapter({ db: failing, stateDir, serviceUrls: SERVICE_URLS, clock, logger, pollIntervalMs: 25, request: stubRequest });
     for (let i = 0; i < 200 && calls.length === 0; i += 1) await new Promise((resolve) => setTimeout(resolve, 25));
     expect(calls).toHaveLength(1);
@@ -657,7 +657,7 @@ describe.skipIf(!available)('local task adapter', () => {
       };
       const capped = await cappedAdapter(3);
       const names = Array.from({ length: 7 }, (_, i) => `cap-a-${String(i)}`);
-      for (const name of names) await capped.create(launch(name, TENANT_A.tenantId));
+      for (const name of names) await capped.create(feedImport(name, TENANT_A.tenantId));
       const first = capped.dispatchDue();
       for (let i = 0; i < 50 && calls.length < 3; i += 1) await new Promise((resolve) => setTimeout(resolve, 20));
       expect(await capped.dispatchDue()).toBe(0);
@@ -676,7 +676,7 @@ describe.skipIf(!available)('local task adapter', () => {
     it('rotates the starting tenant so a busy tenant cannot hold every slot', async () => {
       const capped = await cappedAdapter(1);
       for (const tenant of [TENANT_A, TENANT_B]) {
-        for (const n of [1, 2]) await capped.create(launch(`fair-${tenant.siteId}-${String(n)}`, tenant.tenantId));
+        for (const n of [1, 2]) await capped.create(feedImport(`fair-${tenant.siteId}-${String(n)}`, tenant.tenantId));
       }
       const counts: number[] = [];
       for (let scan = 0; scan < 5; scan += 1) counts.push(await capped.dispatchDue());
@@ -727,7 +727,7 @@ describe.skipIf(!available)('local task adapter', () => {
         if (!hang) res.writeHead(204).end();
       });
       await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-      target = { ...SERVICE_URLS, reporting: `http://127.0.0.1:${String((server.address() as AddressInfo).port)}` };
+      target = { ...SERVICE_URLS, 'programs-sites': `http://127.0.0.1:${String((server.address() as AddressInfo).port)}` };
       real = await createLocalTaskAdapter({ db, stateDir, serviceUrls: target, clock, logger, autoStart: false });
     });
 
@@ -740,10 +740,10 @@ describe.skipIf(!available)('local task adapter', () => {
 
     it('cuts a hung target off at the dispatch deadline and retries it', async () => {
       await real.create({
-        queue: 'reporting-export-run',
+        queue: 'programs-sites-sitemonitor',
         name: 'hung-a',
         scheduleTime: new Date(nowMs),
-        url: `${target.reporting}/internal/v1/tasks/exports/run`,
+        url: `${target['programs-sites']}/internal/v1/jobs/sitemonitor`,
         deadlineS: 15,
         tenantId: TENANT_A.tenantId,
       });
@@ -766,9 +766,9 @@ describe.skipIf(!available)('local task adapter', () => {
       const create = (name: string, url: string): Promise<void> =>
         startSpan('create-task', SpanKind.INTERNAL, async (span) => {
           traceId = span.spanContext().traceId;
-          await real.create({ queue: 'reporting-export-run', name, scheduleTime: new Date(nowMs - 1000), url, deadlineS: 30, tenantId: TENANT_B.tenantId });
+          await real.create({ queue: 'programs-sites-sitemonitor', name, scheduleTime: new Date(nowMs - 1000), url, deadlineS: 30, tenantId: TENANT_B.tenantId });
         });
-      await create('trace-b', `${target.reporting}/internal/v1/tasks/exports/run`);
+      await create('trace-b', `${target['programs-sites']}/internal/v1/jobs/sitemonitor`);
       const instrumentedTrace = traceId;
       expect(await real.dispatchDue()).toBe(1);
       const traceparent = received.at(-1)?.traceparent;
@@ -776,9 +776,9 @@ describe.skipIf(!available)('local task adapter', () => {
       expect(String(traceparent).split('-')[1]).toBe(instrumentedTrace);
       await flushTracing();
       const dispatched = exporter.getFinishedSpans().find((span) => span.spanContext().spanId === String(traceparent).split('-')[2]);
-      expect(dispatched).toMatchObject({ name: 'POST reporting', kind: SpanKind.CLIENT });
+      expect(dispatched).toMatchObject({ name: 'POST programs-sites', kind: SpanKind.CLIENT });
 
-      await create('trace-stub-b', `${target.reporting}/internal/v1/tasks/exports/run`);
+      await create('trace-stub-b', `${target['programs-sites']}/internal/v1/jobs/sitemonitor`);
       const stored = (await rowOf(TENANT_B.tenantId, 'trace-stub-b'))?.headers as { traceparent?: string };
       await shutdownTracing();
       const stubbed = await createLocalTaskAdapter({ db, stateDir, serviceUrls: target, clock, logger, autoStart: false, request: stubRequest });
@@ -806,10 +806,10 @@ describe.skipIf(!available)('local task adapter', () => {
         end: () => Promise.resolve(),
       };
       const task = (name: string): CreateTaskInput => ({
-        queue: 'reporting-export-run',
+        queue: 'programs-sites-sitemonitor',
         name,
         scheduleTime: new Date(nowMs - 1000),
-        url: `${target.reporting}/internal/v1/tasks/exports/${name}/run`,
+        url: `${target['programs-sites']}/internal/v1/jobs/sitemonitor/${name}`,
         deadlineS: 30,
         tenantId: TENANT_A.tenantId,
       });
@@ -837,7 +837,7 @@ describe.skipIf(!available)('local task adapter', () => {
       expect(new Set(sampled)).toStrictEqual(new Set([false]));
       expect(traceparentOf('timer-traced')).toMatch(new RegExp(`^00-${createdTrace}-[0-9a-f]{16}-01$`));
       expect(untraced[3]).toBe('01');
-      expect(dispatched).toMatchObject({ name: 'POST reporting', kind: SpanKind.CLIENT });
+      expect(dispatched).toMatchObject({ name: 'POST programs-sites', kind: SpanKind.CLIENT });
       expect(dispatched?.parentSpanContext).toBeUndefined();
     });
   });
@@ -1014,7 +1014,7 @@ SELECT site_id, tenant_id, 1, LOCALTIMESTAMP(3) FROM unnest($1::text[], $2::uuid
       ['another adapter over its own pool', 'wake-cross-a', false, [SYSTEM_TENANT_ID, TENANT_A.tenantId, TENANT_A.tenantId]],
     ])('dispatches a due task %s creates after the start-up scan at the next check, scanning only its tenant', async (_by, name, itself, expected) => {
       const polling = await startQuiet();
-      await (itself ? polling : writer).create(launch(name, TENANT_A.tenantId));
+      await (itself ? polling : writer).create(feedImport(name, TENANT_A.tenantId));
       await until(async () => (await storedRow(TENANT_A.tenantId, name))?.status === 'done');
       await sleep(POLL_MS * 5);
       expect(taskNames()).toEqual([name]);
@@ -1024,7 +1024,7 @@ SELECT site_id, tenant_id, 1, LOCALTIMESTAMP(3) FROM unnest($1::text[], $2::uuid
 
     it('dispatches a due task another process creates after the start-up scan, scanning only its tenant', async () => {
       await startQuiet();
-      const input = launch('wake-process-a', TENANT_A.tenantId);
+      const input = feedImport('wake-process-a', TENANT_A.tenantId);
       const writerInput = { ...input, scheduleTime: input.scheduleTime.toISOString() };
       const { stdout } = await promisify(execFile)(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', EXTERNAL_WRITER], {
         cwd: PLATFORM_DIR,
@@ -1038,7 +1038,7 @@ SELECT site_id, tenant_id, 1, LOCALTIMESTAMP(3) FROM unnest($1::text[], $2::uuid
 
     it('opens nothing for a future task until the clock reaches it, then dispatches it', async () => {
       const polling = await startQuiet();
-      await polling.create(launch('wake-later-b', TENANT_B.tenantId, { scheduleTime: new Date(nowMs + 60_000) }));
+      await polling.create(feedImport('wake-later-b', TENANT_B.tenantId, { scheduleTime: new Date(nowMs + 60_000) }));
       await sleep(POLL_MS * 10);
       expect(calls).toEqual([]);
       expect(opened).toEqual([TENANT_B.tenantId]);
@@ -1051,11 +1051,11 @@ SELECT site_id, tenant_id, 1, LOCALTIMESTAMP(3) FROM unnest($1::text[], $2::uuid
       const polling = await startQuiet();
       const statuses = [503];
       respond = () => Promise.resolve(statuses.shift() ?? 200);
-      await polling.create(launch('wake-retry-a', TENANT_A.tenantId));
+      await polling.create(feedImport('wake-retry-a', TENANT_A.tenantId));
       await until(async () => (await storedRow(TENANT_A.tenantId, 'wake-retry-a'))?.last_status === 503);
       await sleep(POLL_MS * 5);
       expect(calls).toHaveLength(1);
-      nowMs += retryDelayS(queueDefinition('surveys-launch').retry, 1) * 1000;
+      nowMs += retryDelayS(queueDefinition('content-feed-import').retry, 1) * 1000;
       await until(async () => (await storedRow(TENANT_A.tenantId, 'wake-retry-a'))?.status === 'done');
       expect(calls.map((call) => call.headers['x-cloudtasks-taskretrycount'])).toEqual(['0', '1']);
     });
@@ -1067,14 +1067,14 @@ SELECT site_id, tenant_id, 1, LOCALTIMESTAMP(3) FROM unnest($1::text[], $2::uuid
     ])('holds a paused queue task without rescanning its tenant and dispatches it after %s resumes the queue', async (_by, name, itself, expected) => {
       const polling = await startQuiet();
       const control = itself ? polling : writer;
-      const queue = 'communications-reminders';
+      const queue = 'content-scheduled-publish';
       await control.pauseQueue(queue);
       try {
         await control.create({
           queue,
           name,
           scheduleTime: new Date(nowMs),
-          url: `${SERVICE_URLS.communications}/internal/v1/tasks/reminders`,
+          url: `${SERVICE_URLS['strategies-content']}/internal/v1/jobs/publish-scheduled-changesets`,
           deadlineS: 60,
           tenantId: TENANT_B.tenantId,
         });
@@ -1108,7 +1108,7 @@ SELECT site_id, tenant_id, 1, LOCALTIMESTAMP(3) FROM unnest($1::text[], $2::uuid
           answer = resolve;
         });
       try {
-        await other.create(launch('wake-other-retry-a', TENANT_A.tenantId, { scheduleTime: new Date(dueAt) }));
+        await other.create(feedImport('wake-other-retry-a', TENANT_A.tenantId, { scheduleTime: new Date(dueAt) }));
         // Only the other adapter's clock has reached the task, so it alone claims and attempts it.
         otherNowMs = dueAt;
         const attempt = other.dispatchDue();
@@ -1121,7 +1121,7 @@ SELECT site_id, tenant_id, 1, LOCALTIMESTAMP(3) FROM unnest($1::text[], $2::uuid
         respond = () => Promise.resolve(200);
         answer(503);
         expect(await attempt).toBe(1);
-        nowMs = dueAt + retryDelayS(queueDefinition('surveys-launch').retry, 1) * 1000;
+        nowMs = dueAt + retryDelayS(queueDefinition('content-feed-import').retry, 1) * 1000;
         await until(async () => (await storedRow(TENANT_A.tenantId, 'wake-other-retry-a'))?.status === 'done');
       } finally {
         await other.close();
@@ -1134,8 +1134,8 @@ SELECT site_id, tenant_id, 1, LOCALTIMESTAMP(3) FROM unnest($1::text[], $2::uuid
       await startQuiet();
       const tenant = TENANT_B.tenantId;
       const name = 'wake-other-delete-b';
-      await writer.create(launch(name, tenant, { scheduleTime: new Date(nowMs + 10 * 3600 * 1000) }));
-      expect(await writer.delete('surveys-launch', name, { tenantId: tenant })).toEqual({ name, deleted: true });
+      await writer.create(feedImport(name, tenant, { scheduleTime: new Date(nowMs + 10 * 3600 * 1000) }));
+      expect(await writer.delete('content-feed-import', name, { tenantId: tenant })).toEqual({ name, deleted: true });
       nowMs += LOCAL_TOMBSTONE_RETENTION_S * 1000 + 60_000;
       await until(async () => (await storedRow(tenant, name)) === undefined);
       expect(opened).toEqual([SYSTEM_TENANT_ID, tenant]);
@@ -1152,7 +1152,7 @@ SELECT site_id, tenant_id, 1, LOCALTIMESTAMP(3) FROM unnest($1::text[], $2::uuid
       await until(() => listenEvents.includes('lost'));
       expect(warnings.map((warning) => warning.msg)).toEqual(['Local tasks listener lost; every check scans all tenants until it listens again']);
       // Committed while nothing listens, so only a scan of every tenant can find it.
-      await writer.create(launch('wake-lost-a', TENANT_A.tenantId));
+      await writer.create(feedImport('wake-lost-a', TENANT_A.tenantId));
       await until(async () => (await storedRow(TENANT_A.tenantId, 'wake-lost-a'))?.status === 'done');
       await until(() => listenEvents.length === 3);
       expect(listenEvents).toEqual(['listening', 'lost', 'listening']);
@@ -1164,7 +1164,7 @@ SELECT site_id, tenant_id, 1, LOCALTIMESTAMP(3) FROM unnest($1::text[], $2::uuid
       metadataTx = 0;
       await sleep(POLL_MS * 15);
       expect(opened).toEqual([]);
-      await writer.create(launch('wake-relisten-a', TENANT_A.tenantId));
+      await writer.create(feedImport('wake-relisten-a', TENANT_A.tenantId));
       await until(async () => (await storedRow(TENANT_A.tenantId, 'wake-relisten-a'))?.status === 'done');
       expect(opened).toEqual([SYSTEM_TENANT_ID, TENANT_A.tenantId, TENANT_A.tenantId]);
       expect(taskNames()).toEqual(['wake-lost-a', 'wake-relisten-a']);
@@ -1172,7 +1172,7 @@ SELECT site_id, tenant_id, 1, LOCALTIMESTAMP(3) FROM unnest($1::text[], $2::uuid
 
     it('rechecks a tenant outside the registry once per purge interval and never dispatches its task', async () => {
       await startQuiet();
-      await writer.create(launch('wake-unregistered', tenantIdForSite('wake-unregistered-site')));
+      await writer.create(feedImport('wake-unregistered', tenantIdForSite('wake-unregistered-site')));
       await until(() => opened.length >= 1);
       await sleep(POLL_MS * 15);
       // The paused read and the registry read, then nothing until the purge interval has passed.
@@ -1186,7 +1186,7 @@ SELECT site_id, tenant_id, 1, LOCALTIMESTAMP(3) FROM unnest($1::text[], $2::uuid
     it('purges a tombstone at the check after its retention and the purge interval have passed', async () => {
       const polling = await startQuiet();
       const tenant = TENANT_UMBRELLA.tenantId;
-      await polling.create(launch('wake-purge-u', tenant));
+      await polling.create(feedImport('wake-purge-u', tenant));
       await until(async () => (await storedRow(tenant, 'wake-purge-u'))?.status === 'done');
       const doneAt = nowMs;
       nowMs = doneAt + (LOCAL_TOMBSTONE_RETENTION_S - 1) * 1000;
@@ -1200,13 +1200,13 @@ SELECT site_id, tenant_id, 1, LOCALTIMESTAMP(3) FROM unnest($1::text[], $2::uuid
     it('keeps a paused queue tombstone past its retention without rescanning its tenant, and purges it after resume', async () => {
       const polling = await startQuiet();
       const tenant = TENANT_B.tenantId;
-      const queue = 'communications-reminders';
+      const queue = 'content-scheduled-publish';
       const name = 'wake-paused-purge-b';
       await polling.create({
         queue,
         name,
         scheduleTime: new Date(nowMs),
-        url: `${SERVICE_URLS.communications}/internal/v1/tasks/reminders/3`,
+        url: `${SERVICE_URLS['strategies-content']}/internal/v1/jobs/publish-scheduled-changesets/3`,
         deadlineS: 60,
         tenantId: tenant,
       });

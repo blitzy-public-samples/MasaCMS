@@ -116,7 +116,7 @@ describe('scannedRouteKey', () => {
     ['an admin scan fault', { url: '/admin/?muraAction=cLogin.main&returnURL=zz%3Cscript%3E&q=null' }, 'admin:clogin.main{scriptprotect=fault}', 'admin:clogin.main'],
     ['url names stripped onto one', { url: '/_api/json/v1/tenant-a/?method=findOne&entityname=user&a-b=one&a.b=two' }, 'api:user.findone{scriptprotect=fault}', 'api:user.findone'],
     ['url names renamed onto one', { url: '/?amp%3Bxy=one&xyamp%3B=two' }, 'page:render{scriptprotect=fault}', 'page:render'],
-    ['posted names stripped onto one', { url: '/legacy-fixtures/cfml/api.cfm/finance/records', ...form('a-b=one&a.b=two') }, 'fixture:finance/records@post{scriptprotect=fault}', 'fixture:finance/records@post'],
+    ['posted names stripped onto one', { url: '/legacy-fixtures/cfml/api.cfm/people/persons', ...form('a-b=one&a.b=two') }, 'fixture:people/persons@post{scriptprotect=fault}', 'fixture:people/persons@post'],
     ['an array nested past the depth the stack decides', { url: `/?q=${'%5B'.repeat(600)}${'%5D'.repeat(600)}` }, 'page:render{scriptprotect=fault}', 'page:render'],
     ['a root-served scan fault, which always answers the error page', { url: '/_api/json/v1/tenant-a/?method=findOne&x=null' }, 'api:.findone', undefined],
     ['names stripped onto one with equal values', { url: '/?a-b=x&a.b=x' }, 'page:render', undefined],

@@ -1,4 +1,4 @@
-// cchain.edit loader and form markup against admin/core/views/cchain/edit.cfm (GS-CO-09).
+// cchain.edit loader and form markup against admin/core/views/cchain/edit.cfm.
 import * as cheerio from 'cheerio';
 import type { CheerioAPI } from 'cheerio';
 import { cfUuid } from '@opt2/platform/legacy-compat';

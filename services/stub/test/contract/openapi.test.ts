@@ -24,16 +24,27 @@ import {
   TENANT_A,
   TENANT_B,
   assertResponseMatchesOpenApi,
+  contractOperations,
+  contractRouteKey,
+  declarationMismatches,
   findOperation,
+  injectedBody,
+  injectedResponse,
+  loadOpenApiDocument,
   mintServiceToken,
   mintTasksInvokerToken,
+  operationIdProblems,
   pushTo,
   registryPayloads,
   testEnvelope,
+  withoutHeadTwins,
   type InjectResponse,
 } from '@opt2/platform/testing';
+import { commentToRow, newComment, noteCommentedPayload } from '../../src/domain/comment.js';
 import { newNote, noteCreatedPayload, noteToRow, type NoteProjectionRow } from '../../src/domain/note.js';
 import {
+  NOTE_COMMENTED_SUBSCRIPTION,
+  NOTE_COMMENTED_TOPIC,
   NOTE_CREATED_SUBSCRIPTION,
   NOTE_CREATED_TOPIC,
   SITE_CHANGED_SUBSCRIPTION,
@@ -48,24 +59,6 @@ type Headers = Record<string, string>;
 interface OpenApiDoc {
   openapi: string;
   info: { version: string; 'x-source-sha'?: string };
-  paths: Record<string, Record<string, unknown>>;
-}
-
-interface OperationObject {
-  operationId?: string;
-  'x-opt2-requires'?: string[];
-  'x-opt2-public'?: boolean;
-  'x-opt2-transport'?: string;
-}
-
-/** One contract operation with its auth declaration. */
-interface ContractOperation {
-  method: string;
-  path: string;
-  operationId: string | undefined;
-  requires: string[] | undefined;
-  public: boolean;
-  transport: string | undefined;
 }
 
 /** One request against an operation; `path` has no query, and `status` names a declared error status expected instead of the 2xx. */
@@ -86,11 +79,10 @@ interface RequestSpec {
   verify?: Case['verify'];
 }
 
-const DOC = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as OpenApiDoc;
+const DOC = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as unknown as OpenApiDoc;
 const PIN = JSON.parse(readFileSync(new URL('../../../../opt2/source-pin.json', import.meta.url), 'utf8')) as { sha: string };
 
 const HTTP_METHODS = ['get', 'post', 'put', 'patch', 'delete'] as const;
-const JSON_MEDIA_TYPE = /^application\/(?:[\w.+-]+\+)?json\b/i;
 const SERVICE = 'stub';
 const STUB_URL = 'http://127.0.0.1:8199';
 const NOTES_PATH = '/opt2/stub/notes';
@@ -108,6 +100,8 @@ const READ_NOTE = newNote({ title: 'Read note', body: 'Read body' }, TEST_CLOCK)
 const DELETED_NOTE = newNote({ title: 'Deleted note', body: '' }, TEST_CLOCK);
 const PUSHED_NOTE = newNote({ title: 'Pushed note', body: 'Pushed body' }, TEST_CLOCK);
 const READ_PATH = `${NOTES_PATH}/${READ_NOTE.noteId}`;
+const READ_COMMENT = newComment(READ_NOTE.noteId, TENANT_A.siteId, 'Read comment', TEST_CLOCK);
+const PUSHED_COMMENT = newComment(PUSHED_NOTE.noteId, TENANT_A.siteId, 'Pushed comment', TEST_CLOCK);
 
 const READ_PROJECTION: NoteProjectionRow = {
   note_id: READ_NOTE.noteId,
@@ -154,38 +148,7 @@ function epochSecondsOf(date: Date): number {
   return Math.floor(date.getTime() / 1000);
 }
 
-/** One entry per operation of `doc`, its method upper-cased. */
-function contractOperations(doc: OpenApiDoc): ContractOperation[] {
-  return Object.entries(doc.paths).flatMap(([path, item]) =>
-    HTTP_METHODS.flatMap((method) => {
-      const op = item[method] as OperationObject | undefined;
-      if (op === undefined) return [];
-      return [
-        {
-          method: method.toUpperCase(),
-          path,
-          operationId: op.operationId,
-          requires: op['x-opt2-requires'],
-          public: op['x-opt2-public'] === true,
-          transport: op['x-opt2-transport'],
-        },
-      ];
-    }),
-  );
-}
-
-const CONTRACT_OPS = contractOperations(DOC);
-
-/** `METHOD path` key of a registered route, its `:name` parameters in contract `{name}` form. */
-function routeKey({ method, url }: Pick<RouteMatrixEntry, 'method' | 'url'>): string {
-  return `${method} ${url.replace(/:([A-Za-z0-9_]+)/g, '{$1}')}`;
-}
-
-/** The routes without Fastify's implicit HEAD twins of GET routes. */
-function withoutHeadTwins(routes: readonly RouteMatrixEntry[]): RouteMatrixEntry[] {
-  const gets = new Set(routes.filter((route) => route.method === 'GET').map((route) => route.url));
-  return routes.filter((route) => !(route.method === 'HEAD' && gets.has(route.url)));
-}
+const CONTRACT_OPS = contractOperations(DOC, { methods: HTTP_METHODS });
 
 /** Invocation credential of the `caller` workload carrying `roles`. */
 async function serviceHeaders(caller: string, roles: string[]): Promise<Headers> {
@@ -220,13 +183,6 @@ function sitePayload(siteId: string) {
   return payload;
 }
 
-/** The response body: parsed JSON for JSON media types, raw text otherwise, undefined when empty. */
-function bodyOf(res: InjectResponse): unknown {
-  if (res.body === '') return undefined;
-  const contentType = res.headers['content-type'];
-  return typeof contentType === 'string' && JSON_MEDIA_TYPE.test(contentType) ? res.json() : res.body;
-}
-
 /** Asserts `res` answers `operationId` with its declared 2xx, or `expected.status`, and a contracted body; returns the body. */
 function expectContracted(operationId: string, expected: Pick<Case, 'method' | 'path' | 'status'>, res: InjectResponse): unknown {
   const { method, path, status } = expected;
@@ -238,8 +194,8 @@ function expectContracted(operationId: string, expected: Pick<Case, 'method' | '
   } else {
     expect(res.statusCode, res.body).toBe(status);
   }
-  const body = bodyOf(res);
-  assertResponseMatchesOpenApi(DOC, { method, path, status: res.statusCode, contentType: res.headers['content-type'], body });
+  const body = injectedBody(res);
+  assertResponseMatchesOpenApi(DOC, injectedResponse({ method, url: path }, res, { body }));
   return body;
 }
 
@@ -266,6 +222,28 @@ const cases = {
   getNoteProjection: request('GET', `${READ_PATH}/projection`, {
     as: asUser(Roles.member),
     verify: (body) => expect(body).toMatchObject({ data: { noteid: READ_NOTE.noteId, lasteventid: PROJECTED_EVENT_ID } }),
+  }),
+  createNoteGrant: request('POST', `${READ_PATH}/grants`, {
+    as: asUser(Roles.systemUser),
+    payload: { granteesiteid: TENANT_B.siteId },
+    verify: (body, { db }) => {
+      expect(body).toMatchObject({ method: 'save', data: { noteid: READ_NOTE.noteId, granteesiteid: TENANT_B.siteId } });
+      expect(db.rows('tenant_grant').map((row) => row.resource_id)).toContain(READ_NOTE.noteId);
+    },
+  }),
+  createNoteComment: request('POST', `${READ_PATH}/comments`, {
+    as: asUser(Roles.member),
+    payload: { grantorsiteid: TENANT_A.siteId, body: 'Created comment' },
+    verify: (body, { publisher }) => {
+      expect(body).toMatchObject({ method: 'save', data: { noteid: READ_NOTE.noteId, authorsiteid: TENANT_A.siteId, body: 'Created comment' } });
+      expect(publisher.published.map(({ topic }) => topic)).toContain(NOTE_COMMENTED_TOPIC);
+    },
+  }),
+  listNoteComments: request('GET', `${READ_PATH}/comments`, {
+    as: asUser(Roles.member),
+    verify: (body) => {
+      expect(body).toMatchObject({ method: 'findMany', data: { items: expect.arrayContaining([expect.objectContaining({ commentid: READ_COMMENT.commentId })]) } });
+    },
   }),
   deleteNote: request('DELETE', `${NOTES_PATH}/${DELETED_NOTE.noteId}`, {
     as: asUser(Roles.s2),
@@ -338,6 +316,26 @@ const cases = {
     verify: (_body, { db, publisher }) => {
       expect(db.rows('note_projection', TENANT_A.tenantId).map((row) => row.note_id)).toContain(PUSHED_NOTE.noteId);
       expect(publisher.deadLetters(NOTE_CREATED_SUBSCRIPTION)).toEqual([]);
+    },
+  },
+  pushNoteCommented: {
+    method: 'POST',
+    path: pushPath(NOTE_COMMENTED_SUBSCRIPTION),
+    run: ({ app }) =>
+      pushTo(
+        app,
+        NOTE_COMMENTED_SUBSCRIPTION,
+        testEnvelope({
+          topic: NOTE_COMMENTED_TOPIC,
+          tenantId: TENANT_A.tenantId,
+          aggregateId: PUSHED_NOTE.noteId,
+          aggregateVersion: 2,
+          payload: noteCommentedPayload(PUSHED_COMMENT),
+        }),
+      ),
+    verify: (_body, { db, publisher }) => {
+      expect(db.rows('note_activity', TENANT_A.tenantId).map((row) => row.comment_id)).toContain(PUSHED_COMMENT.commentId);
+      expect(publisher.deadLetters(NOTE_COMMENTED_SUBSCRIPTION)).toEqual([]);
     },
   },
   pushSiteChanged: {
@@ -414,9 +412,7 @@ describe('openapi document', () => {
   });
 
   it('gives every operation a unique operationId', () => {
-    const ids = CONTRACT_OPS.map(({ operationId }) => operationId);
-    expect(ids.filter((id) => typeof id !== 'string' || id === '')).toEqual([]);
-    expect(new Set(ids).size).toBe(ids.length);
+    expect(operationIdProblems(CONTRACT_OPS)).toEqual({ missing: [], duplicated: [] });
   });
 });
 
@@ -434,22 +430,11 @@ describe('route matrix', () => {
   });
 
   it('registers exactly the contract operations', () => {
-    expect(routes.map(routeKey).sort()).toEqual(CONTRACT_OPS.map(({ method, path }) => `${method} ${path}`).sort());
+    expect(routes.map((route) => contractRouteKey(route)).sort()).toEqual(CONTRACT_OPS.map(({ method, path }) => `${method} ${path}`).sort());
   });
 
   it('declares each route with the contract roles, public flag and transport', () => {
-    const byKey = new Map(CONTRACT_OPS.map((op) => [`${op.method} ${op.path}`, op]));
-    const declared = routes.map((route) => ({
-      route: routeKey(route),
-      requires: [...(route.requires ?? [])].sort(),
-      public: route.public === true,
-      transport: route.transport,
-    }));
-    const contracted = routes.map((route) => {
-      const op = byKey.get(routeKey(route));
-      return { route: routeKey(route), requires: [...(op?.requires ?? [])].sort(), public: op?.public === true, transport: op?.transport };
-    });
-    expect(declared).toEqual(contracted);
+    expect(declarationMismatches(routes, CONTRACT_OPS, { withDeclaration: true })).toEqual([]);
   });
 });
 
@@ -460,6 +445,7 @@ describe('operations', () => {
     const db = createRecordingDb({
       notes: [READ_NOTE, DELETED_NOTE, PUSHED_NOTE].map((note) => ({ tenantId: TENANT_A.tenantId, row: noteToRow(note) })),
       projections: [{ tenantId: TENANT_A.tenantId, row: READ_PROJECTION }],
+      comments: [{ tenantId: TENANT_A.tenantId, row: commentToRow(READ_COMMENT) }],
     });
     // PostgreSQL formats the stored watermark's finished_at; the bound text already has that form.
     db.respond('insert into stub.migration_watermark', ({ params }) => [

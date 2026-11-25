@@ -12,7 +12,7 @@
     "subdir": "snapshots"
   },
   "windows": { "openBudgetMs": 30000, "importRetryMs": 5000, "gatewayLeaseMs": 120000 },
-  "transition": { "freezeAckTimeoutMs": 30000, "cfthreadWaitMs": 600000, "drainTimeoutMs": 300000 },
+  "transition": { "freezeAckTimeoutMs": 30000, "drainTimeoutMs": 300000 },
   "projection": { "defaultAwaitTimeoutMs": 5000, "batchRows": 1000, "streamPagesPerCycle": 1, "idlePollMs": 250, "idleMaxPollMs": 5000 },
   "background": { "bridgePollMs": 60000, "tasksReconcileMs": 300000 },
   "startupGuard": {
@@ -45,24 +45,18 @@
       "admin:cusers.update{type=2,action=update}",
       "fixture:people/persons/{id}/archive@post"
     ],
-    "units": ["people.person_archive", "timesheets.blackout"]
+    "units": ["people.person_archive"]
   },
   "owners": {
     "identity": { "schema": "identity", "package": "services/identity" },
     "people": { "schema": "people", "package": "services/people" },
     "programs-sites": { "schema": "programs_sites", "package": "services/programs-sites" },
     "strategies-content": { "schema": "content", "package": "services/strategies-content" },
-    "communications": { "schema": "communications", "package": "services/communications" },
-    "reporting": { "schema": "reporting", "package": "services/reporting" },
-    "surveys": { "schema": "surveys", "package": "services/surveys" },
-    "timesheets": { "schema": "timesheets", "package": "services/timesheets" },
-    "finance": { "schema": "finance", "package": "services/finance" },
-    "e-signature": { "schema": "esignature", "package": "services/e-signature" },
     "stub": { "schema": "stub", "package": "services/stub" },
     "gateway": { "schema": "gateway", "package": "gateway" },
     "migration": { "schema": "migration", "package": "migration" }
   },
-  "dataOwners": ["identity", "people", "programs-sites", "strategies-content", "communications", "reporting", "surveys", "timesheets", "finance", "e-signature"],
+  "dataOwners": ["identity", "people", "programs-sites", "strategies-content"],
   "cloud": {
     "iamUserSuffixTrim": ".gserviceaccount.com",
     "serviceAccountPrefix": "opt2-",

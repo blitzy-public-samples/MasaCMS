@@ -1,11 +1,9 @@
 // Unit tests for the background suspend and resume routes over the real background state on an in-memory scheduler_state: contract shape, the stored record, the legacy 400 and auth.
-import { readFileSync } from 'node:fs';
-
 import { INVOCATION_HEADER, Roles, collectRouteMatrix } from '@opt2/platform/auth';
 import { createLogger } from '@opt2/platform/logging';
 import { createService, fixedClock, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
 import type { MetadataTx, QueryResult, TenantDb } from '@opt2/platform/tenancy';
-import { assertResponseMatchesOpenApi, mintServiceToken, mintUserToken, testVerifier } from '@opt2/platform/testing';
+import { assertResponseMatchesOpenApi, loadOpenApiDocument, mintServiceToken, mintUserToken, testVerifier } from '@opt2/platform/testing';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { parse } from 'yaml';
 
@@ -14,7 +12,7 @@ import { BACKGROUND_ROUTES, registerBackgroundRoutes } from '../../src/routes/ba
 
 type Operation = Record<string, unknown>;
 
-const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as {
+const OPENAPI = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as {
   paths: Record<string, Record<string, Operation>>;
 };
 const SUSPEND_PATH = '/internal/v1/background:suspend';
@@ -27,13 +25,13 @@ const RECORD: BackgroundRecord = {
   since: null,
   reason: 'golden capture',
   pushConfigs: {
-    'timesheets.people.person.archived.v1': {
-      pushEndpoint: 'http://127.0.0.1:22918/internal/v1/events/timesheets.people.person.archived.v1?key=REDACTED',
+    'identity.people.person.changed.v1': {
+      pushEndpoint: 'http://127.0.0.1:22911/internal/v1/events/identity.people.person.changed.v1?key=REDACTED',
       attributes: { 'x-goog-version': 'v1' },
     },
   },
   pausedQueues: [{ service: 'programs-sites', queue: 'programs-sites-sitemonitor' }],
-  pausedTasks: ['opt2-survey-41-launch'],
+  pausedTasks: ['/var/www/index.cfm/_api/sitemonitor/'],
 };
 
 /** `migration.scheduler_state` in memory; values make a JSON round trip, as jsonb does. */
@@ -160,7 +158,7 @@ describe('backgroundSuspend', () => {
 
   it('keeps a supplied since and lets a repeated suspend replace the record', async () => {
     await post(SUSPEND_PATH, await operator(), { ...RECORD, since: SINCE });
-    const again = { ...RECORD, since: SINCE, pausedTasks: [...RECORD.pausedTasks, 'opt2-survey-41-reminder-1'] };
+    const again = { ...RECORD, since: SINCE, pausedTasks: [...RECORD.pausedTasks, '/srv/www/index.cfm/_api/sitemonitor/'] };
 
     const res = await post(SUSPEND_PATH, await operator(), again);
 

@@ -102,10 +102,10 @@ describe('legacy-bound entries under v0002 as the request shapes them', () => {
   });
 
   it('holds an asynchronous request by the write entries its doactions name, table-scoped over their units', async () => {
-    const outcome = await outcomeOf({ url: `${ASYNC}&doaction=forwardEmail`, form: { object: 'rater', doaction: 'SAVERATE,,setReminder' } });
+    const outcome = await outcomeOf({ url: `${ASYNC}&doaction=saveForm`, form: { object: 'rater', doaction: 'SAVERATE,,setReminder' } });
     expect(outcome).toMatchObject({ entry: { route: 'api:processasyncobject', kind: 'legacy-write' }, tableScope: true });
-    expect(outcome.holdRoutes).toEqual(['page:forwardemail', 'page:saverate']);
-    expect(targetUnits(outcome)).toEqual(RATING);
+    expect(outcome.holdRoutes).toEqual(['page:saveform', 'page:saverate']);
+    expect(targetUnits(outcome)).toEqual([...RATING, 'content.file', 'identity.redirect'].sort());
   });
 
   it('composes an unmatched page key from its listed doactions, held by the others and spanning tables when several write', async () => {
@@ -205,7 +205,7 @@ describe('legacy-bound entries under v0002 as the request shapes them', () => {
     const reload = v0002.entryFor('reload:application');
     expect(outcome.result).toMatchObject({ key: 'reload:application', afterReload: { key: 'page:render' } });
     expect(outcome.entry?.route).toBe('page:render');
-    expect(new Set(outcome.entry?.units)).toEqual(new Set([...IDENTITY_LOGIN, 'reporting.session_tracking', ...(reload?.units ?? [])]));
+    expect(new Set(outcome.entry?.units)).toEqual(new Set([...IDENTITY_LOGIN, ...(reload?.units ?? [])]));
     expect(outcome.holdRoutes).toEqual(['reload:application']);
   });
 });
@@ -221,7 +221,7 @@ describe('legacy-bound page keys over versions whose render entry does not write
       clock: fixedClock('2026-06-30T12:00:00Z'),
       requestWrites,
     });
-  const READ_RENDER = entry({ route: 'page:render', owningService: 'none', kind: 'read', units: ['reporting.session_tracking'] });
+  const READ_RENDER = entry({ route: 'page:render', owningService: 'none', kind: 'read', units: ['content.filename_archive'] });
   const LOGOUT = entry({ route: 'page:logout', owningService: 'identity', kind: 'read', units: ['identity.login_state'] });
 
   it('routes an unknown doaction under a read render entry as listed, held by the doactions it names', async () => {

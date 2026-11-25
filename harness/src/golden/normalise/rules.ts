@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { parse } from 'yaml';
 import { z } from '@opt2/platform/service-kit';
 import {
@@ -11,7 +11,7 @@ import {
 } from '../catalogue.js';
 import { GoldenConfigError } from '../errors.js';
 import { originBaseUrl, type Origin } from '../session.js';
-import { repoPath, type EnvLike } from '../../lib/paths.js';
+import { REPO_ROOT, repoPath, stateDir, type EnvLike } from '../../lib/paths.js';
 import { pinnedSha } from '../../lib/pin.js';
 
 /** Default location of the golden normalisation rules. */
@@ -118,6 +118,25 @@ const originsSchema = z.strictObject({
 /** Capture and replay origins, `values` resolved to concrete origins by {@link loadRules}. */
 export type OriginRules = z.infer<typeof originsSchema>;
 
+const hostPathsSchema = z.strictObject({
+  id: ruleId,
+  roots: z
+    .array(
+      // `paths` is added after parsing and filled by loadRules, so the file never names a host path.
+      z
+        .strictObject({ root: z.enum(['checkout', 'state-dir']), placeholder })
+        .transform((entry) => ({ ...entry, paths: [] as string[] })),
+    )
+    .min(1)
+    .superRefine((roots, ctx) => {
+      for (const root of duplicates(roots.map((entry) => entry.root))) {
+        ctx.addIssue({ code: 'custom', message: `declares root ${root} more than once` });
+      }
+    }),
+});
+/** Host directories and their placeholders, each root's `paths` resolved by {@link loadRules}. */
+export type HostPathRules = z.infer<typeof hostPathsSchema>;
+
 const idPatternFields = {
   id: ruleId,
   pattern: z.string().min(1),
@@ -134,28 +153,11 @@ function checkIdPattern(rule: { pattern: string; flags: string }, ctx: z.Refinem
   }
 }
 
-const keyedIdSchema = z.strictObject({
-  id: ruleId,
-  keys: nonEmptyNames,
-  keyMatch: matchMode,
-  placeholder: ordinalPlaceholder,
-  ordinal: z.literal('scenario'),
-  ordinalKey: z.enum(['exact', 'case-insensitive']),
-});
-/** An opaque id known only by the JSON key, form field or column it is stored under, e.g. a Mailpit message ID. */
-export type KeyedIdRule = z.infer<typeof keyedIdSchema>;
-
-// Each key names one keyed rule, and each id kind has its own placeholder, so two kinds' ordinals never read alike.
-function checkKeyedIds(
-  rules: { placeholder: string; rfc4122: { placeholder: string }; keyed: readonly KeyedIdRule[] },
-  ctx: z.RefinementCtx,
-): void {
-  for (const key of duplicates(rules.keyed.flatMap((rule) => rule.keys), lowerCase)) {
-    ctx.addIssue({ code: 'custom', message: `names keyed id key ${key} more than once`, path: ['keyed'] });
-  }
-  const placeholders = [rules.placeholder, rules.rfc4122.placeholder, ...rules.keyed.map((rule) => rule.placeholder)];
-  for (const repeated of duplicates(placeholders)) {
-    ctx.addIssue({ code: 'custom', message: `uses placeholder ${repeated} for more than one id kind`, path: ['keyed'] });
+// Each id kind has its own placeholder, so two kinds' ordinals never read alike.
+function checkPlaceholders(rules: { placeholder: string; rfc4122: { placeholder: string } }, ctx: z.RefinementCtx): void {
+  if (rules.placeholder === rules.rfc4122.placeholder) {
+    const message = `uses placeholder ${rules.placeholder} for more than one id kind`;
+    ctx.addIssue({ code: 'custom', message, path: ['rfc4122', 'placeholder'] });
   }
 }
 
@@ -164,11 +166,10 @@ const idsSchema = z
     ...idPatternFields,
     keepLiteral: names,
     rfc4122: z.strictObject(idPatternFields).superRefine(checkIdPattern),
-    keyed: z.array(keyedIdSchema),
   })
   .superRefine(checkIdPattern)
-  .superRefine(checkKeyedIds);
-/** CF UUID ordinals, plus the RFC 4122 variant and the keyed ids. */
+  .superRefine(checkPlaceholders);
+/** CF UUID ordinals, plus the RFC 4122 variant. */
 export type IdRules = z.infer<typeof idsSchema>;
 
 const timestampClassSchema = z.strictObject({
@@ -391,22 +392,15 @@ const exportsSchema = z.strictObject({
     whitespace: whitespaceMode,
     keyTies: z.strictObject({ match: matchMode, whitespace: whitespaceMode, order: z.literal('row-alone-then-raw') }),
   }),
-  xlsx: z.strictObject({
-    parser: z.literal('exceljs'),
-    compare: z.literal('cells-per-sheet'),
-    sheetNames: z.enum(['compare', 'ignore']),
-    dates: z.literal('iso-before-timestamp-rule'),
-  }),
-  pdf: z.strictObject({ parser: z.literal('pdfjs-dist'), compare: z.literal('text-per-page'), whitespace: whitespaceMode }),
   zip: z.strictObject({
     parser: z.literal('jszip'),
     compare: z.array(z.enum(['entries', 'contentType', 'contentDispositionFilename'])).min(1),
     recordsetRows: z.strictObject({ entries: pattern, order: z.literal('row-alone-then-raw') }),
   }),
   file: z.strictObject({ compare: z.array(z.enum(['sha256', 'contentType', 'contentDispositionFilename'])).min(1) }),
-  neverCompareBytes: z.array(z.enum(['csv', 'xlsx', 'pdf', 'zip'])),
+  neverCompareBytes: z.array(z.enum(['csv', 'zip'])),
 });
-/** CSV, XLSX, PDF, ZIP and downloaded-file comparison. */
+/** CSV, ZIP and downloaded-file comparison. */
 export type ExportRules = z.infer<typeof exportsSchema>;
 
 const transitionsSchema = z.strictObject({
@@ -440,7 +434,7 @@ const rowsSchema = z.strictObject({
   keyForm: z.literal('normalised'),
   keyless: z.literal('multiset-with-counts'),
   apply: ruleRefs,
-  literal: z.strictObject({ money: pattern, dateOnlyFields: z.boolean() }),
+  literal: z.strictObject({ dateOnlyFields: z.boolean() }),
   volatile: z.array(
     z.strictObject({
       column: z.string().regex(/^[A-Za-z_]\w*\.[A-Za-z_]\w*$/, 'must be <table>.<column>'),
@@ -452,17 +446,6 @@ const rowsSchema = z.strictObject({
 /** Stored-row comparison over canonical encodings. */
 export type RowRules = z.infer<typeof rowsSchema>;
 
-const tasksSchema = z.strictObject({
-  id: ruleId,
-  compare: nonEmptyNames,
-  base: z.strictObject({ requestFields: nonEmptyNames, fallback: z.literal('earliest-task-time') }),
-  times: z.literal('offset-seconds-from-base'),
-  apply: ruleRefs,
-  order: nonEmptyNames,
-});
-/** Scheduled-task comparison as offsets from the scheduling base. */
-export type TaskRules = z.infer<typeof tasksSchema>;
-
 const filesSchema = z.strictObject({
   id: ruleId,
   compare: nonEmptyNames,
@@ -471,59 +454,6 @@ const filesSchema = z.strictObject({
 });
 /** Stored file-variant comparison. */
 export type FileRules = z.infer<typeof filesSchema>;
-
-const recordField = z.string().min(1);
-const chainHashesSchema = z
-  .strictObject({
-    id: ruleId,
-    fields: nonEmptyNames,
-    fieldMatch: z.literal('case-insensitive'),
-    format: z.string().min(1),
-    placeholder: ordinalPlaceholder,
-    ordinal: z.literal('scenario'),
-    ordinalKey: z.literal('exact'),
-    keepLiteral: names,
-    selfConsistency: z.strictObject({
-      check: z.literal('usp-audit-append'),
-      record: z.strictObject({
-        requestId: recordField,
-        seq: recordField,
-        action: recordField,
-        actor: recordField,
-        detail: recordField,
-        at: recordField,
-        previous: recordField,
-        hash: recordField,
-      }),
-      mismatchPlaceholder: placeholder,
-    }),
-  })
-  .superRefine((rule, ctx) => {
-    for (const name of duplicates(rule.fields, lowerCase)) {
-      ctx.addIssue({ code: 'custom', message: `declares field ${name} more than once`, path: ['fields'] });
-    }
-    const { record } = rule.selfConsistency;
-    for (const name of duplicates(Object.values(record), lowerCase)) {
-      const message = `names field ${name} for more than one role`;
-      ctx.addIssue({ code: 'custom', message, path: ['selfConsistency', 'record'] });
-    }
-    const fields = new Set(rule.fields.map(lowerCase));
-    for (const role of ['previous', 'hash'] as const) {
-      if (!fields.has(record[role].toLowerCase())) {
-        ctx.addIssue({ code: 'custom', message: 'must be one of fields', path: ['selfConsistency', 'record', role] });
-      }
-    }
-    if (!compiles(rule.format)) {
-      ctx.addIssue({ code: 'custom', message: 'must be a valid regular expression', path: ['format'] });
-      return;
-    }
-    const format = new RegExp(rule.format);
-    rule.keepLiteral.forEach((value, index) => {
-      if (!format.test(value)) ctx.addIssue({ code: 'custom', message: 'must match format', path: ['keepLiteral', index] });
-    });
-  });
-/** Audit chain hashes as ordinals, each entry hash checked against the fixture procedure's formula first. */
-export type ChainHashRules = z.infer<typeof chainHashesSchema>;
 
 const knownIssueScopeSchema = z
   .strictObject({
@@ -668,6 +598,7 @@ export const normaliseRulesSchema = z
     sourceSha: z.string().regex(/^[0-9a-f]{40}$/, 'must be a 40-character lowercase hex commit id'),
     version: z.literal(1),
     origins: originsSchema,
+    hostPaths: hostPathsSchema,
     ids: idsSchema,
     timestamps: timestampsSchema,
     tokens: tokensSchema,
@@ -680,9 +611,7 @@ export const normaliseRulesSchema = z
     transitions: transitionsSchema,
     mail: mailSchema,
     rows: rowsSchema,
-    tasks: tasksSchema,
     files: filesSchema,
-    chainHashes: chainHashesSchema,
     knownIssues: knownIssuesSchema,
     overrides: overridesSchema,
   })
@@ -751,8 +680,21 @@ function resolveOrigins(origins: OriginRules, env: EnvLike, file: string): strin
   });
 }
 
+/** `dir` as given and, when it exists, as its real path. */
+function pathForms(dir: string): string[] {
+  return existsSync(dir) ? [...new Set([dir, realpathSync(dir)])] : [dir];
+}
+
+// The checkout is the harness's own, which legacy-start.sh makes the legacy webroot; the state directory is `env`'s.
+function resolveHostPaths(hostPaths: HostPathRules, env: EnvLike): HostPathRules['roots'] {
+  return hostPaths.roots.map((entry) => ({
+    ...entry,
+    paths: pathForms(entry.root === 'checkout' ? REPO_ROOT : stateDir(env)),
+  }));
+}
+
 /**
- * Reads and validates the rules at `path`, binds the pinned source SHA and resolves origins from `env`.
+ * Reads and validates the rules at `path`, binds the pinned source SHA and resolves origins and host paths from `env`.
  * Throws `GoldenConfigError` when the file cannot be read or parsed, fails the schema, carries another
  * source SHA, or leaves an origin variable unresolved.
  */
@@ -787,7 +729,12 @@ export function loadRules(path: string = RULES_PATH, env: EnvLike = process.env)
     );
   }
   const values = resolveOrigins(parsed.data.origins, env, path);
-  return deepFreeze({ ...parsed.data, origins: { ...parsed.data.origins, values } });
+  const roots = resolveHostPaths(parsed.data.hostPaths, env);
+  return deepFreeze({
+    ...parsed.data,
+    origins: { ...parsed.data.origins, values },
+    hostPaths: { ...parsed.data.hostPaths, roots },
+  });
 }
 
 function ruleEntries(rules: NormaliseRules): Map<string, Record<string, unknown>> {

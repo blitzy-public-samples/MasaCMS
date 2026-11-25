@@ -51,9 +51,9 @@ const PIN_SHA = (JSON.parse(await readFile(opt2Path('source-pin.json'), 'utf8'))
 const GENERATED_AT = '2026-06-30T12:00:00.000Z';
 const CLOCK = (): Date => new Date(GENERATED_AT);
 const CONSUMER_KEYS = ['crossTenantEffects', 'fanoutRegistryOnly', 'subscription', 'tenantlessRejected'];
-const ARCHIVED = 'timesheets.people.person.archived.v1';
-const SCHEDULED = 'communications.surveys.survey.scheduled.v1';
-const CLEAN_RUN: GatewayIsolationResult = { crossTenantReads: 0, crossTenantWrites: 0, surveyGrantOnly: true, cases: [] };
+const NOTE_CREATED = 'stub.stub.note.created.v1';
+const GROUP_CHANGED = 'strategies-content.identity.group.changed.v1';
+const CLEAN_RUN: GatewayIsolationResult = { crossTenantReads: 0, crossTenantWrites: 0, grantOnly: true, cases: [] };
 
 /** A push subscription entry of `consumer` on `topic`, shaped as `deriveTopology` writes it. */
 function subscriptionEntry(consumer: string, topic: string): SubscriptionEntry {
@@ -71,8 +71,8 @@ function subscriptionEntry(consumer: string, topic: string): SubscriptionEntry {
 
 const TOPOLOGY: Pick<Topology, 'subscriptions'> = {
   subscriptions: {
-    [ARCHIVED]: subscriptionEntry('timesheets', 'people.person.archived.v1'),
-    [SCHEDULED]: subscriptionEntry('communications', 'surveys.survey.scheduled.v1'),
+    [NOTE_CREATED]: subscriptionEntry('stub', 'stub.note.created.v1'),
+    [GROUP_CHANGED]: subscriptionEntry('strategies-content', 'identity.group.changed.v1'),
   },
 };
 const TOPOLOGY_SUBSCRIPTIONS = consumerSubscriptions(TOPOLOGY);
@@ -123,9 +123,9 @@ function committedRows(): CatalogRows {
 function compliantRows(): CatalogRows {
   const rows = committedRows();
   for (const table of rows.tables) {
-    if (table.schema === 'timesheets' && table.table === 'blackout') table.relforcerowsecurity = true;
+    if (table.schema === 'programs_sites' && table.table === 'changelog') table.relforcerowsecurity = true;
   }
-  for (const role of rows.roles) if (role.rolname === 'finance_app') role.rolbypassrls = false;
+  for (const role of rows.roles) if (role.rolname === 'content_app') role.rolbypassrls = false;
   return rows;
 }
 
@@ -293,7 +293,7 @@ describe('buildIsolationReport over the samples', () => {
     const { report } = buildIsolationReport(passingInput());
 
     expectCommittedShape(report);
-    expect(report.consumers.map((row) => row.subscription)).toEqual([SCHEDULED, ARCHIVED]);
+    expect(report.consumers.map((row) => row.subscription)).toEqual([GROUP_CHANGED, NOTE_CREATED]);
   });
 
   it('passes when every package shows the clean sample, the catalog is compliant and the gateway run is clean', () => {
@@ -315,19 +315,19 @@ describe('buildIsolationReport over the samples', () => {
       expect([enabled, forced, usingAndWithCheck]).toEqual([tables, tables, tables]);
     }
     expect(report.consumers).toEqual([
-      { subscription: SCHEDULED, tenantlessRejected: true, fanoutRegistryOnly: null, crossTenantEffects: 0 },
-      { subscription: ARCHIVED, tenantlessRejected: true, fanoutRegistryOnly: true, crossTenantEffects: 0 },
+      { subscription: GROUP_CHANGED, tenantlessRejected: true, fanoutRegistryOnly: null, crossTenantEffects: 0 },
+      { subscription: NOTE_CREATED, tenantlessRejected: true, fanoutRegistryOnly: true, crossTenantEffects: 0 },
     ]);
     expect(report.roles).toEqual({ rolbypassrls: [], rolsuper: [], membershipViolations: [] });
-    expect(report.endToEnd).toMatchObject({ crossTenantReads: 0, crossTenantWrites: 0, surveyGrantOnly: true });
+    expect(report.endToEnd).toMatchObject({ crossTenantReads: 0, crossTenantWrites: 0, grantOnly: true });
   });
 
   it.each<[string, (input: IsolationReportInput) => IsolationReportInput, (report: IsolationReport) => unknown, unknown]>([
     [
       'the catalog shows the committed unforced table and BYPASSRLS role',
       (input) => ({ ...input, catalog: evaluateCatalog(committedRows()) }),
-      (report) => [report.roles.rolbypassrls, rowOf(report, 'timesheets').rlsCatalog],
-      [['finance_app'], { tables: 1, enabled: 1, forced: 0, usingAndWithCheck: 1 }],
+      (report) => [report.roles.rolbypassrls, rowOf(report, 'programs-sites').rlsCatalog],
+      [['content_app'], { tables: 1, enabled: 1, forced: 0, usingAndWithCheck: 1 }],
     ],
     [
       'one service shows a cross-tenant write',
@@ -342,21 +342,21 @@ describe('buildIsolationReport over the samples', () => {
       1,
     ],
     [
-      'the gateway admitted a survey response for an ungranted site',
-      (input) => withGatewayRun(input, { surveyGrantOnly: false }),
-      (report) => report.endToEnd.surveyGrantOnly,
+      'the gateway admitted a grant-checked write for an ungranted site',
+      (input) => withGatewayRun(input, { grantOnly: false }),
+      (report) => report.endToEnd.grantOnly,
       false,
     ],
     [
       'a consumer applies an event to another tenant',
-      (input) => withFailedAssertion(input, 'timesheets', 'crossTenantEffects', ARCHIVED),
-      (report) => consumerOf(report, ARCHIVED).crossTenantEffects,
+      (input) => withFailedAssertion(input, 'stub', 'crossTenantEffects', NOTE_CREATED),
+      (report) => consumerOf(report, NOTE_CREATED).crossTenantEffects,
       1,
     ],
     [
       'a consumer does not dead-letter a tenantless event',
-      (input) => withFailedAssertion(input, 'communications', 'tenantlessRejected', SCHEDULED),
-      (report) => consumerOf(report, SCHEDULED).tenantlessRejected,
+      (input) => withFailedAssertion(input, 'strategies-content', 'tenantlessRejected', GROUP_CHANGED),
+      (report) => consumerOf(report, GROUP_CHANGED).tenantlessRejected,
       false,
     ],
     [
@@ -373,11 +373,11 @@ describe('buildIsolationReport over the samples', () => {
   });
 
   it('fails an uncovered consumer of a package whose other consumer is covered, without crediting it that evidence', () => {
-    const covered = TOPOLOGY_SUBSCRIPTIONS.find((subscription) => subscription.subscription === ARCHIVED);
-    if (covered === undefined) throw new Error(`the fixed topology has no ${ARCHIVED}`);
+    const covered = TOPOLOGY_SUBSCRIPTIONS.find((subscription) => subscription.subscription === NOTE_CREATED);
+    if (covered === undefined) throw new Error(`the fixed topology has no ${NOTE_CREATED}`);
     const uncovered: ConsumerSubscription = {
-      subscription: 'timesheets.programs-sites.site.changed.v1',
-      consumer: 'timesheets',
+      subscription: 'stub.programs-sites.site.changed.v1',
+      consumer: 'stub',
       topic: 'programs-sites.site.changed.v1',
       fanout: false,
     };
@@ -385,18 +385,18 @@ describe('buildIsolationReport over the samples', () => {
     const built = buildIsolationReport(passingInput({ subscriptions: [covered, uncovered] }));
 
     expect(built.report.consumers).toEqual([
-      { subscription: ARCHIVED, tenantlessRejected: true, fanoutRegistryOnly: true, crossTenantEffects: 0 },
       { subscription: uncovered.subscription, tenantlessRejected: false, fanoutRegistryOnly: null, crossTenantEffects: null },
+      { subscription: NOTE_CREATED, tenantlessRejected: true, fanoutRegistryOnly: true, crossTenantEffects: 0 },
     ]);
     const naming = `naming ${uncovered.subscription} or ${uncovered.topic} in its consumer package`;
     expect(built.findings).toEqual(
       [`no tenantless-event assertion ${naming}`, `no cross-tenant effect assertion ${naming}`].map((detail) => ({
         scope: `consumer ${uncovered.subscription}`,
-        service: 'timesheets',
+        service: 'stub',
         detail,
       })),
     );
-    expect(built.servicesFailing).toEqual(['timesheets']);
+    expect(built.servicesFailing).toEqual(['stub']);
     expect(built.report.result).toBe('fail');
   });
 
@@ -415,7 +415,7 @@ describe('buildIsolationReport over the samples', () => {
 });
 
 describe('endToEndResultSchema', () => {
-  it.each(['surveyGrantOnly', 'crossTenantWrites', 'cases'] as const)('rejects a gateway run without %s', (field) => {
+  it.each(['grantOnly', 'crossTenantWrites', 'cases'] as const)('rejects a gateway run without %s', (field) => {
     const gateway: Partial<GatewayIsolationResult> = { ...CLEAN_RUN };
     delete gateway[field];
 
@@ -492,11 +492,14 @@ describe('main', () => {
 
     const outcome = await main([], deps(committedRows()));
 
-    expect(outcome).toMatchObject({ code: 1, summary: { result: 'fail', servicesFailing: ['timesheets', 'finance'] } });
+    expect(outcome).toMatchObject({
+      code: 1,
+      summary: { result: 'fail', servicesFailing: ['programs-sites', 'strategies-content'] },
+    });
     const report = await writtenReport();
     expect(report).toMatchObject({ sourceSha: PIN_SHA, generatedAt: GENERATED_AT, result: 'fail' });
-    expect(report.roles.rolbypassrls).toEqual(['finance_app']);
-    expect(rowOf(report, 'timesheets').rlsCatalog).toMatchObject({ tables: 1, forced: 0 });
+    expect(report.roles.rolbypassrls).toEqual(['content_app']);
+    expect(rowOf(report, 'programs-sites').rlsCatalog).toMatchObject({ tables: 1, forced: 0 });
   });
 
   it.each<[string, GatewayIsolationResult, number, string]>([

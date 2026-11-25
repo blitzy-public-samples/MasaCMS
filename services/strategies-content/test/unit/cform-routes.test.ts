@@ -17,7 +17,7 @@ import {
   type ServiceRequest,
   type ServiceResponse,
 } from '@opt2/platform/service-kit';
-import { TENANT_A, TENANT_B, assertResponseMatchesOpenApi } from '@opt2/platform/testing';
+import { TENANT_A, TENANT_B, assertResponseMatchesOpenApi, loadOpenApiDocument } from '@opt2/platform/testing';
 import { CONTENT_CONFIG_DEFAULTS, actorFromClaims } from '../../src/domain/context.js';
 import { acfStructKeyOrder, type AdminRenderResult } from '../../src/legacy/admin-render.js';
 import { createContentRepository } from '../../src/repo/repository.js';
@@ -34,7 +34,7 @@ interface Recorded {
 }
 
 const recorded = JSON.parse(readFileSync(new URL('../fixtures/legacy-cform-recorded.json', import.meta.url), 'utf8')) as Recorded;
-const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
+const OPENAPI = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as object;
 
 const SITE = TENANT_A.siteId;
 const USER = 'U0000001-AAAA-BBBB-CCCCDDDDEEEEFFFF';

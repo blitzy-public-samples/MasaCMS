@@ -46,11 +46,11 @@ export const BRIDGE_SESSION_PATH = '/gateway/legacy-bridge/cfml/session.cfm';
 /** Path of the bridge's site page, of which the double serves `op=paths`, `op=versionMenu`, `op=plugins` and `op=static`. */
 export const BRIDGE_SITE_PATH = '/gateway/legacy-bridge/cfml/site.cfm';
 
-/** `site.cfm?op=plugins` as legacy answers it with the GS-PS-10 golden plugin deployed. */
+/** `site.cfm?op=plugins` as legacy answers it with a golden plugin deployed. */
 export const LEGACY_PLUGINS: LegacyPlugin[] = [
   {
     moduleId: '88C48C97-ADFA-018D-66EAB47267C52ED2',
-    name: 'GS-PS-10 Plugin',
+    name: 'OPT-2 Utility Plugin',
     directory: '1',
     category: 'Utility',
     version: '1.0.0',

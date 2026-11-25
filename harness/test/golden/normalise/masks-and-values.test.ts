@@ -79,7 +79,7 @@ function configError(fn: () => unknown): GoldenConfigError {
 
 describe('masksFor', () => {
   it.each<[string, string, string | RouteKeyResult, string[]]>([
-    ['gives any scenario and route the wildcard masks', 'GS-CO-01', 'admin:carch.list', WILDCARD_MASKS],
+    ['gives any scenario and route the wildcard masks', 'GS-CO-71', 'admin:carch.list', WILDCARD_MASKS],
     [
       'adds session-rotation on an authored login route key',
       'GS-ID-01',
@@ -100,17 +100,17 @@ describe('masksFor', () => {
     ],
     [
       'matches an authored route key after trimming and lower-casing it',
-      'GS-ID-05',
+      'GS-PE-01',
       ' Admin:CUsers.EditGroup ',
       [...WILDCARD_MASKS, 'default-member'],
     ],
-    ['leaves default-member off a scenario it does not list', 'GS-CO-01', 'admin:cusers.editgroup', WILDCARD_MASKS],
+    ['leaves default-member off a scenario it does not list', 'GS-CO-71', 'admin:cusers.editgroup', WILDCARD_MASKS],
   ])('%s', (_label, scenarioId, routeKey, expected) => {
     expect(idsOf(masksFor(scenarioId, routeKey, rules))).toStrictEqual(expected);
   });
 
   it('scopes date-mask to DOM date text under the dom and envelope compare kinds', () => {
-    const mask = maskFor('date-mask', 'GS-CO-01', 'admin:carch.list', rules);
+    const mask = maskFor('date-mask', 'GS-CO-71', 'admin:carch.list', rules);
     expect(mask?.compareKinds).toStrictEqual(['dom', 'envelope']);
     const selectors = mask?.locations.map((location) => (location.kind === 'dom' ? location.selector : location.kind));
     expect(selectors).toStrictEqual(knownIssue('date-mask').scope.selectors);
@@ -123,9 +123,9 @@ describe('masksFor', () => {
   });
 
   it('scopes default-member to the checked attribute of the isPublic radios', () => {
-    expect(maskFor('default-member', 'GS-ID-05', 'admin:cusers.edituser', rules)).toStrictEqual({
+    expect(maskFor('default-member', 'GS-PE-01', 'admin:cusers.edituser', rules)).toStrictEqual({
       id: 'default-member',
-      scenarios: ['GS-ID-05', 'GS-ID-06', 'GS-PE-01', 'GS-PE-02', 'GS-PE-RH-01', 'GS-PE-RH-02'],
+      scenarios: ['GS-PE-01', 'GS-PE-02', 'GS-PE-RH-01', 'GS-PE-RH-02'],
       routeKeys: ['admin:cusers.editgroup', 'admin:cusers.edituser'],
       locations: [
         { kind: 'dom', selector: 'input[name=isPublic][value=1]', attributes: ['checked'] },
@@ -186,7 +186,7 @@ describe('masksFor', () => {
     ['a computed', { ...LOGIN, key: 'admin:cusers.edituser', baseKey: 'admin:cusers.edituser', httpMethod: 'GET' }],
   ])('keeps a flagged default-member once on %s route key its route keys list', (_label, routeKey) => {
     const step = { name: 'save', knownIssue: 'default-member' };
-    expect(idsOf(masksFor('GS-ID-05', routeKey, rules, step))).toStrictEqual([...WILDCARD_MASKS, 'default-member']);
+    expect(idsOf(masksFor('GS-PE-01', routeKey, rules, step))).toStrictEqual([...WILDCARD_MASKS, 'default-member']);
   });
 
   it.each([
@@ -196,16 +196,16 @@ describe('masksFor', () => {
       'no-such-issue',
       'is not one of date-mask, session-rotation, header-search-404, default-member',
     ],
-    ['header-search-404 outside its step scenarios', 'GS-CO-01', 'header-search-404', 'is declared for GS-CO-06 only'],
+    ['header-search-404 outside its step scenarios', 'GS-CO-71', 'header-search-404', 'is declared for GS-CO-06 only'],
     [
       'default-member outside its scenarios',
-      'GS-CO-01',
+      'GS-CO-71',
       'default-member',
-      'is declared for GS-ID-05, GS-ID-06, GS-PE-01, GS-PE-02, GS-PE-RH-01, GS-PE-RH-02 only',
+      'is declared for GS-PE-01, GS-PE-02, GS-PE-RH-01, GS-PE-RH-02 only',
     ],
     [
       'default-member on a route its route keys do not list',
-      'GS-ID-05',
+      'GS-PE-01',
       'default-member',
       'is declared for routes admin:cusers.editgroup, admin:cusers.edituser only',
     ],
@@ -458,7 +458,7 @@ describe('timestamps', () => {
   });
 
   it('keeps date-only fields literal, matching their names ignoring case and underscores', () => {
-    expect(['asOf', 'due_date', 'AS_OF', 'title'].map((name) => isDateOnlyField(name, rules))).toStrictEqual([
+    expect(['dueDate', 'due_date', 'DUE_DATE', 'title'].map((name) => isDateOnlyField(name, rules))).toStrictEqual([
       true,
       true,
       true,
@@ -680,7 +680,7 @@ describe('normaliseValue', () => {
       up: '../x?y=1',
       bad: 'http://[bad',
       when: '2026-06-30T10:00:00',
-      asOf: '2026-06-30',
+      effectiveFrom: '2026-06-30',
       dueDate: ['2026-06-30'],
       createdAt: EPOCH_MS,
       loginTime: EPOCH_MS,
@@ -698,7 +698,6 @@ describe('normaliseValue', () => {
     expect(out).toStrictEqual({
       '<id:1>': { id: '<id:1>' },
       URL: '<origin>/page',
-      asOf: '2026-06-30',
       at,
       authToken: '',
       bad: 'http://[bad',
@@ -707,6 +706,7 @@ describe('normaliseValue', () => {
       csrf_token: '<token>',
       downloadUrl: '<url>',
       dueDate: ['2026-06-30'],
+      effectiveFrom: '2026-06-30',
       flag: true,
       link: '/_api/json/v1/site/content',
       loginTime: '<ts:epoch-ms>',
@@ -730,7 +730,7 @@ describe('normaliseValue', () => {
     [EPOCH_MS, 'updatedAt', '<ts:epoch-ms>'],
     ['abc', 'csrf_token', '<token>'],
     ['', 'csrf_token', ''],
-    [['2026-06-30'], 'asOf', ['2026-06-30']],
+    [['2026-06-30'], 'effectiveFrom', ['2026-06-30']],
     ['/opt2/files/x', undefined, '<url>'],
   ])('normalises %j under key %s to %j', (value, key, expected) => {
     expect(normaliseValue(value, createIdOrdinals(), rules, key)).toStrictEqual(expected);

@@ -17,20 +17,7 @@ export interface CsrfRouteDeps {
   csrf: CsrfDeps;
 }
 
-// The synthetic services consume tokens from their fixture routes' CSRF hook.
-const CONSUME_CALLERS = [
-  'people',
-  'programs-sites',
-  'strategies-content',
-  'identity',
-  'gateway',
-  'communications',
-  'e-signature',
-  'finance',
-  'reporting',
-  'surveys',
-  'timesheets',
-] as const;
+const CONSUME_CALLERS = ['people', 'programs-sites', 'strategies-content', 'identity', 'gateway'] as const;
 
 const CONSUME_AUTH: Opt2RouteConfig = Object.freeze({
   transport: 'service',

@@ -28,7 +28,7 @@ const UPDATE_ROUTE = routeKey('PUT', 'identity', `/v1/permissions/modules/${MODU
 /** The Site Manager module form as posted: one `groupid` per checked box, then the hidden fields. */
 const POSTED: ReadonlyArray<readonly [string, string]> = [
   ['groupid', GROUP_IDS.tenantAAdmin],
-  ['groupid', GROUP_IDS.timesheetsEmployee],
+  ['groupid', GROUP_IDS.teamMember],
   ['groupid', GROUP_IDS.umbrellaMembers],
   ['router', REFERER],
   ['siteid', SITE],
@@ -104,7 +104,7 @@ describe('cpermUpdateModule', () => {
       ['identity', 'PUT', `/v1/permissions/modules/${MODULE_IDS.content}`],
     ]);
     expect(Object.entries(gateway.calls[0]?.form ?? {})).toEqual([
-      ['groupid', `${GROUP_IDS.tenantAAdmin},${GROUP_IDS.timesheetsEmployee},${GROUP_IDS.umbrellaMembers}`],
+      ['groupid', `${GROUP_IDS.tenantAAdmin},${GROUP_IDS.teamMember},${GROUP_IDS.umbrellaMembers}`],
       ['contentid', MODULE_IDS.content],
       ['siteid', SITE],
       ['topid', 'X'],

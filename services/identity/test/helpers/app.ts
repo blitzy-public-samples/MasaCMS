@@ -1,9 +1,8 @@
 /** Shared scaffolding of the identity suites: the app built for `app.inject` over in-memory database, task, publisher, Identity Platform and service-client fakes. */
 import { mkdtempSync, rmSync } from 'node:fs';
-import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { LOCAL_USER_TOKEN, decodeJwt } from '@opt2/platform/auth';
+import { decodeJwt } from '@opt2/platform/auth';
 import { cfUuid } from '@opt2/platform/legacy-compat';
 import {
   ServiceUnavailableError,
@@ -15,31 +14,24 @@ import {
   type ServiceRequest,
   type ServiceResponse,
 } from '@opt2/platform/service-kit';
-import {
-  assertCreateInput,
-  outboxSweepQueue,
-  resolvePageSize,
-  type CreateTaskInput,
-  type CreateTaskResult,
-  type DeleteTaskResult,
-  type QueueState,
-  type TaskInfo,
-  type TaskPage,
-  type TaskPageRequest,
-  type TaskPort,
-} from '@opt2/platform/tasks';
+import { outboxSweepQueue, type TaskPort } from '@opt2/platform/tasks';
 import type { TenantDb } from '@opt2/platform/tenancy';
 import {
-  ROLE_SET,
-  TENANT_A,
-  authHeadersFor,
+  CLIENT_ROUTE_KEY,
   businessClock,
+  clientPathPattern,
   createCapturingPublisher,
+  createFakeTaskPort,
+  createHeadersFor,
+  createTestStateDir as sharedCreateTestStateDir,
   fixedClock,
+  localTestEnv,
+  localTestUrl,
+  pathWithoutQuery,
   testVerifier,
-  writeTestSecrets,
   type CapturingPublisher,
-  type RoleSubject,
+  type ClientHandler,
+  type FakeTaskPort,
 } from '@opt2/platform/testing';
 import { SERVICE_NAME, buildApp, identityEnvSchema, type IdentityEnv } from '../../src/app.js';
 import { USER_CLOSED_WAIT_MS } from '../../src/domain/account-operations.js';
@@ -58,23 +50,11 @@ import {
 } from './memory-repo.js';
 import { ALL_ACTORS, DEFAULT_SEED, type TestActor } from './rows.js';
 
-export { fixedClock };
+export { createFakeTaskPort, fixedClock, type ClientHandler, type FakeTaskPort };
 
 const STATE_DIR_PREFIX = 'opt2-identity-test-';
 const MINUTE_MS = 60_000;
 const HOUR_MS = 60 * MINUTE_MS;
-
-/** Local ports of the callees identity's env names, as `harness/repro/ports.env` fixes them. */
-const LOCAL_PORTS = Object.freeze({
-  gateway: 8100,
-  migration: 8102,
-  identity: 8111,
-  people: 8112,
-  'programs-sites': 8113,
-  'strategies-content': 8114,
-} as const);
-
-const localUrl = (port: number): string => `http://127.0.0.1:${String(port)}`;
 
 /** Clock every suite shares: local `2026-06-30T12:00:00`, the seed's business date. */
 export const TEST_CLOCK: Clock = businessClock();
@@ -102,44 +82,20 @@ export const CLOUD_DB_OVERRIDES: Readonly<Record<string, string | undefined>> = 
   PG_PASSWORD: undefined,
 });
 
-/** A fresh state directory outside the checkout holding the platform test key pair and push key. */
-export async function createTestStateDir(): Promise<string> {
-  const dir = await mkdtemp(path.join(tmpdir(), STATE_DIR_PREFIX));
-  await writeTestSecrets(dir);
-  return dir;
-}
+/** A fresh state directory under the OS temp directory holding the platform test key pair and push key. */
+export const createTestStateDir = (): Promise<string> => sharedCreateTestStateDir(STATE_DIR_PREFIX);
 
-/**
- * The parsed local environment of identity, read from literals and `TZ` only. `OPT2_STATE_DIR` is `stateDir`, else a fresh
- * empty directory; `overrides` merge last, and an override of `undefined` removes the variable. The `PG_*` values are
- * never connected to, since suites inject the database.
- */
+/** Identity's parsed local environment; `OPT2_STATE_DIR` is `stateDir`, else a fresh empty directory, and an `undefined` override removes a variable. */
 export function testEnv(overrides: Readonly<Record<string, string | undefined>> = {}, stateDir?: string): IdentityEnv {
-  const source: Record<string, string | undefined> = {
-    PORT: String(LOCAL_PORTS.identity),
-    OPT2_SERVICE_NAME: SERVICE_NAME,
-    OPT2_ENV: 'local',
-    OPT2_DB_AUTH: 'password',
-    PG_HOST: '127.0.0.1',
-    PG_PORT: '5432',
-    PG_DATABASE: 'opt2_identity_test',
-    PG_USER: 'identity_app',
-    PG_PASSWORD: 'unused',
-    OPT2_TOKEN_ISSUER: LOCAL_USER_TOKEN.issuer,
-    OPT2_TOKEN_AUDIENCE: LOCAL_USER_TOKEN.audience,
-    OPT2_JWKS_URL: `${localUrl(LOCAL_PORTS.identity)}/.well-known/jwks.json`,
-    OPT2_GATEWAY_URL: localUrl(LOCAL_PORTS.gateway),
-    OPT2_MIGRATION_URL: localUrl(LOCAL_PORTS.migration),
-    OPT2_SERVICE_URLS: JSON.stringify(Object.fromEntries(Object.entries(LOCAL_PORTS).map(([service, port]) => [service, localUrl(port)]))),
-    OPT2_STATE_DIR: stateDir ?? ('OPT2_STATE_DIR' in overrides ? undefined : mkdtempSync(path.join(tmpdir(), STATE_DIR_PREFIX))),
-    OPT2_TASKS_ADAPTER: 'local',
-    OPT2_STORAGE_ADAPTER: 'local',
-    GOOGLE_CLOUD_PROJECT: 'opt2-local',
-    TZ: process.env.TZ ?? 'UTC',
-    ...overrides,
+  const urls = { OPT2_GATEWAY_URL: localTestUrl('gateway'), OPT2_MIGRATION_URL: localTestUrl('migration') };
+  const options = {
+    service: SERVICE_NAME,
+    database: { name: 'opt2_identity_test', user: 'identity_app' },
+    callees: ['gateway', 'migration', 'identity', 'people', 'programs-sites', 'strategies-content'],
+    stateDir: () => stateDir ?? mkdtempSync(path.join(tmpdir(), STATE_DIR_PREFIX)),
+    extra: { ...urls, OPT2_STORAGE_ADAPTER: 'local', GOOGLE_CLOUD_PROJECT: 'opt2-local', TZ: process.env.TZ ?? 'UTC' },
   };
-  const defined = Object.entries(source).filter((entry): entry is [string, string] => entry[1] !== undefined);
-  return loadEnv(identityEnvSchema, Object.fromEntries(defined));
+  return loadEnv(identityEnvSchema, localTestEnv(options, overrides));
 }
 
 /** One `mintIdToken` call the fake Identity Platform received. */
@@ -175,112 +131,6 @@ export function createFakeIdentityPlatform(): FakeIdentityPlatform {
     },
   };
 }
-
-/** A task the fake port holds; a deleted task is a tombstone whose name stays reserved. */
-export interface FakeTask {
-  readonly input: CreateTaskInput;
-  readonly deleted: boolean;
-}
-
-/** In-memory `TaskPort` keyed by `(queue, name)` that never dispatches. */
-export interface FakeTaskPort extends TaskPort {
-  readonly kind: 'local';
-  /** Every created task by `<queue>/<name>`, tombstones included, in creation order. */
-  readonly tasks: ReadonlyMap<string, FakeTask>;
-  /** Makes the next `times` creates on `queue`, or on any queue when omitted, throw after their input is checked. */
-  failCreate(queue?: string, times?: number): void;
-}
-
-interface StoredTask {
-  input: CreateTaskInput;
-  deleted: boolean;
-}
-
-interface CreateFailure {
-  queue: string | undefined;
-  remaining: number;
-}
-
-const taskKey = (queue: string, name: string): string => `${queue}/${name}`;
-
-/** Creates a {@link FakeTaskPort}; a repeated `(queue, name)`, live or deleted, answers `created: false` as ALREADY_EXISTS does. */
-export function createFakeTaskPort(): FakeTaskPort {
-  const tasks = new Map<string, StoredTask>();
-  const paused = new Set<string>();
-  const failures: CreateFailure[] = [];
-
-  const live = (queue: string, name: string): StoredTask | undefined => {
-    const task = tasks.get(taskKey(queue, name));
-    return task === undefined || task.deleted ? undefined : task;
-  };
-  const infoOf = ({ input }: StoredTask): TaskInfo => ({
-    queue: input.queue,
-    name: input.name,
-    scheduleTime: new Date(input.scheduleTime.getTime()),
-    ...(input.tenantId === undefined ? {} : { tenantId: input.tenantId }),
-    status: 'pending',
-    attempts: 0,
-  });
-
-  return {
-    kind: 'local',
-    tasks,
-
-    async create(input: CreateTaskInput): Promise<CreateTaskResult> {
-      assertCreateInput(input);
-      const failure = failures.find((entry) => entry.remaining > 0 && (entry.queue === undefined || entry.queue === input.queue));
-      if (failure !== undefined) {
-        failure.remaining -= 1;
-        throw new Error(`fake task port: injected create failure on ${input.queue}/${input.name}`);
-      }
-      const key = taskKey(input.queue, input.name);
-      if (tasks.has(key)) return { name: input.name, created: false };
-      tasks.set(key, { input, deleted: false });
-      return { name: input.name, created: true };
-    },
-
-    async delete(queue: string, name: string): Promise<DeleteTaskResult> {
-      const task = live(queue, name);
-      if (task !== undefined) task.deleted = true;
-      return { name, deleted: task !== undefined };
-    },
-
-    async list(queue: string, page?: TaskPageRequest): Promise<TaskPage> {
-      const pageSize = resolvePageSize(page?.pageSize);
-      const queued = [...tasks.values()].filter((task) => task.input.queue === queue && !task.deleted);
-      const start = page?.pageToken === undefined ? 0 : Number(page.pageToken);
-      const end = start + pageSize;
-      const listed = queued.slice(start, end).map(infoOf);
-      return end < queued.length ? { tasks: listed, nextPageToken: String(end) } : { tasks: listed };
-    },
-
-    async get(queue: string, name: string): Promise<TaskInfo | undefined> {
-      const task = live(queue, name);
-      return task === undefined ? undefined : infoOf(task);
-    },
-
-    async pauseQueue(queue: string): Promise<void> {
-      paused.add(queue);
-    },
-
-    async resumeQueue(queue: string): Promise<void> {
-      paused.delete(queue);
-    },
-
-    async queueState(queue: string): Promise<QueueState> {
-      return { queue, paused: paused.has(queue) };
-    },
-
-    close: (): Promise<void> => Promise.resolve(),
-
-    failCreate(queue, times = 1) {
-      failures.push({ queue, remaining: times });
-    },
-  };
-}
-
-/** Answers one service call. */
-export type ClientHandler = (req: ServiceRequest) => ServiceResponse | Promise<ServiceResponse>;
 
 /** Handlers per callee: one for every call, or several keyed `'<METHOD> <path>'`, where a `{name}` segment matches any one segment. */
 export type ClientHandlers = Readonly<Record<string, ClientHandler | Readonly<Record<string, ClientHandler>>>>;
@@ -334,26 +184,11 @@ const CURRENT_USER_PATH = '/internal/v1/users/current';
 const SITES_SERVICE = 'programs-sites';
 const MAIL_SETTINGS_PATH = '/internal/v1/sites/mail-settings:lookup';
 const MARK_USED_PATH = /^\/internal\/v1\/legacy-sessions\/([^/]+):mark-used$/;
-const ROUTE_KEY = /^(GET|POST|PUT|PATCH|DELETE) (\/\S*)$/;
 const ANY_PATH = /^/;
 const JSON_HEADERS: Readonly<Record<string, string>> = Object.freeze({ 'content-type': 'application/json;charset=utf-8' });
 
 /** Seeded actors by upper-cased `UserID`, the people rows the default current-user read answers. */
 const ACTORS_BY_USER_ID: ReadonlyMap<string, TestActor> = new Map(ALL_ACTORS.map((actor) => [actor.account.userid.toUpperCase(), actor]));
-
-function matcherPattern(matcher: PathMatcher): RegExp {
-  if (matcher instanceof RegExp) return matcher;
-  const source = matcher
-    .split(/(\{[^}/]+\})/)
-    .map((part) => (/^\{[^}/]+\}$/.test(part) ? '[^/]+' : part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
-    .join('');
-  return new RegExp(`^${source}$`);
-}
-
-function pathOnly(requestPath: string): string {
-  const query = requestPath.indexOf('?');
-  return query === -1 ? requestPath : requestPath.slice(0, query);
-}
 
 function firstValue(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;
@@ -422,9 +257,9 @@ export function createClientRecorder(handlers: ClientHandlers = {}): ClientRecor
       continue;
     }
     for (const [key, handler] of Object.entries(entry)) {
-      const parsed = ROUTE_KEY.exec(key);
+      const parsed = CLIENT_ROUTE_KEY.exec(key);
       if (parsed?.[1] === undefined || parsed[2] === undefined) throw new TypeError(`client handler key must be '<METHOD> <path>': ${key}`);
-      routes.push({ service, method: parsed[1] as ServiceRequest['method'], pattern: matcherPattern(parsed[2]), handler });
+      routes.push({ service, method: parsed[1] as ServiceRequest['method'], pattern: clientPathPattern(parsed[2]), handler });
     }
   }
 
@@ -434,7 +269,7 @@ export function createClientRecorder(handlers: ClientHandlers = {}): ClientRecor
       method: 'POST',
       pattern: MARK_USED_PATH,
       handler: (req) => {
-        const sid = decodeURIComponent(MARK_USED_PATH.exec(pathOnly(req.path))?.[1] ?? '');
+        const sid = decodeURIComponent(MARK_USED_PATH.exec(pathWithoutQuery(req.path))?.[1] ?? '');
         const { tokens } = req.json as { tokens: Array<{ token: string; usedAt: string }> };
         markedUsed.push({ sid, tokens: tokens.map(({ token, usedAt }) => ({ token, usedAt })) });
         return { status: 204, headers: {}, body: undefined };
@@ -443,7 +278,7 @@ export function createClientRecorder(handlers: ClientHandlers = {}): ClientRecor
     {
       service: PEOPLE_SERVICE,
       method: 'GET',
-      pattern: matcherPattern(CURRENT_USER_PATH),
+      pattern: clientPathPattern(CURRENT_USER_PATH),
       handler: (req) => {
         const userId = requestedUserId(req);
         const actor = userId === undefined ? undefined : ACTORS_BY_USER_ID.get(userId.toUpperCase());
@@ -454,7 +289,7 @@ export function createClientRecorder(handlers: ClientHandlers = {}): ClientRecor
     {
       service: SITES_SERVICE,
       method: 'POST',
-      pattern: matcherPattern(MAIL_SETTINGS_PATH),
+      pattern: clientPathPattern(MAIL_SETTINGS_PATH),
       handler: (req) => {
         const { siteIds } = req.json as { siteIds: string[] };
         return { status: 200, headers: { ...JSON_HEADERS }, body: { items: siteIds.map(siteMailSettingsOf) } };
@@ -463,12 +298,12 @@ export function createClientRecorder(handlers: ClientHandlers = {}): ClientRecor
   ];
 
   const matches = (route: ClientRoute, req: ServiceRequest): boolean =>
-    route.service === req.service && (route.method === undefined || route.method === req.method) && route.pattern.test(pathOnly(req.path));
+    route.service === req.service && (route.method === undefined || route.method === req.method) && route.pattern.test(pathWithoutQuery(req.path));
 
   async function request<T = unknown>(req: ServiceRequest): Promise<ServiceResponse<T>> {
     if (closed) throw new Error(`client recorder: closed before ${req.service} ${req.method} ${req.path}`);
     requests.push(req);
-    const failure = failures.findIndex((entry) => entry.service === req.service && entry.pattern.test(pathOnly(req.path)));
+    const failure = failures.findIndex((entry) => entry.service === req.service && entry.pattern.test(pathWithoutQuery(req.path)));
     if (failure !== -1) {
       failures.splice(failure, 1);
       const refused = Object.assign(new Error(`connect ECONNREFUSED (${req.service})`), { code: 'ECONNREFUSED' });
@@ -489,14 +324,14 @@ export function createClientRecorder(handlers: ClientHandlers = {}): ClientRecor
     request,
     close,
     requestsTo(service, matcher) {
-      const pattern = matcher === undefined ? ANY_PATH : matcherPattern(matcher);
-      return requests.filter((req) => req.service === service && pattern.test(pathOnly(req.path)));
+      const pattern = matcher === undefined ? ANY_PATH : clientPathPattern(matcher);
+      return requests.filter((req) => req.service === service && pattern.test(pathWithoutQuery(req.path)));
     },
     on(service, method, matcher, handler) {
-      routes.push({ service, method, pattern: matcherPattern(matcher), handler });
+      routes.push({ service, method, pattern: clientPathPattern(matcher), handler });
     },
     failNext(service, matcher) {
-      failures.push({ service, pattern: matcherPattern(matcher) });
+      failures.push({ service, pattern: clientPathPattern(matcher) });
     },
     clear() {
       requests.length = 0;
@@ -592,28 +427,5 @@ export async function buildTestApp(
   }
 }
 
-/** Options of {@link headersFor}. */
-export interface HeadersForOptions {
-  /** Site of a user token; `tenant-a` by default. */
-  site?: string;
-  /** Callee of the invocation credential; identity by default. */
-  audience?: string;
-  /** Masa `UserID` of a user token; one per subject by default. */
-  sub?: string;
-}
-
-function roleSubjectNamed(name: string): RoleSubject {
-  const found = ROLE_SET.find((candidate) => candidate.name === name);
-  if (found === undefined) throw new TypeError(`ROLE_SET has no subject named ${name}`);
-  return found;
-}
-
-/** `app.inject` headers presenting `subject`, or the `ROLE_SET` subject of that name, to identity; rejects with TypeError for an unknown name. */
-export async function headersFor(subject: RoleSubject | string, opts: HeadersForOptions = {}): Promise<Record<string, string>> {
-  const resolved = typeof subject === 'string' ? roleSubjectNamed(subject) : subject;
-  return authHeadersFor(resolved, {
-    site: opts.site ?? TENANT_A.siteId,
-    audience: opts.audience ?? SERVICE_NAME,
-    ...(opts.sub === undefined ? {} : { sub: opts.sub }),
-  });
-}
+/** `app.inject` headers presenting a subject, or the `ROLE_SET` subject of that name, to identity, with tenant-a user tokens by default. */
+export const headersFor = createHeadersFor({ audience: SERVICE_NAME });

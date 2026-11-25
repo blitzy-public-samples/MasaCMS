@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import { LegacyServiceUnavailableError } from '@opt2/platform/legacy-compat';
-import { assertResponseMatchesOpenApi, TENANT_A, TENANT_B, TENANT_UMBRELLA } from '@opt2/platform/testing';
+import { assertResponseMatchesOpenApi, TENANT_A, TENANT_B, TENANT_UMBRELLA, loadOpenApiDocument } from '@opt2/platform/testing';
 import { actorFromClaims, CONTENT_CONFIG_DEFAULTS, type ContentConfig } from '../../src/domain/context.js';
 import { contentEntities } from '../../src/legacy/jsonapi-entities.js';
 import { jsonApiEndpoint } from '../../src/legacy/jsonapi-serializers.js';
@@ -42,7 +42,7 @@ const FIXTURE = JSON.parse(readFileSync(new URL('../fixtures/legacy/json-api-val
   answers: Record<string, Answer>;
 };
 
-const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
+const OPENAPI = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as object;
 const SITE = TENANT_A.siteId;
 const REGISTERED: ReadonlySet<string> = new Set([TENANT_A, TENANT_B, TENANT_UMBRELLA].map((tenant) => tenant.siteId));
 const RESOLVE: JsonApiResolveOptions = { siteExists: (siteId) => REGISTERED.has(siteId.toLowerCase()), appReloadKey: 'appreload', context: '', variations: true };

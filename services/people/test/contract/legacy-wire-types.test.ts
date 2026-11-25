@@ -1,11 +1,10 @@
 /** Legacy wire vectors of the people contract: JSON API user and address bodies and favorites template bodies, as the legacy oracle answers them. */
-import { readFileSync } from 'node:fs';
 import { createApiSerializer, entityPropertyHint, type ApiKeyHint } from '@opt2/platform/legacy-compat';
-import { ContractAssertionError, assertResponseMatchesOpenApi } from '@opt2/platform/testing';
+import { ContractAssertionError, assertResponseMatchesOpenApi, loadOpenApiDocument } from '@opt2/platform/testing';
 import { describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 
-const CONTRACT = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as Record<string, unknown>;
+const CONTRACT = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as Record<string, unknown>;
 
 const USER_ID = 'AF240756-C1CD-6298-60C0CAF70AACAE2B';
 const ADMIN_ID = 'AF1841AB-0ED4-34A5-AF2596AB342BA3E6';

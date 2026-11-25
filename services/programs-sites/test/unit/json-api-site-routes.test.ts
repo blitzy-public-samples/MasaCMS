@@ -1,5 +1,4 @@
 /** Settings, declarations, legacy envelopes, CSRF consume, auth denials and fallbacks of the JSON API `site` routes. */
-import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -26,6 +25,7 @@ import {
   TENANT_UMBRELLA,
   assertResponseMatchesOpenApi,
   authHeadersFor,
+  loadOpenApiDocument,
   mintServiceToken,
   mintUserToken,
   testVerifier,
@@ -44,7 +44,7 @@ type ContractOperation = Record<string, unknown>;
 type StoredSite = Awaited<ReturnType<ProgramsSitesRepository['readSite']>>;
 type Subject = 's2' | 'site-admin';
 
-const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as {
+const OPENAPI = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as {
   paths: Record<string, Record<string, ContractOperation>>;
 };
 const ORIGIN_DOMAINS: Readonly<Record<string, string[]>> = {

@@ -1,15 +1,21 @@
-/** Stub table definitions against `0001_stub.sql` and the platform repository contract. */
-import { readFileSync } from 'node:fs';
+/** Stub table definitions against the `db/migrations` SQL and the platform repository contract. */
+import { readFileSync, readdirSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { canonicalTypeForPostgres, createRepository, type MigrationHandlerOptions } from '@opt2/platform/migration-kit';
-import { NOTE_PROJECTION_TABLE, NOTE_TABLE, STUB_TABLES, STUB_UNITS } from '../../src/repo/tables.js';
+import { NOTE_ACTIVITY_TABLE, NOTE_COMMENT_TABLE, NOTE_PROJECTION_TABLE, NOTE_TABLE, STUB_TABLES, STUB_UNITS } from '../../src/repo/tables.js';
 
 interface DdlTable {
   columns: { name: string; type: string }[];
   primaryKey: string[];
 }
 
-const SQL = readFileSync(new URL('../../db/migrations/0001_stub.sql', import.meta.url), 'utf8');
+const MIGRATIONS = new URL('../../db/migrations/', import.meta.url);
+// Every migration in file-name order, as the bootstrap applies them.
+const SQL = readdirSync(MIGRATIONS)
+  .filter((name) => name.endsWith('.sql'))
+  .sort()
+  .map((name) => readFileSync(new URL(name, MIGRATIONS), 'utf8'))
+  .join('\n');
 const CREATE_TABLE = /^CREATE TABLE stub\.(\w+) \(\n([\s\S]*?)\n\);/gm;
 const COLUMN = /^"?([a-z_]+)"? (.+?)(?= NOT NULL| NULL| DEFAULT | PRIMARY KEY| UNIQUE| CHECK | GENERATED |$)/;
 const SEEDED_GATE = /\('stub' \|\| '(\.\w+)', 'open', NULL, 'quiet'\)/g;
@@ -51,7 +57,7 @@ describe('stub units', () => {
     const seeded = [...SQL.matchAll(SEEDED_GATE)].map((m) => `stub${m[1] as string}`);
     expect(seeded).toEqual([...STUB_UNITS]);
     expect(STUB_TABLES.map((definition) => definition.unit)).toEqual([...STUB_UNITS]);
-    expect(STUB_TABLES).toEqual([NOTE_TABLE, NOTE_PROJECTION_TABLE]);
+    expect(STUB_TABLES).toEqual([NOTE_TABLE, NOTE_PROJECTION_TABLE, NOTE_COMMENT_TABLE, NOTE_ACTIVITY_TABLE]);
   });
 
   it('build a platform repository and migration handler units', () => {

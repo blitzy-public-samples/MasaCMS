@@ -133,7 +133,7 @@ describe('createResponseModes', () => {
       'admin:cusers.update': { responseMode: 'redirect' },
       'admin:cusers.update{type=1}': { responseMode: 'json', contentType: 'application/json' },
       'admin:carch.edit': {},
-      'fixture:communications/messages/{id}@get': { responseMode: 'json', contentType: 'application/json' },
+      'fixture:people/persons/{id}/archive@get': { responseMode: 'json', contentType: 'application/json' },
       'api:content.findone': { responseMode: 'json', contentType: 'application/json' },
     }),
   );
@@ -151,7 +151,7 @@ describe('createResponseModes', () => {
     expect(info).not.toHaveProperty('contentType');
   });
 
-  it.each(['fixture:communications/messages/{id}@get', 'api:content.findone', 'admin:carch.edit', 'admin:carch.edit{notify}', 'admin:cfeed.list'])(
+  it.each(['fixture:people/persons/{id}/archive@get', 'api:content.findone', 'admin:carch.edit', 'admin:carch.edit{notify}', 'admin:cfeed.list'])(
     'answers undefined for %s, which has no admin mode',
     (key) => {
       expect(modes.modeFor(key)).toBeUndefined();

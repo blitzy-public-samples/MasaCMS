@@ -7,13 +7,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock, type MockInstance } from 'vitest';
 
-import { CATALOGUE_PATH, loadCatalogue, scenarioById } from '../../src/golden/catalogue.js';
 import type { FetchLike } from '../../src/lib/http.js';
 import { opt2Path, type EnvLike } from '../../src/lib/paths.js';
 import { pinnedSha } from '../../src/lib/pin.js';
 import {
-  CATALOGUE_SCENARIO,
   CLOUD_MEASUREMENT,
+  CONTENT_READS,
   EXPECTED_MIN_INSTANCES,
   GATEWAY_PROBES,
   READ_SET,
@@ -73,14 +72,17 @@ const CSRF_TOKEN = 'FIXTURE-CSRF-REPORT';
 const FEED_ID = 'F0000000-0000-0000-0000000000000001';
 /** Cut-over version the fake gateway reports active, written to OPT2_CUTOVER_DIR. */
 const ACTIVE_VERSION = 'v9101';
-/** The fixture reads ACTIVE_VERSION routes to target, by path; every other route key is legacy. */
-const TARGET_READS: readonly { path: string; route: string; owningService: RestartService }[] = [
-  { path: '/legacy-fixtures/cfml/api.cfm/surveys/surveys', route: 'fixture:surveys/surveys@get', owningService: 'surveys' },
-  { path: '/legacy-fixtures/cfml/api.cfm/finance/records', route: 'fixture:finance/records@get', owningService: 'finance' },
-  { path: '/legacy-fixtures/cfml/api.cfm/esignature/requests', route: 'fixture:esignature/requests@get', owningService: 'e-signature' },
+/** The reads ACTIVE_VERSION routes to target, by path and query; every other route key is legacy. */
+const TARGET_READS: readonly { path: string; route: string; owningService: RestartService; kind: string }[] = [
+  {
+    path: '/admin/?muraAction=cArch.list&siteid=tenant-a&moduleid=00000000000000000000000000000000000&topid=00000000000000000000000000000000001',
+    route: 'admin:carch.list',
+    owningService: 'strategies-content',
+    kind: 'write',
+  },
 ];
-/** Services whose gateway probe ACTIVE_VERSION routes to target; identity's is a fresh-session surveys read. */
-const TARGET_PROBED: readonly RestartService[] = ['identity', 'surveys', 'finance', 'e-signature'];
+/** Services whose gateway probe ACTIVE_VERSION routes to target; identity's is a fresh-session Site Manager tree read. */
+const TARGET_PROBED: readonly RestartService[] = ['identity', 'strategies-content'];
 const LEGACY_MS = 4;
 const TARGET_MS = 5;
 const COLD_START_MS = 100;
@@ -213,7 +215,7 @@ describe('main over the samples', () => {
 
   /** Owner of a GET ACTIVE_VERSION routes to target; the gateway proxies every other request to legacy. */
   function targetOwnerOf(method: string, url: URL): RestartService | undefined {
-    return method === 'GET' ? TARGET_READS.find((read) => read.path === url.pathname)?.owningService : undefined;
+    return method === 'GET' ? TARGET_READS.find((read) => read.path === `${url.pathname}${url.search}`)?.owningService : undefined;
   }
 
   /**
@@ -249,7 +251,7 @@ describe('main over the samples', () => {
   }
 
   /**
-   * Legacy origin, gateway and the ten service processes on one fake clock: each legacy request takes LEGACY_MS,
+   * Legacy origin, gateway and the service processes on one fake clock: each legacy request takes LEGACY_MS,
    * each gateway request TARGET_MS, a started service answers /healthz 200 after COLD_START_MS, and the gateway
    * answers 502 for a target-routed read while its owner or identity is stopped.
    */
@@ -335,7 +337,7 @@ describe('main over the samples', () => {
     return { entries, clock, kill, spawn, fetch, feeds };
   }
 
-  /** GS-CO-05's seed rows (tenant-a Pages, the umbrella png, the tenant-a Folder) as the seed generator writes them. */
+  /** The content reads' seed rows (tenant-a Pages, the umbrella png, the tenant-a Folder) as the seed generator writes them. */
   function seedDataset(): unknown {
     const id = (tag: string, n: number) => `${tag}-0000-0000-${String(n).padStart(16, '0')}`;
     return {
@@ -375,9 +377,8 @@ describe('main over the samples', () => {
     writeUpState({ processes: stack.entries }, { env });
     await writeJson(path.join(cutoverDir, 'versions', `${ACTIVE_VERSION}.json`), {
       tableVersion: ACTIVE_VERSION,
-      entries: TARGET_READS.map(({ route, owningService }) => ({ route, owningService, state: 'target', kind: 'read' })),
+      entries: TARGET_READS.map(({ route, owningService, kind }) => ({ route, owningService, state: 'target', kind })),
     });
-    await writeJson(path.join(stateDir, 'fixtures.json'), { available: true, reason: null, checkedAt: '2026-06-30T09:00:00.000Z' });
     await writeJson(path.join(stateDir, 'secrets', 'seed-credentials.json'), {
       roles: { 'tenant-a': Object.fromEntries(SEED_ROLES.map((role) => [role, seedUsername(role)])) },
       users: { 'tenant-a': Object.fromEntries(SEED_ROLES.map((role) => [seedUsername(role), credential(role)])) },
@@ -400,7 +401,7 @@ describe('main over the samples', () => {
     });
 
     const sets = [
-      ...expandCatalogueReads(scenarioById(await loadCatalogue(CATALOGUE_PATH), CATALOGUE_SCENARIO)).map((read) => read.set),
+      ...expandCatalogueReads(CONTENT_READS).map((read) => read.set),
       ...READ_SET.map((entry) => entry.set),
     ];
     const report = JSON.parse(await fs.readFile(path.join(reportsDir, 'performance.json'), 'utf8')) as PerformanceReport & {
@@ -413,7 +414,7 @@ describe('main over the samples', () => {
     expect(report.sourceSha).toBe(pinnedSha());
     expect(report.minInstanceCount).toStrictEqual({ source: 'minInstanceCounts', values: PLAN_SAMPLE.minInstanceCounts, label: 'measured' });
     expect(report.windowsOverThreshold).toStrictEqual([SITE_DELETE_WINDOW]);
-    // ACTIVE_VERSION leaves every latency route on legacy and routes no gateway read to six of the services.
+    // ACTIVE_VERSION leaves every latency route on legacy and routes no gateway read to the services outside TARGET_PROBED.
     expect(report.findings.filter((finding) => finding.kind === 'legacy-served')).toHaveLength(sets.length);
     expect(report.findings.filter((finding) => finding.kind === 'probe-not-target').map((finding) => finding.subject).sort()).toStrictEqual(
       RESTART_SERVICES.filter((service) => !TARGET_PROBED.includes(service)).sort(),

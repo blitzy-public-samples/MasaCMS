@@ -242,9 +242,9 @@ function fakeLegacy(tables: Readonly<Record<string, TableSpec>>, scripts: Readon
 
 /** Ownership entries as `opt2/table-ownership.json` records them; `migratable: false` marks a retired table. */
 const OWNERSHIP: Readonly<Record<string, { keyColumns?: readonly string[]; migratable?: boolean }>> = {
-  'Program_N.timesheet': { keyColumns: ['timesheet_id'] },
-  'Program_N.blackout': { keyColumns: [] },
-  'Program_N.approval_action': { keyColumns: ['action_id'] },
+  'Program_N.enrolment': { keyColumns: ['enrolment_id'] },
+  'Program_N.attendance': { keyColumns: [] },
+  'Program_N.cohort': { keyColumns: ['cohort_id'] },
   tfiles: { keyColumns: ['siteID', 'fileID'] },
   tglobals: { migratable: false },
 };
@@ -295,17 +295,17 @@ function fakeCatalog(failures: Readonly<Record<string, Error>> = {}) {
   return { catalog, keyLookups };
 }
 
-const TIMESHEET: TableSpec = {
+const ENROLMENT: TableSpec = {
   columns: [
-    { name: 'timesheet_id', type: 'int' },
+    { name: 'enrolment_id', type: 'int' },
     { name: 'person_id', type: 'char', maxLength: 35 },
-    { name: 'hours', type: 'decimal', scale: 2 },
+    { name: 'credits', type: 'decimal', scale: 2 },
     { name: 'note', type: 'nvarchar', maxLength: 200 },
   ],
-  primaryKey: ['timesheet_id'],
+  primaryKey: ['enrolment_id'],
 };
 
-const BLACKOUT: TableSpec = {
+const ATTENDANCE: TableSpec = {
   columns: [
     { name: 'person_id', type: 'char', maxLength: 35 },
     { name: 'reason', type: 'nvarchar', maxLength: 50 },
@@ -321,13 +321,13 @@ const TFILES: TableSpec = {
   primaryKey: ['fileID'],
 };
 
-/** The live legacy catalog: two programs of timesheet and blackout, a dbo table sharing a folded name, and plain tables. */
+/** The live legacy catalog: two programs of enrolment and attendance, a dbo table sharing a folded name, and plain tables. */
 const LIVE: Readonly<Record<string, TableSpec>> = {
-  'Program_2.timesheet': TIMESHEET,
-  'Program_1.timesheet': TIMESHEET,
-  'Program_1.blackout': BLACKOUT,
-  'Program_2.blackout': BLACKOUT,
-  'dbo.timesheet': TFILES,
+  'Program_2.enrolment': ENROLMENT,
+  'Program_1.enrolment': ENROLMENT,
+  'Program_1.attendance': ATTENDANCE,
+  'Program_2.attendance': ATTENDANCE,
+  'dbo.enrolment': TFILES,
   'dbo.odd.name': TFILES,
   'dbo.tfiles': TFILES,
   'dbo.tglobals': TFILES,
@@ -336,29 +336,29 @@ const LIVE: Readonly<Record<string, TableSpec>> = {
 
 const PROGRAM: CanonicalColumn = { name: LEGACY_PROGRAM_ID_COLUMN, type: 'i' };
 
-const FOLDED_TIMESHEET: readonly CanonicalColumn[] = [
-  { name: 'timesheet_id', type: 'i' },
+const FOLDED_ENROLMENT: readonly CanonicalColumn[] = [
+  { name: 'enrolment_id', type: 'i' },
   { name: 'person_id', type: 's' },
-  { name: 'hours', type: 'd', scale: 2 },
+  { name: 'credits', type: 'd', scale: 2 },
   { name: 'note', type: 's' },
   PROGRAM,
 ];
 
-const sheet = (timesheetId: number, personId: string, hours = '7.50', note: string | null = null): Row => ({
-  timesheet_id: timesheetId,
+const enrolment = (enrolmentId: number, personId: string, credits = '7.50', note: string | null = null): Row => ({
+  enrolment_id: enrolmentId,
   person_id: personId,
-  hours,
+  credits,
   note,
 });
 
-const blackout = (personId: string, reason: string): Row => ({ person_id: personId, reason });
+const attendance = (personId: string, reason: string): Row => ({ person_id: personId, reason });
 
-/** Timesheet 3 has identical content in both programs; blackout P-001/leave likewise, and twice in program 1. */
+/** Enrolment 3 has identical content in both programs; attendance P-001/leave likewise, and twice in program 1. */
 const SCRIPTS: Readonly<Record<string, StreamScript>> = {
-  'Program_1.timesheet': { rows: [sheet(1, 'P-001'), sheet(3, 'P-003', '8.00', 'same'), sheet(4, 'P-004')] },
-  'Program_2.timesheet': { rows: [sheet(2, 'P-002'), sheet(3, 'P-003', '8.00', 'same')] },
-  'Program_1.blackout': { rows: [blackout('P-002', 'leave'), blackout('P-001', 'leave'), blackout('P-001', 'leave')] },
-  'Program_2.blackout': { rows: [blackout('P-001', 'leave'), blackout('P-003', 'audit')] },
+  'Program_1.enrolment': { rows: [enrolment(1, 'P-001'), enrolment(3, 'P-003', '8.00', 'same'), enrolment(4, 'P-004')] },
+  'Program_2.enrolment': { rows: [enrolment(2, 'P-002'), enrolment(3, 'P-003', '8.00', 'same')] },
+  'Program_1.attendance': { rows: [attendance('P-002', 'leave'), attendance('P-001', 'leave'), attendance('P-001', 'leave')] },
+  'Program_2.attendance': { rows: [attendance('P-001', 'leave'), attendance('P-003', 'audit')] },
   'dbo.tfiles': { rows: [{ fileID: 'F-2', siteID: 'tenant-a', hits: 1 }, { fileID: 'F-1', siteID: 'tenant-b', hits: 2 }] },
 };
 
@@ -388,9 +388,9 @@ beforeEach(() => {
 describe('streamFoldedRows', () => {
   it('merges keyed Program_<n> parts in compareCanonicalRows order with legacy_program_id in row, encoding and key', async () => {
     const fake = fakeLegacy(LIVE, SCRIPTS);
-    const out = await collect(streamFoldedRows({ legacy: fake.legacy, table: 'Program_N.timesheet', parts: [part(2, 'timesheet'), part(1, 'timesheet')] }));
+    const out = await collect(streamFoldedRows({ legacy: fake.legacy, table: 'Program_N.enrolment', parts: [part(2, 'enrolment'), part(1, 'enrolment')] }));
 
-    expect(out.map((row) => [row.row.timesheet_id, row.legacyProgramId])).toEqual([
+    expect(out.map((row) => [row.row.enrolment_id, row.legacyProgramId])).toEqual([
       ['1', 1],
       ['2', 2],
       ['3', 1],
@@ -399,25 +399,25 @@ describe('streamFoldedRows', () => {
     ]);
     out.slice(1).forEach((row, index) => expect(compareCanonicalRows(out[index] as CanonicalRow, row)).toBeLessThan(0));
     for (const row of out) {
-      expect(row.table).toBe('Program_N.timesheet');
+      expect(row.table).toBe('Program_N.enrolment');
       expect(row.row[LEGACY_PROGRAM_ID_COLUMN]).toBe(String(row.legacyProgramId));
-      expect(row.keyValues).toEqual([Number(row.row.timesheet_id), row.legacyProgramId]);
-      expect(row.encoding).toBe(encodeRow(FOLDED_TIMESHEET, row.row));
-      expect(row.key).toBe(encodeKey(FOLDED_TIMESHEET, ['timesheet_id', LEGACY_PROGRAM_ID_COLUMN], row.row));
+      expect(row.keyValues).toEqual([Number(row.row.enrolment_id), row.legacyProgramId]);
+      expect(row.encoding).toBe(encodeRow(FOLDED_ENROLMENT, row.row));
+      expect(row.key).toBe(encodeKey(FOLDED_ENROLMENT, ['enrolment_id', LEGACY_PROGRAM_ID_COLUMN], row.row));
     }
     expect(fake.streams.map((stream) => stream.sql)).toEqual(
       [1, 2].map(
-        (id) => `SELECT [timesheet_id], [person_id], CONVERT(varchar(64), [hours]) AS [hours], [note] FROM [Program_${String(id)}].[timesheet] ORDER BY [timesheet_id] ASC`,
+        (id) => `SELECT [enrolment_id], [person_id], CONVERT(varchar(64), [credits]) AS [credits], [note] FROM [Program_${String(id)}].[enrolment] ORDER BY [enrolment_id] ASC`,
       ),
     );
   });
 
   it('yields identical content of two programs as two distinct rows', async () => {
     const fake = fakeLegacy(LIVE, SCRIPTS);
-    const out = await collect(streamFoldedRows({ legacy: fake.legacy, table: 'Program_N.timesheet', parts: [part(1, 'timesheet'), part(2, 'timesheet')] }));
-    const [first, second] = out.filter((row) => row.row.timesheet_id === '3');
+    const out = await collect(streamFoldedRows({ legacy: fake.legacy, table: 'Program_N.enrolment', parts: [part(1, 'enrolment'), part(2, 'enrolment')] }));
+    const [first, second] = out.filter((row) => row.row.enrolment_id === '3');
 
-    expect(first?.row).toEqual({ timesheet_id: '3', person_id: 'P-003', hours: '8.00', note: 'same', [LEGACY_PROGRAM_ID_COLUMN]: '1' });
+    expect(first?.row).toEqual({ enrolment_id: '3', person_id: 'P-003', credits: '8.00', note: 'same', [LEGACY_PROGRAM_ID_COLUMN]: '1' });
     expect(second?.row).toEqual({ ...first?.row, [LEGACY_PROGRAM_ID_COLUMN]: '2' });
     expect(first?.key).not.toBe(second?.key);
     expect(first?.encoding).not.toBe(second?.encoding);
@@ -425,7 +425,7 @@ describe('streamFoldedRows', () => {
 
   it('merges keyless parts by folded encoding, keeping each program duplicate as its own row', async () => {
     const fake = fakeLegacy(LIVE, SCRIPTS);
-    const out = await collect(streamFoldedRows({ legacy: fake.legacy, table: 'Program_N.blackout', parts: [part(1, 'blackout'), part(2, 'blackout')] }));
+    const out = await collect(streamFoldedRows({ legacy: fake.legacy, table: 'Program_N.attendance', parts: [part(1, 'attendance'), part(2, 'attendance')] }));
     const columns: CanonicalColumn[] = [{ name: 'person_id', type: 's' }, { name: 'reason', type: 's' }, PROGRAM];
 
     expect(out.map((row) => row.encoding)).toEqual(out.map((row) => row.encoding).sort(compareEncodings));
@@ -437,7 +437,7 @@ describe('streamFoldedRows', () => {
       ['P-003', 2],
     ]);
     for (const row of out) {
-      expect(row).toMatchObject({ table: 'Program_N.blackout', key: row.encoding, keyValues: [] });
+      expect(row).toMatchObject({ table: 'Program_N.attendance', key: row.encoding, keyValues: [] });
       expect(row.encoding).toBe(encodeRow(columns, row.row));
     }
     expect(out[0]?.encoding).toBe(out[1]?.encoding);
@@ -449,85 +449,85 @@ describe('streamFoldedRows', () => {
     const out = await collect(
       streamFoldedRows({
         legacy: fake.legacy,
-        table: 'Program_N.timesheet',
-        parts: [part(1, 'timesheet'), part(2, 'timesheet')],
-        columns: ['hours', 'LEGACY_PROGRAM_ID'],
-        keyColumns: ['timesheet_id', LEGACY_PROGRAM_ID_COLUMN],
+        table: 'Program_N.enrolment',
+        parts: [part(1, 'enrolment'), part(2, 'enrolment')],
+        columns: ['credits', 'LEGACY_PROGRAM_ID'],
+        keyColumns: ['enrolment_id', LEGACY_PROGRAM_ID_COLUMN],
       }),
     );
-    const columns: CanonicalColumn[] = [{ name: 'hours', type: 'd', scale: 2 }, PROGRAM];
+    const columns: CanonicalColumn[] = [{ name: 'credits', type: 'd', scale: 2 }, PROGRAM];
 
-    expect(fake.streams[0]?.sql).toBe('SELECT [timesheet_id], CONVERT(varchar(64), [hours]) AS [hours] FROM [Program_1].[timesheet] ORDER BY [timesheet_id] ASC');
+    expect(fake.streams[0]?.sql).toBe('SELECT [enrolment_id], CONVERT(varchar(64), [credits]) AS [credits] FROM [Program_1].[enrolment] ORDER BY [enrolment_id] ASC');
     expect(out).toHaveLength(5);
-    expect(out[0]?.row).toEqual({ timesheet_id: '1', hours: '7.50', [LEGACY_PROGRAM_ID_COLUMN]: '1' });
+    expect(out[0]?.row).toEqual({ enrolment_id: '1', credits: '7.50', [LEGACY_PROGRAM_ID_COLUMN]: '1' });
     for (const row of out) expect(row.encoding).toBe(encodeRow(columns, row.row));
   });
 
-  const reshaped = (change: (columns: ColumnSpec[]) => ColumnSpec[], primaryKey: readonly string[] | null = ['timesheet_id']): TableSpec => ({
-    columns: change([...TIMESHEET.columns]),
+  const reshaped = (change: (columns: ColumnSpec[]) => ColumnSpec[], primaryKey: readonly string[] | null = ['enrolment_id']): TableSpec => ({
+    columns: change([...ENROLMENT.columns]),
     ...(primaryKey === null ? {} : { primaryKey }),
   });
-  const mismatch = 'Program_2.timesheet does not have the columns, types and key of Program_1.timesheet';
-  const twoParts = [part(1, 'timesheet'), part(2, 'timesheet')];
+  const mismatch = 'Program_2.enrolment does not have the columns, types and key of Program_1.enrolment';
+  const twoParts = [part(1, 'enrolment'), part(2, 'enrolment')];
 
   it.each<[string, TableSpec, readonly FoldPart[], string]>([
-    ['a part with a column of another type', reshaped((c) => c.map((col) => (col.name === 'hours' ? { name: 'hours', type: 'int' } : col))), twoParts, mismatch],
-    ['a part with a decimal of another scale', reshaped((c) => c.map((col) => (col.name === 'hours' ? { ...col, scale: 3 } : col))), twoParts, mismatch],
+    ['a part with a column of another type', reshaped((c) => c.map((col) => (col.name === 'credits' ? { name: 'credits', type: 'int' } : col))), twoParts, mismatch],
+    ['a part with a decimal of another scale', reshaped((c) => c.map((col) => (col.name === 'credits' ? { ...col, scale: 3 } : col))), twoParts, mismatch],
     ['a part with a renamed column', reshaped((c) => c.map((col) => (col.name === 'note' ? { ...col, name: 'comment' } : col))), twoParts, mismatch],
     ['a part with its columns in another order', reshaped((c) => c.reverse()), twoParts, mismatch],
     ['a part with another primary key', reshaped((c) => c, ['person_id']), twoParts, mismatch],
     ['a part without a primary key', reshaped((c) => c, null), twoParts, mismatch],
-    ['a part with its own legacy_program_id column', reshaped((c) => [...c, { name: 'Legacy_Program_ID', type: 'int' }]), twoParts, 'Program_2.timesheet already has a legacy_program_id column'],
-    ['a fold without parts', TIMESHEET, [], 'a folded table needs at least one Program_<id> part'],
+    ['a part with its own legacy_program_id column', reshaped((c) => [...c, { name: 'Legacy_Program_ID', type: 'int' }]), twoParts, 'Program_2.enrolment already has a legacy_program_id column'],
+    ['a fold without parts', ENROLMENT, [], 'a folded table needs at least one Program_<id> part'],
   ])('raises FoldShapeError before reading rows for %s', async (_label, programTwo, parts, message) => {
-    const fake = fakeLegacy({ ...LIVE, 'Program_2.timesheet': programTwo }, SCRIPTS);
-    const failure = await collect(streamFoldedRows({ legacy: fake.legacy, table: 'Program_N.timesheet', parts })).catch((error: unknown) => error);
+    const fake = fakeLegacy({ ...LIVE, 'Program_2.enrolment': programTwo }, SCRIPTS);
+    const failure = await collect(streamFoldedRows({ legacy: fake.legacy, table: 'Program_N.enrolment', parts })).catch((error: unknown) => error);
 
     expect(failure).toBeInstanceOf(FoldShapeError);
-    expect(failure).toMatchObject({ name: 'FoldShapeError', table: 'Program_N.timesheet', message: `Program_N.timesheet: ${message}` });
+    expect(failure).toMatchObject({ name: 'FoldShapeError', table: 'Program_N.enrolment', message: `Program_N.enrolment: ${message}` });
     expect(fake.streams).toHaveLength(0);
   });
 
   it('surfaces a part driver error at the pull that meets it and cancels the other parts', async () => {
     const cause = Object.assign(new Error('Connection lost - read ECONNRESET'), { code: 'ESOCKET' });
-    const many = Array.from({ length: 200 }, (_, index) => sheet(index * 2 + 1, 'P-001'));
+    const many = Array.from({ length: 200 }, (_, index) => enrolment(index * 2 + 1, 'P-001'));
     const fake = fakeLegacy(LIVE, {
-      'Program_1.timesheet': { rows: many },
-      'Program_2.timesheet': { rows: [sheet(2, 'P-002'), sheet(6, 'P-006')], failAt: 1, error: cause },
+      'Program_1.enrolment': { rows: many },
+      'Program_2.enrolment': { rows: [enrolment(2, 'P-002'), enrolment(6, 'P-006')], failAt: 1, error: cause },
     });
     const seen: unknown[] = [];
     const failure = await (async () => {
-      for await (const row of streamFoldedRows({ legacy: fake.legacy, table: 'Program_N.timesheet', parts: twoParts })) seen.push(row.row.timesheet_id);
+      for await (const row of streamFoldedRows({ legacy: fake.legacy, table: 'Program_N.enrolment', parts: twoParts })) seen.push(row.row.enrolment_id);
     })().catch((error: unknown) => error);
 
     expect(failure).toBeInstanceOf(ExtractError);
-    expect(failure).toMatchObject({ database: 'muradb_test', table: 'Program_N.timesheet', cause });
+    expect(failure).toMatchObject({ database: 'muradb_test', table: 'Program_N.enrolment', cause });
     expect(seen).toEqual(['1', '2']);
-    expect(fake.streamOf('[Program_1].[timesheet]')?.cancels).toBe(1);
+    expect(fake.streamOf('[Program_1].[enrolment]')?.cancels).toBe(1);
   });
 
   it('cancels every part when the consumer breaks early', async () => {
-    const rows = (offset: number) => Array.from({ length: 50 }, (_, index) => sheet(index * 2 + offset, 'P-001'));
-    const fake = fakeLegacy(LIVE, { 'Program_1.timesheet': { rows: rows(1) }, 'Program_2.timesheet': { rows: rows(2) } });
-    for await (const row of streamFoldedRows({ legacy: fake.legacy, table: 'Program_N.timesheet', parts: twoParts })) if (row) break;
+    const rows = (offset: number) => Array.from({ length: 50 }, (_, index) => enrolment(index * 2 + offset, 'P-001'));
+    const fake = fakeLegacy(LIVE, { 'Program_1.enrolment': { rows: rows(1) }, 'Program_2.enrolment': { rows: rows(2) } });
+    for await (const row of streamFoldedRows({ legacy: fake.legacy, table: 'Program_N.enrolment', parts: twoParts })) if (row) break;
 
     expect(fake.streams.map((stream) => stream.cancels)).toEqual([1, 1]);
   });
 
   it('surfaces a part close failure after an early break, but never over the consumer error', async () => {
-    const rows = Array.from({ length: 50 }, (_, index) => sheet(index + 1, 'P-001'));
+    const rows = Array.from({ length: 50 }, (_, index) => enrolment(index + 1, 'P-001'));
     const broken: Record<string, StreamScript> = {
-      'Program_1.timesheet': { rows, cancelError: new Error('connection reset') },
-      'Program_2.timesheet': { rows, cancelError: new Error('connection reset') },
+      'Program_1.enrolment': { rows, cancelError: new Error('connection reset') },
+      'Program_2.enrolment': { rows, cancelError: new Error('connection reset') },
     };
     const breaking = (async () => {
-      for await (const row of streamFoldedRows({ legacy: fakeLegacy(LIVE, broken).legacy, table: 'Program_N.timesheet', parts: twoParts })) if (row) break;
+      for await (const row of streamFoldedRows({ legacy: fakeLegacy(LIVE, broken).legacy, table: 'Program_N.enrolment', parts: twoParts })) if (row) break;
     })();
-    await expect(breaking).rejects.toMatchObject({ name: 'ExtractError', table: 'Program_N.timesheet', cause: new Error('connection reset') });
+    await expect(breaking).rejects.toMatchObject({ name: 'ExtractError', table: 'Program_N.enrolment', cause: new Error('connection reset') });
 
     clearCatalogCache();
     const throwing = (async () => {
-      for await (const row of streamFoldedRows({ legacy: fakeLegacy(LIVE, broken).legacy, table: 'Program_N.timesheet', parts: twoParts })) {
+      for await (const row of streamFoldedRows({ legacy: fakeLegacy(LIVE, broken).legacy, table: 'Program_N.enrolment', parts: twoParts })) {
         if (row) throw new Error('consumer');
       }
     })();
@@ -584,12 +584,12 @@ describe('streamFoldedRows over more parts than it keeps open', () => {
       note: index % 3 === 0 ? null : `note ${String(id)} ✓`,
     }));
 
-  const blackoutRows = (id: number): Row[] => Array.from({ length: 8 }, (_, index) => blackout(`P-${String((index + id) % 3)}`, index % 2 === 0 ? 'leave' : 'audit'));
+  const attendanceRows = (id: number): Row[] => Array.from({ length: 8 }, (_, index) => attendance(`P-${String((index + id) % 3)}`, index % 2 === 0 ? 'leave' : 'audit'));
 
-  const timesheetRows = (id: number): Row[] => Array.from({ length: 12 }, (_, index) => sheet(index * 4 + (id % 4), `P-${String(id)}`));
+  const enrolmentRows = (id: number): Row[] => Array.from({ length: 12 }, (_, index) => enrolment(index * 4 + (id % 4), `P-${String(id)}`));
 
   it('folds 11 keyed parts filled past their high-water mark on a 10-connection pool in direct-merge order', async () => {
-    const { tables, scripts, parts, table } = programs('timesheet', TIMESHEET, 11, timesheetRows);
+    const { tables, scripts, parts, table } = programs('enrolment', ENROLMENT, 11, enrolmentRows);
     const options = { table, parts, highWaterMark: 4, spillDir: spillParent };
     const direct = await collect(streamFoldedRows({ ...options, legacy: fakeLegacy(tables, scripts).legacy, maxOpenParts: parts.length }));
     const bounded = fakeLegacy(tables, scripts, 10);
@@ -605,7 +605,7 @@ describe('streamFoldedRows over more parts than it keeps open', () => {
   });
 
   it('exhausts a 10-connection pool when all 11 keyed parts stream at once', async () => {
-    const { tables, scripts, parts, table } = programs('timesheet', TIMESHEET, 11, timesheetRows);
+    const { tables, scripts, parts, table } = programs('enrolment', ENROLMENT, 11, enrolmentRows);
     const fake = fakeLegacy(tables, scripts, 10);
     const failure = await collect(streamFoldedRows({ legacy: fake.legacy, table, parts, highWaterMark: 4, maxOpenParts: parts.length })).catch((error: unknown) => error);
 
@@ -619,9 +619,9 @@ describe('streamFoldedRows over more parts than it keeps open', () => {
     ['keyed', 1, 'mixed', MIXED, mixedRows, 1],
     ['keyed', 2, 'mixed', MIXED, mixedRows, 2],
     ['keyed', 3, 'mixed', MIXED, mixedRows, 3],
-    ['keyless', 1, 'blackout', BLACKOUT, blackoutRows, 1],
-    ['keyless', 2, 'blackout', BLACKOUT, blackoutRows, 1],
-    ['keyless', 3, 'blackout', BLACKOUT, blackoutRows, 1],
+    ['keyless', 1, 'attendance', ATTENDANCE, attendanceRows, 1],
+    ['keyless', 2, 'attendance', ATTENDANCE, attendanceRows, 1],
+    ['keyless', 3, 'attendance', ATTENDANCE, attendanceRows, 1],
   ])('merges five %s parts in groups of %i through spill runs exactly as the direct merge', async (_label, maxOpenParts, name, spec, rows, peak) => {
     const { tables, scripts, parts, table } = programs(name, spec, 5, rows);
     const direct = await collect(streamFoldedRows({ legacy: fakeLegacy(tables, scripts).legacy, table, parts, highWaterMark: 2, maxOpenParts: parts.length }));
@@ -640,11 +640,11 @@ describe('streamFoldedRows over more parts than it keeps open', () => {
   });
 
   it('removes its spill directory when the consumer breaks during the run merge, with no part request left open', async () => {
-    const { tables, scripts, parts, table } = programs('timesheet', TIMESHEET, 5, timesheetRows);
+    const { tables, scripts, parts, table } = programs('enrolment', ENROLMENT, 5, enrolmentRows);
     const fake = fakeLegacy(tables, scripts);
     const seen: unknown[] = [];
     for await (const row of streamFoldedRows({ legacy: fake.legacy, table, parts, maxOpenParts: 2, spillDir: spillParent })) {
-      seen.push(row.row.timesheet_id);
+      seen.push(row.row.enrolment_id);
       break;
     }
 
@@ -668,11 +668,11 @@ describe('streamFoldedRows over more parts than it keeps open', () => {
   }
 
   it.each<ReductionCase>([
-    { label: '40 keyed parts one at a time', name: 'timesheet', spec: TIMESHEET, rows: timesheetRows, count: 40, maxOpenParts: 1, extra: {}, fanIn: MAX_MERGE_FAN_IN, peak: 1 },
-    { label: '40 keyed parts two at a time under a 1-byte sortRunBytes', name: 'timesheet', spec: TIMESHEET, rows: timesheetRows, count: 40, maxOpenParts: 2, extra: { sortRunBytes: 1 }, fanIn: 2, peak: 2 },
-    { label: '40 parts keyed on a value all rows of a part share', name: 'timesheet', spec: TIMESHEET, rows: timesheetRows, count: 40, maxOpenParts: 1, extra: { keyColumns: ['person_id'] }, fanIn: MAX_MERGE_FAN_IN, peak: 1 },
-    { label: '36 keyless parts one at a time', name: 'blackout', spec: BLACKOUT, rows: blackoutRows, count: 36, maxOpenParts: 1, extra: {}, fanIn: MAX_MERGE_FAN_IN, peak: 1 },
-    { label: '40 keyless parts two at a time', name: 'blackout', spec: BLACKOUT, rows: blackoutRows, count: 40, maxOpenParts: 2, extra: {}, fanIn: MAX_MERGE_FAN_IN, peak: 1 },
+    { label: '40 keyed parts one at a time', name: 'enrolment', spec: ENROLMENT, rows: enrolmentRows, count: 40, maxOpenParts: 1, extra: {}, fanIn: MAX_MERGE_FAN_IN, peak: 1 },
+    { label: '40 keyed parts two at a time under a 1-byte sortRunBytes', name: 'enrolment', spec: ENROLMENT, rows: enrolmentRows, count: 40, maxOpenParts: 2, extra: { sortRunBytes: 1 }, fanIn: 2, peak: 2 },
+    { label: '40 parts keyed on a value all rows of a part share', name: 'enrolment', spec: ENROLMENT, rows: enrolmentRows, count: 40, maxOpenParts: 1, extra: { keyColumns: ['person_id'] }, fanIn: MAX_MERGE_FAN_IN, peak: 1 },
+    { label: '36 keyless parts one at a time', name: 'attendance', spec: ATTENDANCE, rows: attendanceRows, count: 36, maxOpenParts: 1, extra: {}, fanIn: MAX_MERGE_FAN_IN, peak: 1 },
+    { label: '40 keyless parts two at a time', name: 'attendance', spec: ATTENDANCE, rows: attendanceRows, count: 40, maxOpenParts: 2, extra: {}, fanIn: MAX_MERGE_FAN_IN, peak: 1 },
   ])('folds $label exactly as the direct merge, reading at most $fanIn runs at once', async ({ name, spec, rows, count, maxOpenParts, extra, fanIn, peak }) => {
     const { tables, scripts, parts, table } = programs(name, spec, count, rows);
     const direct = await collect(streamFoldedRows({ ...extra, legacy: fakeLegacy(tables, scripts).legacy, table, parts, maxOpenParts: parts.length }));
@@ -684,7 +684,7 @@ describe('streamFoldedRows over more parts than it keeps open', () => {
     expect(out).toStrictEqual(direct);
     out.slice(1).forEach((row, index) => expect(compareCanonicalRows(out[index] as CanonicalRow, row)).toBeLessThanOrEqual(0));
     if (extra.keyColumns !== undefined) {
-      expect(out.filter((row) => row.legacyProgramId === 1).map((row) => row.row.timesheet_id)).toEqual(rows(1).map((row) => String(row.timesheet_id)));
+      expect(out.filter((row) => row.legacyProgramId === 1).map((row) => row.row.enrolment_id)).toEqual(rows(1).map((row) => String(row.enrolment_id)));
     }
     expect(written('run-')).toBe(Math.ceil(count / maxOpenParts));
     expect(written('merge-')).toBeGreaterThan(0);
@@ -696,11 +696,11 @@ describe('streamFoldedRows over more parts than it keeps open', () => {
   });
 
   it('closes every run and removes its spill directory when the consumer breaks after a reduction', async () => {
-    const { tables, scripts, parts, table } = programs('timesheet', TIMESHEET, 40, timesheetRows);
+    const { tables, scripts, parts, table } = programs('enrolment', ENROLMENT, 40, enrolmentRows);
     const fake = fakeLegacy(tables, scripts);
     const seen: unknown[] = [];
     for await (const row of streamFoldedRows({ legacy: fake.legacy, table, parts, maxOpenParts: 1, spillDir: spillParent })) {
-      seen.push([row.row.timesheet_id, row.legacyProgramId]);
+      seen.push([row.row.enrolment_id, row.legacyProgramId]);
       break;
     }
 
@@ -715,7 +715,7 @@ describe('streamFoldedRows over more parts than it keeps open', () => {
     ['a first-pass merge', 'run-1'],
     ['the final merge', 'merge-1'],
   ])('propagates a run that cannot be opened for %s, closing every run and removing its spill directory', async (_label, failing) => {
-    const { tables, scripts, parts, table } = programs('timesheet', TIMESHEET, 40, timesheetRows);
+    const { tables, scripts, parts, table } = programs('enrolment', ENROLMENT, 40, enrolmentRows);
     const fake = fakeLegacy(tables, scripts);
     handles.failOpen = (path, flags) => flags === 'r' && basename(path) === failing;
     const failure = collect(streamFoldedRows({ legacy: fake.legacy, table, parts, maxOpenParts: 1, spillDir: spillParent }));
@@ -729,8 +729,8 @@ describe('streamFoldedRows over more parts than it keeps open', () => {
   const cause = Object.assign(new Error('Connection lost - read ECONNRESET'), { code: 'ESOCKET' });
 
   it.each<[string, string, TableSpec, (id: number) => Row[], readonly number[]]>([
-    ['keyed', 'timesheet', TIMESHEET, timesheetRows, [0, 0, 0, 1]],
-    ['keyless', 'blackout', BLACKOUT, blackoutRows, [0, 0, 0]],
+    ['keyed', 'enrolment', ENROLMENT, enrolmentRows, [0, 0, 0, 1]],
+    ['keyless', 'attendance', ATTENDANCE, attendanceRows, [0, 0, 0]],
   ])('propagates a %s part failure in a later group once, cancelling its group and opening no later group', async (_label, name, spec, rows, cancels) => {
     const { tables, scripts, parts, table } = programs(name, spec, 5, rows, { failAt: 2, error: cause });
     const fake = fakeLegacy(tables, scripts);
@@ -750,7 +750,7 @@ describe('streamFoldedRows over more parts than it keeps open', () => {
   });
 
   it('propagates a spill directory failure before opening any part', async () => {
-    const { tables, scripts, parts, table } = programs('timesheet', TIMESHEET, 5, timesheetRows);
+    const { tables, scripts, parts, table } = programs('enrolment', ENROLMENT, 5, enrolmentRows);
     const fake = fakeLegacy(tables, scripts);
 
     await expect(collect(streamFoldedRows({ legacy: fake.legacy, table, parts, maxOpenParts: 2, spillDir: join(spillParent, 'missing') }))).rejects.toMatchObject({ code: 'ENOENT' });
@@ -759,7 +759,7 @@ describe('streamFoldedRows over more parts than it keeps open', () => {
 
   it.each([0, -1, 2.5, Number.NaN])('rejects maxOpenParts %s before opening the database', async (maxOpenParts) => {
     const fake = fakeLegacy(LIVE, SCRIPTS);
-    const failure = await collect(streamFoldedRows({ legacy: fake.legacy, table: 'Program_N.timesheet', parts: [part(1, 'timesheet')], maxOpenParts })).catch((error: unknown) => error);
+    const failure = await collect(streamFoldedRows({ legacy: fake.legacy, table: 'Program_N.enrolment', parts: [part(1, 'enrolment')], maxOpenParts })).catch((error: unknown) => error);
 
     expect(failure).toBeInstanceOf(RangeError);
     expect(failure).toMatchObject({ message: `maxOpenParts must be a positive integer, got ${String(maxOpenParts)}` });
@@ -768,22 +768,22 @@ describe('streamFoldedRows over more parts than it keeps open', () => {
 });
 
 describe('describeLegacyTable', () => {
-  const timesheetParts = [part(1, 'timesheet'), part(2, 'timesheet')];
+  const enrolmentParts = [part(1, 'enrolment'), part(2, 'enrolment')];
 
   it.each<[string, LegacyTableShape]>([
     [
-      'Program_N.timesheet',
-      { table: 'Program_N.timesheet', folded: true, keyed: true, keyColumns: ['timesheet_id', LEGACY_PROGRAM_ID_COLUMN], columns: FOLDED_TIMESHEET, parts: timesheetParts },
+      'Program_N.enrolment',
+      { table: 'Program_N.enrolment', folded: true, keyed: true, keyColumns: ['enrolment_id', LEGACY_PROGRAM_ID_COLUMN], columns: FOLDED_ENROLMENT, parts: enrolmentParts },
     ],
     [
-      'Program_N.blackout',
+      'Program_N.attendance',
       {
-        table: 'Program_N.blackout',
+        table: 'Program_N.attendance',
         folded: true,
         keyed: false,
         keyColumns: [],
         columns: [{ name: 'person_id', type: 's' }, { name: 'reason', type: 's' }, PROGRAM],
-        parts: [part(1, 'blackout'), part(2, 'blackout')],
+        parts: [part(1, 'attendance'), part(2, 'attendance')],
       },
     ],
     [
@@ -811,12 +811,12 @@ describe('describeLegacyTable', () => {
   });
 
   it.each<[string, string, boolean, readonly number[]]>([
-    ['Program_N.timesheet', 'Program_N.timesheet', true, [1, 2]],
-    ['program_n.TIMESHEET', 'Program_N.timesheet', true, [1, 2]],
-    ['[Program_N].[timesheet]', 'Program_N.timesheet', true, [1, 2]],
-    ['Program_2.timesheet', 'Program_N.timesheet', true, [2]],
-    ['[Program_1].[timesheet]', 'Program_N.timesheet', true, [1]],
-    ['timesheet', 'timesheet', false, []],
+    ['Program_N.enrolment', 'Program_N.enrolment', true, [1, 2]],
+    ['program_n.ENROLMENT', 'Program_N.enrolment', true, [1, 2]],
+    ['[Program_N].[enrolment]', 'Program_N.enrolment', true, [1, 2]],
+    ['Program_2.enrolment', 'Program_N.enrolment', true, [2]],
+    ['[Program_1].[enrolment]', 'Program_N.enrolment', true, [1]],
+    ['enrolment', 'enrolment', false, []],
     ['dbo.[odd.name]', 'odd.name', false, []],
     ['tfiles', 'tfiles', false, []],
   ])('resolves %s to table %s (folded: %s) with program parts %j', async (name, table, folded, programIds) => {
@@ -832,11 +832,11 @@ describe('describeLegacyTable', () => {
     ['a named snapshot', 'muradb_opt2_snap_2', 'muradb_opt2_snap_2'],
   ])('raises TableNotFoundError naming %s for a fold target with no live parts', async (_label, database, named) => {
     const fake = fakeLegacy(LIVE, SCRIPTS);
-    const options: LegacyTableOptions = database === undefined ? { table: 'Program_N.approval_action' } : { table: 'Program_N.approval_action', database };
+    const options: LegacyTableOptions = database === undefined ? { table: 'Program_N.cohort' } : { table: 'Program_N.cohort', database };
     const failure = await describeLegacyTable(deps(fake), options).catch((error: unknown) => error);
 
     expect(failure).toBeInstanceOf(TableNotFoundError);
-    expect(failure).toMatchObject({ database: named, table: 'Program_N.approval_action', message: `table Program_N.approval_action not found in database ${named}` });
+    expect(failure).toMatchObject({ database: named, table: 'Program_N.cohort', message: `table Program_N.cohort not found in database ${named}` });
     expect(fake.opened).toEqual([named]);
     expect(fake.listed).toHaveLength(1);
   });
@@ -846,7 +846,7 @@ describe('describeLegacyTable', () => {
     ['the requested key over the ownership key', { table: 'tfiles', keyColumns: ['hits'] }, ['hits'], []],
     ['the live primary key for a table the ownership file does not know', { table: 'tunknown' }, ['fileID'], ['tunknown']],
     ['the live primary key for a table the ownership file does not migrate', { table: 'tglobals' }, ['fileID'], ['tglobals']],
-    ['the ownership key of a program table plus legacy_program_id', { table: 'Program_1.timesheet' }, ['timesheet_id', LEGACY_PROGRAM_ID_COLUMN], ['Program_1.timesheet']],
+    ['the ownership key of a program table plus legacy_program_id', { table: 'Program_1.enrolment' }, ['enrolment_id', LEGACY_PROGRAM_ID_COLUMN], ['Program_1.enrolment']],
   ])('keys a table by %s', async (_label, options, keyColumns, lookups) => {
     const { catalog, keyLookups } = fakeCatalog();
     const shape = await describeLegacyTable(deps(fakeLegacy(LIVE, SCRIPTS), catalog), options);
@@ -866,8 +866,8 @@ describe('describeLegacyTable', () => {
 describe('streamLegacyTable', () => {
   const migratable = (name: string, physical: MigratableTable['physical'], folded: boolean, keyColumns: readonly string[]): MigratableTable => ({
     name,
-    owner: 'timesheets',
-    owners: ['timesheets'],
+    owner: 'programs-sites',
+    owners: ['programs-sites'],
     physical,
     folded,
     keyColumns,
@@ -876,10 +876,10 @@ describe('streamLegacyTable', () => {
   it('streams a folded migratable table through its own parts and key without listing tables or reading ownership', async () => {
     const fake = fakeLegacy(LIVE, SCRIPTS);
     const { catalog, keyLookups } = fakeCatalog();
-    const table = migratable('Program_N.timesheet', [part(1, 'timesheet'), part(2, 'timesheet')], true, ['timesheet_id']);
+    const table = migratable('Program_N.enrolment', [part(1, 'enrolment'), part(2, 'enrolment')], true, ['enrolment_id']);
     const out = await collect(streamLegacyTable(deps(fake, catalog), { table }));
 
-    expect(out.map((row) => [row.row.timesheet_id, row.legacyProgramId])).toEqual([
+    expect(out.map((row) => [row.row.enrolment_id, row.legacyProgramId])).toEqual([
       ['1', 1],
       ['2', 2],
       ['3', 1],
@@ -903,19 +903,19 @@ describe('streamLegacyTable', () => {
   });
 
   it('raises FoldShapeError for a folded migratable table with a part outside the Program_<id> schemas', async () => {
-    const table = migratable('Program_N.timesheet', [{ ref: ref('dbo', 'timesheet', 'timesheet') }, part(1, 'timesheet')], true, ['timesheet_id']);
+    const table = migratable('Program_N.enrolment', [{ ref: ref('dbo', 'enrolment', 'enrolment') }, part(1, 'enrolment')], true, ['enrolment_id']);
     const failure = await collect(streamLegacyTable(deps(fakeLegacy(LIVE, SCRIPTS)), { table })).catch((error: unknown) => error);
 
     expect(failure).toBeInstanceOf(FoldShapeError);
-    expect(failure).toMatchObject({ table: 'Program_N.timesheet', message: 'Program_N.timesheet: timesheet is not a Program_<id> table' });
+    expect(failure).toMatchObject({ table: 'Program_N.enrolment', message: 'Program_N.enrolment: enrolment is not a Program_<id> table' });
   });
 
   it('streams a logical folded name from every live program and a plain name as one table', async () => {
-    const folded = await collect(streamLegacyTable(deps(fakeLegacy(LIVE, SCRIPTS)), { table: 'Program_N.blackout' }));
+    const folded = await collect(streamLegacyTable(deps(fakeLegacy(LIVE, SCRIPTS)), { table: 'Program_N.attendance' }));
     const plain = await collect(streamLegacyTable(deps(fakeLegacy(LIVE, SCRIPTS)), { table: 'tfiles' }));
 
     expect(folded.map((row) => row.legacyProgramId)).toEqual([1, 1, 2, 1, 2]);
-    expect(folded.every((row) => row.table === 'Program_N.blackout')).toBe(true);
+    expect(folded.every((row) => row.table === 'Program_N.attendance')).toBe(true);
     expect(plain.map((row) => [row.row.siteID, row.row.fileID])).toEqual([
       ['tenant-a', 'F-2'],
       ['tenant-b', 'F-1'],

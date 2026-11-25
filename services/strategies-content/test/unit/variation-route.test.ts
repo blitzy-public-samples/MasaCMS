@@ -1,5 +1,4 @@
 /** `/_api/resource/variation`: the branch gate against the shared route key, the unmatched page, the site binding and the fail-closed script. */
-import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -9,7 +8,7 @@ import { collectRouteMatrix } from '@opt2/platform/auth';
 import { routeKeyForRequest } from '@opt2/platform/legacy-compat';
 import { createLogger } from '@opt2/platform/logging';
 import { createService, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
-import { TENANT_A, TENANT_B, assertResponseMatchesOpenApi, testVerifier, writeTestSecrets, type InjectResponse } from '@opt2/platform/testing';
+import { TENANT_A, TENANT_B, assertResponseMatchesOpenApi, loadOpenApiDocument, testVerifier, writeTestSecrets, type InjectResponse } from '@opt2/platform/testing';
 import { CONTENT_CONFIG_DEFAULTS } from '../../src/domain/context.js';
 import {
   VARIATION_PATH,
@@ -23,7 +22,7 @@ import { SERVICE, TEST_CLOCK, serviceHeaders, testEnv, userHeaders } from '../he
 
 type Operation = Record<string, unknown>;
 
-const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as {
+const OPENAPI = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as {
   paths: Record<string, Record<string, Operation>>;
 };
 const TEMPLATES = { [VARIATION_PATH]: VARIATION_PATH, [`${VARIATION_PATH}/{path}`]: `${VARIATION_PATH}/*` } as const;

@@ -13,7 +13,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 
 import { loadConfig } from '../../src/config.js';
 import type { BridgeClient, LegacyDb } from '../../src/legacy/index.js';
-import { loadUnitCatalog, type OwnersClient } from '../../src/owners/index.js';
+import { loadUnitCatalog, type OwnersClient, type UnitCatalog } from '../../src/owners/index.js';
 import { WindowImportError, decodedRowOf, importWindow, keyRowOf, type ImportInput, type WindowImportContext } from '../../src/windows/import.js';
 import {
   connectionLost,
@@ -24,7 +24,7 @@ import {
   type Row,
   type StatementRecord,
 } from '../helpers/fake-legacy-db.js';
-import { writeInventoryFile } from '../helpers/fixtures.js';
+import { UNITS, fixtureInventoryFor, writeInventoryFile, writeOwnershipFile } from '../helpers/fixtures.js';
 import { createOwnerDoubles, type OwnerFailure } from '../helpers/owner-double.js';
 
 // Every decodeRow call passes through, counted by encoding, so a test can tell which rows were decoded.
@@ -70,6 +70,8 @@ interface Scenario {
   name: string;
   unit: string;
   owner: string;
+  /** Imports over the fixture's table ownership and inventory instead of the committed ownership. */
+  fixture?: boolean;
   scope: ImportInput['scope'];
   legacy: LegacyTable[];
   /** The owner's export columns of the unit's table. */
@@ -89,42 +91,42 @@ const TSETTINGS: LegacyTable = {
   rows: ['default', 'tenant-a', 'tenant-b', UMBRELLA].map((SiteID) => ({ SiteID, filePoolID: null })),
 };
 
-const SURVEYS: LegacyTable = {
-  qualified: 'synthetic.survey',
-  columns: [col('survey_id', 'int'), col('siteID', 'nvarchar', 25), col('title', 'nvarchar', 200)],
-  options: { primaryKey: ['survey_id'] },
+const ARCHIVES: LegacyTable = {
+  qualified: 'synthetic.person_archive',
+  columns: [col('archive_id', 'int'), col('siteID', 'nvarchar', 50), col('archived_by', 'nvarchar', 50)],
+  options: { primaryKey: ['archive_id'] },
   rows: [
-    { survey_id: 1, siteID: FIRST, title: 'Renamed' },
-    { survey_id: 3, siteID: FIRST, title: 'New' },
-    { survey_id: 4, siteID: SECOND, title: 'Changed' },
-    { survey_id: 5, siteID: FIRST, title: 'Same' },
-    { survey_id: 10, siteID: FIRST, title: 'Ten' },
-    { survey_id: 12, siteID: SECOND, title: 'Twelve' },
+    { archive_id: 1, siteID: FIRST, archived_by: 'Renamed' },
+    { archive_id: 3, siteID: FIRST, archived_by: 'New' },
+    { archive_id: 4, siteID: SECOND, archived_by: 'Changed' },
+    { archive_id: 5, siteID: FIRST, archived_by: 'Same' },
+    { archive_id: 10, siteID: FIRST, archived_by: 'Ten' },
+    { archive_id: 12, siteID: SECOND, archived_by: 'Twelve' },
   ],
 };
 
 const KEYED: Scenario = {
   name: 'a keyed table across tenants, in canonical rather than numeric key order',
-  unit: 'surveys.survey',
-  owner: 'surveys',
+  unit: 'people.person_archive',
+  owner: 'people',
   scope: { table: true },
-  legacy: [SURVEYS],
-  columns: [i('survey_id'), s('siteID'), s('title')],
+  legacy: [ARCHIVES],
+  columns: [i('archive_id'), s('siteID'), s('archived_by')],
   held: [
     {
-      table: 'synthetic.survey',
+      table: 'synthetic.person_archive',
       site: FIRST,
       rows: [
-        { survey_id: '1', siteID: FIRST, title: 'Original' },
-        { survey_id: '2', siteID: FIRST, title: 'Deleted' },
-        { survey_id: '5', siteID: FIRST, title: 'Same' },
-        { survey_id: '10', siteID: FIRST, title: 'Ten old' },
-        { survey_id: '11', siteID: FIRST, title: 'Gone' },
+        { archive_id: '1', siteID: FIRST, archived_by: 'Original' },
+        { archive_id: '2', siteID: FIRST, archived_by: 'Deleted' },
+        { archive_id: '5', siteID: FIRST, archived_by: 'Same' },
+        { archive_id: '10', siteID: FIRST, archived_by: 'Ten old' },
+        { archive_id: '11', siteID: FIRST, archived_by: 'Gone' },
       ],
     },
-    { table: 'synthetic.survey', site: SECOND, rows: [{ survey_id: '4', siteID: SECOND, title: 'Before' }] },
+    { table: 'synthetic.person_archive', site: SECOND, rows: [{ archive_id: '4', siteID: SECOND, archived_by: 'Before' }] },
   ],
-  show: ['survey_id', 'title'],
+  show: ['archive_id', 'archived_by'],
   expected: {
     // Deletes follow every upsert, in apply-encoding order.
     [FIRST]: [
@@ -176,19 +178,20 @@ const KEYLESS: Scenario = {
   },
 };
 
-const days = (rows: [number, number][]): Row[] => rows.map(([day, hours]) => ({ day_id: day, hours }));
-const heldDays = (rows: [number, number][]): Row[] => rows.map(([day, hours]) => ({ day_id: String(day), hours: String(hours) }));
-const dayTable = (programId: number, rows: [number, number][]): LegacyTable => ({
-  qualified: `Program_${String(programId)}.timesheet_day`,
-  columns: [col('day_id', 'int'), col('hours', 'int')],
-  options: { primaryKey: ['day_id'] },
-  rows: days(rows),
+const enrolments = (rows: [number, number][]): Row[] => rows.map(([enrolment, cohort]) => ({ enrolment_id: enrolment, cohort_id: cohort }));
+const heldEnrolments = (rows: [number, number][]): Row[] => rows.map(([enrolment, cohort]) => ({ enrolment_id: String(enrolment), cohort_id: String(cohort) }));
+const enrolmentTable = (programId: number, rows: [number, number][]): LegacyTable => ({
+  qualified: `Program_${String(programId)}.enrolment`,
+  columns: [col('enrolment_id', 'int'), col('cohort_id', 'int')],
+  options: { primaryKey: ['enrolment_id'] },
+  rows: enrolments(rows),
 });
 
 const FOLDED: Scenario = {
   name: 'a Program_<id> table folded into per-program batches of each program tenant',
-  unit: 'timesheets.timesheet_day',
-  owner: 'timesheets',
+  unit: UNITS.enrolment,
+  owner: 'programs-sites',
+  fixture: true,
   scope: { table: true },
   legacy: [
     {
@@ -200,29 +203,29 @@ const FOLDED: Scenario = {
         { program_id: 2, siteID: SECOND },
       ],
     },
-    dayTable(1, [
+    enrolmentTable(1, [
       [1, 7],
       [2, 4],
       [3, 8],
     ]),
-    dayTable(2, [
+    enrolmentTable(2, [
       [1, 6],
       [2, 5],
     ]),
   ],
-  columns: [i('day_id'), i('hours')],
+  columns: [i('enrolment_id'), i('cohort_id')],
   held: [
     {
-      table: 'Program_1.timesheet_day',
+      table: 'Program_1.enrolment',
       site: FIRST,
-      rows: heldDays([
+      rows: heldEnrolments([
         [1, 8],
         [4, 8],
       ]),
     },
-    { table: 'Program_2.timesheet_day', site: SECOND, rows: heldDays([[1, 6]]) },
+    { table: 'Program_2.enrolment', site: SECOND, rows: heldEnrolments([[1, 6]]) },
   ],
-  show: ['day_id', 'hours'],
+  show: ['enrolment_id', 'cohort_id'],
   expected: {
     [FIRST]: [
       [1, 'upsert', undefined, '1', '7'],
@@ -234,40 +237,47 @@ const FOLDED: Scenario = {
   },
 };
 
-const reminder = (id: number, survey: number, offset: number): Row => ({ reminder_id: id, survey_id: survey, offset_minutes: offset });
-const heldReminder = (id: number, survey: number, offset: number): Row => ({ reminder_id: String(id), survey_id: String(survey), offset_minutes: String(offset) });
+const token = (id: string, client: string, granttype: string): Row => ({ token: id, clientid: client, granttype });
 
 const PARENT_TENANT: Scenario = {
   name: 'a child table that keeps the first tenant holding a key and places new rows by their parent',
-  unit: 'surveys.survey_reminder',
-  owner: 'surveys',
+  unit: 'identity.oauth_token',
+  owner: 'identity',
   scope: { table: true },
   legacy: [
-    SURVEYS,
     {
-      qualified: 'synthetic.survey_reminder',
-      columns: [col('reminder_id', 'int'), col('survey_id', 'int'), col('offset_minutes', 'int')],
-      options: { primaryKey: ['reminder_id'] },
-      rows: [reminder(10, 1, 60), reminder(11, 1, 30), reminder(12, 99, 5), reminder(13, 4, 25)],
+      qualified: 'dbo.toauthclients',
+      columns: [col('clientid', 'varchar', 35), col('siteid', 'varchar', 25), col('name', 'varchar', 50)],
+      options: { primaryKey: ['clientid'] },
+      rows: [
+        { clientid: 'C1', siteid: FIRST, name: 'Portal' },
+        { clientid: 'C4', siteid: SECOND, name: 'Partner' },
+      ],
+    },
+    {
+      qualified: 'dbo.toauthtokens',
+      columns: [col('token', 'varchar', 35), col('clientid', 'varchar', 35), col('granttype', 'varchar', 50)],
+      options: { primaryKey: ['token'] },
+      rows: [token('T10', 'C1', 'password'), token('T11', 'C1', 'refresh_token'), token('T12', 'C99', 'password'), token('T13', 'C4', 'client_credentials')],
     },
   ],
-  columns: [i('reminder_id'), i('survey_id'), i('offset_minutes')],
+  columns: [s('token'), s('clientid'), s('granttype')],
   held: [
-    { table: 'synthetic.survey_reminder', site: FIRST, rows: [heldReminder(13, 4, 20)] },
-    { table: 'synthetic.survey_reminder', site: SECOND, rows: [heldReminder(11, 1, 15), heldReminder(13, 4, 20), heldReminder(14, 4, 10)] },
+    { table: 'toauthtokens', site: FIRST, rows: [token('T13', 'C4', 'authorization_code')] },
+    { table: 'toauthtokens', site: SECOND, rows: [token('T11', 'C1', 'password'), token('T13', 'C4', 'authorization_code'), token('T14', 'C4', 'password')] },
   ],
-  show: ['reminder_id', 'offset_minutes'],
+  show: ['token', 'granttype'],
   expected: {
     [FIRST]: [
-      [undefined, 'upsert', undefined, '10', '60'],
-      [undefined, 'upsert', undefined, '13', '25'],
+      [undefined, 'upsert', undefined, 'T10', 'password'],
+      [undefined, 'upsert', undefined, 'T13', 'client_credentials'],
     ],
     [SECOND]: [
-      [undefined, 'upsert', undefined, '11', '30'],
-      [undefined, 'delete', undefined, '13', '20'],
-      [undefined, 'delete', undefined, '14', '10'],
+      [undefined, 'upsert', undefined, 'T11', 'refresh_token'],
+      [undefined, 'delete', undefined, 'T13', 'authorization_code'],
+      [undefined, 'delete', undefined, 'T14', 'password'],
     ],
-    [UMBRELLA]: [[undefined, 'upsert', undefined, '12', '5']],
+    [UMBRELLA]: [[undefined, 'upsert', undefined, 'T12', 'password']],
   },
 };
 
@@ -412,11 +422,17 @@ interface Hooks {
 let databases = 0;
 let spillDir: string;
 let inventoryDir: string;
-let inventory: string;
+/** Table ownership, unit catalog and inventory of the committed ownership and of the fixture's. */
+let worlds: Record<'committed' | 'fixture', { tableOwnership: string; catalog: UnitCatalog; inventory: string }>;
 
 beforeAll(async () => {
   inventoryDir = await mkdtemp(join(tmpdir(), 'opt2-window-spill-inventory-'));
-  inventory = await writeInventoryFile(inventoryDir);
+  const fixtureDir = join(inventoryDir, 'fixture');
+  const fixtureOwnership = await writeOwnershipFile(fixtureDir);
+  worlds = {
+    committed: { tableOwnership: CONFIG.paths.tableOwnership, catalog: CATALOG, inventory: await writeInventoryFile(join(inventoryDir, 'committed'), fixtureInventoryFor(CATALOG)) },
+    fixture: { tableOwnership: fixtureOwnership, catalog: loadUnitCatalog(fixtureOwnership), inventory: await writeInventoryFile(fixtureDir) },
+  };
 });
 
 afterAll(async () => {
@@ -441,7 +457,8 @@ async function importOnce(scenario: Scenario, sortRunBytes: number | undefined, 
     rows: Object.fromEntries(tables.map((table) => [table.qualified, table.rows])),
   });
   hooks.legacy?.(fake);
-  const doubles = createOwnerDoubles(CATALOG, { owners: [scenario.owner] });
+  const { tableOwnership, catalog, inventory } = worlds[scenario.fixture === true ? 'fixture' : 'committed'];
+  const doubles = createOwnerDoubles(catalog, { owners: [scenario.owner] });
   const owner = doubles.owner(scenario.owner);
   for (const { table, site, rows } of scenario.held) owner.seedRows(table, tenantIdForSite(site), rows, scenario.columns);
   if (fail !== undefined) owner.failNext('apply', fail);
@@ -472,9 +489,9 @@ async function importOnce(scenario: Scenario, sortRunBytes: number | undefined, 
     },
   };
   const ctx = {
-    config: { ...CONFIG, paths: { ...CONFIG.paths, inventory }, backfill: { ...CONFIG.backfill, batchRows: BATCH_ROWS } },
+    config: { ...CONFIG, paths: { ...CONFIG.paths, inventory, tableOwnership }, backfill: { ...CONFIG.backfill, batchRows: BATCH_ROWS } },
     legacy,
-    catalog: CATALOG,
+    catalog,
     owners,
     bridge: {} as BridgeClient,
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger,
@@ -532,7 +549,7 @@ describe('importWindow through spilled sorted runs', () => {
   // An unchanged row is decoded where it is read: once as the owner's row is checked and once by the extractor. The
   // sorted runs, the join and the diff rebuild it without decoding it again.
   it.each([
-    { name: KEYED.name, scenario: KEYED, unchanged: { survey_id: '5', siteID: FIRST, title: 'Same' } },
+    { name: KEYED.name, scenario: KEYED, unchanged: { archive_id: '5', siteID: FIRST, archived_by: 'Same' } },
     { name: UNCHANGED_KEYLESS.name, scenario: UNCHANGED_KEYLESS, unchanged: heldObject('A', FIRST, 1) },
   ])('decodes an unchanged row only where it is read: $name', async ({ scenario, unchanged }) => {
     decodes.clear();
@@ -575,8 +592,8 @@ describe('decodedRowOf', () => {
   });
 });
 
-/** Whether `statement` is the legacy side's read of the survey reminder rows. */
-const readsReminders = (statement: StatementRecord): boolean => statement.sql.includes('[synthetic].[survey_reminder]');
+/** Whether `statement` is the legacy side's read of the OAuth token rows. */
+const readsTokens = (statement: StatementRecord): boolean => statement.sql.includes('[dbo].[toauthtokens]');
 
 /** Resolves on the first event-loop turn at which `fake` has run a statement `matches` accepts; fails after 10 s. */
 async function statementRun(fake: FakeLegacyDb, matches: (statement: StatementRecord) => boolean): Promise<void> {
@@ -590,7 +607,7 @@ async function statementRun(fake: FakeLegacyDb, matches: (statement: StatementRe
 describe('importWindow while both sides of a table read', () => {
   it.each([
     { name: 'the owner export fails while the legacy side streams', failing: 'target', message: 'export page lost' },
-    { name: 'the legacy stream fails while the owner export is read', failing: 'legacy', message: 'reading synthetic.survey_reminder from database' },
+    { name: 'the legacy stream fails while the owner export is read', failing: 'legacy', message: 'reading toauthtokens from database' },
   ])('fails with WindowImportError and disposes every run when $name', async ({ failing, message }) => {
     // The export after FIRST's, whose rows have spilled by then, starts once the legacy side reads the table.
     const tenants = [...SITE_OF.keys()].sort();
@@ -616,18 +633,18 @@ describe('importWindow while both sides of a table read', () => {
     try {
       outcome = await importOnce(PARENT_TENANT, SPILL_EVERY_ROW, undefined, {
         legacy: (fake) => {
-          if (failing === 'legacy') fake.failNext(readsReminders, connectionLost());
+          if (failing === 'legacy') fake.failNext(readsTokens, connectionLost());
         },
         // Legacy reads made once the exports have started belong to the legacy side of the table.
         beforeLive: async (fake) => {
-          if (failing === 'target' && fake.statements.some(readsReminders)) await failed;
+          if (failing === 'target' && fake.statements.some(readsTokens)) await failed;
           if (failing === 'legacy' && exportsStarted) await atGate;
         },
         beforeExport: async (tenantId, fake) => {
           exportsStarted = true;
           if (tenantId !== gated) return;
           targetGated();
-          await statementRun(fake, readsReminders);
+          await statementRun(fake, readsTokens);
           if (failing === 'target') {
             gateDone = true;
             targetFailed();

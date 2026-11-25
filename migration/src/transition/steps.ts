@@ -50,13 +50,11 @@ import { ProjectionTimeoutError, type Projector } from '../reverse/index.js';
 import {
   readSchedulerState,
   siteMonitorJobUnits,
-  surveysTouched,
   type PauseResult,
   type RestoreResult,
   type SchedulerScope,
   type SchedulerService,
   type SiteMonitorHandoffResult,
-  type SurveysHandoffResult,
 } from '../scheduler/index.js';
 import { SnapshotBlockedError, latestSnapshot, requireSnapshot, takeSnapshot, type SnapshotRecord } from '../snapshot/index.js';
 import {
@@ -143,8 +141,6 @@ export interface TransitionPlan {
   siteMonitorUnits: string[];
   /** A unit fed by `tcontent`, which Masa's start-up rewrites, becomes `target`-authoritative. */
   contentToTarget: boolean;
-  /** A unit fed by the fixture's `cfthread` export jobs is in `T`. */
-  exportJobsWriteT: boolean;
   returnsToLegacy: boolean;
 }
 
@@ -225,7 +221,7 @@ export interface TransitionProgress {
   /** The written report: `rollback-before` from step 6, or `post-cutover` from step 8 after activation. */
   reconciliation?: { point: string; result: ReconcileResult; differences: number; reportPath: string };
   activatedEpoch?: number;
-  handoffs?: { siteMonitor?: SiteMonitorHandoffResult; surveys?: SurveysHandoffResult; restore?: RestoreResult };
+  handoffs?: { siteMonitor?: SiteMonitorHandoffResult; restore?: RestoreResult };
   /** Units returned to legacy whose forward feed restarts from a fresh snapshot (`opt2-migrate rollback rebaseline`). */
   rebaselineRequired: string[];
   /** Failed undo attempts of an aborting transition: how many, when the first failed, and when they were escalated to an operator. */
@@ -321,13 +317,9 @@ export interface StepOutcome {
 
 // Gateway instances refresh their cut-over state every second; epoch and in-flight waits poll at this pace.
 const GATEWAY_POLL_MS = 250;
-const EXPORT_JOB_POLL_MS = 1000;
 /** Masa's start-up rewrites rows of this table (core/appcfc/onApplicationStart_include.cfm:892-929). */
 const CONTENT_TABLE = 'tcontent';
-const EXPORT_JOB_TABLE = 'synthetic.export_job';
 const FILES_TABLE = 'tfiles';
-const EXPORT_JOB_TABLE_SQL = "SELECT CASE WHEN OBJECT_ID(N'synthetic.export_job', N'U') IS NULL THEN 0 ELSE 1 END AS present";
-const OPEN_EXPORT_JOBS_SQL = "SELECT job_id FROM synthetic.export_job WHERE state IN (N'queued', N'running') ORDER BY job_id";
 const POST_CUTOVER_POINT = 'post-cutover';
 const ROLLBACK_BEFORE_POINT = 'rollback-before';
 /** Gateway answers to an activation that mean the version was refused, never activated. */
@@ -402,7 +394,6 @@ export function deriveTransitionPlan(
     siteMonitorEntryMoves: diff.changedEntries.some((change) => change.entry.kind === 'job'),
     siteMonitorUnits: siteMonitorJobUnits(active),
     contentToTarget: meets(CONTENT_TABLE, toTarget),
-    exportJobsWriteT: meets(EXPORT_JOB_TABLE, setT),
     returnsToLegacy: toLegacy.length > 0,
   };
 }
@@ -811,24 +802,6 @@ async function clearLegacyOrphans(run: StepRun, orphans: readonly InflightRow[])
   await finishOrphanRestart(run);
 }
 
-/** Waits until the fixture's `cfthread` export jobs have left `queued` and `running`. */
-async function awaitExportJobs(run: StepRun): Promise<void> {
-  const { ctx } = run;
-  const pool = await ctx.legacy.live();
-  const table = await pool.request().query<{ present: number }>(EXPORT_JOB_TABLE_SQL);
-  if (table.recordset[0]?.present !== 1) return;
-  const deadline = ctx.clock.now().getTime() + ctx.config.transition.cfthreadWaitMs;
-  for (;;) {
-    const { recordset } = await pool.request().query<{ job_id: string }>(OPEN_EXPORT_JOBS_SQL);
-    if (recordset.length === 0) return;
-    if (ctx.clock.now().getTime() >= deadline) {
-      const jobs = recordset.map((row) => row.job_id);
-      throw new TransitionAbortedError(3, `Fixture export jobs are still queued or running: ${jobs.join(', ')}`, { jobs });
-    }
-    await run.sleep(EXPORT_JOB_POLL_MS);
-  }
-}
-
 /** Step 3: confirms the frozen entries' in-flight writes have finished, clearing orphans only with evidence. */
 async function confirmInflightFinished(run: StepRun): Promise<void> {
   const { plan, progress } = run;
@@ -848,7 +821,6 @@ async function confirmInflightFinished(run: StepRun): Promise<void> {
   // Closing the gates in step 5 is the evidence that these can no longer commit.
   progress.targetOrphans = orphans.filter((row) => row.side === 'target');
   await run.persist();
-  if (plan.exportJobsWriteT) await awaitExportJobs(run);
 }
 
 /** Step 4: with the gates still open, waits until `T`'s owners have published and its consumers have received every event. */
@@ -1119,13 +1091,9 @@ async function handOffAndReopen(run: StepRun): Promise<void> {
     handoffs.siteMonitor = await deps.scheduler.handOffSiteMonitorToTarget();
     await run.persist();
   }
-  if (handoffs.surveys === undefined && surveysTouched(plan.toTarget, ctx.catalog)) {
-    handoffs.surveys = await deps.scheduler.handOffSurveysToTarget();
-    await run.persist();
-  }
   if (handoffs.restore === undefined && plan.toLegacy.length > 0) {
     // Only a monitor whose entry returns to legacy is restored; one handed to the target above stays there.
-    handoffs.restore = await deps.scheduler.restoreToLegacy(plan.toLegacy, schedulerScope(plan, plan.siteMonitorEntryMoves && monitorTo === 'legacy'));
+    handoffs.restore = await deps.scheduler.restoreToLegacy(schedulerScope(plan, plan.siteMonitorEntryMoves && monitorTo === 'legacy'));
     await run.persist();
   }
 

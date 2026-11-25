@@ -10,10 +10,16 @@ import {
   TENANT_A,
   TENANT_B,
   assertResponseMatchesOpenApi,
+  contractOperations,
+  injectedResponse,
+  loadOpenApiDocument,
+  operationAuthProblems,
+  operationRouteKeys,
   poolTenantExpectation,
   pushTo,
   registryPayloads,
   testEnvelope,
+  toContractPath,
   type InjectResponse,
 } from '@opt2/platform/testing';
 import {
@@ -70,56 +76,27 @@ interface ContractOperation {
   served: string[];
 }
 
-const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as OpenApiDoc;
+const OPENAPI = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as unknown as OpenApiDoc;
 const PIN = JSON.parse(readFileSync(new URL('../../../../opt2/source-pin.json', import.meta.url), 'utf8')) as { sha: string };
 const HTTP_METHODS = ['get', 'put', 'post', 'delete', 'patch', 'head', 'options'] as const;
-const TRANSPORTS: readonly unknown[] = ['service', 'pubsub-push', 'cloud-tasks'];
 
 /** Legacy-served, decision-list and halted actions this service must neither declare nor register. */
 const NOT_BUILT = ['processAsyncObject', 'swagger', 'declareEntity', 'undeclareEntity', 'checkSchema', 'cropimage', 'rotateimage', 'flipimage', 'upload=image'];
 const NOT_BUILT_NAMES = new RegExp(NOT_BUILT.join('|'), 'gi');
 const NOT_BUILT_NAME = new RegExp(NOT_BUILT.join('|'), 'i');
 
-const operationAt = (item: Record<string, Json>, verb: string): Json | undefined => item[verb];
-
-const OPERATIONS: readonly ContractOperation[] = Object.entries(OPENAPI.paths).flatMap(([path, item]) =>
-  HTTP_METHODS.flatMap((verb) => {
-    const op = operationAt(item, verb);
-    if (op === undefined) return [];
-    const method = verb.toUpperCase();
-    const names = [op['x-opt2-route-keys'], op['x-opt2-legacy-actions']].flatMap((list) => (Array.isArray(list) ? list.map(String) : []));
-    const fastifyPath = op['x-opt2-fastify-path'] as string | string[] | undefined;
-    return [
-      {
-        key: `${method} ${path}`,
-        method,
-        path,
-        operationId: String(op.operationId),
-        requires: op['x-opt2-requires'],
-        public: op['x-opt2-public'],
-        transport: op['x-opt2-transport'],
-        legacyNames: names,
-        served: fastifyPath === undefined ? [`${method} ${path}`] : [fastifyPath].flat().map((url) => `${method} ${contractPath(url)}`),
-      },
-    ];
-  }),
-);
-
 /** Names of the `x-opt2-wildcard` path parameters of `template`'s path item and operations, `$ref`s resolved. */
 function wildcardNames(template: string): Set<string> {
   const item = OPENAPI.paths[template] ?? {};
-  const params = [item.parameters, ...HTTP_METHODS.map((verb) => operationAt(item, verb)?.parameters)].flatMap((list) =>
-    Array.isArray(list) ? (list as Json[]) : [],
-  );
+  const params = [item.parameters, ...HTTP_METHODS.map((verb) => item[verb]?.parameters)].flatMap((list) => (Array.isArray(list) ? (list as Json[]) : []));
   const resolved = params.map((param) =>
     typeof param.$ref === 'string' ? (OPENAPI.components.parameters[param.$ref.replace('#/components/parameters/', '')] ?? {}) : param,
   );
   return new Set(resolved.filter((param) => param.in === 'path' && param['x-opt2-wildcard'] === true).map((param) => String(param.name)));
 }
 
-/** A Fastify url in contract form: escaped `::` as `:`, `:name` as `{name}`, a trailing `*` as the contract's wildcard parameter there. */
-function contractPath(url: string): string {
-  const path = url.replaceAll('::', '\0').replace(/:(\w+)/g, '{$1}').replaceAll('\0', ':');
+/** A contract path ending `/*` as the template whose wildcard parameter sits there; any other path as is. */
+function resolveWildcard(path: string): string {
   if (!path.endsWith('/*')) return path;
   const prefix = path.slice(0, -1);
   const template = Object.keys(OPENAPI.paths).find((candidate) => {
@@ -128,6 +105,26 @@ function contractPath(url: string): string {
   });
   return template ?? path;
 }
+
+/** A Fastify url in contract form, a trailing `*` as the contract's wildcard parameter there. */
+const contractPath = (url: string): string => toContractPath(url, { wildcard: resolveWildcard });
+
+const CONTRACT_OPERATIONS = contractOperations(OPENAPI, { methods: HTTP_METHODS });
+
+const OPERATIONS: readonly ContractOperation[] = CONTRACT_OPERATIONS.map((contract) => {
+  const { method, path, operationId, operation: op } = contract;
+  return {
+    key: `${method} ${path}`,
+    method,
+    path,
+    operationId,
+    requires: op['x-opt2-requires'],
+    public: op['x-opt2-public'],
+    transport: op['x-opt2-transport'],
+    legacyNames: [op['x-opt2-route-keys'], op['x-opt2-legacy-actions']].flatMap((list) => (Array.isArray(list) ? list.map(String) : [])),
+    served: operationRouteKeys(contract, { wildcard: resolveWildcard }),
+  };
+});
 
 /** Registered routes of `app` keyed `METHOD path` in contract form, without HEAD twins of GET routes the contract does not declare. */
 function registeredRoutes(app: TestApp['app']): Map<string, RouteMatrixEntry> {
@@ -177,13 +174,7 @@ interface Request {
 async function call(request: Request): Promise<InjectResponse> {
   const { method, url, headers = {}, payload } = request;
   const res = await t.app.inject({ method, url, headers, ...(payload === undefined ? {} : { payload }) });
-  assertResponseMatchesOpenApi(OPENAPI, {
-    method,
-    path: url.split('?')[0] ?? url,
-    status: res.statusCode,
-    contentType: res.headers['content-type'],
-    body: res.body,
-  });
+  assertResponseMatchesOpenApi(OPENAPI, injectedResponse(request, res));
   return res;
 }
 
@@ -238,12 +229,7 @@ describe('contract document', () => {
   });
 
   it('declares on every operation exactly one of a role list or public access, and a known transport', () => {
-    const faults = OPERATIONS.filter((op) => {
-      const declaresRoles = Array.isArray(op.requires) && op.requires.length > 0;
-      const roleFormOk = declaresRoles || op.requires === undefined;
-      return declaresRoles === (op.public === true) || !roleFormOk || !TRANSPORTS.includes(op.transport);
-    }).map((op) => ({ operation: op.key, requires: op.requires, public: op.public, transport: op.transport }));
-    expect(faults).toEqual([]);
+    expect(operationAuthProblems(CONTRACT_OPERATIONS)).toEqual([]);
   });
 
   it('declares each operation with the transport its path takes', () => {
@@ -872,13 +858,7 @@ describe('push subscriptions', () => {
   };
   /** Holds a push answer to the subscription's contract operation. */
   const held = (subscription: string, res: InjectResponse): InjectResponse => {
-    assertResponseMatchesOpenApi(OPENAPI, {
-      method: 'POST',
-      path: `/internal/v1/events/${subscription}`,
-      status: res.statusCode,
-      contentType: res.headers['content-type'],
-      body: res.body,
-    });
+    assertResponseMatchesOpenApi(OPENAPI, injectedResponse({ method: 'POST', url: `/internal/v1/events/${subscription}` }, res));
     return res;
   };
 
@@ -964,7 +944,7 @@ describe('queue control', () => {
     ['pauses', `/internal/v1/task-queues/${OWN_QUEUE}/pause`, 200, { queue: OWN_QUEUE, service: SERVICE, paused: true, running: 0 }],
     ['resumes', `/internal/v1/task-queues/${OWN_QUEUE}/resume`, 200, { queue: OWN_QUEUE, service: SERVICE, paused: false }],
     ['refuses to ensure the non-recurring', `/internal/v1/task-queues/${OWN_QUEUE}/ensure`, 400, undefined],
-    ['refuses to pause another service’s', '/internal/v1/task-queues/surveys-launch/pause', 400, undefined],
+    ['refuses to pause another service’s', '/internal/v1/task-queues/people-outbox-sweep/pause', 400, undefined],
     ['refuses to pause an unknown', '/internal/v1/task-queues/no-such-queue/pause', 400, undefined],
   ])('%s queue with the contract answer', async (_label, target, status, body) => {
     const res = await call({ method: 'POST', url: target, headers: { ...(await serviceHeaders('operator')), ...JSON_TYPE }, payload: {} });
@@ -1221,13 +1201,7 @@ describe('full app responses', () => {
     c.setup?.();
     const res = await full.app.inject({ method: c.method, url: c.url, headers: await c.headers(), ...(c.payload === undefined ? {} : { payload: c.payload }) });
     expect(res.statusCode, res.body).toBe(c.status);
-    assertResponseMatchesOpenApi(OPENAPI, {
-      method: c.method,
-      path: c.url.split('?')[0] ?? c.url,
-      status: res.statusCode,
-      contentType: res.headers['content-type'],
-      body: c.unparsed === true ? res.rawPayload : res.body,
-    });
+    assertResponseMatchesOpenApi(OPENAPI, injectedResponse(c, res, { body: c.unparsed === true ? res.rawPayload : res.body }));
     c.verify(res);
   });
 });

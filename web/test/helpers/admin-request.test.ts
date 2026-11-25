@@ -1,6 +1,5 @@
 // Tests of the admin-request helpers: the site the builder path seeds, and the session pool markers of each preset.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { Roles } from '@opt2/platform/auth';
 import { ADMIN_LOGIN_REDIRECT_ACTION, ADMIN_NOACCESS_ACTION } from '@opt2/platform/legacy-compat';
 import { applicationGate, type GateDecision } from '@/lib/access-gate';
 import { resetLegacySettingsForTests } from '@/lib/env';
@@ -19,7 +18,6 @@ import {
   editorRequest,
   makeAdminRequest,
   noSitesRequest,
-  opt2RoleRequest,
   siteAdminRequest,
   type AdminRequestPartial,
   type TestAdminRequestInput,
@@ -117,7 +115,6 @@ describe('session pool markers', () => {
     ['the S2 admin', () => adminS2Request(), `${PRIVATE_DEFAULT},S2`, true],
     ['qa_editor', () => editorRequest(), PRIVATE_DEFAULT, true],
     ['the site admin', () => siteAdminRequest(), PRIVATE_TENANT_A, true],
-    ['a synthetic role', () => opt2RoleRequest(Roles.timesheetsEmployee), PRIVATE_TENANT_A, true],
     ['a private user without sites', () => noSitesRequest({ s2IsPrivate: true }), PRIVATE_TENANT_A, true],
     ['a public member', () => makeAdminRequest({}, 'member'), PUBLIC_TENANT_A, false],
     ['a public user without sites', () => noSitesRequest({ s2IsPrivate: false }), PUBLIC_TENANT_A, false],

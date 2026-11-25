@@ -1,12 +1,10 @@
-// Generates the cut-over versions v0001-v0003 from the inventory, groups, exceptions and fixture status; CLI `cutover:versions`.
+// Generates the cut-over versions v0001-v0003 from the inventory, groups and exceptions; CLI `cutover:versions`.
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { SYNTHETIC_V1_PREFIXES, normaliseRouteKey, routeKeyForEntryPoint } from '@opt2/platform/legacy-compat';
-import { baseEnvSchema, optionalEnvString } from '@opt2/platform/service-kit';
+import { normaliseRouteKey, routeKeyForEntryPoint } from '@opt2/platform/legacy-compat';
 import { carryWriteEntries, createWriteClosure, documentDiff, legacyWriteExceptionKeys, type WriteClosure } from './build-groups.js';
-import { CutoverSchemaError, FILE_STORE_TABLE, loadVersion } from './loader.js';
+import { CutoverSchemaError, FILE_STORE_TABLE } from './loader.js';
 import { resolveGatewayPaths, type GatewayPaths } from './paths.js';
 import { loadValidationContext, unpreventedWriters, validateVersion, type ValidationContext } from './validate.js';
 import type {
@@ -17,7 +15,6 @@ import type {
   Disposition,
   EntryKind,
   Finding,
-  FixtureStatus,
   GroupsFile,
   OwnershipTarget,
   OwningService,
@@ -52,91 +49,25 @@ const ROSTER_ENTRIES: ReadonlySet<string> = new Set(
     'fixture:people/persons/{id}/archive@post',
   ].map(normaliseRouteKey),
 );
-const ROSTER_UNITS: ReadonlySet<string> = new Set(['people.person_archive', 'timesheets.blackout']);
+const ROSTER_UNITS: ReadonlySet<string> = new Set(['people.person_archive']);
 
 const OWNING_SERVICES: ReadonlySet<string> = new Set<OwningService>([
   'identity',
   'people',
   'programs-sites',
   'strategies-content',
-  'communications',
-  'reporting',
-  'surveys',
-  'timesheets',
-  'finance',
-  'e-signature',
   'stub',
   'web',
   'gateway',
   'none',
 ]);
 
-/** A synthetic module: its service, web path segment, own `/v1/` prefixes, and the units its screens read and actions write. */
-interface SyntheticModule {
-  readonly service: OwningService;
-  readonly web: string;
-  readonly v1: readonly string[];
-  readonly screenUnits: readonly string[];
-}
-
-const SYNTHETIC_MODULES: readonly SyntheticModule[] = [
-  {
-    service: 'communications',
-    web: 'communications',
-    v1: SYNTHETIC_V1_PREFIXES.communications,
-    screenUnits: ['communications.delivery_status', 'communications.message', 'communications.message_template'],
-  },
-  {
-    service: 'e-signature',
-    web: 'e-signature',
-    v1: SYNTHETIC_V1_PREFIXES['e-signature'],
-    screenUnits: ['esignature.audit_entry', 'esignature.signature', 'esignature.signature_request'],
-  },
-  {
-    service: 'finance',
-    web: 'finance',
-    v1: SYNTHETIC_V1_PREFIXES.finance,
-    screenUnits: ['finance.attachment', 'finance.record', 'finance.record_version', 'finance.rollup'],
-  },
-  {
-    service: 'reporting',
-    web: 'reporting',
-    v1: SYNTHETIC_V1_PREFIXES.reporting,
-    screenUnits: ['reporting.export_definition', 'reporting.export_job'],
-  },
-  {
-    service: 'surveys',
-    web: 'surveys',
-    v1: SYNTHETIC_V1_PREFIXES.surveys,
-    // The schedule screen lists a survey's tasks, which surveys reads from communications.
-    screenUnits: [
-      'communications.scheduled_task',
-      'surveys.survey',
-      'surveys.survey_reminder',
-      'surveys.survey_response',
-      'surveys.survey_schedule',
-      'surveys.survey_target',
-    ],
-  },
-  {
-    service: 'timesheets',
-    web: 'timesheets',
-    v1: SYNTHETIC_V1_PREFIXES.timesheets,
-    screenUnits: ['timesheets.approval_action', 'timesheets.blackout', 'timesheets.timesheet', 'timesheets.timesheet_day'],
-  },
-];
-
 /** Bucket owners of the local signed-file routes; `fileStore` buckets hold Masa's file store (the tfiles units). */
 const BUCKETS: ReadonlyArray<{ readonly bucket: string; readonly owner: OwningService; readonly fileStore: boolean }> = [
   { bucket: 'content-files', owner: 'strategies-content', fileStore: true },
-  { bucket: 'esignature-documents', owner: 'e-signature', fileStore: false },
-  { bucket: 'finance-attachments', owner: 'finance', fileStore: false },
-  { bucket: 'reporting-exports', owner: 'reporting', fileStore: false },
 ];
 
 const LEGACY_STATIC_PREFIXES = ['/admin/assets', '/core/vendor', '/core/modules'];
-// Same test as the validator's fixture-backed units: tables in the fixture schemas only.
-const FIXTURE_TABLE = /^(?:synthetic|program_\w+)\./i;
 // A file name makes path families that key files (static) emit the path, so the glob takes the family live requests get.
 const GLOB_PROBE = 'index.js';
 // Probes whose globs take a folder's templates and components.
@@ -199,7 +130,7 @@ export class CutoverBuildError extends Error {
 const byCodeUnit = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 const sorted = (values: Iterable<string>): string[] => [...new Set(values)].sort(byCodeUnit);
 
-/** Sorted ids of the roster group set R: groups holding a roster write entry or a seam unit. */
+/** Sorted ids of the roster group set R: groups holding a roster write entry or the person-archive unit. */
 export function rosterGroupSet(groups: Pick<GroupsFile, 'groups'>): string[] {
   return sorted(
     groups.groups
@@ -267,11 +198,10 @@ function carriedGroups(carried: ReadonlyMap<string, readonly string[]>, groups: 
   return result;
 }
 
-/** The entries every version shares, and the synthetic services' `/v1/` entries added from v0002 when fixtures are unavailable. */
+/** The entries every version shares. */
 interface EntryPlan {
   readonly shared: readonly PlannedEntry[];
-  readonly synthetic: readonly PlannedEntry[];
-  /** Groups a carried write entry or a synthetic `/v1/` entry writes. */
+  /** Groups a carried write entry writes. */
   readonly written: ReadonlySet<string>;
 }
 
@@ -285,16 +215,8 @@ function inventoriedEntries(ctx: ValidationContext): { entries: PlannedEntry[]; 
   const groupOf = carriedGroups(carried, ctx.groups);
   const closures = keyClosures(ctx, closure);
   const heldBack = legacyWriteExceptionKeys(ctx.exceptions);
-  // Fixture modules read only fixture tables, never the class-extension and trash rows a split gives their service.
-  const syntheticServices = new Set<string>(SYNTHETIC_MODULES.map((module) => module.service));
-  const splitUnits = new Set(
-    ctx.ownership.tables.filter((table) => table.owner === 'split').flatMap((table) => table.targets.map((target) => target.unit)),
-  );
   const ownerUnits = new Map<string, string[]>();
-  for (const { unit, owner } of ctx.ownership.units) {
-    if (syntheticServices.has(owner) && splitUnits.has(unit)) continue;
-    ownerUnits.set(owner, sorted([...(ownerUnits.get(owner) ?? []), unit]));
-  }
+  for (const { unit, owner } of ctx.ownership.units) ownerUnits.set(owner, sorted([...(ownerUnits.get(owner) ?? []), unit]));
 
   const entries = [...ctx.inventoryKeys].map(([route, facts]): PlannedEntry => {
     const owner = owningService(facts.owningService, route);
@@ -326,42 +248,9 @@ function nativeEntry(
   return { route, owningService, kind, group: null, units, disposition, rule };
 }
 
-/**
- * Units whose every legacy table the inventory lists with no writer. The screens still read them, but nothing writes them
- * after backfill, so both sides read alike and they hold no screen on legacy; their groups stay legacy in every version.
- */
-function writerlessUnits(ctx: ValidationContext): Set<string> {
-  const writers = new Map<string, number>();
-  for (const table of ctx.inventory.tables) {
-    const key = table.table.toLowerCase();
-    writers.set(key, (writers.get(key) ?? 0) + table.writers.length);
-  }
-  return new Set(
-    ctx.ownership.units
-      .filter(({ legacyTables }) => legacyTables.length > 0 && legacyTables.every((table) => writers.get(table.toLowerCase()) === 0))
-      .map(({ unit }) => unit),
-  );
-}
-
-/**
- * Entries of OPT-2's own paths and the legacy static assets, which the inventory does not list. A module's screens and actions
- * follow the screen units a writer can change, since the actions re-render those screens; throws `CutoverBuildError` for a
- * screen unit not in the ownership file.
- */
+/** Entries of OPT-2's own paths and the legacy static assets, which the inventory does not list. */
 function nativeEntries(ctx: ValidationContext): PlannedEntry[] {
   const unitOwner = new Map(ctx.ownership.units.map((unit) => [unit.unit, unit.owner]));
-  const writerless = writerlessUnits(ctx);
-  const modules = SYNTHETIC_MODULES.flatMap((module) => {
-    const read = globRoute(`/opt2/admin/${module.web}`);
-    const unknown = module.screenUnits.filter((unit) => !unitOwner.has(unit));
-    if (unknown.length > 0) throw new CutoverBuildError(`${read}: units ${unknown.join(', ')} are not in opt2/table-ownership.json`);
-    const units = sorted(module.screenUnits.filter((unit) => !writerless.has(unit)));
-    const rule: StateRule = { type: 'units', units };
-    return [
-      nativeEntry(read, 'web', 'read', units, rule),
-      nativeEntry(globRoute(`/opt2/admin-actions/${module.web}`), 'web', 'write', [], rule),
-    ];
-  });
   const targets: readonly ObjectTarget[] = ctx.ownership.tables.flatMap((table) => table.targets);
   const fileStoreUnits = ctx.ownership.tables
     .filter((table) => table.table.toLowerCase() === FILE_STORE_TABLE)
@@ -379,44 +268,13 @@ function nativeEntries(ctx: ValidationContext): PlannedEntry[] {
     ),
     nativeEntry(globRoute('/_next'), 'web', 'static', [], TARGET),
     ...LEGACY_STATIC_PREFIXES.map((prefix) => nativeEntry(globRoute(prefix), 'none', 'static', [], LEGACY, 'legacy-served')),
-    ...modules,
     ...files,
   ];
 }
 
-function planEntries(ctx: ValidationContext, fixturesAvailable: boolean): EntryPlan {
+function planEntries(ctx: ValidationContext): EntryPlan {
   const { entries, groupOf } = inventoriedEntries(ctx);
-  const written = new Set(groupOf.values());
-  const synthetic = fixturesAvailable ? [] : SYNTHETIC_MODULES.flatMap((module) => syntheticEntries(ctx, module, written));
-  for (const entry of synthetic) if (entry.group !== null) written.add(entry.group);
-  return { shared: [...entries, ...nativeEntries(ctx)], synthetic, written };
-}
-
-/**
- * A synthetic service's own `<prefix>/**` entry per `/v1/` resource prefix for a fixtures-unavailable build; each names the
- * service's one fixture-backed group no carried entry writes, so those units move too, or no group, and fails when there are several.
- */
-function syntheticEntries(ctx: ValidationContext, module: SyntheticModule, written: ReadonlySet<string>): PlannedEntry[] {
-  const owners = new Map(ctx.ownership.units.map((unit) => [unit.unit, unit]));
-  const fixtureBacked = (unit: string): boolean => {
-    const owned = owners.get(unit);
-    return owned?.owner === module.service && owned.legacyTables.length > 0 && owned.legacyTables.every((t) => FIXTURE_TABLE.test(t));
-  };
-  const unwritten = ctx.groups.groups.filter((group) => !written.has(group.id) && group.units.every(fixtureBacked));
-  const routes = module.v1.map((prefix) => globRoute(prefix));
-  if (unwritten.length > 1) {
-    throw new CutoverBuildError(`${routes.join(', ')}: fixture-backed units span groups ${unwritten.map((group) => group.id).join(', ')}`);
-  }
-  const [group] = unwritten as [CutoverGroup?];
-  return routes.map((route): PlannedEntry => ({
-    route,
-    owningService: module.service,
-    kind: 'write',
-    group: group?.id ?? null,
-    units: group?.units ?? [],
-    disposition: 'carry',
-    rule: group === undefined ? { type: 'fixed', state: 'target' } : { type: 'group', group: group.id },
-  }));
+  return { shared: [...entries, ...nativeEntries(ctx)], written: new Set(groupOf.values()) };
 }
 
 /** Authority of every group, keys sorted. */
@@ -451,8 +309,8 @@ function describeFinding(finding: Finding): string {
 }
 
 /** Builds v0001-v0003, each validated against its predecessor; throws `CutoverBuildError` rather than return an invalid version. */
-export function buildVersions(ctx: ValidationContext, fixtures: Pick<FixtureStatus, 'available'>): CutoverTable[] {
-  const plan = planEntries(ctx, fixtures.available);
+export function buildVersions(ctx: ValidationContext): CutoverTable[] {
+  const plan = planEntries(ctx);
   const unitGroup = new Map(ctx.groups.groups.flatMap((group) => group.units.map((unit): [string, string] => [unit, group.id])));
   const movable = (group: CutoverGroup): boolean =>
     plan.written.has(group.id) && group.units.every((unit) => unpreventedWriters(unit, ctx).length === 0);
@@ -467,11 +325,11 @@ export function buildVersions(ctx: ValidationContext, fixtures: Pick<FixtureStat
     rollbackRefs: RollbackRef[];
   }> = [
     { id: 'v0001', groupAuthority: authorities(ctx.groups, () => 'legacy'), entries: plan.shared, rollbackRefs: [] },
-    { id: 'v0002', groupAuthority: v0002, entries: [...plan.shared, ...plan.synthetic], rollbackRefs: [] },
+    { id: 'v0002', groupAuthority: v0002, entries: plan.shared, rollbackRefs: [] },
     {
       id: 'v0003',
       groupAuthority: authorities(ctx.groups, (group) => (roster.includes(group.id) ? 'legacy' : (v0002[group.id] ?? 'legacy'))),
-      entries: [...plan.shared, ...plan.synthetic],
+      entries: plan.shared,
       rollbackRefs,
     },
   ];
@@ -521,28 +379,9 @@ export function serialiseVersion(table: CutoverTable): string {
   return `${JSON.stringify(table)}\n`;
 }
 
-/** Whether a version serves a synthetic service's own `/v1/` routes, which only a fixtures-unavailable build does. */
-export function servesSyntheticRoutes(table: CutoverTable): boolean {
-  const services = new Set<string>(SYNTHETIC_MODULES.map((module) => module.service));
-  const body = (route: string): string => route.slice(route.indexOf(':') + 1);
-  return table.entries.some(
-    (entry) => entry.state === 'target' && services.has(entry.owningService) && body(entry.route).startsWith('/v1/'),
-  );
-}
-
-/** `--fixtures` value. */
-export type FixturesMode = 'available' | 'unavailable' | 'auto';
-
-/** Environment `main` reads for `--fixtures auto`; a blank value counts as unset. */
-export interface BuildVersionsEnv {
-  readonly OPT2_STATE_DIR?: string;
-  readonly HOME?: string;
-}
-
-/** Output sinks, paths and environment of `main`. */
+/** Output sinks and paths of `main`. */
 export interface BuildVersionsIo {
   readonly paths?: GatewayPaths;
-  readonly env?: BuildVersionsEnv;
   readonly stdout?: (text: string) => void;
   readonly stderr?: (text: string) => void;
 }
@@ -556,39 +395,16 @@ async function readIfPresent(file: string): Promise<string | undefined> {
   }
 }
 
-/** `OPT2_STATE_DIR`, default `<HOME>/.opt2/state`, checked by the shared environment schema; throws `CutoverBuildError`. */
-function stateDirOf(env: BuildVersionsEnv): string {
-  const dir = optionalEnvString().parse(env.OPT2_STATE_DIR) ?? join(env.HOME ?? homedir(), '.opt2', 'state');
-  const result = baseEnvSchema.shape.OPT2_STATE_DIR.safeParse(dir);
-  if (result.success) return result.data;
-  throw new CutoverBuildError(`OPT2_STATE_DIR: ${result.error.issues.map((issue) => issue.message).join('; ')} (${dir})`);
-}
-
-/** Fixture availability: `${OPT2_STATE_DIR}/fixtures.json`, else as the committed v0002 was built, else available. */
-export async function resolveFixtures(mode: FixturesMode, paths: GatewayPaths, env: BuildVersionsEnv): Promise<boolean> {
-  if (mode !== 'auto') return mode === 'available';
-  const file = join(stateDirOf(env), 'fixtures.json');
-  const status = await readIfPresent(file);
-  if (status !== undefined) {
-    const { available } = JSON.parse(status) as Partial<FixtureStatus>;
-    if (typeof available !== 'boolean') throw new CutoverBuildError(`${file}: available must be true or false`);
-    return available;
-  }
-  try {
-    return !servesSyntheticRoutes(await loadVersion(paths, 'v0002'));
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return true;
-    throw error;
-  }
-}
-
 const USAGE = 'usage: build-versions.ts [--write] [--fixtures available|unavailable|auto]';
 const FIXTURES_MODES: readonly string[] = ['available', 'unavailable', 'auto'];
 
-/** Parsed options, or the usage error; `--write` may repeat, since the `cutover:versions` script already passes it. */
-function parseArgs(argv: readonly string[]): { write: boolean; fixtures: FixturesMode } | string {
+/**
+ * Parsed options, or the usage error; `--write` may repeat, since the `cutover:versions` script already passes it. `--fixtures`
+ * is accepted for callers that pass it; no version depends on fixture availability.
+ */
+function parseArgs(argv: readonly string[]): { write: boolean } | string {
   let write = false;
-  let fixtures: FixturesMode | undefined;
+  let fixtures: string | undefined;
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--write') {
@@ -597,13 +413,13 @@ function parseArgs(argv: readonly string[]): { write: boolean; fixtures: Fixture
       const value = argv[i + 1];
       if (fixtures !== undefined) return '--fixtures given twice';
       if (value === undefined || !FIXTURES_MODES.includes(value)) return '--fixtures needs available, unavailable or auto';
-      fixtures = value as FixturesMode;
+      fixtures = value;
       i += 1;
     } else {
       return `unknown argument ${String(arg)}`;
     }
   }
-  return { write, fixtures: fixtures ?? 'auto' };
+  return { write };
 }
 
 /** CLI: diffs each built version against its file (exit 0 equal, 1 differ or invalid input), or writes them (`--write`); 2 on usage error. */
@@ -618,8 +434,7 @@ export async function main(argv: readonly string[], io: BuildVersionsIo = {}): P
   const paths = io.paths ?? resolveGatewayPaths();
   let tables: CutoverTable[];
   try {
-    const available = await resolveFixtures(options.fixtures, paths, io.env ?? process.env);
-    tables = buildVersions(await loadValidationContext(paths, 'ci'), { available });
+    tables = buildVersions(await loadValidationContext(paths, 'ci'));
   } catch (error) {
     if (!(error instanceof CutoverSchemaError || error instanceof CutoverBuildError)) throw error;
     stderr(`build-versions: ${error.message}`);

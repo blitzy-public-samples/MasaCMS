@@ -65,8 +65,8 @@ vi.mock('@google-cloud/pubsub', async (importOriginal) => {
 vi.mock('../../src/events/publisher.js', () => ({ createPublisher: state.createPublisher }));
 
 const USAGE = 'usage: opt2-events replay --subscription <name> [--max <n>] [--idle-seconds <n>] [--project <id>]';
-const SUBSCRIPTION = 'timesheets.people.person.archived.v1';
-const TOPIC = 'people.person.archived.v1';
+const SUBSCRIPTION = 'identity.people.person.changed.v1';
+const TOPIC = 'people.person.changed.v1';
 const SOURCE = `${SUBSCRIPTION}.dlq.replay`;
 const PROJECT = 'opt2-unit';
 // Assembled at run time, so no literal credential appears in source.
@@ -180,8 +180,8 @@ describe('opt2-events arguments', () => {
     [replayArgs('--bogus'), 'unknown option'],
     [replayArgs(`--${SECRET}=x`), 'unknown option'],
     [replayArgs('--max'), 'an option is missing its value or was given one it does not take'],
-    [['replay', '--subscription', 'timesheets', '--project', PROJECT], SUBSCRIPTION_PROBLEM],
-    [['replay', '--subscription', `timesheets.${SECRET}`, '--project', PROJECT], SUBSCRIPTION_PROBLEM],
+    [['replay', '--subscription', 'identity', '--project', PROJECT], SUBSCRIPTION_PROBLEM],
+    [['replay', '--subscription', `identity.${SECRET}`, '--project', PROJECT], SUBSCRIPTION_PROBLEM],
     [replayArgs('--max', '0'), MAX_PROBLEM],
     [replayArgs('--max', '1.5'), MAX_PROBLEM],
     [replayArgs('--max', '9007199254740993'), MAX_PROBLEM],
@@ -195,7 +195,7 @@ describe('opt2-events arguments', () => {
     expect(record).toMatchObject({ severity: 'ERROR', message: `opt2-events: ${problem}; ${USAGE}` });
     expect(record).not.toHaveProperty('error');
     expect(stderr).not.toContain(SECRET);
-    expect(stderr).not.toMatch(/frob|extra|bogus|timesheets|"0"|1\.5|9007199254740993|2147484/);
+    expect(stderr).not.toMatch(/frob|extra|bogus|identity|"0"|1\.5|9007199254740993|2147484/);
     expect(stdout).toBe('');
     expect(state.createPublisher).not.toHaveBeenCalled();
     expect(state.pubsubOptions).toHaveLength(0);

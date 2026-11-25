@@ -34,8 +34,8 @@ const GATEWAY = 'core/mura/fixture/fixtureGateway.cfc';
 const TRUNCATED_DAO = 'core/mura/fixture/fixtureTruncatedDAO.cfc';
 const OWNERSHIP_FILE = 'opt2/table-ownership.json';
 const PROGRAM_SITE_SQL = 'legacy-fixtures/sql/010_program_site.sql';
-const TIMESHEET_SQL = 'legacy-fixtures/sql/timesheets/010_timesheet.sql';
-const TIMESHEETS_DIR = 'legacy-fixtures/sql/timesheets/';
+const ITEM_SQL = 'legacy-fixtures/sql/sample-module/010_item.sql';
+const SAMPLE_MODULE_DIR = 'legacy-fixtures/sql/sample-module/';
 
 /** Committed fixtures by their place in the on-disk archive tree. */
 const COPIED: Readonly<Record<string, string>> = {
@@ -181,31 +181,31 @@ const LIVE: readonly LiveCatalogTable[] = [
   liveTable('dbo', 'tsettings', ['SiteID', 'Site'], 'SiteID', true),
   liveTable('dbo', 'tusers', ['UserID', 'SiteID'], 'UserID', true),
   ...['Program_1', 'Program_2'].flatMap((schema) => [
-    liveTable(schema, 'timesheet', ['timesheet_id', 'person_id', 'siteID'], 'timesheet_id', true),
-    liveTable(schema, 'timesheet_day', ['day_id', 'timesheet_id', 'archive_id', 'hours'], 'day_id', false),
+    liveTable(schema, 'item', ['item_id', 'person_id', 'siteID'], 'item_id', true),
+    liveTable(schema, 'item_day', ['day_id', 'item_id', 'archive_id', 'hours'], 'day_id', false),
   ]),
   liveTable('synthetic', 'program_site', ['program_id', 'siteID'], 'program_id', true),
-  liveTable('synthetic', 'survey', ['survey_id', 'siteID'], 'survey_id', true),
-  liveTable('synthetic', 'survey_reminder', ['reminder_id', 'survey_id'], 'reminder_id', false),
+  liveTable('synthetic', 'sample', ['sample_id', 'siteID'], 'sample_id', true),
+  liveTable('synthetic', 'sample_reminder', ['reminder_id', 'sample_id'], 'reminder_id', false),
 ];
 
 function programTables(schema: string): FixtureOwnership['tables'] {
   return [
     {
-      table: `${schema}.timesheet`,
-      owner: 'timesheets',
-      primaryKey: ['timesheet_id'],
-      columns: ['timesheet_id', 'person_id', 'siteID'],
+      table: `${schema}.item`,
+      owner: 'sample-module',
+      primaryKey: ['item_id'],
+      columns: ['item_id', 'person_id', 'siteID'],
       hasSiteId: true,
-      source: { path: TIMESHEET_SQL, lines: [3, 14] },
+      source: { path: ITEM_SQL, lines: [3, 14] },
     },
     {
-      table: `${schema}.timesheet_day`,
-      owner: 'timesheets',
+      table: `${schema}.item_day`,
+      owner: 'sample-module',
       primaryKey: ['day_id'],
-      columns: ['day_id', 'timesheet_id', 'archive_id', 'hours'],
+      columns: ['day_id', 'item_id', 'archive_id', 'hours'],
       hasSiteId: false,
-      source: { path: TIMESHEETS_DIR, lines: null },
+      source: { path: SAMPLE_MODULE_DIR, lines: null },
     },
   ];
 }
@@ -226,22 +226,22 @@ const OWNERSHIP: FixtureOwnership = {
     ...programTables('Program_2'),
     PROGRAM_SITE,
     { table: 'synthetic.person_archive', primaryKey: ['archive_id'], columns: ['archive_id', 'person_id', 'siteID'], hasSiteId: true },
-    { table: 'synthetic.survey', primaryKey: ['survey_id'], columns: ['survey_id', 'siteID'], hasSiteId: true },
+    { table: 'synthetic.sample', primaryKey: ['sample_id'], columns: ['sample_id', 'siteID'], hasSiteId: true },
     {
-      table: 'synthetic.survey_reminder',
+      table: 'synthetic.sample_reminder',
       primaryKey: ['reminder_id'],
-      columns: ['reminder_id', 'survey_id'],
+      columns: ['reminder_id', 'sample_id'],
       hasSiteId: false,
-      tenantParent: { table: 'synthetic.survey', join: 'synthetic.survey.survey_id = synthetic.survey_reminder.survey_id' },
+      tenantParent: { table: 'synthetic.sample', join: 'synthetic.sample.sample_id = synthetic.sample_reminder.sample_id' },
     },
     {
-      table: 'synthetic.survey_target',
+      table: 'synthetic.sample_target',
       primaryKey: ['target_id'],
       columns: ['target_id', 'siteID'],
       hasSiteId: null,
-      tenantParent: { table: 'synthetic.survey', join: 'synthetic.survey_target.survey_ref = synthetic.survey.survey_id' },
+      tenantParent: { table: 'synthetic.sample', join: 'synthetic.sample_target.sample_ref = synthetic.sample.sample_id' },
     },
-    { table: 'synthetic.rollup', primaryKey: ['period', 'state'], columns: ['period', 'state', 'day_id', 'survey_id'] },
+    { table: 'synthetic.rollup', primaryKey: ['period', 'state'], columns: ['period', 'state', 'day_id', 'sample_id'] },
     {
       table: 'synthetic.unparented',
       columns: ['note_id'],
@@ -250,9 +250,9 @@ const OWNERSHIP: FixtureOwnership = {
     {
       table: 'synthetic.misjoined',
       columns: ['note_id'],
-      tenantParent: { table: 'synthetic.survey', join: 'synthetic.other.survey_id = synthetic.survey.survey_id' },
+      tenantParent: { table: 'synthetic.sample', join: 'synthetic.other.sample_id = synthetic.sample.sample_id' },
     },
-    { table: 'synthetic.unjoined', tenantParent: { table: 'synthetic.survey', join: 'survey_id' } },
+    { table: 'synthetic.unjoined', tenantParent: { table: 'synthetic.sample', join: 'sample_id' } },
   ],
 };
 
@@ -408,11 +408,11 @@ describe('the relation fixture tree', () => {
       ['ent:fixtureStatsBean', 'domain-bean', 'tfixturestats'],
     ]);
     expect(tables.map((t) => [t.table, t.primaryKey, t.hasSiteId])).toEqual([
-      ['Program_N.timesheet', ['timesheet_id'], true],
-      ['Program_N.timesheet_day', ['day_id'], false],
+      ['Program_N.item', ['item_id'], true],
+      ['Program_N.item_day', ['day_id'], false],
       ['synthetic.program_site', ['program_id'], true],
-      ['synthetic.survey', ['survey_id'], true],
-      ['synthetic.survey_reminder', ['reminder_id'], false],
+      ['synthetic.sample', ['sample_id'], true],
+      ['synthetic.sample_reminder', ['reminder_id'], false],
       ['tfixture', ['fixtureID'], true],
       ['tfixturenopk', [], false],
       ['tfixturenote', ['noteid'], false],
@@ -767,56 +767,56 @@ describe('extractDaoJoins', () => {
 describe('fixtureRelations', () => {
   it('relates program tables within their own schema and to synthetic, and synthetic tables by stated parents and sole keys', () => {
     expect(fixtureRelations(OWNERSHIP)).toEqual([
-      programFold('rel:program_1.timesheet->synthetic.program_site.program_id', 'Program_1.timesheet'),
-      programFold('rel:program_1.timesheet_day->synthetic.program_site.program_id', 'Program_1.timesheet_day'),
+      programFold('rel:program_1.item->synthetic.program_site.program_id', 'Program_1.item'),
+      programFold('rel:program_1.item_day->synthetic.program_site.program_id', 'Program_1.item_day'),
       fixtureFk(
-        'rel:program_1.timesheet_day.archive_id->synthetic.person_archive.archive_id',
-        'Program_1.timesheet_day.archive_id',
+        'rel:program_1.item_day.archive_id->synthetic.person_archive.archive_id',
+        'Program_1.item_day.archive_id',
         'synthetic.person_archive.archive_id',
-        { path: TIMESHEETS_DIR, lines: [1, 1] },
+        { path: SAMPLE_MODULE_DIR, lines: [1, 1] },
         true,
       ),
       fixtureFk(
-        'rel:program_1.timesheet_day.timesheet_id->program_1.timesheet.timesheet_id',
-        'Program_1.timesheet_day.timesheet_id',
-        'Program_1.timesheet.timesheet_id',
-        { path: TIMESHEETS_DIR, lines: [1, 1] },
+        'rel:program_1.item_day.item_id->program_1.item.item_id',
+        'Program_1.item_day.item_id',
+        'Program_1.item.item_id',
+        { path: SAMPLE_MODULE_DIR, lines: [1, 1] },
         true,
       ),
-      programFold('rel:program_2.timesheet->synthetic.program_site.program_id', 'Program_2.timesheet'),
-      programFold('rel:program_2.timesheet_day->synthetic.program_site.program_id', 'Program_2.timesheet_day'),
+      programFold('rel:program_2.item->synthetic.program_site.program_id', 'Program_2.item'),
+      programFold('rel:program_2.item_day->synthetic.program_site.program_id', 'Program_2.item_day'),
       fixtureFk(
-        'rel:program_2.timesheet_day.archive_id->synthetic.person_archive.archive_id',
-        'Program_2.timesheet_day.archive_id',
+        'rel:program_2.item_day.archive_id->synthetic.person_archive.archive_id',
+        'Program_2.item_day.archive_id',
         'synthetic.person_archive.archive_id',
-        { path: TIMESHEETS_DIR, lines: [1, 1] },
+        { path: SAMPLE_MODULE_DIR, lines: [1, 1] },
         true,
       ),
       fixtureFk(
-        'rel:program_2.timesheet_day.timesheet_id->program_2.timesheet.timesheet_id',
-        'Program_2.timesheet_day.timesheet_id',
-        'Program_2.timesheet.timesheet_id',
-        { path: TIMESHEETS_DIR, lines: [1, 1] },
+        'rel:program_2.item_day.item_id->program_2.item.item_id',
+        'Program_2.item_day.item_id',
+        'Program_2.item.item_id',
+        { path: SAMPLE_MODULE_DIR, lines: [1, 1] },
         true,
       ),
       fixtureFk(
-        'rel:synthetic.rollup.survey_id->synthetic.survey.survey_id',
-        'synthetic.rollup.survey_id',
-        'synthetic.survey.survey_id',
+        'rel:synthetic.rollup.sample_id->synthetic.sample.sample_id',
+        'synthetic.rollup.sample_id',
+        'synthetic.sample.sample_id',
         { path: OWNERSHIP_FILE, lines: [1, 1] },
         false,
       ),
       fixtureFk(
-        'rel:synthetic.survey_reminder.survey_id->synthetic.survey.survey_id',
-        'synthetic.survey_reminder.survey_id',
-        'synthetic.survey.survey_id',
+        'rel:synthetic.sample_reminder.sample_id->synthetic.sample.sample_id',
+        'synthetic.sample_reminder.sample_id',
+        'synthetic.sample.sample_id',
         { path: OWNERSHIP_FILE, lines: [1, 1] },
         true,
       ),
       fixtureFk(
-        'rel:synthetic.survey_target.survey_ref->synthetic.survey.survey_id',
-        'synthetic.survey_target.survey_ref',
-        'synthetic.survey.survey_id',
+        'rel:synthetic.sample_target.sample_ref->synthetic.sample.sample_id',
+        'synthetic.sample_target.sample_ref',
+        'synthetic.sample.sample_id',
         { path: OWNERSHIP_FILE, lines: [1, 1] },
         false,
       ),
@@ -825,14 +825,14 @@ describe('fixtureRelations', () => {
 
   it('keeps the stated source lines of the child entry', () => {
     const note = {
-      table: 'Program_1.timesheet_note',
+      table: 'Program_1.item_note',
       primaryKey: ['note_id'],
-      columns: ['note_id', 'timesheet_id'],
-      source: { path: TIMESHEET_SQL, lines: [20, 27] },
+      columns: ['note_id', 'item_id'],
+      source: { path: ITEM_SQL, lines: [20, 27] },
     };
     const relations = fixtureRelations({ tables: [...programTables('Program_1'), note] });
-    expect(byRelationId(relations, 'rel:program_1.timesheet_note.timesheet_id->program_1.timesheet.timesheet_id')).toMatchObject({
-      source: { path: TIMESHEET_SQL, lines: [20, 27] },
+    expect(byRelationId(relations, 'rel:program_1.item_note.item_id->program_1.item.item_id')).toMatchObject({
+      source: { path: ITEM_SQL, lines: [20, 27] },
       tenantDerivation: false,
     });
   });
@@ -859,16 +859,16 @@ describe('fixtureRelations', () => {
     ['an empty key column', { table: 'synthetic.bad', primaryKey: [''] }],
     ['a column list that is not an array', { table: 'synthetic.bad', columns: 'a,b' }],
     ['a site flag that is not a boolean', { table: 'Program_1.bad', hasSiteId: 'yes' }],
-    ['a tenant parent without a join', { table: 'synthetic.bad', tenantParent: { table: 'synthetic.survey' } }],
+    ['a tenant parent without a join', { table: 'synthetic.bad', tenantParent: { table: 'synthetic.sample' } }],
     ['a source without a path', { table: 'synthetic.bad', source: { lines: [1, 2] } }],
-    ['a source line below 1', { table: 'Program_2.bad', source: { path: TIMESHEET_SQL, lines: [0, 2] } }],
+    ['a source line below 1', { table: 'Program_2.bad', source: { path: ITEM_SQL, lines: [0, 2] } }],
   ])('rejects a fixture entry with %s', (_label, entry) => {
     expect(() => fixtureRelations({ tables: [entry] })).toThrow(z.ZodError);
   });
 
   it('validates fixture entries only, passing their unread fields through', () => {
     expect(fixtureRelations({ tables: [{ table: 'tusers', primaryKey: [''], hasSiteId: 'yes' }] })).toEqual([]);
-    expect(fixtureRelations({ tables: [{ table: 'synthetic.extra', owner: 'surveys', targets: [{ unit: 'surveys.extra' }] }] })).toEqual([]);
+    expect(fixtureRelations({ tables: [{ table: 'synthetic.extra', owner: 'people', targets: [{ unit: 'people.extra' }] }] })).toEqual([]);
   });
 });
 
@@ -930,10 +930,10 @@ describe('extractRelations', () => {
 
   it('unites the three sources re-keyed to inventory table names, each list sorted by rel: id', () => {
     expect(ids(union.relations)).toEqual([
-      'rel:program_n.timesheet->synthetic.program_site.program_id',
-      'rel:program_n.timesheet_day->synthetic.program_site.program_id',
-      'rel:program_n.timesheet_day.timesheet_id->program_n.timesheet.timesheet_id',
-      'rel:synthetic.survey_reminder.survey_id->synthetic.survey.survey_id',
+      'rel:program_n.item->synthetic.program_site.program_id',
+      'rel:program_n.item_day->synthetic.program_site.program_id',
+      'rel:program_n.item_day.item_id->program_n.item.item_id',
+      'rel:synthetic.sample_reminder.sample_id->synthetic.sample.sample_id',
       'rel:tfixture.siteid->tsettings.siteid',
       'rel:tfixturenopk.fixtureid->tfixture.fixtureid',
       'rel:tfixturenote.authorid->tusers.userid',
@@ -954,18 +954,18 @@ describe('extractRelations', () => {
   });
 
   it('folds the Program_1 and Program_2 edges into one Program_N edge whose id names the inventory tables', () => {
-    expect(byRelationId(union.relations, 'rel:program_n.timesheet_day.timesheet_id->program_n.timesheet.timesheet_id')).toEqual(
+    expect(byRelationId(union.relations, 'rel:program_n.item_day.item_id->program_n.item.item_id')).toEqual(
       fixtureFk(
-        'rel:program_n.timesheet_day.timesheet_id->program_n.timesheet.timesheet_id',
-        'Program_N.timesheet_day.timesheet_id',
-        'Program_N.timesheet.timesheet_id',
-        { path: TIMESHEETS_DIR, lines: [1, 1] },
+        'rel:program_n.item_day.item_id->program_n.item.item_id',
+        'Program_N.item_day.item_id',
+        'Program_N.item.item_id',
+        { path: SAMPLE_MODULE_DIR, lines: [1, 1] },
         true,
       ),
     );
     expect(union.relations.filter((r) => r.kind === 'program-fold')).toEqual([
-      programFold('rel:program_n.timesheet->synthetic.program_site.program_id', 'Program_N.timesheet'),
-      programFold('rel:program_n.timesheet_day->synthetic.program_site.program_id', 'Program_N.timesheet_day'),
+      programFold('rel:program_n.item->synthetic.program_site.program_id', 'Program_N.item'),
+      programFold('rel:program_n.item_day->synthetic.program_site.program_id', 'Program_N.item_day'),
     ]);
     expect(union.relations.every((r) => r.id.startsWith(`rel:${r.child.table.toLowerCase()}`))).toBe(true);
   });
@@ -987,10 +987,10 @@ describe('extractRelations', () => {
 
   it('drops and counts each edge that touches a table the inventory does not list', () => {
     expect(union.dropped).toEqual([
-      'rel:program_1.timesheet_day.archive_id->synthetic.person_archive.archive_id',
-      'rel:program_2.timesheet_day.archive_id->synthetic.person_archive.archive_id',
-      'rel:synthetic.rollup.survey_id->synthetic.survey.survey_id',
-      'rel:synthetic.survey_target.survey_ref->synthetic.survey.survey_id',
+      'rel:program_1.item_day.archive_id->synthetic.person_archive.archive_id',
+      'rel:program_2.item_day.archive_id->synthetic.person_archive.archive_id',
+      'rel:synthetic.rollup.sample_id->synthetic.sample.sample_id',
+      'rel:synthetic.sample_target.sample_ref->synthetic.sample.sample_id',
       'rel:tfixturenote.contentid->tcontent.contentid',
     ]);
     expect(union.counts).toEqual({
@@ -1008,10 +1008,10 @@ describe('extractRelations', () => {
   it('derives tenancy from the inventory child table, and always for a program fold', () => {
     const derived = union.relations.filter((r) => r.tenantDerivation).map((r) => r.id);
     expect(derived).toEqual([
-      'rel:program_n.timesheet->synthetic.program_site.program_id',
-      'rel:program_n.timesheet_day->synthetic.program_site.program_id',
-      'rel:program_n.timesheet_day.timesheet_id->program_n.timesheet.timesheet_id',
-      'rel:synthetic.survey_reminder.survey_id->synthetic.survey.survey_id',
+      'rel:program_n.item->synthetic.program_site.program_id',
+      'rel:program_n.item_day->synthetic.program_site.program_id',
+      'rel:program_n.item_day.item_id->program_n.item.item_id',
+      'rel:synthetic.sample_reminder.sample_id->synthetic.sample.sample_id',
       'rel:tfixturenopk.fixtureid->tfixture.fixtureid',
       'rel:tfixturenote.authorid->tusers.userid',
       'rel:tfixturenote.fixtureid->tfixture.fixtureid',

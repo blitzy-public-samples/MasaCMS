@@ -1,13 +1,12 @@
 /** cUsers roster form posts shared by the offline and PostgreSQL admin-roster suites. */
-import { readFileSync } from 'node:fs';
 import { parse } from 'yaml';
 import { CSRF_FIELD_EXPIRES, CSRF_FIELD_TOKEN, adminUrl, cfUuid } from '@opt2/platform/legacy-compat';
-import { TENANT_A, assertResponseMatchesOpenApi } from '@opt2/platform/testing';
+import { TENANT_A, assertResponseMatchesOpenApi, loadOpenApiDocument } from '@opt2/platform/testing';
 import { TEST_CLOCK, userHeaders, type TestApp } from './app.js';
 import { createIdentityDouble, type IdentityDouble } from './identity-double.js';
 import { DEFAULT_PEOPLE_SEED, SYSTEM_USER_A_PERSON, accountFor, accountsForSeed, personRow, type TestActor } from './fixtures.js';
 
-export const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as { paths: Record<string, Record<string, unknown>> };
+export const OPENAPI = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as { paths: Record<string, Record<string, unknown>> };
 
 /** The contract path declaring `operationId`, which `app.inject` addresses. */
 function pathOf(operationId: string): string {

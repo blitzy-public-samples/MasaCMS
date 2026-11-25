@@ -14,7 +14,7 @@ import {
 } from '@opt2/platform/events';
 import { z } from '@opt2/platform/service-kit';
 
-import { FIXTURES_UNAVAILABLE, readFixtureStatus, type FixtureStatus } from '../golden/catalogue.js';
+import { FIXTURES_UNAVAILABLE } from '../golden/catalogue.js';
 import { isMainModule, parseFlags, runCli, UsageError, type CliOutcome } from '../lib/cli.js';
 import { REPO_ROOT, reportsDir, stateDir, type EnvLike } from '../lib/paths.js';
 import { readPin, type Pin } from '../lib/pin.js';
@@ -44,15 +44,14 @@ export const EVENT_CHECK_IDS = [
 export type EventCheckId = (typeof EVENT_CHECK_IDS)[number];
 
 /** Seam ids, in report order. */
-export const SEAM_IDS = ['archiveToBlackout', 'surveyToCloudTasks'] as const;
+export const SEAM_IDS = ['noteToProjection'] as const;
 
 /** One seam id. */
 export type SeamId = (typeof SEAM_IDS)[number];
 
 /** Topic whose delivery each seam carries. */
 export const SEAM_TOPICS: Readonly<Record<SeamId, string>> = Object.freeze({
-  archiveToBlackout: 'people.person.archived.v1',
-  surveyToCloudTasks: 'surveys.survey.scheduled.v1',
+  noteToProjection: 'stub.note.created.v1',
 });
 
 /** Every topic of the event contracts, in report order. */
@@ -64,13 +63,12 @@ export const EVENT_TOPICS = [
   'identity.login-mail.requested.v1',
   'people.person.changed.v1',
   'people.person.archived.v1',
-  'surveys.survey.scheduled.v1',
-  'communications.message.delivery-status-changed.v1',
   'stub.note.created.v1',
+  'stub.note.commented.v1',
 ] as const;
 
-/** Keys of the e2e result store: the checks, the two seams and the full outbox replay. */
-export const E2E_KEYS = [...EVENT_CHECK_IDS, 'seams.archiveToBlackout', 'seams.surveyToCloudTasks', 'outboxReplay'] as const;
+/** Keys of the e2e result store: the checks, the seam and the full outbox replay. */
+export const E2E_KEYS = [...EVENT_CHECK_IDS, 'seams.noteToProjection', 'outboxReplay'] as const;
 
 /** One e2e result key. */
 export type EventE2EKey = (typeof E2E_KEYS)[number];
@@ -83,12 +81,6 @@ export const EVENT_PACKAGES = [
   'services/people',
   'services/programs-sites',
   'services/strategies-content',
-  'services/communications',
-  'services/reporting',
-  'services/surveys',
-  'services/timesheets',
-  'services/finance',
-  'services/e-signature',
 ] as const;
 
 /** Replay command the report names as `outboxReplay.command`. */
@@ -159,7 +151,6 @@ function messageOf(err: unknown): string {
 
 /** Record result of a seam check's outcome. */
 export function seamRecordResult(seam: SeamResult): EventRecordResult {
-  if (seam.skipped !== undefined) return seam.skipped;
   return seam.passed ? 'pass' : 'fail';
 }
 
@@ -372,18 +363,16 @@ export async function topicsFromContracts(repoRoot: string = REPO_ROOT): Promise
 /** Outcome of one seam. */
 export type SeamOutcome = EventRecordResult | 'not-run';
 
-/** One seam: its topic and the recorded outcome, evidence and source, or the reason it was skipped. */
+/** One seam: its topic and the recorded outcome, evidence and source. */
 export interface SeamEntry {
   topic: string;
   result: SeamOutcome;
   evidence?: unknown;
   source?: string;
-  reason?: string | null;
 }
 
-function seamEntry(id: SeamId, record: EventResultRecord | undefined, fixtures: FixtureAvailability): SeamEntry {
+function seamEntry(id: SeamId, record: EventResultRecord | undefined): SeamEntry {
   const topic = SEAM_TOPICS[id];
-  if (!fixtures.available) return { topic, result: FIXTURES_UNAVAILABLE, reason: fixtures.reason };
   if (record === undefined) return { topic, result: 'not-run' };
   return { topic, result: record.result, evidence: record.evidence, source: record.source };
 }
@@ -418,16 +407,12 @@ function outboxSection(record: EventResultRecord<OutboxReplayEvidence> | undefin
   };
 }
 
-/** Whether the legacy fixtures are available, and why not. */
-export type FixtureAvailability = Pick<FixtureStatus, 'available' | 'reason'>;
-
 /** Everything {@link buildEventsReport} reads, already loaded. */
 export interface EventsReportInputs {
   sourceSha: string;
   generatedAt: string;
   packages: readonly PackageResults[];
   results: EventResults;
-  fixtures: FixtureAvailability;
   topics: readonly TopicRow[];
 }
 
@@ -480,13 +465,12 @@ export function eventsOutcome(report: Pick<EventsReport, 'outboxReplay' | 'check
 
 /** The report from already-loaded inputs; reads nothing. */
 export function buildEventsReport(inputs: EventsReportInputs): EventsReport {
-  const { packages, results, fixtures } = inputs;
+  const { packages, results } = inputs;
   const checks = Object.fromEntries(
     EVENT_CHECK_IDS.map((id) => [id, checkResult(id, packages, results[id])]),
   ) as Record<EventCheckId, CheckResult>;
   const seams: Record<SeamId, SeamEntry> = {
-    archiveToBlackout: seamEntry('archiveToBlackout', results['seams.archiveToBlackout'], fixtures),
-    surveyToCloudTasks: seamEntry('surveyToCloudTasks', results['seams.surveyToCloudTasks'], fixtures),
+    noteToProjection: seamEntry('noteToProjection', results['seams.noteToProjection']),
   };
   const outboxReplay = outboxSection(results.outboxReplay);
   const topics = inputs.topics.map((row) => ({ ...row, consumers: [...row.consumers] }));
@@ -512,7 +496,7 @@ export interface EventsReportDeps {
   repoRoot?: string;
 }
 
-/** Loads every input of the report: package vitest JSON, e2e records, fixture status and contracts. */
+/** Loads every input of the report: package vitest JSON, e2e records and contracts. */
 export async function readEventsReportInputs(deps: EventsReportDeps = {}): Promise<EventsReportInputs> {
   const env = deps.env ?? process.env;
   return {
@@ -520,7 +504,6 @@ export async function readEventsReportInputs(deps: EventsReportDeps = {}): Promi
     generatedAt: (deps.clock ?? (() => new Date()))().toISOString(),
     packages: await readPackageResults(env),
     results: await readEventResults(env),
-    fixtures: readFixtureStatus(env),
     topics: await topicsFromContracts(deps.repoRoot ?? REPO_ROOT),
   };
 }
@@ -529,7 +512,7 @@ const USAGE = 'usage: tsx src/events/report.ts [--out <file>]';
 const HELP = `${USAGE} [--help]
 
 Writes the events report from the [events:<check>]-tagged assertions under test/events/ in each package's vitest
-JSON, the e2e results under \${OPT2_STATE_DIR}/events/e2e/, the fixture status and the event contracts.
+JSON, the e2e results under \${OPT2_STATE_DIR}/events/e2e/ and the event contracts.
 
 Options:
   --out <file>  report file; a relative path resolves against the working directory

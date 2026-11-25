@@ -7,7 +7,7 @@ import path from 'node:path';
 import { sha256Hex, type CanonicalColumn } from '@opt2/platform/migration-kit';
 import { fixedClock } from '@opt2/platform/service-kit';
 import { tenantIdForSite, type TenantDb } from '@opt2/platform/tenancy';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { loadConfig } from '../../src/config.js';
 import { loadGroups, loadVersion } from '../../src/cutover/index.js';
@@ -56,18 +56,26 @@ const PERSON_COLUMNS: CanonicalColumn[] = [
   { name: 'UserID', type: 's' },
   { name: 'Fname', type: 's' },
 ];
-const STATS_COLUMNS: CanonicalColumn[] = [
-  { name: 'EmailID', type: 's' },
+const OBJECT_COLUMNS: CanonicalColumn[] = [
+  { name: 'ObjectID', type: 's' },
   { name: 'Status', type: 'i' },
 ];
 
+/** Keyless legacy table of the committed catalog. */
+const KEYLESS_TABLE = 'tsystemobjects';
+/** Unit of a folded fixture table, which only {@link writeExtendedOwnership} records. */
+const FOLD_UNIT = 'programs_sites.enrolment';
+/** Unit of a table with an object column, which only {@link writeExtendedOwnership} records. */
+const DOCUMENT_UNIT = 'people.document';
 /** Legacy table whose fake shape sets an object column apart. */
-const ATTACHMENT_TABLE = 'Program_N.finance_attachment';
+const DOCUMENT_TABLE = 'Program_N.document';
+/** Unit no legacy table feeds, which only {@link writeExtendedOwnership} records. */
+const TASK_UNIT = 'programs_sites.scheduled_task';
 
-/** Shape of a unit table: `temailstats` keyless, everything else keyed on its first column, attachments with an object column. */
+/** Shape of a unit table: `tsystemobjects` keyless, everything else keyed on its first column, documents with an object column. */
 function shapeOf(unit: string, legacyTable: string): UnitTableShape {
-  const keyless = legacyTable === 'temailstats';
-  const columns = keyless ? STATS_COLUMNS : PERSON_COLUMNS;
+  const keyless = legacyTable === KEYLESS_TABLE;
+  const columns = keyless ? OBJECT_COLUMNS : PERSON_COLUMNS;
   return {
     unit,
     owner: realCatalog.units().find((candidate) => candidate.id === unit)?.owner ?? 'strategies-content',
@@ -76,7 +84,7 @@ function shapeOf(unit: string, legacyTable: string): UnitTableShape {
     keyColumns: keyless ? [] : [columns[0]?.name ?? ''],
     columns,
     excludedColumns: keyless ? [] : ['IdentityCol'],
-    objectColumns: legacyTable === ATTACHMENT_TABLE ? [{ name: 'content', type: 'b' }] : [],
+    objectColumns: legacyTable === DOCUMENT_TABLE ? [{ name: 'content', type: 'b' }] : [],
     folded: false,
   };
 }
@@ -234,11 +242,11 @@ let reportsDir: string;
 let calls: Calls;
 
 function contextOf(
-  over: { snapshots?: readonly SnapshotSpec[]; catalog?: UnitCatalog; tableVersion?: string | null; stateDir?: string } = {},
+  over: { snapshots?: readonly SnapshotSpec[]; catalog?: UnitCatalog; tableVersion?: string | null; stateDir?: string; tableOwnership?: string } = {},
 ): ReconcileContext {
   const ctx = {
     env: { MURA_DATABASE: LIVE_DB, OPT2_REPORTS_DIR: reportsDir, OPT2_STATE_DIR: over.stateDir ?? path.join(reportsDir, 'state') },
-    config,
+    config: over.tableOwnership === undefined ? config : { ...config, paths: { ...config.paths, tableOwnership: over.tableOwnership } },
     clock: fixedClock('2026-06-30T12:00:00.000Z'),
     db: fakeDb(over.snapshots ?? [{ seq: 0, kind: 'seed' }]),
     catalog: over.catalog ?? realCatalog,
@@ -261,11 +269,71 @@ function catalogWithFileUnit(): UnitCatalog {
   };
 }
 
+/** A fold table program, an object-column table and a unit no legacy table feeds, beside the committed units. */
+interface ExtendedOwnership {
+  readonly tableOwnership: string;
+  readonly catalog: UnitCatalog;
+}
+
+/**
+ * Writes the committed ownership plus three fixture-only units it does not record, {@link FOLD_UNIT} over a folded
+ * fixture table, {@link DOCUMENT_UNIT} over a table with an object column and {@link TASK_UNIT} over no table, and
+ * returns the file with its catalog.
+ */
+async function writeExtendedOwnership(dir: string): Promise<ExtendedOwnership> {
+  const committed = JSON.parse(readFileSync(config.paths.tableOwnership, 'utf8')) as { units: unknown[]; tables: unknown[] };
+  const folded = (table: string, owner: string, unit: string, key: string, objectColumns?: Record<string, string>) => ({
+    table,
+    origin: 'fixture',
+    owner,
+    primaryKey: [key],
+    siteIdColumn: null,
+    tenantResolution: 'program_site',
+    migrated: true,
+    programFold: true,
+    targets: [{ unit, owner, rowPredicate: null, keyColumns: [key], columnPolicy: 'whole-table', ...(objectColumns === undefined ? {} : { objectColumns }) }],
+  });
+  const tableOwnership = path.join(dir, 'table-ownership.json');
+  const extended = {
+    ...committed,
+    units: [
+      ...committed.units,
+      { unit: FOLD_UNIT, owner: 'programs-sites', legacyTables: ['Program_N.enrolment'] },
+      { unit: DOCUMENT_UNIT, owner: 'people', legacyTables: [DOCUMENT_TABLE] },
+      { unit: TASK_UNIT, owner: 'programs-sites', legacyTables: [] },
+    ],
+    tables: [
+      ...committed.tables,
+      folded('Program_N.enrolment', 'programs-sites', FOLD_UNIT, 'enrolment_id'),
+      folded(DOCUMENT_TABLE, 'people', DOCUMENT_UNIT, 'document_id', { content: 'people-documents' }),
+    ],
+  };
+  await writeFile(tableOwnership, `${JSON.stringify(extended)}\n`, 'utf8');
+  return { tableOwnership, catalog: loadUnitCatalog(tableOwnership) };
+}
+
+let extendedDir: string;
+let extended: ExtendedOwnership;
+
+beforeAll(async () => {
+  extendedDir = await mkdtemp(path.join(os.tmpdir(), 'reconcile-index-ownership-'));
+  extended = await writeExtendedOwnership(extendedDir);
+});
+
+afterAll(async () => {
+  await rm(extendedDir, { recursive: true, force: true });
+});
+
+/** A context over the extended ownership of {@link writeExtendedOwnership}. */
+function extendedContextOf(over: Parameters<typeof contextOf>[0] = {}): ReconcileContext {
+  return contextOf({ ...over, catalog: extended.catalog, tableOwnership: extended.tableOwnership });
+}
+
 const PERSON = 'people.person|tusers';
-const STATS = 'communications.email_stat|temailstats';
+const KEYLESS = `programs_sites.system_object|${KEYLESS_TABLE}`;
 const ann = { UserID: 'U1', Fname: 'Ann' };
 const bob = { UserID: 'U2', Fname: 'Bob' };
-const sent = { EmailID: 'E1', Status: '1' };
+const object = { ObjectID: 'O1', Status: '1' };
 /** A row encoding the owner exports for a unit without a migratable legacy table. */
 const TASK = 's3:T01s9:scheduled';
 
@@ -339,8 +407,8 @@ describe('runReconcile', () => {
     ],
     [
       'a duplicated keyless row',
-      'communications.email_stat',
-      { legacy: { [STATS]: { [A]: [sent, sent] } }, target: { [STATS]: { [A]: [sent] } } },
+      'programs_sites.system_object',
+      { legacy: { [KEYLESS]: { [A]: [object, object] } }, target: { [KEYLESS]: { [A]: [object] } } },
       { kind: 'missing-in-target', occurrences: 1 },
     ],
     [
@@ -374,7 +442,7 @@ describe('runReconcile', () => {
     const result = await runReconcile(contextOf(), { point: 'rollback-before' }, fakeSources({ fixtures: LOADED, liveTables: MASA_TABLES }, calls));
 
     expect(result).toMatchObject({ point: 'rollback-before', result: 'zero-difference', exitCode: 0 });
-    expect(rosterUnits).toEqual(expect.arrayContaining(['people.person', 'people.person_archive', 'timesheets.blackout']));
+    expect(rosterUnits).toEqual(expect.arrayContaining(['people.person', 'people.person_archive']));
     expect([...calls.shapes].sort()).toEqual([...new Set(expected)].sort());
     expect(calls.legacyObjects).toEqual([]);
     expect(calls.legacyTableDatabases).toEqual([]);
@@ -393,11 +461,11 @@ describe('runReconcile', () => {
   });
 
   it('reconciles every catalog unit plus the file units when --units is absent', async () => {
-    await runReconcile(contextOf({ snapshots: [{ seq: 0, kind: 'seed' }] }), { point: 'after-backfill' }, fakeSources({}, calls));
+    await runReconcile(extendedContextOf({ snapshots: [{ seq: 0, kind: 'seed' }] }), { point: 'after-backfill' }, fakeSources({}, calls));
 
     const units = new Set(calls.shapes.map((shape) => shape.slice(0, shape.indexOf('|'))));
     expect(units.has('people.person')).toBe(true);
-    expect(new Set(calls.targetOnlyRows.map((call) => call.unit))).toEqual(new Set(['communications.scheduled_task']));
+    expect(new Set(calls.targetOnlyRows.map((call) => call.unit))).toEqual(new Set([TASK_UNIT]));
     expect(calls.legacyObjects).toEqual([{ legacySource: 'snapshot', snapshotSeq: 0, database: `${LIVE_DB}_opt2_snap_0` }]);
     expect(new Set(calls.targetObjects.map((call) => `${call.owner}:${call.unit}`))).toEqual(new Set(['strategies-content:content.file']));
   });
@@ -464,7 +532,12 @@ describe('runReconcile', () => {
   });
 
   it.each<[string, string[], Fakes, string]>([
-    ['a fixture unit whose tables the database lacks', ['people.person', 'finance.record'], { fixtures: UNAVAILABLE, liveTables: MASA_TABLES }, `finance.record (${SKIP_REASON})`],
+    [
+      'a fixture unit whose tables the database lacks',
+      ['people.person', 'people.person_archive'],
+      { fixtures: UNAVAILABLE, liveTables: MASA_TABLES },
+      `people.person_archive (${SKIP_REASON})`,
+    ],
     ['a file unit of a halted store', [FILE_UNIT], { legacyObjects: { status: 'halted', store: 's3', reason: 'store is s3' } }, `${FILE_UNIT} (store is s3)`],
   ])('refuses a --units run naming %s before comparing or writing anything', async (_name, units, fakes, uncompared) => {
     const error: unknown = await runReconcile(contextOf(), { point: 'post-cutover', units }, fakeSources(fakes, calls)).catch((caught: unknown) => caught);
@@ -566,24 +639,24 @@ describe('reconcileUnits', () => {
   ])('compares a unit without a migratable legacy table with its owner export over no legacy rows, reporting %s', async (_name, targetOnly, expected) => {
     const targetTenant = tenantIdForSite('target-only');
     const report = await reconcileUnits(
-      contextOf(),
-      { point: 'post-cutover', units: ['communications.scheduled_task', 'people.person'], database: LIVE_DB, requireEveryUnit: true },
+      extendedContextOf(),
+      { point: 'post-cutover', units: [TASK_UNIT, 'people.person'], database: LIVE_DB, requireEveryUnit: true },
       fakeSources({ targetOnly, targetTenants: [targetTenant] }, calls),
     );
 
     const tenants = [A, B, UMBRELLA, targetTenant].sort();
-    expect(calls.targetOnlyRows).toEqual(tenants.map((tenantId) => ({ owner: 'communications', unit: 'communications.scheduled_task', tenantId })));
+    expect(calls.targetOnlyRows).toEqual(tenants.map((tenantId) => ({ owner: 'programs-sites', unit: TASK_UNIT, tenantId })));
     expect(calls.shapes).toEqual([PERSON]);
-    const entries = report.units.filter((entry) => entry.unit === 'communications.scheduled_task');
+    const entries = report.units.filter((entry) => entry.unit === TASK_UNIT);
     expect(entries.map((entry) => [entry.tenantId, entry.targetCount, entry.differences])).toEqual(expected(targetTenant));
-    expect(entries.every((entry) => entry.owner === 'communications' && entry.legacyTable === null && entry.legacyCount === 0 && entry.files === null)).toBe(true);
+    expect(entries.every((entry) => entry.owner === 'programs-sites' && entry.legacyTable === null && entry.legacyCount === 0 && entry.files === null)).toBe(true);
     expect(report.skippedUnits).toEqual([]);
     expect(report.result).toBe(Object.keys(targetOnly).length === 0 ? 'zero-difference' : 'difference');
   });
 
   it('lists the unit tables and file units compared empty on both sides in every tenant and counts them among the units', async () => {
     const [archiveTable] = realCatalog.legacyTablesOf('people.person_archive');
-    const blackoutTables = realCatalog.legacyTablesOf('timesheets.blackout').filter((table) => realCatalog.isMigratable(table));
+    const interestTables = realCatalog.legacyTablesOf('people.user_interest').filter((table) => realCatalog.isMigratable(table));
     const archive = `people.person_archive|${archiveTable ?? ''}`;
     const fakes: Fakes = {
       legacy: { [archive]: { [A]: [ann] } },
@@ -592,12 +665,12 @@ describe('reconcileUnits', () => {
     };
     const report = await reconcileUnits(
       contextOf(),
-      { point: 'rollback-before', units: ['timesheets.blackout', 'people.person_archive', FILE_UNIT], database: LIVE_DB },
+      { point: 'rollback-before', units: ['people.user_interest', 'people.person_archive', FILE_UNIT], database: LIVE_DB },
       fakeSources(fakes, calls),
     );
 
     const tenants = [A, B, UMBRELLA].sort();
-    expect(blackoutTables.length).toBeGreaterThan(0);
+    expect(interestTables.length).toBeGreaterThan(0);
     expect(report.units.filter((entry) => entry.legacyCount + entry.targetCount > 0).map((entry) => `${entry.unit}/${entry.tenantId}`)).toEqual([
       `people.person_archive/${A}`,
     ]);
@@ -607,11 +680,11 @@ describe('reconcileUnits', () => {
         .map((entry) => [entry.unit, entry.legacyTable, entry.tenantId, entry.legacyCount, entry.targetCount, entry.differenceCount]),
     ).toEqual([
       ...tenants.map((tenantId) => [FILE_UNIT, null, tenantId, 0, 0, 0]),
-      ...[...blackoutTables].sort().flatMap((legacyTable) => tenants.map((tenantId) => ['timesheets.blackout', legacyTable, tenantId, 0, 0, 0])),
+      ...[...interestTables].sort().flatMap((legacyTable) => tenants.map((tenantId) => ['people.user_interest', legacyTable, tenantId, 0, 0, 0])),
     ]);
     expect(report.emptyUnits).toEqual([
       { unit: FILE_UNIT, legacyTable: null },
-      ...[...blackoutTables].sort().map((legacyTable) => ({ unit: 'timesheets.blackout', legacyTable })),
+      ...[...interestTables].sort().map((legacyTable) => ({ unit: 'people.user_interest', legacyTable })),
     ]);
     expect(report.summary).toMatchObject({ units: 3, emptyUnits: 2, unitsWithDifferences: 0, skippedUnits: 0 });
     expect(report.result).toBe('zero-difference');
@@ -656,28 +729,28 @@ describe('reconcileUnits', () => {
   });
 
   it.each<[string, ObjectEntry, 'zero-difference' | 'difference', object[]]>([
-    ['equal bytes', { key: 'Program_1.finance_attachment/AT1', size: 4, sha256: SHA_1 }, 'zero-difference', []],
+    ['equal bytes', { key: 'Program_1.document/D1', size: 4, sha256: SHA_1 }, 'zero-difference', []],
     [
       'a changed stored hash',
-      { key: 'Program_1.finance_attachment/AT1', size: 4, sha256: SHA_2 },
+      { key: 'Program_1.document/D1', size: 4, sha256: SHA_2 },
       'difference',
-      [expect.objectContaining({ kind: 'object-mismatch', key: 'Program_1.finance_attachment/AT1', column: 'sha256', legacy: SHA_1, target: SHA_2 })],
+      [expect.objectContaining({ kind: 'object-mismatch', key: 'Program_1.document/D1', column: 'sha256', legacy: SHA_1, target: SHA_2 })],
     ],
   ])("compares an object-column unit's values with its owner's manifest, outside the file store, for %s", async (_name, stored, result, differences) => {
-    const attachments = `finance.attachment|${ATTACHMENT_TABLE}`;
+    const documents = `${DOCUMENT_UNIT}|${DOCUMENT_TABLE}`;
     const fakes: Fakes = {
       siteTenants: [A],
-      legacy: { [attachments]: { [A]: [ann] } },
-      target: { [attachments]: { [A]: [ann] } },
-      columnObjects: { legacy: { [A]: [{ key: 'Program_1.finance_attachment/AT1', size: 4, sha256: SHA_1, orphan: false }] }, target: { [A]: [stored] } },
+      legacy: { [documents]: { [A]: [ann] } },
+      target: { [documents]: { [A]: [ann] } },
+      columnObjects: { legacy: { [A]: [{ key: 'Program_1.document/D1', size: 4, sha256: SHA_1, orphan: false }] }, target: { [A]: [stored] } },
     };
-    const report = await reconcileUnits(contextOf(), { point: 'post-cutover', units: ['finance.attachment'], database: LIVE_DB }, fakeSources(fakes, calls));
+    const report = await reconcileUnits(extendedContextOf(), { point: 'post-cutover', units: [DOCUMENT_UNIT], database: LIVE_DB }, fakeSources(fakes, calls));
 
     expect(calls.legacyObjects).toEqual([]);
-    expect(calls.targetRows).toEqual([{ unit: 'finance.attachment', tenantId: A, includeObjects: false }]);
+    expect(calls.targetRows).toEqual([{ unit: DOCUMENT_UNIT, tenantId: A, includeObjects: false }]);
     expect(report).toMatchObject({ result, fileStore: { store: null, status: 'not-applicable', haltedUnits: [] } });
     expect(report.units).toEqual([
-      expect.objectContaining({ unit: 'finance.attachment', legacyTable: ATTACHMENT_TABLE, tenantId: A, files: expect.objectContaining({ legacyObjects: 1, targetObjects: 1 }), differences }),
+      expect.objectContaining({ unit: DOCUMENT_UNIT, legacyTable: DOCUMENT_TABLE, tenantId: A, files: expect.objectContaining({ legacyObjects: 1, targetObjects: 1 }), differences }),
     ]);
   });
 
@@ -756,22 +829,32 @@ describe('fixture-backed units', () => {
   });
 
   it('compares the fixture tables a database holds although the status reads unavailable, Program_<id> parts folded', async () => {
-    const { fixture } = unitTablesOf(rosterGroupUnits());
+    const units = [...rosterGroupUnits(), FOLD_UNIT];
+    const fixture = units.flatMap((unit) =>
+      extended.catalog
+        .legacyTablesOf(unit)
+        .filter((table) => table.startsWith('Program_N.') || FIXTURE_TABLES.has(table))
+        .map((legacyTable) => ({ unit, legacyTable })),
+    );
     const physical = fixture.flatMap(({ legacyTable }) =>
       legacyTable.startsWith('Program_N.') ? ['Program_1', 'Program_2'].map((schema) => `${schema}${legacyTable.slice('Program_N'.length)}`) : [legacyTable],
     );
 
-    const result = await runReconcile(contextOf(), { point: 'rollback-before' }, fakeSources({ fixtures: UNAVAILABLE, liveTables: [...MASA_TABLES, ...physical] }, calls));
+    const result = await runReconcile(
+      extendedContextOf(),
+      { point: 'rollback-before', units },
+      fakeSources({ fixtures: UNAVAILABLE, liveTables: [...MASA_TABLES, ...physical] }, calls),
+    );
 
-    expect(physical).toEqual(expect.arrayContaining(['Program_1.blackout', 'Program_2.blackout', 'synthetic.person_archive']));
+    expect(physical).toEqual(expect.arrayContaining(['Program_1.enrolment', 'Program_2.enrolment', 'synthetic.person_archive']));
     expect(calls.shapes).toEqual(expect.arrayContaining(fixture.map((entry) => `${entry.unit}|${entry.legacyTable}`)));
     expect(result.summary.skippedUnits).toBe(0);
     expect(calls.legacyTableDatabases).toEqual([LIVE_DB]);
   });
 
   it.each<[string, FixtureStatus, string[], string, string[]]>([
-    ['Masa table while the fixtures are unavailable', UNAVAILABLE, ['people.person', 'finance.record'], 'tusers', ['Program_1.finance_record']],
-    ['fixture table while the fixtures are loaded', LOADED, ['finance.record'], 'Program_N.finance_record', []],
+    ['Masa table while the fixtures are unavailable', UNAVAILABLE, ['people.person', 'people.person_archive'], 'tusers', ['synthetic.person_archive']],
+    ['fixture table while the fixtures are loaded', LOADED, ['people.person_archive'], 'synthetic.person_archive', []],
   ])('stops on a missing %s', async (_name, fixtures, units, missing, present) => {
     const liveTables = [...MASA_TABLES.filter((table) => table !== missing), ...present];
 
@@ -796,9 +879,9 @@ describe('fixture-backed units', () => {
     }
     const sources: ReconcileSources = { ...fakeSources({ liveTables: MASA_TABLES }, calls), fixtureStatus: undefined };
 
-    const report = await reconcileUnits(contextOf({ stateDir }), { point: 'post-cutover', units: ['finance.record'], database: LIVE_DB }, sources);
+    const report = await reconcileUnits(contextOf({ stateDir }), { point: 'post-cutover', units: ['people.person_archive'], database: LIVE_DB }, sources);
 
-    expect(report.skippedUnits).toEqual([{ unit: 'finance.record', legacyTable: 'Program_N.finance_record', reason }]);
+    expect(report.skippedUnits).toEqual([{ unit: 'people.person_archive', legacyTable: 'synthetic.person_archive', reason }]);
     expect(report.units).toEqual([]);
     expect(report.result).toBe('zero-difference');
   });
@@ -813,7 +896,7 @@ describe('fixture-backed units', () => {
     await write(path.join(stateDir, 'fixtures.json'));
     const sources: ReconcileSources = { ...fakeSources({ liveTables: MASA_TABLES }, calls), fixtureStatus: undefined };
 
-    const error: unknown = await reconcileUnits(contextOf({ stateDir }), { point: 'post-cutover', units: ['finance.record'], database: LIVE_DB }, sources).catch(
+    const error: unknown = await reconcileUnits(contextOf({ stateDir }), { point: 'post-cutover', units: ['people.person_archive'], database: LIVE_DB }, sources).catch(
       (caught: unknown) => caught,
     );
 
@@ -861,11 +944,11 @@ describe('fixture-backed units', () => {
     const ctx = { ...contextOf(), legacy } as unknown as ReconcileContext;
     const sources: ReconcileSources = { ...fakeSources({ fixtures: UNAVAILABLE }, calls), legacyTables: undefined };
 
-    const report = await reconcileUnits(ctx, { point: 'post-cutover', units: ['finance.rollup', 'people.person'], database }, sources);
+    const report = await reconcileUnits(ctx, { point: 'post-cutover', units: ['people.person_archive', 'people.person'], database }, sources);
 
     expect(opened).toEqual([database]);
     expect(statements.filter((text) => text.includes('sys.tables'))).toHaveLength(1);
-    expect(report.skippedUnits).toEqual([{ unit: 'finance.rollup', legacyTable: 'Program_N.finance_rollup', reason: SKIP_REASON }]);
+    expect(report.skippedUnits).toEqual([{ unit: 'people.person_archive', legacyTable: 'synthetic.person_archive', reason: SKIP_REASON }]);
     expect(calls.shapes).toEqual(unitTablesOf(['people.person']).masa);
   });
 });

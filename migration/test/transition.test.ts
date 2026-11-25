@@ -14,7 +14,7 @@ import {
   type ChangeRow,
   type LegacyChange,
 } from '@opt2/platform/migration-kit';
-import { ROLE_SET, TENANT_A, assertResponseMatchesOpenApi, authHeadersFor, pgAvailable, testVerifier } from '@opt2/platform/testing';
+import { ROLE_SET, TENANT_A, assertResponseMatchesOpenApi, authHeadersFor, loadOpenApiDocument, pgAvailable, testVerifier } from '@opt2/platform/testing';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { parse } from 'yaml';
 
@@ -57,11 +57,9 @@ import {
   SITE_MONITOR_TASK,
   TABLES,
   UNITS,
-  blackoutRow,
   defineFixtureTables,
   fixtureEntries,
   fixtureGroups,
-  fixtureId,
   fixtureVersion,
   personArchiveRow,
 } from './helpers/fixtures.js';
@@ -86,7 +84,7 @@ const PG = await pgAvailable();
 const V_A = 'v0201';
 const V_B = 'v0202';
 const ARCHIVE_GROUP = FIXTURE_GROUP_IDS.archive;
-const SET_T = [UNITS.personArchive, UNITS.blackout].sort();
+const SET_T = [UNITS.personArchive];
 const ROLLBACK_BEFORE_REPORT = 'opt2/reports/reconciliation/rollback-before.json';
 const ARCHIVED_TOPIC = 'people.person.archived.v1';
 const PEOPLE_SWEEP_ENSURE = '/internal/v1/task-queues/people-outbox-sweep/ensure';
@@ -98,7 +96,7 @@ const ORPHAN_REQUEST_ID = 'req-orphaned-archive-0001';
 const ABANDONED_REQUEST_ID = 'req-abandoned-archive-0001';
 const PUBSUB_PROJECT = 'opt2-transition-suite';
 const SYNC_SQL = readFileSync(new URL('../sql/005_opt2_sync.sql', import.meta.url), 'utf8');
-const MIGRATION_DOC = parse(readFileSync(new URL('../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
+const MIGRATION_DOC = loadOpenApiDocument(new URL('../contracts/openapi.yaml', import.meta.url), parse) as object;
 const SERVICES_DIR = fileURLToPath(new URL('../../services/', import.meta.url));
 
 /** Every event topic the services' contracts define, by file name. */
@@ -124,11 +122,11 @@ function fakePubSub(consumers: readonly string[]): PubSubLike {
   };
 }
 
-/** The fixture routes with the archive group at `archive`; the monitor job lists the blackout unit, so moving T pauses it. */
+/** The fixture routes with the archive group at `archive`; the monitor job lists the archive unit, so moving T pauses it. */
 function archiveVersion(name: string, archive: 'legacy' | 'target', rollback: boolean): CutoverVersion {
   const authority = { [ARCHIVE_GROUP]: archive };
   const entries = fixtureEntries(name, authority).map((entry) =>
-    entry.kind === 'job' ? { ...entry, units: [...new Set([...entry.units, UNITS.blackout])].sort() } : entry,
+    entry.kind === 'job' ? { ...entry, units: [...new Set([...entry.units, UNITS.personArchive])].sort() } : entry,
   );
   const rollbackRefs = rollback
     ? [{ groups: [ARCHIVE_GROUP], rollbackSet: [ARCHIVE_GROUP], report: ROLLBACK_BEFORE_REPORT, evidence: [ROLLBACK_BEFORE_REPORT] }]
@@ -144,9 +142,7 @@ function canonicalColumns(table: { columns: readonly { name: string; type: strin
 }
 
 const ARCHIVE_COLUMNS = canonicalColumns(TABLES['synthetic.person_archive']);
-const BLACKOUT_COLUMNS = canonicalColumns(TABLES['Program_1.blackout']);
 const ARCHIVE = personArchiveRow();
-const BLACKOUT = blackoutRow({ day_id: fixtureId('timesheet_day:tenant-a/2026-06-16'), archive_id: ARCHIVE.archive_id });
 /** A second archive of the same person that people holds but whose change never reaches legacy. */
 const UNPROJECTED_ARCHIVE = personArchiveRow({ effective_from: new Date(2026, 6, 1) });
 const ARCHIVED_EVENT: DoublePublishedEvent = {
@@ -164,7 +160,6 @@ function insertChange(
   keyColumn: string,
   row: Row,
   xid: string,
-  legacyProgramId?: number,
 ): ChangeRow & { legacy: LegacyChange[] } {
   const key = encodeKey(columns, [keyColumn], row);
   const after = encodeRow(columns, row);
@@ -183,7 +178,7 @@ function insertChange(
     at: '2026-06-30 11:00:00.000',
     requestId: null,
     operationId: null,
-    legacy: [{ unit, legacyTable, key, before: null, after, columns: [], ...(legacyProgramId === undefined ? {} : { legacyProgramId }) }],
+    legacy: [{ unit, legacyTable, key, before: null, after, columns: [] }],
   };
 }
 
@@ -222,15 +217,6 @@ function takeXid(state: OwnerDoubleState): string {
   return xid;
 }
 
-/** The timesheets consumer of `people.person.archived.v1`: one blackout row and its changelog row in tenant A. */
-function consumeArchived(state: OwnerDoubleState): void {
-  const xid = takeXid(state);
-  state.seedRows(TABLES['Program_1.blackout'].qualified, TENANT_A.tenantId, [BLACKOUT], BLACKOUT_COLUMNS);
-  state.changesScript.set(TENANT_A.tenantId, [
-    { rows: [insertChange(UNITS.blackout, 'Program_N.blackout', BLACKOUT_COLUMNS, 'blackout_id', BLACKOUT, xid, 1)], horizon: state.nextXid },
-  ]);
-}
-
 /** Settings of one scenario. */
 interface ScenarioOptions {
   /** Raw variables over the test env, such as `OPT2_LEGACY_RESTART_CMD`. */
@@ -256,7 +242,6 @@ interface Scenario {
   t: TestContext;
   clock: MutableClock;
   people: OwnerDoubleState;
-  timesheets: OwnerDoubleState;
   /** A transition service over the scenario, stopped after the test. */
   service(): TransitionService;
   /** The step engine over a fresh record from `V_A` to `V_B`, continuing after `seed.lastStep` when given. */
@@ -278,14 +263,13 @@ describe('deriveTransitionPlan', () => {
       toLegacy: SET_T,
       legacyWriteEntries: [],
       frozenRoutes: [FIXTURE_ROUTES.archive],
-      owners: ['people', 'timesheets'],
+      owners: ['people'],
       siteMonitorEntryMoves: false,
       contentToTarget: false,
-      exportJobsWriteT: false,
       returnsToLegacy: true,
     });
     expect(plan.entriesChanged.map(({ route, from, to }) => [route, from, to])).toEqual([[FIXTURE_ROUTES.archive, 'target', 'legacy']]);
-    expect(plan.siteMonitorUnits).toContain(UNITS.blackout);
+    expect(plan.siteMonitorUnits).toContain(UNITS.personArchive);
     const content = fixtureGroups().groups.find((group) => group.id === FIXTURE_GROUP_IDS.content);
     expect(content?.units.length).toBeGreaterThan(0);
     expect(plan.setT.filter((unit) => content?.units.includes(unit))).toEqual([]);
@@ -320,8 +304,8 @@ describe.skipIf(!PG)('transition (requires PostgreSQL: PG_* unset)', () => {
   });
 
   /**
-   * Archive group `target` under `V_A`; people's unprojected archive event publishes once its outbox sweep is ensured, and
-   * timesheets consumes it into a blackout row only while the blackout gate is open.
+   * Archive group `target` under `V_A`; people's unpublished archive event publishes once its outbox sweep is ensured, which
+   * the shared log records as `owner:people publish`.
    */
   async function arrange(options: ScenarioOptions = {}): Promise<Scenario> {
     const clock = createMutableClock();
@@ -384,9 +368,7 @@ describe.skipIf(!PG)('transition (requires PostgreSQL: PG_* unset)', () => {
 
     if (t.owners === null) throw new Error('The scenario runs over owner doubles');
     const people = t.owners.owner('people');
-    const timesheets = t.owners.owner('timesheets');
     people.setGate(UNITS.personArchive, { state: 'open' });
-    timesheets.setGate(UNITS.blackout, { state: 'open' });
 
     const archives = options.unprojected === true ? [ARCHIVE, UNPROJECTED_ARCHIVE] : [ARCHIVE];
     people.seedRows(TABLES['synthetic.person_archive'].qualified, TENANT_A.tenantId, archives, ARCHIVE_COLUMNS);
@@ -402,7 +384,7 @@ describe.skipIf(!PG)('transition (requires PostgreSQL: PG_* unset)', () => {
       if (!sweepEnsured()) return { unpublished: 1 };
       if (!state.published.some((event) => event.eventId === ARCHIVED_EVENT.eventId)) {
         state.published.push({ ...ARCHIVED_EVENT });
-        timesheets.onEffect(UNITS.blackout, consumeArchived, { eventId: ARCHIVED_EVENT.eventId, tenantId: ARCHIVED_EVENT.tenantId });
+        t.log.append('owner:people', 'publish', { eventId: ARCHIVED_EVENT.eventId });
       }
       return { unpublished: 0 };
     };
@@ -425,7 +407,6 @@ describe.skipIf(!PG)('transition (requires PostgreSQL: PG_* unset)', () => {
       t,
       clock,
       people,
-      timesheets,
       service() {
         const service = createTransitionService(t.ctx, serviceOptions);
         cleanups.push(() => service.stop());
@@ -507,10 +488,7 @@ describe.skipIf(!PG)('transition (requires PostgreSQL: PG_* unset)', () => {
 
   /** The gate state each T unit holds at its owner. */
   function gatesOfT(s: Scenario) {
-    return {
-      [UNITS.personArchive]: s.people.gates.get(UNITS.personArchive),
-      [UNITS.blackout]: s.timesheets.gates.get(UNITS.blackout),
-    };
+    return { [UNITS.personArchive]: s.people.gates.get(UNITS.personArchive) };
   }
 
   it('drains a pending archive event while the gates are open, projects T into legacy, reconciles it to zero and activates V_B', async () => {
@@ -533,14 +511,14 @@ describe.skipIf(!PG)('transition (requires PostgreSQL: PG_* unset)', () => {
     expect(done.error).toBeUndefined();
 
     const sweptAt = at(s, 'client:people', `POST ${PEOPLE_SWEEP_ENSURE}`);
-    const consumedAt = at(s, 'owner:timesheets', 'effect');
-    const closedAt = Math.min(at(s, 'owner:people', 'gate.close'), at(s, 'owner:timesheets', 'gate.close'));
+    const publishedAt = at(s, 'owner:people', 'publish');
+    const closedAt = at(s, 'owner:people', 'gate.close');
     const frozenAt = at(s, 'gateway', 'freeze');
     const activatedAt = at(s, 'gateway', 'activate');
     const unfrozenAt = at(s, 'gateway', 'unfreeze');
     expect(sweptAt).toBeGreaterThanOrEqual(0);
-    expect(consumedAt).toBeGreaterThan(sweptAt);
-    expect(closedAt).toBeGreaterThan(consumedAt);
+    expect(publishedAt).toBeGreaterThan(sweptAt);
+    expect(closedAt).toBeGreaterThan(publishedAt);
     expect(frozenAt).toBeGreaterThanOrEqual(0);
     expect(frozenAt).toBeLessThan(closedAt);
     expect(activatedAt).toBeGreaterThan(closedAt);
@@ -556,8 +534,6 @@ describe.skipIf(!PG)('transition (requires PostgreSQL: PG_* unset)', () => {
     expect(s.t.gateway.snapshot().instances.find((instance) => instance.instanceId === LAGGING_INSTANCE)?.seenEpoch).toBeGreaterThanOrEqual(EPOCH + 2);
 
     expect(s.t.legacy.rows(TABLES['synthetic.person_archive'].qualified)).toEqual([ARCHIVE]);
-    expect(s.t.legacy.rows(TABLES['Program_1.blackout'].qualified)).toEqual([BLACKOUT]);
-    expect(s.t.legacy.rows(TABLES['Program_2.blackout'].qualified)).toEqual([]);
     expect(await reportOf(s, 'reconciliation/rollback-before.json')).toMatchObject({
       point: 'rollback-before',
       result: 'zero-difference',
@@ -566,7 +542,6 @@ describe.skipIf(!PG)('transition (requires PostgreSQL: PG_* unset)', () => {
 
     expect(gatesOfT(s)).toEqual({
       [UNITS.personArchive]: { unit: UNITS.personArchive, state: 'legacy', holderId: null, phase: 'quiet' },
-      [UNITS.blackout]: { unit: UNITS.blackout, state: 'legacy', holderId: null, phase: 'quiet' },
     });
     expect(await leasesOf(s.t.ctx, started.transitionId)).toEqual([]);
     expect(s.t.gateway.snapshot()).toMatchObject({ tableVersion: V_B, frozen: [] });
@@ -613,13 +588,9 @@ describe.skipIf(!PG)('transition (requires PostgreSQL: PG_* unset)', () => {
     expect(s.t.gateway.snapshot()).toMatchObject({ tableVersion: V_A, frozen: [] });
     expect(at(s, 'gateway', 'unfreeze')).toBeGreaterThan(at(s, 'gateway', 'freeze'));
     const reopened = s.t.log.entries.filter((entry) => entry.op === 'gate.open').map(({ component, args }) => [component, args]);
-    expect(reopened).toEqual([
-      ['owner:people', { op: 'open', units: [UNITS.personArchive], holderId: transitionId, state: 'open' }],
-      ['owner:timesheets', { op: 'open', units: [UNITS.blackout], holderId: transitionId, state: 'open' }],
-    ]);
+    expect(reopened).toEqual([['owner:people', { op: 'open', units: [UNITS.personArchive], holderId: transitionId, state: 'open' }]]);
     expect(gatesOfT(s)).toEqual({
       [UNITS.personArchive]: { unit: UNITS.personArchive, state: 'open', holderId: null, phase: 'quiet' },
-      [UNITS.blackout]: { unit: UNITS.blackout, state: 'open', holderId: null, phase: 'quiet' },
     });
     expect(await leasesOf(s.t.ctx, transitionId)).toEqual([]);
     expect(siteMonitorTask(s).paused).toBe(false);
@@ -664,7 +635,7 @@ describe.skipIf(!PG)('transition (requires PostgreSQL: PG_* unset)', () => {
     ]);
     expect(at(s, 'legacy', 'restart')).toBeGreaterThan(at(s, 'gateway', 'freeze'));
     expect(at(s, 'gateway', 'clearOrphans')).toBeGreaterThan(at(s, 'legacy', 'restart'));
-    expect(at(s, 'owner:timesheets', 'effect')).toBeGreaterThan(at(s, 'gateway', 'clearOrphans'));
+    expect(at(s, 'owner:people', 'publish')).toBeGreaterThan(at(s, 'gateway', 'clearOrphans'));
     expect(s.t.gateway.inflightRows()).toEqual([]);
     expect(await leasesOf(s.t.ctx, transitionId)).toEqual([]);
     expect(s.t.gateway.snapshot().tableVersion).toBe(V_B);
@@ -688,7 +659,7 @@ describe.skipIf(!PG)('transition (requires PostgreSQL: PG_* unset)', () => {
         args: { side: 'target', evidence: { kind: 'gates-closed', holderId: transitionId, at: anyString, units: SET_T }, instanceIds: [LIVE_INSTANCE] },
       },
     ]);
-    const closedAt = Math.max(at(s, 'owner:people', 'gate.close'), at(s, 'owner:timesheets', 'gate.close'));
+    const closedAt = at(s, 'owner:people', 'gate.close');
     expect(at(s, 'gateway', 'clearOrphans')).toBeGreaterThan(closedAt);
     expect(s.t.gateway.inflightRows()).toEqual([]);
     expect(s.t.gateway.snapshot().tableVersion).toBe(V_B);
@@ -696,7 +667,7 @@ describe.skipIf(!PG)('transition (requires PostgreSQL: PG_* unset)', () => {
 
   it('refuses at step 3 naming the orphan when no restart command is set, however far the clock has run', async () => {
     const s = await arrange({ orphan: true });
-    s.clock.advance(6 * s.t.ctx.config.transition.cfthreadWaitMs);
+    s.clock.advance(12 * s.t.ctx.config.transition.drainTimeoutMs);
     const engine = s.engine();
     await engine.step(1);
     await engine.step(2);
@@ -752,10 +723,10 @@ describe.skipIf(!PG)('transition (requires PostgreSQL: PG_* unset)', () => {
     expect(gatewayOps.filter((op) => op === 'freeze')).toHaveLength(1);
     expect(gatewayOps.filter((op) => op === 'activate')).toHaveLength(1);
     expect(s.t.log.entries.filter((entry) => entry.op === `POST ${PEOPLE_SWEEP_ENSURE}`).length).toBeGreaterThanOrEqual(1);
-    expect(at(s, 'owner:timesheets', 'effect')).toBeLessThan(at(s, 'owner:timesheets', 'gate.close'));
+    expect(at(s, 'owner:people', 'publish')).toBeLessThan(at(s, 'owner:people', 'gate.close'));
     expect(bridgeOps(s).filter((op) => op === 'scheduler.pause')).toHaveLength(1);
-    expect(gatesOfT(s)[UNITS.blackout]).toMatchObject({ state: 'legacy', holderId: null });
-    expect(s.t.legacy.rows(TABLES['Program_1.blackout'].qualified)).toEqual([BLACKOUT]);
+    expect(gatesOfT(s)[UNITS.personArchive]).toMatchObject({ state: 'legacy', holderId: null });
+    expect(s.t.legacy.rows(TABLES['synthetic.person_archive'].qualified)).toEqual([ARCHIVE]);
 
     const { rows } = await schema.db.withMetadata((tx) =>
       tx.query<{ state: string; entries: { steps: { step: number; result?: string }[] } }>(

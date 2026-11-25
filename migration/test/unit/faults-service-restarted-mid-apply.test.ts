@@ -152,12 +152,8 @@ const OWNER_CALLS: [Exclude<OwnerMethod, 'apply' | 'exportPages'>, DataOwner, un
   ['putObject', 'strategies-content', UPLOAD],
   ['getObject', 'strategies-content', ['tenant-a/F1.png']],
   ['deleteObject', 'strategies-content', ['tenant-a/F1.png']],
-  ['getAttachmentObject', 'finance', [{ tenantId: 'tenant-a', attachmentId: 'A1' }]],
-  ['getExportObject', 'reporting', [{ tenantId: 'tenant-a', jobId: 'J1' }]],
   ['siteMonitorState', 'programs-sites', []],
   ['putSiteMonitorState', 'programs-sites', [{ lastMonitored: '2026-01-01T00:00:00.000Z' }]],
-  ['adoptScheduledTasks', 'communications', [{ tasks: [] }]],
-  ['cancelAdoptedScheduledTasks', 'communications', [{ names: [] }]],
 ];
 
 /** Replaces `method` of the harness's owners client, which the wrapped client calls through, with `mock`. */

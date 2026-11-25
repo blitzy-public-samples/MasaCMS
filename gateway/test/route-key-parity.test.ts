@@ -143,7 +143,7 @@ describe("remote-function keys through the gateway's route-key options", () => {
   });
 });
 
-// The committed v0002 through app.ts's options: the synthetic screens and the comment, feed and form writes.
+// The committed v0002 through app.ts's options: the comment, feed and form writes.
 const v0002 = await committedIndex('v0002');
 const v0002Matcher = createMatcher({
   state: fakeCutoverState(v0002),
@@ -166,34 +166,8 @@ function bodiless(method: string, path: string, query: Record<string, string>, e
   return { name: expectedKey, source: 'gateway/cutover/versions/v0002.json', request: { method, path, query, headers: {} }, expectedKey };
 }
 
-const TENANT = { siteid: 'tenant-a' };
-
 describe("v0002 routing through the gateway's route-key options", () => {
   it.each<[string, RouteKeyConflictCase, Partial<CutoverEntry>, 'target' | 'legacy']>([
-    [
-      'the reporting export list',
-      bodiless('GET', '/opt2/admin/reporting/exports', TENANT, 'opt2:/opt2/admin/reporting/exports'),
-      { route: 'opt2:/opt2/admin/reporting/**', state: 'target', kind: 'read', units: ['reporting.export_job'] },
-      'target',
-    ],
-    [
-      'a reporting queue action',
-      bodiless('POST', '/opt2/admin-actions/reporting/queue', TENANT, 'opt2:/opt2/admin-actions/reporting/queue'),
-      { route: 'opt2:/opt2/admin-actions/reporting/**', state: 'target', kind: 'write' },
-      'target',
-    ],
-    [
-      'the communications templates',
-      bodiless('GET', '/opt2/admin/communications/templates', TENANT, 'opt2:/opt2/admin/communications/templates'),
-      { route: 'opt2:/opt2/admin/communications/**', state: 'target', kind: 'read' },
-      'target',
-    ],
-    [
-      'the timesheet list, whose sheets nothing writes',
-      bodiless('GET', '/opt2/admin/timesheets/sheets', TENANT, 'opt2:/opt2/admin/timesheets/sheets'),
-      { route: 'opt2:/opt2/admin/timesheets/**', state: 'target', kind: 'read' },
-      'target',
-    ],
     [
       'a compact-display feed save',
       sharedCase('admin-cfeed-update-close-compact-display-variant'),

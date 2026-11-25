@@ -303,7 +303,7 @@ const idleDb: TenantDb = {
   end: () => Promise.resolve(),
 };
 
-/** `synthetic.program_site` of the test apps: each test binds the programs it applies to the site it applies them under. */
+/** Program-to-site map of the test apps: each test binds the programs it applies to the site it applies them under. */
 const programSites = new Map<number, string>();
 
 /** Maps each of `programIds` to `site`. */

@@ -1,7 +1,7 @@
 # OPT-2 migration orchestrator and service
 Source SHA: 696383140578f8dea3ece26f80cd7bfb370ddf0f
 
-The migration package moves data between the legacy Masa SQL Server database and the PostgreSQL schemas of the ten services while the gateway moves routes one cut-over version at a time. It ships three CLIs (`opt2-migrate`, `opt2-db`, `opt2-ops`) and the always-on migration service, all from one image.
+The migration package moves data between the legacy Masa SQL Server database and the PostgreSQL schemas of the four target services while the gateway moves routes one cut-over version at a time. It ships three CLIs (`opt2-migrate`, `opt2-db`, `opt2-ops`) and the always-on migration service, all from one image.
 
 ## Purpose
 
@@ -11,7 +11,7 @@ The migration package moves data between the legacy Masa SQL Server database and
 | Prove zero difference | Reconciliation at every point: row count, SHA-256, field differences and file-object manifest, tolerance zero (AAP 0.8.4) |
 | Keep one writer per unit | Unit leases and owner gates for cut-over transitions, and write windows around legacy-served and withheld writers (AAP 0.5.4) |
 | Keep legacy readers current | Reverse projection of the owners' changelogs into the live legacy tables, and the read-after-write barrier (AAP 0.8.3) |
-| Hand over schedulers and files | The native `siteMonitor` and fixture survey tasks, and the legacy file store into `content-files` |
+| Hand over schedulers and files | The native `siteMonitor` task, and the legacy file store into `content-files` |
 
 ## Runtime forms
 
@@ -100,7 +100,7 @@ DDL in [`db/migrations/0001_migration.sql`](db/migrations/0001_migration.sql), [
 | `unit_lease` | One holder per unit, kind `window` or `transition` |
 | `projector_cursor` | Reporting mirror of the projector cursor and applied horizon per owner and tenant. The authoritative checkpoint is `opt2_sync.projector_checkpoint` in SQL Server, committed with each batch |
 | `projector_quarantine` | Changes the projector could not write into legacy (a SQL Server data error or a missing legacy row), and the other changes of their operation, each recorded before its batch commits without it: owner, tenant, changelog `xid`/`seq`, legacy table, op, legacy key, reason, batch. `repaired_at`, `repaired_xid` and `repaired_seq` are set once a later change of the same keyed row is written |
-| `scheduler_state` | Keys `sitemonitor`, `nativeTasks`, `surveyTasks` and `background` (the `opt2-ops` record) |
+| `scheduler_state` | Keys `sitemonitor`, `nativeTasks` and `background` (the `opt2-ops` record) |
 | `file_manifest` | Per snapshot and site: path, `fileID`, variant, extension, size, SHA-256, orphan flag, object key, transfer time |
 | `backfill_baseline` | The one snapshot the target was backfilled from and when that backfill started, recorded before its first batch |
 
@@ -114,7 +114,7 @@ DDL in [`db/migrations/0001_migration.sql`](db/migrations/0001_migration.sql), [
 ### Backfill (`src/apply/backfill.ts`, `src/order/`, `src/extract/`)
 
 - Tables load in the dependency order computed from the inventory's code relations (Masa declares no foreign keys), written to `migration-order.json`.
-- Canonical rows ordered by key; fixture `Program_<id>` tables fold into one stream with `legacy_program_id`.
+- Canonical rows ordered by key; live `Program_<id>` tables fold into one stream with `legacy_program_id`.
 - 1,000 rows per tenant per batch to the owner's `apply`, each with a deterministic `batchId`, so a repeated batch is a no-op. Split tables (`tusers`, `tclassextend*`, `ttrash`) go to every owner, which takes its own rows and columns.
 - `tenant_id = tenantIdForSite(siteID)`; pooled rows carry the umbrella tenant, child rows inherit their parent's, and rows with no resolvable parent load under the umbrella tenant and are reported as orphans.
 - Owners emit only `state` events for migration applies, never `process` events.
@@ -132,8 +132,8 @@ DDL in [`db/migrations/0001_migration.sql`](db/migrations/0001_migration.sql), [
 | Step | Name | Does |
 |---|---|---|
 | 1 | `transition-set` | Derives the units `T` whose authority changes and the affected entries; leases `T` as holder kind `transition` |
-| 2 | `stop-new-work` | Pauses the native and survey tasks and the owners' queues that write `T` (outbox sweeps excepted); freezes the entries and waits for every gateway instance's epoch |
-| 3 | `confirm-inflight-finished` | Waits for `gateway.inflight` to hold none of them but orphans (the instance is dead, or abandoned the exchange); orphaned legacy-bound rows are cleared only by a controlled restart (`OPT2_LEGACY_RESTART_CMD`), otherwise the transition aborts naming the orphan, and orphaned target-bound rows pass to step 5; waits for fixture `cfthread` exports (10 min bound) |
+| 2 | `stop-new-work` | Pauses the native task and the owners' queues that write `T` (outbox sweeps excepted); freezes the entries and waits for every gateway instance's epoch |
+| 3 | `confirm-inflight-finished` | Waits for `gateway.inflight` to hold none of them but orphans (the instance is dead, or abandoned the exchange); orphaned legacy-bound rows are cleared only by a controlled restart (`OPT2_LEGACY_RESTART_CMD`), otherwise the transition aborts naming the orphan, and orphaned target-bound rows pass to step 5 |
 | 4 | `drain-effects` | Runs the outbox sweeps and waits until every published event for `T` has an inbox receipt, or a dead letter for a `state` event, with the gates still open; a dead-lettered `process` event aborts the step, and an owner that does not answer is asked again until `transition.drainTimeoutMs` |
 | 5 | `close-gates` | Closes `T`'s gates at their owners with the transition as holder, then clears step 3's target-bound orphans with that `gates-closed` evidence |
 | 6 | `final-state-and-reconcile` | Final snapshot and diff for units moving to `target`; projector to every owner's write position for units moving to `legacy`; reconciles `T` to zero or aborts |
@@ -150,7 +150,7 @@ Orphan classification (the in-flight waits of step 3, reload windows and `opt2-o
 - Each batch is one SQL Server transaction that also upserts `opt2_sync.projector_checkpoint`, so a crash never re-applies a committed batch. Split tables update only `target`-authoritative columns; keyless tables delete exactly one row matching the before-image.
 - A change legacy cannot take (a SQL Server data error such as truncation, NULL, conversion, overflow, duplicate key or constraint, or no legacy row for an update or keyless delete) is recorded in `migration.projector_quarantine`, logged, and left out of its batch, which then commits with the rest and the checkpoint; any other failure stops the stream at its checkpoint. Every other change of the batch that belongs to the same operation is recorded and left out with it, so legacy never holds part of an operation.
 - A later change of a quarantined keyed row replays it: an update writes its whole after-image, inserting the row when legacy has none. Once the batch commits, the earlier records of that row are marked repaired and one INFO line names them. A crash between the commit and the marking leaves them unrepaired. Keyless rows are never repaired.
-- After batches touching `tsettings` or content, the projector calls `site.cfm?op=refresh` and `jobs.cfm?job=purgeCache`. `content.file_object` changes go to the legacy store through `files.cfm?op=put|delete`; finance attachments go back into `Program_<id>.finance_attachment`.
+- After batches touching `tsettings` or content, the projector calls `site.cfm?op=refresh` and `jobs.cfm?job=purgeCache`. `content.file_object` changes go to the legacy store through `files.cfm?op=put|delete`.
 - `projectionAwait` answers once every listed `<owner>=<xid>` position is below that owner's applied horizon, or 503 after `timeoutMs` (default 5 s). It answers 503 at once when a listed position has an unrepaired quarantine record (`ProjectionQuarantinedError`). Owners' current positions and positions without such a record are awaited as before.
 
 ### Reconciliation (`src/reconcile/`)
@@ -179,7 +179,7 @@ Masa's start-up rewrites `tcontent` rows of type `File` or `Link` that are activ
 
 - `scheduler import` loads the capture taken before ColdFusion first restarted with `MURA_PING=false`.
 - In the transition that makes `/_api/sitemonitor` `target`: the native task is paused before the freeze and deleted after activation, programs-sites receives `application.lastMonitored` as its cursor, and its recurring trigger is enabled only if a native task existed.
-- Fixture `opt2-survey-*` tasks are paused, adopted by communications (`/internal/v1/migration/adopt-scheduled-tasks`) and then deleted. A transition back to `legacy` reverses each step through `scheduler.cfm?op=restore` and `jobs.cfm?job=setCursor`.
+- A transition back to `legacy` reverses each step through `scheduler.cfm?op=restore` and `jobs.cfm?job=setCursor`.
 
 ### File-store transfer (`src/files/`)
 
@@ -201,7 +201,7 @@ Masa's start-up rewrites `tcontent` rows of type `File` or `Link` that are activ
 | `service-restarted-mid-apply` | An owner restarted while receiving batches |
 | `pubsub-redelivery` | State-event outbox rows republished with their original `eventId` |
 | `window-import-interrupted` | A window import failed after legacy committed |
-| `projector-delay` | Sleep once per projector cycle before its first read (default 3 s; used by GS-BR-01) |
+| `projector-delay` | Sleep once per projector cycle before its first read (default 3 s) |
 | `forced-reinit` | A `tcontent` row matching the start-up predicate, converted by the guard |
 
 ### People-roster rollback (`src/rollback/`)
@@ -239,6 +239,7 @@ Written under `OPT2_REPORTS_DIR` (default `opt2/reports/`); each carries `source
 |---|---|
 | `reconciliation/{after-backfill,after-feed-<n>,after-fault-<fault>,checkpoint,post-cutover,rollback-before,rollback-after}.json` | `reconcile`, `backfill`, `feed`, `fault`, transitions |
 | `reconciliation/summary.md` | Regenerated with every reconciliation report |
+| `reconciliation/archive/<point>.json` | Committed evidence only: one full baseline report plus difference records, built, verified and reconstructed by `npx tsx src/reconcile/archive.ts build\|verify\|show`; no `opt2-migrate` command reads it |
 | `windows.json` | Every write window: route, units, scope, phases with timestamps, rows imported, outcome. Written from `migration.write_window` by `window report` and when the service stops |
 | `transitions.json` | Every transition: versions, `setT`, steps, outcome |
 | `migration-order.json` | The dependency order, from `backfill` and `feed` |
@@ -302,7 +303,7 @@ npm start               # node dist/cli.js serve
 ```
 
 - Suites that need PostgreSQL create a throwaway schema from the `PG_*` variables, skip when `PG_HOST` is unset unless `OPT2_TEST_REQUIRE_PG=1`, which makes an unset `PG_HOST` fail instead, and fail when the server is unreachable. The two cases in `test/unit/db-bootstrap-cli.test.ts` that run `opt2-db bootstrap` and `teardown --target local` are the exception: they drop and create the fixed-name schemas and the cluster-global `<schema>_owner`, `_app` and `_migrator` roles, so they are skipped by default (the two expected skips of `npm test`) and run only with `OPT2_DEDICATED_PG=1`, under the same `PG_HOST` rules. `PG_*` must then name a disposable PostgreSQL cluster the run owns, never a shared one: a separate database does not isolate roles. SQL Server, ColdFusion, the bridge, the gateway, the owners and Pub/Sub are in-process doubles (`test/helpers/`), so no suite needs a legacy server.
-- Headline suites: `test/windows.test.ts` (overlapping windows, a transition racing a window, gateway loss mid-write), `test/transition.test.ts` (pending seam event drained before the gates close), `test/projection-await.test.ts` (older open transaction holds the barrier), `test/reverse-crash.test.ts` (crash between the SQL Server commit and the mirror), `test/reverse-nokey.test.ts` (duplicate keyless rows).
+- Headline suites: `test/windows.test.ts` (overlapping windows, a transition racing a window, gateway loss mid-write), `test/transition.test.ts` (pending archive event drained before the gates close), `test/projection-await.test.ts` (older open transaction holds the barrier), `test/reverse-crash.test.ts` (crash between the SQL Server commit and the mirror), `test/reverse-nokey.test.ts` (duplicate keyless rows).
 
 ## Links
 

@@ -26,6 +26,7 @@ import {
   createCapturingPublisher,
   fixedClock,
   fixtureForSite,
+  loadOpenApiDocument,
   mintServiceToken,
   mintUserToken,
   registryPayloads,
@@ -90,7 +91,7 @@ const NOW = new Date(2026, 5, 30, 12, 0, 0, 123);
 const CLOCK = fixedClock(NOW);
 const SITE_A = TENANT_A.siteId;
 const SITE_B = TENANT_B.siteId;
-const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
+const OPENAPI = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as object;
 const GROUP_CHANGED_SCHEMA = JSON.parse(readFileSync(new URL(`../../contracts/events/${GROUP_CHANGED_TOPIC}.json`, import.meta.url), 'utf8')) as object;
 const MEMBERSHIP_CHANGED_SCHEMA = JSON.parse(
   readFileSync(new URL(`../../contracts/events/${MEMBERSHIP_CHANGED_TOPIC}.json`, import.meta.url), 'utf8'),

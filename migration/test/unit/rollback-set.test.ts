@@ -55,9 +55,9 @@ import {
 const config = loadConfig();
 const GENERATED_AT = '2026-06-30T12:00:00.000Z';
 const R_GROUPS: string[] = [...ROLLBACK_GROUPS];
-const R_UNITS = sorted([UNITS.credential, UNITS.userAccount, UNITS.person, UNITS.personArchive, UNITS.blackout]);
+const R_UNITS = sorted([UNITS.credential, UNITS.userAccount, UNITS.person, UNITS.personArchive]);
 const UNMET_ARCHIVE_LEG =
-  'the rehearsal covers create and edit only; the archive-to-blackout leg (GS-PE-RH-03) is unmet (AAP 0.7.6).';
+  'the rehearsal covers create and edit only; the archive leg (GS-PE-RH-03) is unmet (AAP 0.7.6).';
 
 const V0003_REF = firstRollbackRef(V0003);
 
@@ -139,7 +139,7 @@ const MERGED_TO = withoutGroup(V0003, FIXTURE_GROUP_IDS.login);
 const LOGIN_LEGACY: Readonly<Record<string, Authority>> = { [FIXTURE_GROUP_IDS.login]: 'legacy' };
 
 describe('deriveRollbackSet', () => {
-  it('returns the roster create/edit group and the archive/blackout group of the fixture', () => {
+  it('returns the roster create/edit group and the archive group of the fixture', () => {
     expect(config.rollbackSet.routeKeys).toEqual(
       expect.arrayContaining([FIXTURE_ROUTES.rosterAdd, FIXTURE_ROUTES.rosterUpdate, FIXTURE_ROUTES.archive]),
     );
@@ -325,7 +325,7 @@ const OUTCOME_IDS: string[] = [...REHEARSAL_SCENARIOS, SESSION_SCENARIO];
 const SCENARIO_LABELS: Readonly<Record<string, string>> = {
   'GS-PE-RH-01': 'roster create',
   'GS-PE-RH-02': 'roster edit',
-  'GS-PE-RH-03': 'archive → blackout',
+  'GS-PE-RH-03': 'roster archive',
   'GS-ID-09': 'session step across `v0003` activation',
 };
 const REBASELINE: RebaselineRecord = {
@@ -482,7 +482,7 @@ describe('renderRollbackReport', () => {
         reconciliationRow(input.reconciliation.before),
         reconciliationRow(input.reconciliation.after),
         ...OUTCOME_IDS.map((id) => replayRow(id, replayPath(id), 'pass')),
-        'Fixtures available: the rehearsal covers create, edit and the archive-to-blackout leg (GS-PE-RH-03).',
+        'Fixtures available: the rehearsal covers create, edit and the archive leg (GS-PE-RH-03).',
       ]),
     );
   });
@@ -735,7 +735,7 @@ describe('renderRollbackReport', () => {
     {
       name: 'available',
       fixtures: { available: true },
-      line: 'Fixtures available: the rehearsal covers create, edit and the archive-to-blackout leg (GS-PE-RH-03).',
+      line: 'Fixtures available: the rehearsal covers create, edit and the archive leg (GS-PE-RH-03).',
     },
     {
       name: 'unavailable with a reason',
@@ -833,7 +833,7 @@ describe('writeRollbackReport', () => {
         scenarios: [
           ...REHEARSAL_SCENARIOS.map((id) => ({ id, result: 'pass', evidence: { golden: `harness/golden/sets/${id}.json`, replay: replayPath(id) } })),
           { id: SESSION_SCENARIO, result: 'withheld', evidence: { golden: `harness/golden/sets/${SESSION_SCENARIO}.json`, replay: replayPath(SESSION_SCENARIO) } },
-          { id: 'GS-CO-01', result: 'fail' },
+          { id: 'GS-CO-04', result: 'fail' },
         ],
         rehearsalCrossings: [crossingRow(SESSION_SCENARIO, crossing)],
       }),
@@ -871,7 +871,7 @@ describe('writeRollbackReport', () => {
         reconciliationRow(reconciliation('after', 'zero-difference')),
         ...REHEARSAL_SCENARIOS.map((id) => replayRow(id, replayPath(id), 'pass')),
         replayRow(SESSION_SCENARIO, crossingPath(SESSION_SCENARIO), crossing),
-        'Fixtures available: the rehearsal covers create, edit and the archive-to-blackout leg (GS-PE-RH-03).',
+        'Fixtures available: the rehearsal covers create, edit and the archive leg (GS-PE-RH-03).',
       ]),
     );
   });

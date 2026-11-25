@@ -229,8 +229,8 @@ describe('identity buildApp with an invalid role map', () => {
     { invalid: 'is not JSON', text: '{bad json', reason: /^role-map\.json: .+ JSON/, cause: SyntaxError },
     {
       invalid: 'maps a group to an unknown role',
-      text: JSON.stringify({ sourceSha: '696383140578f8dea3ece26f80cd7bfb370ddf0f', scope: 'privateUserPool', groups: [{ groupName: 'Payroll', role: 'timesheets.bogus-role' }] }),
-      reason: /^role-map\.json: role-map\.json group .+ needs a groupName and a synthetic role$/,
+      text: JSON.stringify({ sourceSha: '696383140578f8dea3ece26f80cd7bfb370ddf0f', scope: 'privateUserPool', groups: [{ groupName: 'Payroll', role: 'payroll.clerk' }] }),
+      reason: /^role-map\.json: role-map\.json group .+: no target role is granted through a Masa group$/,
       cause: TypeError,
     },
   ])('refuses to start when role-map.json $invalid', async ({ text, reason, cause }) => {

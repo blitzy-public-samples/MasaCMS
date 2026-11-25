@@ -1,5 +1,4 @@
 /** The cUsers and cEditProfile gates of people: roles, `before()` defaults and scrubbing, and `secure()` denials, directly and through the app. */
-import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import { AuthDenial, Roles, moduleRole, renderAuthDenial, type UserClaims } from '@opt2/platform/auth';
@@ -7,7 +6,7 @@ import {
   ADMIN_LOGIN_REDIRECT_ACTION as COMPAT_LOGIN_REDIRECT_ACTION,
   ADMIN_NOACCESS_ACTION as COMPAT_NOACCESS_ACTION,
 } from '@opt2/platform/legacy-compat';
-import { TENANT_A, TENANT_B, assertResponseMatchesOpenApi } from '@opt2/platform/testing';
+import { TENANT_A, TENANT_B, assertResponseMatchesOpenApi, loadOpenApiDocument } from '@opt2/platform/testing';
 import {
   ADMIN_LOGIN_REDIRECT_ACTION,
   ADMIN_NOACCESS_ACTION,
@@ -42,7 +41,7 @@ interface ContractOperation {
   'x-opt2-requires'?: string[];
 }
 
-const CONTRACT = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as {
+const CONTRACT = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as {
   paths: Record<string, Record<string, ContractOperation>>;
 };
 

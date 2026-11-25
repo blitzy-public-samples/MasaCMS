@@ -572,7 +572,7 @@ describe('leasesOfUnits', () => {
     table.seed('identity.account', 'win-1', 'window', T0 - 1);
     table.seed('content.file', 'win-2', 'window', T0);
 
-    const leases = await leasesOfUnits({ db: table.db() }, ['people.person', 'timesheets.blackout', 'identity.account']);
+    const leases = await leasesOfUnits({ db: table.db() }, ['people.person', 'programs_sites.site', 'identity.account']);
 
     expect(leases).toEqual([
       { unit: 'identity.account', holderId: 'win-1', kind: 'window', acquiredAt: new Date(T0 - 1) },

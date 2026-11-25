@@ -46,18 +46,12 @@ const OWNERS = [
   ['people', 'people', 'services/people'],
   ['programs-sites', 'programs_sites', 'services/programs-sites'],
   ['strategies-content', 'content', 'services/strategies-content'],
-  ['communications', 'communications', 'services/communications'],
-  ['reporting', 'reporting', 'services/reporting'],
-  ['surveys', 'surveys', 'services/surveys'],
-  ['timesheets', 'timesheets', 'services/timesheets'],
-  ['finance', 'finance', 'services/finance'],
-  ['e-signature', 'esignature', 'services/e-signature'],
   ['stub', 'stub', 'services/stub'],
   ['gateway', 'gateway', 'gateway'],
   ['migration', 'migration', 'migration'],
 ] as const;
 
-const SERVICES = OWNERS.slice(0, 10).map(([name]) => name);
+const SERVICES = OWNERS.slice(0, 4).map(([name]) => name);
 
 const FAULTS = [
   'applier-killed-mid-batch',
@@ -167,7 +161,6 @@ describe('timing and batch figures', () => {
     ['leases a gateway write window for 120 s', config.windows.gatewayLeaseMs, 120 * SECOND],
     ['polls the legacy bridge every 60 s', config.background.bridgePollMs, 60 * SECOND],
     ['reconciles task queues every 5 min', config.background.tasksReconcileMs, 5 * MINUTE],
-    ['waits up to 10 min for cfthread export jobs', config.transition.cfthreadWaitMs, 10 * MINUTE],
     ['delays the projector by 3 s by default', faultNamed(config, 'projector-delay').defaultDelayMs, 3 * SECOND],
   ])('%s', (_title, actual, expected) => {
     expect(actual).toBe(expected);
@@ -184,18 +177,12 @@ describe('timing and batch figures', () => {
 describe('owners', () => {
   const config = loadConfig();
 
-  it('registers thirteen owners in bootstrap order', () => {
+  it('registers seven owners in bootstrap order', () => {
     expect(Object.keys(config.owners)).toEqual([
       'identity',
       'people',
       'programs-sites',
       'strategies-content',
-      'communications',
-      'reporting',
-      'surveys',
-      'timesheets',
-      'finance',
-      'e-signature',
       'stub',
       'gateway',
       'migration',
@@ -208,7 +195,7 @@ describe('owners', () => {
     expect(ownerBySchema(config, schema)).toEqual({ name, schema, package: pkg });
   });
 
-  it('names the ten services, and no platform component, as data owners', () => {
+  it('names the four services, and no platform component, as data owners', () => {
     expect(config.dataOwners).toEqual(SERVICES);
   });
 

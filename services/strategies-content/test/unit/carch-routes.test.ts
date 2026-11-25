@@ -1,5 +1,4 @@
 /** routes/v1/carch page and write routes over the recording pool: declarations, the circuit gate, before() defaults, session effects, screen models, data manager writes and the raw render context. */
-import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import { Roles, collectRouteMatrix, moduleRole, type Role } from '@opt2/platform/auth';
@@ -14,7 +13,7 @@ import {
   type ServiceRequest,
   type ServiceResponse,
 } from '@opt2/platform/service-kit';
-import { TENANT_A, TENANT_B, TENANT_UMBRELLA, assertResponseMatchesOpenApi, type InjectResponse } from '@opt2/platform/testing';
+import { TENANT_A, TENANT_B, TENANT_UMBRELLA, assertResponseMatchesOpenApi, loadOpenApiDocument, type InjectResponse } from '@opt2/platform/testing';
 import { CONTENT_CONFIG_DEFAULTS, actorFromClaims } from '../../src/domain/context.js';
 import { createContentRepository } from '../../src/repo/repository.js';
 import type { ContentRouteContext } from '../../src/routes/index.js';
@@ -35,7 +34,7 @@ import {
 type Json = Record<string, unknown>;
 type Method = 'GET' | 'POST';
 
-const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as {
+const OPENAPI = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as {
   paths: Record<string, Record<string, Json>>;
 };
 

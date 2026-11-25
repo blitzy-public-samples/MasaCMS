@@ -1,9 +1,8 @@
 // Internal Version menu route: web reads the legacy server facts through the bridge's site.cfm?op=versionMenu.
-import { readFile } from 'node:fs/promises';
 import { INVOCATION_HEADER, recordedRoutes, rolesForService } from '@opt2/platform/auth';
 import { createLogger } from '@opt2/platform/logging';
 import { ServiceUnavailableError, createService, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
-import { mintServiceToken, testVerifier } from '@opt2/platform/testing';
+import { loadOpenApiDocument, mintServiceToken, testVerifier } from '@opt2/platform/testing';
 import { Ajv2020, type AnySchemaObject, type ValidateFunction } from 'ajv/dist/2020.js';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
@@ -17,7 +16,7 @@ const apps: FastifyInstance[] = [];
 let menuContract: ValidateFunction;
 
 beforeAll(async () => {
-  const contract = parse(await readFile(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as {
+  const contract = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as {
     components: { schemas: Record<string, AnySchemaObject> };
   };
   const schema = contract.components.schemas.LegacyVersionMenu;

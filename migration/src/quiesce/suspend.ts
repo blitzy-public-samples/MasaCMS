@@ -317,7 +317,7 @@ export async function drainAndSuspend(
     await background.suspend(planned);
 
     const paused = await scheduler.pauseAll();
-    const pausedTasks = [...new Set([...paused.siteMonitor, ...paused.surveys])].sort();
+    const pausedTasks = [...new Set(paused.siteMonitor)].sort();
 
     const producers = targets.filter((target) => !isSweep(target));
     const barrier: Barrier = { timeoutMs: drainTimeoutMs, deadline: ctx.clock.now().getTime() + drainTimeoutMs, sleep };

@@ -131,24 +131,24 @@ const NOTE_CREATED = 'stub.note.created.v1';
 const WITNESS_PREFIX = 'witness_pubsub-redelivery_';
 const WITNESS_NAME = /^witness_pubsub-redelivery_[0-9a-f]{8}\.(.+)$/;
 const PUBLISH_TIME = '2026-06-30T11:59:00.000Z';
-const DATA_OWNERS = ['identity', 'people', 'programs-sites', 'strategies-content', 'timesheets'] as const;
+const DATA_OWNERS = ['identity', 'people', 'programs-sites', 'strategies-content'] as const;
 
 /** Consumer subscriptions of the fake project; the stub's topic belongs to no replayed producer. */
 const SUBSCRIPTIONS = [
   { consumer: 'people', topic: GROUP_CHANGED, ordered: true, port: 20112 },
   { consumer: 'strategies-content', topic: GROUP_CHANGED, ordered: false, port: 20114 },
   { consumer: 'identity', topic: PERSON_CHANGED, ordered: true, port: 20111 },
-  { consumer: 'timesheets', topic: SITE_CHANGED, ordered: false, port: 20118 },
+  { consumer: 'programs-sites', topic: SITE_CHANGED, ordered: false, port: 20113 },
   { consumer: 'stub', topic: NOTE_CREATED, ordered: false, port: 20199 },
 ] as const;
 
 const PEOPLE_GROUP = subscriptionName('people', GROUP_CHANGED);
 const CONTENT_GROUP = subscriptionName('strategies-content', GROUP_CHANGED);
 const IDENTITY_PERSON = subscriptionName('identity', PERSON_CHANGED);
-const TIMESHEETS_SITE = subscriptionName('timesheets', SITE_CHANGED);
+const PROGRAMS_SITES_SITE = subscriptionName('programs-sites', SITE_CHANGED);
 const STUB_NOTE = subscriptionName('stub', NOTE_CREATED);
 /** Held subscriptions in listing order. */
-const HELD = [IDENTITY_PERSON, PEOPLE_GROUP, CONTENT_GROUP, TIMESHEETS_SITE];
+const HELD = [IDENTITY_PERSON, PEOPLE_GROUP, PROGRAMS_SITES_SITE, CONTENT_GROUP];
 /** Topics of the fake project: login mail and archived persons have no consumer, and the DLQ topic is no event topic. */
 const TOPICS = [GROUP_CHANGED, LOGIN_MAIL, PERSON_ARCHIVED, PERSON_CHANGED, SITE_CHANGED, NOTE_CREATED, `${PEOPLE_GROUP}.dlq`];
 /** Topics a witness watches, per replayed producer. */
@@ -171,7 +171,7 @@ const OUTBOX: Record<string, { eventId: string; topic: string; orderingKey: stri
   'programs-sites': [{ eventId: eventId(4), topic: SITE_CHANGED, orderingKey: 'site-4' }],
 };
 
-const INBOX_TOTALS = { identity: 10, people: 20, 'strategies-content': 30, timesheets: 40 };
+const INBOX_TOTALS = { identity: 10, people: 20, 'programs-sites': 40, 'strategies-content': 30 };
 
 const fullName = (name: string): string => `projects/${PROJECT}/subscriptions/${name}`;
 const endpointOf = (name: string): string =>
@@ -420,7 +420,7 @@ function redelivered(name: string, count: number) {
   return { name: `redelivered:${name}`, status: 'pass', detail: { endpoint: endpointOf(name), expected: count, delivered: count, statuses: { 204: count } } };
 }
 
-const HAPPY_REDELIVERIES = [redelivered(IDENTITY_PERSON, 1), redelivered(PEOPLE_GROUP, 2), redelivered(CONTENT_GROUP, 2), redelivered(TIMESHEETS_SITE, 1)];
+const HAPPY_REDELIVERIES = [redelivered(IDENTITY_PERSON, 1), redelivered(PEOPLE_GROUP, 2), redelivered(PROGRAMS_SITES_SITE, 1), redelivered(CONTENT_GROUP, 2)];
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -482,7 +482,7 @@ describe('pubsub-redelivery fault script', () => {
 
   it.each([
     { producers: [] },
-    { producers: ['finance'] },
+    { producers: ['strategies-content'] },
     { since: '2026-06-30' },
     { since: '2026-06-30T08:00:00' },
     { drainTimeoutMs: 0 },
@@ -724,13 +724,13 @@ describe('pubsub-redelivery fault script', () => {
   });
 
   it('fails drained on a drain timeout and skips the after-checks', async () => {
-    const undrained = { counts: counts('timesheets', 4), role: { producer: true, consumer: true } };
+    const undrained = { counts: counts('programs-sites', 4), role: { producer: true, consumer: true } };
     vi.mocked(awaitDrained).mockRejectedValue(new DrainTimeoutError(120_000, [undrained]));
     const { env } = envWith();
     const output = await script.run(env, params());
 
     expect(output.assertions.slice(-3)).toStrictEqual([
-      { name: 'drained', status: 'fail', detail: [counts('timesheets', 4)] },
+      { name: 'drained', status: 'fail', detail: [counts('programs-sites', 4)] },
       { name: 'aggregates-unchanged', status: 'skipped', reason: 'drain did not complete' },
       { name: 'projections-unchanged', status: 'skipped', reason: 'drain did not complete' },
     ]);
@@ -786,11 +786,11 @@ describe('pubsub-redelivery fault script', () => {
   });
 
   it('fails projections-unchanged for owners with pending receipts', async () => {
-    vi.mocked(awaitDrained).mockResolvedValue(drained([counts('identity'), counts('timesheets', 2)]));
+    vi.mocked(awaitDrained).mockResolvedValue(drained([counts('identity'), counts('programs-sites', 2)]));
     const { env } = envWith();
     const output = await script.run(env, params());
 
-    expect(output.assertions.at(-1)).toStrictEqual({ name: 'projections-unchanged', status: 'fail', detail: [counts('timesheets', 2)] });
+    expect(output.assertions.at(-1)).toStrictEqual({ name: 'projections-unchanged', status: 'fail', detail: [counts('programs-sites', 2)] });
   });
 
   it('skips projections-unchanged when the drain checked no owner', async () => {
@@ -873,7 +873,7 @@ describe('pubsub-redelivery fault script', () => {
       {
         kind: 'a network error',
         respond: async (): Promise<Response> => {
-          throw new TypeError(`fetch failed: ${endpointOf(TIMESHEETS_SITE)}?key=${PUSH_KEY}`);
+          throw new TypeError(`fetch failed: ${endpointOf(PROGRAMS_SITES_SITE)}?key=${PUSH_KEY}`);
         },
         label: 'network',
       },
@@ -886,7 +886,7 @@ describe('pubsub-redelivery fault script', () => {
       },
     ])('fails redelivered:<subscription> once the budget ends with every push meeting $kind, releasing each copy', async ({ respond, label }) => {
       answer = async (call) => {
-        if (!call.url.startsWith(endpointOf(TIMESHEETS_SITE))) return new Response(null, { status: 204 });
+        if (!call.url.startsWith(endpointOf(PROGRAMS_SITES_SITE))) return new Response(null, { status: 204 });
         // Answered after the other subscriptions completed, which share the stepping clock.
         await new Promise((resolve) => setTimeout(resolve, 5));
         return respond();
@@ -897,12 +897,11 @@ describe('pubsub-redelivery fault script', () => {
       expect(output.assertions.filter((assertion) => assertion.name.startsWith('redelivered:'))).toStrictEqual([
         redelivered(IDENTITY_PERSON, 1),
         redelivered(PEOPLE_GROUP, 2),
-        redelivered(CONTENT_GROUP, 2),
         {
-          name: `redelivered:${TIMESHEETS_SITE}`,
+          name: `redelivered:${PROGRAMS_SITES_SITE}`,
           status: 'fail',
           detail: {
-            endpoint: endpointOf(TIMESHEETS_SITE),
+            endpoint: endpointOf(PROGRAMS_SITES_SITE),
             expected: 1,
             delivered: 0,
             statuses: { [label]: 5 },
@@ -911,12 +910,13 @@ describe('pubsub-redelivery fault script', () => {
           },
           reason: BUDGET_REASON,
         },
+        redelivered(CONTENT_GROUP, 2),
       ]);
       expect(output.assertions.slice(-4)).toStrictEqual(
         AFTER_CHECKS.map((name) => ({ name, status: 'skipped', reason: 'replayed copies not confirmed processed' })),
       );
-      expect(broker.sub(TIMESHEETS_SITE).released).toStrictEqual(Array.from({ length: 5 }, () => eventId(4)));
-      expect(broker.sub(TIMESHEETS_SITE).acked).toStrictEqual([]);
+      expect(broker.sub(PROGRAMS_SITES_SITE).released).toStrictEqual(Array.from({ length: 5 }, () => eventId(4)));
+      expect(broker.sub(PROGRAMS_SITES_SITE).acked).toStrictEqual([]);
       expect(sleep.mock.calls).toStrictEqual(Array.from({ length: 5 }, () => [1000]));
       expect(awaitDrained).not.toHaveBeenCalled();
       expect(readTargetUnitRows).toHaveBeenCalledTimes(KEYS_PER_CAPTURE);
@@ -1258,7 +1258,7 @@ describe('pubsub-redelivery fault script', () => {
       ['an Error', (endpoint: string) => new Error(`3 INVALID_ARGUMENT: Invalid push endpoint given (endpoint=${endpoint})`)],
       ['a string', (endpoint: string) => `rejected key=${PUSH_KEY} for ${endpoint}`],
     ])('raises PushRestoreError without the push key when a restore rejects with %s, and resume reports it', async (_label, rejection) => {
-      const entry = broker.sub(TIMESHEETS_SITE);
+      const entry = broker.sub(PROGRAMS_SITES_SITE);
       const apply = entry.subscription.modifyPushConfig.getMockImplementation();
       entry.subscription.modifyPushConfig.mockImplementation(async (config: SavedPushConfig) => {
         if (isPushConfig(config)) throw rejection(config.pushEndpoint);
@@ -1268,23 +1268,23 @@ describe('pubsub-redelivery fault script', () => {
 
       const error = await script.run(env, params()).catch((caught: unknown) => caught);
       expect(error).toBeInstanceOf(PushRestoreError);
-      expect((error as PushRestoreError).subscriptions).toStrictEqual([TIMESHEETS_SITE]);
-      expect((error as Error).message).toContain(TIMESHEETS_SITE);
+      expect((error as PushRestoreError).subscriptions).toStrictEqual([PROGRAMS_SITES_SITE]);
+      expect((error as Error).message).toContain(PROGRAMS_SITES_SITE);
       expect((error as Error).message).not.toContain(PUSH_KEY);
       expect(broker.sub(PEOPLE_GROUP).push).toStrictEqual(broker.sub(PEOPLE_GROUP).saved);
       expect((await script.resume(env, params())).assertions[0]).toMatchObject({
         name: 'resume-push-restored',
         status: 'fail',
-        detail: { inPullMode: [TIMESHEETS_SITE] },
+        detail: { inPullMode: [PROGRAMS_SITES_SITE] },
       });
     });
 
     it('raises both errors together when delivery throws and a restore fails', async () => {
       const deliveryFailure = new Error('14 UNAVAILABLE: pull failed');
       failDeliveryLeases(deliveryFailure);
-      vi.mocked(broker.sub(TIMESHEETS_SITE).subscription.modifyPushConfig).mockImplementation(async (config: SavedPushConfig) => {
+      vi.mocked(broker.sub(PROGRAMS_SITES_SITE).subscription.modifyPushConfig).mockImplementation(async (config: SavedPushConfig) => {
         if (isPushConfig(config)) throw new Error(`endpoint=${config.pushEndpoint}`);
-        broker.sub(TIMESHEETS_SITE).push = null;
+        broker.sub(PROGRAMS_SITES_SITE).push = null;
         return [{}];
       });
       const { env } = envWith();
@@ -1293,7 +1293,7 @@ describe('pubsub-redelivery fault script', () => {
       expect(error).toBeInstanceOf(AggregateError);
       expect((error as AggregateError).errors[0]).toBe(deliveryFailure);
       expect((error as AggregateError).errors[1]).toBeInstanceOf(PushRestoreError);
-      expect((error as Error).message).toContain(TIMESHEETS_SITE);
+      expect((error as Error).message).toContain(PROGRAMS_SITES_SITE);
       expect((error as Error).message).not.toContain(PUSH_KEY);
     });
 
@@ -1303,12 +1303,12 @@ describe('pubsub-redelivery fault script', () => {
         setup: () => {
           const respond = answer;
           answer = async (call) => {
-            if (call.url.startsWith(endpointOf(TIMESHEETS_SITE))) inbox.timesheets = (inbox.timesheets ?? 0) + 1;
+            if (call.url.startsWith(endpointOf(PROGRAMS_SITES_SITE))) inbox['programs-sites'] = (inbox['programs-sites'] ?? 0) + 1;
             return respond(call);
           };
         },
         exclude: [] as string[],
-        detail: { differing: [{ owner: 'timesheets', before: 40, after: 41 }], unchecked: [] },
+        detail: { differing: [{ owner: 'programs-sites', before: 40, after: 41 }], unchecked: [] },
       },
       {
         title: 'a consumer without an inbox',
@@ -1321,8 +1321,8 @@ describe('pubsub-redelivery fault script', () => {
       {
         title: 'a consumer that is no drain participant',
         setup: () => undefined,
-        exclude: ['timesheets'],
-        detail: { differing: [], unchecked: ['timesheets'] },
+        exclude: ['programs-sites'],
+        detail: { differing: [], unchecked: ['programs-sites'] },
       },
     ])('fails inbox-unchanged on $title and still compares the aggregates', async ({ setup, exclude, detail }) => {
       setup();

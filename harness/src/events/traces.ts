@@ -1,4 +1,4 @@
-// Finds the people-archive seam trace and classifies CLIENT spans in the collector's OTLP-JSON export; validates captured log lines.
+// Finds the stub note seam trace and classifies CLIENT spans in the collector's OTLP-JSON export; validates captured log lines.
 import { randomBytes } from 'node:crypto';
 import { closeSync, openSync, readSync, statSync } from 'node:fs';
 import path from 'node:path';
@@ -121,14 +121,14 @@ export function mintTraceparent(): MintedTraceparent {
   return { traceparent: `00-${traceId}-${nonZeroHex(8)}-01`, traceId };
 }
 
-/** Push subscription through which timesheets consumes person archives. */
-export const SEAM_SUBSCRIPTION: string = subscriptionName('timesheets', 'people.person.archived.v1');
+/** Push subscription through which the stub consumes its own note events. */
+export const SEAM_SUBSCRIPTION: string = subscriptionName('stub', 'stub.note.created.v1');
 
-/** Gateway request path of the people archive route, the default selector of candidate traces. */
-export const DEFAULT_ARCHIVE_PATH = /\/legacy-fixtures\/cfml\/api\.cfm\/people\/persons\/[^/]+\/archive/;
+/** Gateway request path of the stub note create, the default selector of candidate traces. */
+export const DEFAULT_TRACE_PATH = /^\/opt2\/stub\/notes(?:\?|$)/;
 
 /** Identifier of a required seam span. */
-export type SeamSpanId = 'gateway-server' | 'people-server' | 'outbox-publish' | 'timesheets-consume';
+export type SeamSpanId = 'gateway-server' | 'stub-server' | 'outbox-publish' | 'stub-consume';
 
 /** A span the seam trace must hold: its report label, emitting service and continuity selector. */
 export interface SeamRequiredSpan {
@@ -145,22 +145,22 @@ const CONSUME_SPAN = `events.consume ${SEAM_SUBSCRIPTION}`;
 export const SEAM_REQUIRED_SPANS: readonly SeamRequiredSpan[] = Object.freeze([
   { id: 'gateway-server', name: 'gateway server', service: 'gateway', selector: GATEWAY_SERVER },
   {
-    id: 'people-server',
-    name: 'people server (archive)',
-    service: 'people',
-    selector: { service: 'people', kind: SpanKind.SERVER },
+    id: 'stub-server',
+    name: 'stub server (note create)',
+    service: 'stub',
+    selector: { service: 'stub', kind: SpanKind.SERVER },
   },
   {
     id: 'outbox-publish',
     name: 'outbox.publish',
-    service: 'people',
-    selector: { name: 'outbox.publish', service: 'people', kind: SpanKind.PRODUCER },
+    service: 'stub',
+    selector: { name: 'outbox.publish', service: 'stub', kind: SpanKind.PRODUCER },
   },
   {
-    id: 'timesheets-consume',
+    id: 'stub-consume',
     name: CONSUME_SPAN,
-    service: 'timesheets',
-    selector: { name: CONSUME_SPAN, service: 'timesheets', kind: SpanKind.CONSUMER },
+    service: 'stub',
+    selector: { name: CONSUME_SPAN, service: 'stub', kind: SpanKind.CONSUMER },
   },
 ]);
 
@@ -189,10 +189,10 @@ export interface SeamTraceResult {
   problems: string[];
 }
 
-/** Candidate selection: one trace by id, else every trace whose gateway server span path matches `archivePath`. */
+/** Candidate selection: one trace by id, else every trace whose gateway server span path matches `requestPath`. */
 export interface FindSeamTraceOptions {
   traceId?: string;
-  archivePath?: RegExp;
+  requestPath?: RegExp;
 }
 
 // spansFromOtlpJsonLines keeps neither span attributes nor start times, so those are read here directly.
@@ -273,9 +273,9 @@ function parseLine(line: string): ParsedLine {
   return { spans, details: lineDetails(JSON.parse(line) as OtlpRequest | null) };
 }
 
-function servesArchive(span: ContinuitySpan, details: ReadonlyMap<string, SpanDetail>, archivePath: RegExp): boolean {
+function servesRequest(span: ContinuitySpan, details: ReadonlyMap<string, SpanDetail>, requestPath: RegExp): boolean {
   const paths = details.get(spanKey(span.traceId, span.spanId))?.paths ?? [];
-  return paths.some((p) => p.search(archivePath) >= 0) && firstMatch([span], GATEWAY_SERVER) !== undefined;
+  return paths.some((p) => p.search(requestPath) >= 0) && firstMatch([span], GATEWAY_SERVER) !== undefined;
 }
 
 /** First span matching `selector`, by the platform's selector rules. */
@@ -351,13 +351,13 @@ function noteTrace(sample: TraceSample, span: ContinuitySpan): void {
   }
 }
 
-/** Archive candidates mapped to the line number of their last span, and the number of lines read. */
-interface ArchiveScan {
+/** Request candidates mapped to the line number of their last span, and the number of lines read. */
+interface CandidateScan {
   lastLines: Map<string, number>;
   lineCount: number;
 }
 
-function scanArchiveCandidates(lines: Iterable<string>, archivePath: RegExp): ArchiveScan {
+function scanCandidates(lines: Iterable<string>, requestPath: RegExp): CandidateScan {
   const lastLines = new Map<string, number>();
   let lineCount = 0;
   for (const line of lines) {
@@ -367,7 +367,7 @@ function scanArchiveCandidates(lines: Iterable<string>, archivePath: RegExp): Ar
       continue;
     }
     for (const span of parsed.spans) {
-      if (lastLines.has(span.traceId) || servesArchive(span, parsed.details, archivePath)) {
+      if (lastLines.has(span.traceId) || servesRequest(span, parsed.details, requestPath)) {
         lastLines.set(span.traceId, lineCount);
       }
     }
@@ -384,12 +384,12 @@ interface OpenTrace {
 const ONE_SHOT_INPUT =
   'findSeamTrace without opts.traceId reads its lines twice: pass an array or the result of readTraceLines, or set opts.traceId';
 
-/** With `opts.traceId`, one pass keeping that trace; otherwise two passes over a re-iterable input keeping only open archive candidates. */
+/** With `opts.traceId`, one pass keeping that trace; otherwise two passes over a re-iterable input keeping only open request candidates. */
 export function findSeamTrace(lines: Iterable<string>, opts: FindSeamTraceOptions = {}): SeamTraceResult {
   if (opts.traceId === undefined && (lines[Symbol.iterator]() as unknown) === lines) {
     throw new TypeError(ONE_SHOT_INPUT);
   }
-  const scan = opts.traceId === undefined ? scanArchiveCandidates(lines, opts.archivePath ?? DEFAULT_ARCHIVE_PATH) : undefined;
+  const scan = opts.traceId === undefined ? scanCandidates(lines, opts.requestPath ?? DEFAULT_TRACE_PATH) : undefined;
   const lineLimit = scan?.lineCount ?? Number.POSITIVE_INFINITY;
   const keeps = (id: string): boolean => (scan === undefined ? id === opts.traceId : scan.lastLines.has(id));
   const open = new Map<string, OpenTrace>();

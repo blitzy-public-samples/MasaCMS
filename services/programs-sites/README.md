@@ -2,7 +2,7 @@
 
 Source SHA: 696383140578f8dea3ece26f80cd7bfb370ddf0f
 
-Programs-sites keeps the catalogue of Masa sites. A "program" is a Masa site, and each site is one tenant whose id is `tenantIdForSite(siteID)`: the UUIDv5 of the lower-cased site id under the namespace `6f0a2c1e-5b7d-4e8a-9c3f-0d1e2f3a4b5c` (`@opt2/platform/tenancy`). The fixture schemas `Program_1` and `Program_2` map to the sites `tenant-a` and `tenant-b` through `synthetic.program_site`. The service stores each site's settings, custom image sizes and shared pools, and serves the data behind the Sites and Edit Site admin screens, which `web/` renders. It announces every site and its pools to the other services through `programs-sites.site.changed.v1`, which fills each service's site registry. It also runs the scheduled site monitor, which publishes scheduled change sets, imports remote feeds and runs Masa's other monitor steps on whichever side owns each one.
+Programs-sites keeps the catalogue of Masa sites. A "program" is a Masa site, and each site is one tenant whose id is `tenantIdForSite(siteID)`: the UUIDv5 of the lower-cased site id under the namespace `6f0a2c1e-5b7d-4e8a-9c3f-0d1e2f3a4b5c` (`@opt2/platform/tenancy`). The service stores each site's settings, custom image sizes and shared pools, and serves the data behind the Sites and Edit Site admin screens, which `web/` renders. It announces every site and its pools to the other services through `programs-sites.site.changed.v1`, which fills each service's site registry. It also runs the scheduled site monitor, which publishes scheduled change sets, imports remote feeds and runs Masa's other monitor steps on whichever side owns each one.
 
 Contracts: [`contracts/openapi.yaml`](contracts/openapi.yaml), [`contracts/events/programs-sites.site.changed.v1.json`](contracts/events/programs-sites.site.changed.v1.json). Behaviour-to-code-to-test rows: [`TRACEABILITY.md`](TRACEABILITY.md).
 
@@ -74,14 +74,14 @@ Legacy tables, as split in [`opt2/table-ownership.json`](../../opt2/table-owners
 | `timagesizes` [core/mura/dbUpdates/5.7.cfm:94-102] | `image_size` | All | `sizeID` |
 | `tdirectories` [core/mura/dbUpdates/5.7.cfm:158-164] | `directory` | All | `dirID` |
 | `tsystemobjects` [core/setup/db/mssql.sql:436] | `system_object` | All | No key: multiset, stored with `legacy_row_hash` and `occurrence` |
-| `tclassextend` | `extend_subtype` | Subtypes whose `baseTable` programs-sites owns: `tsettings`, `synthetic.program_site`, `tdirectories`, `timagesizes`, `tsystemobjects` | `subTypeID` |
+| `tclassextend` | `extend_subtype` | Subtypes whose `baseTable` programs-sites owns: `tsettings`, `tdirectories`, `timagesizes`, `tsystemobjects` | `subTypeID` |
 | `tclassextendsets` | `extend_set` | Sets of those subtypes | `extendSetID` |
 | `tclassextendattributes` | `extend_attribute` | Attributes of those sets | `attributeID` |
 | `tclassextendrcsets` | `extend_rc_set` | Related-content sets of those subtypes | `relatedContentSetID` |
 | `tclassextenddata` | `extend_data` | Values of those attributes | `dataID` |
 | `ttrash` | `trash` | `extendObject` rows whose `baseTable` programs-sites owns | `objectID` |
 
-Also owned: `sitemonitor_state` (new), and the platform tables `tenant_registry`, `tenant_grant`, `changelog`, `unit_gate`, `open_operation`, `migration_batch`, `migration_watermark`, `outbox`, `inbox`, `consumer_aggregate_version`, `scheduled_task_queue` and `scheduled_task_queue_state`. `synthetic.program_site` is owned too but not migrated; the migration kit reads it to fold `Program_<id>` rows.
+Also owned: `sitemonitor_state` (new), and the platform tables `tenant_registry`, `tenant_grant`, `changelog`, `unit_gate`, `open_operation`, `migration_batch`, `migration_watermark`, `outbox`, `inbox`, `consumer_aggregate_version`, `scheduled_task_queue` and `scheduled_task_queue_state`.
 
 Every tenant-owned table has `tenant_id uuid NOT NULL` and row-level security enabled and forced, with the `tenant_isolation` policy on `app.tenant_id`. `tenant_registry`, `tenant_grant`, `unit_gate`, `open_operation` and `migration_watermark` hold tenant metadata only. No table declares a foreign key.
 

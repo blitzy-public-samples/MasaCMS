@@ -14,11 +14,9 @@ import {
   hasAnyRole,
   isServiceRole,
   moduleRole,
-  renderAuthDenial,
   rolesForService,
   serviceRole,
   transportForPath,
-  type DenialResponse,
   type Opt2RouteConfig,
   type Role,
   type RouteMatrixEntry,
@@ -50,16 +48,20 @@ import {
   TENANT_UMBRELLA,
   TEST_PUSH_KEY,
   authHeadersFor,
+  createCredentialCache,
   mintServiceToken,
   mintTasksInvokerToken,
   mintUserToken,
   pushTo,
   registryPayloads,
+  renderedDenial,
+  renderedDenialMatching,
+  roleSubjectNamed,
   testEnvelope,
   testVerifier,
+  withQuery,
   type InjectResponse,
   type PushTarget,
-  type RoleSubject,
 } from '@opt2/platform/testing';
 import {
   CONTENT_SUBSCRIPTIONS,
@@ -250,12 +252,6 @@ async function userCredential(claims: { sub: string; roles: readonly Role[]; sit
   return { headers: { authorization: `Bearer ${user}`, [INVOCATION_HEADER]: `Bearer ${gateway}` }, query: '' };
 }
 
-function roleSubject(name: string): RoleSubject {
-  const subject = ROLE_SET.find((candidate) => candidate.name === name);
-  if (subject === undefined) throw new TypeError(`ROLE_SET has no subject named ${name}`);
-  return subject;
-}
-
 function contentUser(name: TokenSubject): Subject {
   const claims = SUBJECT_CLAIMS[name];
   return {
@@ -266,19 +262,6 @@ function contentUser(name: TokenSubject): Subject {
     site: claims.site,
     signedIn: true,
     mint: () => headersOnly(contentHeaders(name, { site: SITE_A })),
-  };
-}
-
-function syntheticUser(role: string): Subject {
-  const subject = roleSubject(role);
-  return {
-    name: role,
-    presents: 'user',
-    userRoles: subject.roles,
-    workloadRoles: GATEWAY_ROLES,
-    site: SITE_A,
-    signedIn: true,
-    mint: () => headersOnly(authHeadersFor(subject, { audience: SERVICE, site: SITE_A })),
   };
 }
 
@@ -297,7 +280,7 @@ function workload(caller: string): Subject {
     workloadRoles: rolesForService(caller),
     site: undefined,
     signedIn: false,
-    mint: () => headersOnly(helperCaller === undefined ? authHeadersFor(roleSubject(serviceRole(caller)), { audience: SERVICE }) : serviceHeaders(helperCaller)),
+    mint: () => headersOnly(helperCaller === undefined ? authHeadersFor(roleSubjectNamed(serviceRole(caller)), { audience: SERVICE }) : serviceHeaders(helperCaller)),
   };
 }
 
@@ -363,7 +346,7 @@ const TASKS_INVOKER: Subject = {
   site: undefined,
   signedIn: false,
   mint: (transport, path) =>
-    headersOnly(transport === 'cloud-tasks' ? tasksHeaders(path) : authHeadersFor(roleSubject(TASKS_INVOKER_ROLE), { audience: SERVICE })),
+    headersOnly(transport === 'cloud-tasks' ? tasksHeaders(path) : authHeadersFor(roleSubjectNamed(TASKS_INVOKER_ROLE), { audience: SERVICE })),
 };
 
 const PUSH_INVOKER: Subject = {
@@ -375,19 +358,6 @@ const PUSH_INVOKER: Subject = {
   signedIn: false,
   mint: async () => ({ headers: {}, query: pushQuery() }),
 };
-
-const SYNTHETIC_SUBJECTS: readonly string[] = [
-  Roles.timesheetsEmployee,
-  Roles.timesheetsPrimaryApprover,
-  Roles.timesheetsSecondaryApprover,
-  Roles.financePreparer,
-  Roles.financeApprover,
-  Roles.esignatureSigner,
-  Roles.esignatureAuditor,
-  Roles.reportingExporter,
-  Roles.surveysManager,
-  Roles.communicationsSender,
-];
 
 const GATE_PROBES: ReadonlyArray<readonly [string, readonly Role[]]> = [
   ['m:014 only', [M.changesets]],
@@ -402,12 +372,16 @@ const GATE_PROBES: ReadonlyArray<readonly [string, readonly Role[]]> = [
   ['m:000+m:004', [M.siteManager, M.forms]],
 ];
 
+/** Callers of ROLE_SET's invocation-credential workloads; the managed invokers are the transport-specific subjects. */
+const WORKLOAD_CALLERS: readonly string[] = ROLE_SET.flatMap((subject) =>
+  subject.kind === 'service' && subject.caller !== undefined && subject.name !== TASKS_INVOKER_ROLE && subject.name !== PUBSUB_INVOKER_ROLE ? [subject.caller] : [],
+);
+
 const SUBJECTS: readonly Subject[] = [
   ANONYMOUS,
   ...CONTENT_SUBJECTS.filter((name): name is TokenSubject => name !== 'anonymous').map(contentUser),
   VISITOR,
-  ...SYNTHETIC_SUBJECTS.map(syntheticUser),
-  ...['migration', 'operator', 'programs-sites', 'people', 'identity'].map(workload),
+  ...WORKLOAD_CALLERS.map(workload),
   workloadForUser('people'),
   workloadForUser('identity'),
   TASKS_INVOKER,
@@ -421,19 +395,12 @@ function subjectNamed(name: string): Subject {
   return subject;
 }
 
-const credentialCache = new Map<string, { mintedAt: number; credential: Promise<Credential> }>();
-
-// User tokens live 300 s; re-minting after 120 s keeps a slow run from presenting an expired one.
-const CREDENTIAL_REUSE_MS = 120_000;
+const cachedCredential = createCredentialCache<Credential>();
 
 /** `subject`'s credential for a request to `path` on `entry`'s transport, reused while its tokens are fresh. */
 function credentialFor(subject: Subject, entry: Pick<RouteMatrixEntry, 'transport'>, path: string): Promise<Credential> {
   const key = subject.presents === 'tasks' ? `${subject.name} ${entry.transport} ${path}` : subject.name;
-  const hit = credentialCache.get(key);
-  if (hit !== undefined && Date.now() - hit.mintedAt < CREDENTIAL_REUSE_MS) return hit.credential;
-  const credential = subject.mint(entry.transport, path);
-  credentialCache.set(key, { mintedAt: Date.now(), credential });
-  return credential;
+  return cachedCredential(key, () => subject.mint(entry.transport, path));
 }
 
 /** Verdict inputs beside the verified roles. */
@@ -855,10 +822,6 @@ function fillPath(url: string, site: string): string {
     .join(':');
 }
 
-function withQuery(url: string, query: string): string {
-  return query === '' ? url : `${url}${url.includes('?') ? '&' : '?'}${query}`;
-}
-
 /** A fresh contract-valid tenant-a envelope of the topic `subscription` consumes. */
 function envelopeFor(subscription: string): ReturnType<typeof testEnvelope> {
   const tenantId = TENANT_A.tenantId;
@@ -1121,22 +1084,8 @@ async function sendCell(entry: RouteMatrixEntry, family: Family, subject: Subjec
   return send(probe, await credentialFor(subject, entry, probe.url.split('?')[0] ?? probe.url));
 }
 
-type DenialRequest = Parameters<typeof renderAuthDenial>[1];
-
-const DENIAL_KINDS: readonly AuthDenial[] = [
-  AuthDenial.unauthenticated('missing-credential'),
-  AuthDenial.invalidToken(),
-  AuthDenial.expiredToken(),
-  AuthDenial.forbidden(),
-];
-
 /** The platform's rendering of an auth denial that `result` answered exactly, if any. */
-function renderedDenialOf(result: ProbeResult): DenialResponse | undefined {
-  const request = { query: result.query } as unknown as DenialRequest;
-  return DENIAL_KINDS.filter((denial) => denial.statusCode === result.res.statusCode)
-    .map((denial) => renderAuthDenial(denial, request))
-    .find((rendered) => rendered.body === result.res.body);
-}
+const renderedDenialOf = (result: ProbeResult) => renderedDenialMatching(result.res.body, result.query, { status: result.res.statusCode });
 
 /** A handler's own 4xx/5xx answer to its probe that still shows admission: its routes, status and identifying predicate. */
 interface HandlerAnswer {
@@ -1428,20 +1377,23 @@ describe('strategies-content authorisation matrix', () => {
       expect(familiesOf({ method: 'GET', url: '/v1/raw/cnav/searchsitedata' }).map((family) => family.declared)).toEqual([PUBLIC_CHECKED]);
     });
 
-    it('probes the content subjects, the synthetic roles, the platform callers, both managed invokers and every gate probe', () => {
+    it('probes the content subjects, the platform callers, both managed invokers and every gate probe', () => {
       const names = SUBJECTS.map((subject) => subject.name);
       expect(new Set(names).size).toBe(names.length);
       const required = [
         ...CONTENT_SUBJECTS,
-        ...SYNTHETIC_SUBJECTS,
         serviceRole('migration'),
         serviceRole('operator'),
         serviceRole('programs-sites'),
         TASKS_INVOKER_ROLE,
         PUBSUB_INVOKER_ROLE,
+        ...ROLE_SET.map((subject) => subject.name),
         ...GATE_PROBES.map(([name]) => name),
       ];
       expect(required.filter((name) => !names.includes(name))).toEqual([]);
+      // Every ROLE_SET workload is probed with the roles the shared set gives it.
+      const workloads = ROLE_SET.filter((subject) => subject.kind === 'service');
+      expect(workloads.map((subject) => [subject.name, subjectNamed(subject.name).workloadRoles])).toEqual(workloads.map((subject) => [subject.name, subject.roles]));
       expect(subjectNamed('other-tenant').site).toBe(SITE_B);
       expect(subjectNamed('editor').userRoles).toContain(M.siteManager);
     });
@@ -1504,9 +1456,7 @@ const SERVICE_TRANSPORT: Pick<RouteMatrixEntry, 'transport'> = Object.freeze({ t
 const credentialOf = (name: string): Promise<Credential> => credentialFor(subjectNamed(name), SERVICE_TRANSPORT, '');
 
 /** The body `renderAuthDenial` gives `denial` for a request with `query`. */
-function denialBody(denial: AuthDenial, query: Record<string, string> = {}): string {
-  return renderAuthDenial(denial, { query } as unknown as DenialRequest).body;
-}
+const denialBody = (denial: AuthDenial, query: Record<string, string> = {}): string => renderedDenial(denial, query).body;
 
 function entryNamed(method: HttpMethod, url: string): RouteMatrixEntry {
   const entry = MATRIX.find((candidate) => candidate.method === method && candidate.url === url);

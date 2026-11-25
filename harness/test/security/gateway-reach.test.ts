@@ -56,10 +56,9 @@ const GATEWAY_MATRIX_FILE = fileURLToPath(
 );
 const ID = '[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16}';
 const FIXTURE = '/legacy-fixtures/cfml/api.cfm';
-const RECORD = `${FIXTURE}/finance/records/:id`;
-const FILE_ROUTE = '/opt2/files/finance-attachments/:tenantId/:objectName';
-const EXPORT_FILE_ROUTE = '/opt2/files/reporting-exports/:tenantId/:objectName';
-const FINANCE_ACTIONS = ['approve', 'edit', 'reject', 'resubmit', 'submit'];
+const PERSON = `${FIXTURE}/people/persons/:userId`;
+const FILE_ROUTE = '/opt2/files/content-files/:tenantId/:objectName';
+const PERSON_ACTIONS = ['archive'];
 const RELAY_URL = '/internal/v1/relay/:service/*';
 const RELAY_TARGET = 'identity';
 
@@ -74,24 +73,21 @@ function matrixOf(pkg: string, routes: RouteMatrixEntry[]): LoadedMatrix {
   return { package: pkg, file: `${pkg}.json`, matrix: { routes } };
 }
 
-/** Anchored pattern of a template's filled path: each named parameter as a CF UUID. */
+/** Anchored pattern of a template's filled path: `:siteid` as tenant-a, each other named parameter as a CF UUID. */
 function filledPattern(url: string, suffix = ''): RegExp {
-  return new RegExp(`^${url.replaceAll('.', '\\.').replace(/:\w+/g, ID)}${suffix}$`);
+  const filled = url.replaceAll('.', '\\.').replaceAll(':siteid', TENANT_A.siteId).replace(/:\w+/g, ID);
+  return new RegExp(`^${filled}${suffix}$`);
 }
 
-const FINANCE = matrixOf('finance', [
+const CONTENT = matrixOf('strategies-content', [
   route('GET', '/healthz', { public: true }),
   route('GET', '/internal/v1/migration/export'),
-  route('GET', `${FIXTURE}/finance/records`),
-  route('POST', `${FIXTURE}/finance/records`),
-  route('GET', RECORD),
-  route('POST', `${RECORD}/:action`),
-  route('GET', `${RECORD}/versions`),
-  route('GET', `${RECORD}/attachments`),
-  route('POST', `${RECORD}/attachments`),
-  route('GET', `${RECORD}/attachments/:aid`),
+  route('GET', '/opt2/content/files'),
+  route('POST', '/core/modules/v1/rater/ajax/saveRate.cfm'),
+  route('DELETE', '/_api/rest/v1/:siteid/content/:id'),
+  route('DELETE', '/_api/json/v1/:siteid/content/:id'),
+  route('POST', '/_api/json/v1/:siteid/category'),
   route('GET', FILE_ROUTE, { public: true }),
-  route('GET', '/v1/finance/records'),
 ]);
 
 const STUB = matrixOf('stub', [
@@ -104,12 +100,10 @@ const STUB = matrixOf('stub', [
   route('POST', '/internal/v1/events/stub.stub.note.created.v1'),
 ]);
 
-const REPORTING = matrixOf('reporting', [route('GET', EXPORT_FILE_ROUTE, { public: true })]);
-
 const PEOPLE = matrixOf('people', [
-  route('GET', `${FIXTURE}/people/persons/:userId/archive`),
-  route('POST', `${FIXTURE}/people/persons/:userId/archive`),
-  route('GET', `${FIXTURE}/finance/records`),
+  route('GET', `${PERSON}/archive`),
+  route('POST', `${PERSON}/:action`),
+  route('GET', '/opt2/stub/notes'),
   route('GET', '/gateway/legacy-bridge/session'),
   route('GET', '/opt2/svc/people/v1/users'),
 ]);
@@ -139,7 +133,7 @@ beforeAll(async () => {
   const { variants } = await loadInventoryVariants();
   const gatewayRoutes = await readJson(GATEWAY_MATRIX_FILE, routeMatrixFileSchema);
   gateway = { package: 'gateway', file: GATEWAY_MATRIX_FILE, matrix: gatewayRoutes };
-  matrices = [gateway, FINANCE, STUB, PEOPLE];
+  matrices = [gateway, CONTENT, STUB, PEOPLE];
   reach = gatewayReach({ matrices, version, variants, gatewayParams: { service: RELAY_TARGET } });
 });
 
@@ -158,8 +152,8 @@ describe('loadCutoverVersion', () => {
     expect(cutoverVersionFile('v0002')).toMatch(/gateway\/cutover\/versions\/v0002\.json$/);
     expect(version.tableVersion).toBe('v0002');
     expect(version.entries).toContainEqual({
-      route: 'fixture:finance/records/{id}/approve@post',
-      owningService: 'finance',
+      route: 'fixture:people/persons/{id}/archive@post',
+      owningService: 'people',
       state: 'target',
       kind: 'write',
     });
@@ -218,13 +212,13 @@ describe('gatewayReach', () => {
   });
 
   it.each<[string, string, string, NotProbedReason, RegExp]>([
-    ['finance', 'GET', '/healthz', 'served-by-gateway', /gateway route GET \/healthz answers GET \/healthz/],
+    ['strategies-content', 'GET', '/healthz', 'served-by-gateway', /gateway route GET \/healthz answers GET \/healthz/],
     ['stub', 'GET', '/healthz', 'served-by-gateway', /gateway route GET \/healthz/],
     ['people', 'GET', '/opt2/svc/people/v1/users', 'served-by-gateway', /relay alias \/opt2\/svc\//],
-    ['finance', 'GET', '/internal/v1/migration/export', 'no-target-entry', /page:render matches page:render, legacy/],
-    ['finance', 'GET', '/v1/finance/records', 'no-target-entry', /opt2:\/v1\/finance\/records matches no entry, so legacy serves it/],
-    ['people', 'GET', `${FIXTURE}/people/persons/:userId/archive`, 'no-target-entry', /archive@get, legacy/],
-    ['people', 'GET', `${FIXTURE}/finance/records`, 'no-target-entry', /owned by finance rather than people/],
+    ['strategies-content', 'GET', '/internal/v1/migration/export', 'no-target-entry', /page:render matches page:render, legacy/],
+    ['strategies-content', 'GET', '/opt2/content/files', 'no-target-entry', /matches opt2:\/opt2\/\*\*, which the gateway answers with 404/],
+    ['people', 'GET', `${PERSON}/archive`, 'no-target-entry', /archive@get, legacy/],
+    ['people', 'GET', '/opt2/stub/notes', 'no-target-entry', /owned by stub rather than people/],
     ['people', 'GET', '/gateway/legacy-bridge/session', 'no-target-entry', /which the gateway answers with 404/],
     ['stub', 'POST', '/internal/v1/events/stub.stub.note.created.v1', 'no-target-entry', /matches no entry/],
     ['stub', 'GET', '/opt2/stub/*', 'no-target-entry', /is served by GET \/opt2\/stub\/opt2-authz-probe\/:id/],
@@ -234,23 +228,23 @@ describe('gatewayReach', () => {
     expect('detail' in found ? found.detail : '').toMatch(detail);
   });
 
-  it('expands the finance :action parameter to exactly the five literal transition entries', () => {
-    const { paths, reach: kind } = probedOf('finance', 'POST', `${RECORD}/:action`);
+  it('expands the people :action parameter to exactly its literal archive entry', () => {
+    const { paths, reach: kind } = probedOf('people', 'POST', `${PERSON}/:action`);
     expect(kind).toBe('cut-over');
     expect(paths.map((entry) => entry.entry?.route)).toEqual(
-      FINANCE_ACTIONS.map((action) => `fixture:finance/records/{id}/${action}@post`),
+      PERSON_ACTIONS.map((action) => `fixture:people/persons/{id}/${action}@post`),
     );
     paths.forEach((entry, index) => {
-      expect(entry.path).toMatch(filledPattern(RECORD, `/${FINANCE_ACTIONS[index]}`));
+      expect(entry.path).toMatch(filledPattern(PERSON, `/${PERSON_ACTIONS[index]}`));
       expect(entry.entry?.kind).toBe('write');
     });
   });
 
   it.each<[string, string, string, string]>([
-    ['finance', 'POST', `${RECORD}/attachments`, 'fixture:finance/records/{id}/attachments@post'],
-    ['finance', 'GET', `${RECORD}/attachments/:aid`, 'fixture:finance/records/{id}/attachments/{id}@get'],
-    ['finance', 'GET', RECORD, 'fixture:finance/records/{id}@get'],
-    ['people', 'POST', `${FIXTURE}/people/persons/:userId/archive`, 'fixture:people/persons/{id}/archive@post'],
+    ['strategies-content', 'POST', '/core/modules/v1/rater/ajax/saveRate.cfm', 'cfm:/core/modules/v1/rater/ajax/saverate.cfm'],
+    ['strategies-content', 'DELETE', '/_api/rest/v1/:siteid/content/:id', 'rest:content.delete'],
+    ['strategies-content', 'DELETE', '/_api/json/v1/:siteid/content/:id', 'api:content.delete'],
+    ['strategies-content', 'POST', '/_api/json/v1/:siteid/category', 'api:category.save'],
     ['stub', 'GET', '/opt2/stub/notes', 'opt2:/opt2/stub/**'],
     ['stub', 'POST', '/opt2/stub/notes', 'opt2:/opt2/stub/**'],
     ['stub', 'GET', '/opt2/stub/notes/:noteId', 'opt2:/opt2/stub/**'],
@@ -262,13 +256,13 @@ describe('gatewayReach', () => {
     expect(paths[0]?.path).toMatch(filledPattern(url));
   });
 
-  it('probes the finance attachment file route on one unsigned path marked signed', () => {
-    const { paths } = probedOf('finance', 'GET', FILE_ROUTE);
+  it('probes the content file route on one unsigned path marked signed', () => {
+    const { paths } = probedOf('strategies-content', 'GET', FILE_ROUTE);
     expect(paths).toHaveLength(1);
-    expect(paths[0]).toMatchObject({ entry: { route: 'opt2:/opt2/files/finance-attachments/**', kind: 'read' }, signed: true });
+    expect(paths[0]).toMatchObject({ entry: { route: 'opt2:/opt2/files/content-files/**', kind: 'read' }, signed: true });
     expect(paths[0]?.path).toMatch(filledPattern(FILE_ROUTE));
     expect(reach.probed.flatMap((entry) => entry.paths).filter((path) => path.signed === true)).toHaveLength(1);
-    expect(probedSignedBuckets(reach)).toEqual(['finance-attachments']);
+    expect(probedSignedBuckets(reach)).toEqual(['content-files']);
   });
 
   describe('with supplied signed-file values', () => {
@@ -288,8 +282,7 @@ describe('gatewayReach', () => {
     }
 
     it.each<[BucketName, LoadedMatrix, string]>([
-      ['finance-attachments', FINANCE, FILE_ROUTE],
-      ['reporting-exports', REPORTING, EXPORT_FILE_ROUTE],
+      ['content-files', CONTENT, FILE_ROUTE],
     ])('probes the %s file route at the supplied tenant and object, unsigned, as a path its signer signs for that key', async (bucket, matrix, url) => {
       const { reach: filled, signed } = await signedReach(matrix, { [bucket]: object });
       const objectPath = `/opt2/files/${bucket}/${object.tenantId}/${object.objectName}`;
@@ -307,16 +300,10 @@ describe('gatewayReach', () => {
       expect(probedSignedBuckets(filled)).toEqual([bucket]);
     });
 
-    it("fills a signed-file route with CF UUIDs when only another bucket's values are supplied", async () => {
-      const { signed } = await signedReach(FINANCE, { 'reporting-exports': object });
-      expect(signed).toHaveLength(1);
-      expect(signed[0]).toMatch(filledPattern(FILE_ROUTE));
-    });
-
     it('leaves a same-named parameter of a route outside /opt2/files/ to a CF UUID', async () => {
       const tenantRoute = '/opt2/stub/tenants/:tenantId';
       const { reach: filled, signed } = await signedReach(matrixOf('stub', [route('GET', tenantRoute)]), {
-        'finance-attachments': object,
+        'content-files': object,
       });
       expect(signed).toEqual([]);
       expect(filled.probed.find((entry) => entry.url === tenantRoute)?.paths[0]?.path).toMatch(filledPattern(tenantRoute));
@@ -332,9 +319,8 @@ describe('gatewayReach', () => {
 
 describe('signedFileBucketOf', () => {
   it.each<[string, BucketName | undefined]>([
-    [FILE_ROUTE, 'finance-attachments'],
-    [EXPORT_FILE_ROUTE, 'reporting-exports'],
-    ['/opt2/files/content-files/:tenantId/:objectName', 'content-files'],
+    [FILE_ROUTE, 'content-files'],
+    ['/opt2/files/Content-Files/:tenantId/:objectName', undefined],
     ['/opt2/files/no-such-bucket/:tenantId/:objectName', undefined],
     ['/opt2/files/:bucket/:key', undefined],
     ['/opt2/stub/notes/:noteId', undefined],
@@ -362,16 +348,16 @@ describe('localFileSigner', () => {
   const expires = 2_000_000_000;
 
   it('signs a bucket path so that the local verifier accepts it for that bucket and key', () => {
-    const url = localFileSigner(key, expires)('/opt2/files/finance-attachments/tenant/object');
+    const url = localFileSigner(key, expires)('/opt2/files/content-files/tenant/object');
     expect(verifySignedUrl(url, (expires - 1) * 1000, key)).toEqual({
       ok: true,
-      bucket: 'finance-attachments',
+      bucket: 'content-files',
       key: 'tenant/object',
       expires,
     });
   });
 
-  it.each(['/opt2/stub/notes', '/opt2/files/no-such-bucket/object', '/opt2/files/finance-attachments'])(
+  it.each(['/opt2/stub/notes', '/opt2/files/no-such-bucket/object', '/opt2/files/content-files'])(
     'refuses %s',
     (path) => {
       expect(() => localFileSigner(key, expires)(path)).toThrow(/not a local signed-file path/);
@@ -381,18 +367,18 @@ describe('localFileSigner', () => {
 
 describe('skipReason', () => {
   type Cell = Pick<Expectation, 'outcome' | 'method' | 'url'>;
-  const LAUNCH = 'fixture:surveys/surveys/{id}/launch@get';
+  const ARCHIVE = 'fixture:people/persons/{id}/archive@post';
   const cell = (outcome: 'allow' | 'deny', method: string, url = '/opt2/x'): Cell => ({ outcome, method, url });
   const at = (entry?: GatewayPath['entry']): GatewayPath => (entry === undefined ? { path: '/x' } : { path: '/x', entry });
 
   it.each<[string, Cell, GatewayPath, string | undefined]>([
-    ['an expected deny', cell('deny', 'POST'), at({ route: LAUNCH, kind: 'write' }), undefined],
+    ['an expected deny', cell('deny', 'POST'), at({ route: ARCHIVE, kind: 'write' }), undefined],
     ['a logout route', cell('allow', 'GET', '/admin/logout'), at(), 'session-ending'],
     ['a write method', cell('allow', 'POST'), at(), 'not-read-only'],
-    ['a GET on a method-keyed write entry', cell('allow', 'GET'), at({ route: LAUNCH, kind: 'write' }), 'not-read-only'],
+    ['a GET on a method-keyed write entry', cell('allow', 'GET'), at({ route: ARCHIVE, kind: 'write' }), 'not-read-only'],
     ['a GET on a job entry', cell('allow', 'GET'), at({ route: 'sitemonitor:run', kind: 'job' }), 'not-read-only'],
     ['a GET on a write glob entry', cell('allow', 'GET'), at({ route: 'opt2:/opt2/stub/**', kind: 'write' }), undefined],
-    ['a GET on a read entry', cell('allow', 'GET'), at({ route: 'fixture:finance/records@get', kind: 'read' }), undefined],
+    ['a GET on a read entry', cell('allow', 'GET'), at({ route: 'api:content.findone', kind: 'read' }), undefined],
     ["a GET on a gateway's own route", cell('allow', 'GET'), at(), undefined],
   ])('answers %s', (_name, expectation, path, reason) => {
     expect(skipReason(expectation, path)).toBe(reason);
@@ -507,15 +493,15 @@ describe('reachVerdicts', () => {
     detail: `HTTP ${observed}`,
   });
 
-  describe('finance POST records/:id/:action, every allow cell left unsent', () => {
+  describe('people POST persons/:userId/:action, every allow cell left unsent', () => {
     let action: ProbedRoute;
     let cells: Expectation[];
     let probes: ReachProbe[];
     let skipped: SkippedCell[];
 
     beforeAll(() => {
-      action = probedOf('finance', 'POST', `${RECORD}/:action`);
-      cells = expectationsFor(FINANCE, ROLE_SET).filter((cell) => cell.method === 'POST' && cell.url === action.url);
+      action = probedOf('people', 'POST', `${PERSON}/:action`);
+      cells = expectationsFor(PEOPLE, ROLE_SET).filter((cell) => cell.method === 'POST' && cell.url === action.url);
       probes = [];
       skipped = [];
       for (const cell of cells) {
@@ -532,12 +518,12 @@ describe('reachVerdicts', () => {
       }
     });
 
-    it('sends only the deny cells, on all five transition paths', () => {
+    it('sends only the deny cells, on its archive path', () => {
       const allows = cells.filter((cell) => cell.outcome === 'allow').length;
       const denies = cells.length - allows;
       expect(allows).toBeGreaterThan(0);
-      expect(skipped).toHaveLength(allows * FINANCE_ACTIONS.length);
-      expect(probes).toHaveLength(denies * FINANCE_ACTIONS.length);
+      expect(skipped).toHaveLength(allows * PERSON_ACTIONS.length);
+      expect(probes).toHaveLength(denies * PERSON_ACTIONS.length);
     });
 
     it('fails without an owner record and is not left unclaimed', () => {
@@ -548,9 +534,9 @@ describe('reachVerdicts', () => {
     });
 
     it.each<[string, string, number, ReachState]>([
-      ["is proven by the owner's own 403", 'finance', 403, 'proven-by-owner-denial'],
+      ["is proven by the owner's own 403", 'people', 403, 'proven-by-owner-denial'],
       ["fails on the gateway's 403 at the owner's template", 'gateway', 403, 'failed'],
-      ['fails on an owner record that did not refuse', 'finance', 200, 'failed'],
+      ['fails on an owner record that did not refuse', 'people', 200, 'failed'],
     ])('%s', (_name, source, statusCode, state) => {
       const member = probes.find((probe) => probe.subject === Roles.member) as ReachProbe;
       const line = logLine(source, { requestId: member.requestId, route: action.url, httpMethod: 'POST', statusCode });

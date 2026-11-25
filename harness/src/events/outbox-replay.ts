@@ -17,9 +17,7 @@ import { pollUntil, readOwnerExport, siteRegistry, type SeamDeps } from './seams
 // without a unit, which their owners' migration export rejects; those consumers are compared by inbox counts alone.
 /** Units each consumer writes from events and exports to `platform.migration`, by consumer. */
 export const CONSUMER_EFFECT_UNITS: Readonly<Record<string, readonly string[]>> = Object.freeze({
-  communications: Object.freeze(['communications.message', 'communications.scheduled_task']),
-  stub: Object.freeze(['stub.note_projection']),
-  timesheets: Object.freeze(['timesheets.blackout']),
+  stub: Object.freeze(['stub.note_projection', 'stub.note_activity']),
 });
 
 /** Bounds of {@link waitForQuiescence}: the whole wait, the wait between polls and the consecutive equal polls needed. */

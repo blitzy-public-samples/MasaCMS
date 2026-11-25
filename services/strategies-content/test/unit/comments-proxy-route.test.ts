@@ -1,5 +1,4 @@
 /** `commentsProxy.cfc` get, flag and getContentStats over a throwaway content schema: remote argument binding, bodies, tenancy, gates and onError's pages. */
-import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -17,6 +16,7 @@ import {
   TENANT_B,
   assertResponseMatchesOpenApi,
   createThrowawaySchema,
+  loadOpenApiDocument,
   mintServiceToken,
   mintUserToken,
   pgAvailable,
@@ -35,7 +35,7 @@ import { COMMENTS_PROXY_PATH, registerCommentsProxyRoutes } from '../../src/rout
 
 type Operation = Record<string, unknown>;
 
-const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as {
+const OPENAPI = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as {
   paths: Record<string, Record<string, Operation>>;
 };
 const SERVICE = 'strategies-content';

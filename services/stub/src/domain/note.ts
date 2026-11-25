@@ -5,9 +5,9 @@ import { cfUuid, isCfUuid } from '@opt2/platform/legacy-compat';
 import type { StubNoteCreatedV1Payload } from '../generated/events/stub.note.created.v1.js';
 
 // pg reads `timestamp(3) without time zone` as a Date in the process zone; writes pass `localTimestamp` text.
-type TimestampValue = Date | string;
+export type TimestampValue = Date | string;
 // pg reads `bigint` as decimal text.
-type BigintValue = number | string;
+export type BigintValue = number | string;
 
 /** A stub note; `noteId` is a CF UUID and `created` local `timestamp(3)` text, as the event payload carries them. */
 export interface Note {
@@ -29,12 +29,16 @@ export type NoteRow = {
   row_version: BigintValue;
 };
 
-/** Validates a note create request; parameter names match ignoring case and unknown parameters are dropped. */
+/**
+ * Validates a note create request; parameter names match ignoring case and unknown parameters are dropped. `pool` `public`
+ * asks for the note in the tenant of the site's registered public user pool.
+ */
 export const noteCreateSchema = z.preprocess(
   lowerCaseKeys,
   z.object({
     title: z.string().trim().min(1).max(255),
     body: z.string().max(10000).default(''),
+    pool: z.literal('public').optional(),
   }),
 );
 
@@ -91,16 +95,19 @@ const noteCursorSchema = z.strictObject({
   noteId: z.string().refine(isCfUuid),
 });
 
+/** A list page's `limit` parameter: decimal text from 1 to NOTE_PAGE_MAX, NOTE_PAGE_DEFAULT when absent. */
+export const pageLimitSchema = z
+  .string()
+  .regex(/^(0|[1-9][0-9]{0,14})$/)
+  .transform(Number)
+  .pipe(z.number().min(1).max(NOTE_PAGE_MAX))
+  .default(NOTE_PAGE_DEFAULT);
+
 /** Validates a note list query; `limit` defaults to NOTE_PAGE_DEFAULT, `after` decodes to its cursor, and parameter names match ignoring case. */
 export const noteListQuerySchema = z.preprocess(
   lowerCaseKeys,
   z.object({
-    limit: z
-      .string()
-      .regex(/^(0|[1-9][0-9]{0,14})$/)
-      .transform(Number)
-      .pipe(z.number().min(1).max(NOTE_PAGE_MAX))
-      .default(NOTE_PAGE_DEFAULT),
+    limit: pageLimitSchema,
     after: z
       .string()
       .transform((text, ctx) => {
@@ -185,18 +192,21 @@ export function projectionFromRow(row: NoteProjectionRow): NoteProjection {
   };
 }
 
-function timestampText(value: TimestampValue): string {
+/** `timestamp(3)` column value as local `timestamp(3)` text. */
+export function timestampText(value: TimestampValue): string {
   return value instanceof Date ? localTimestamp(value) : value;
 }
 
 // Only exact localTimestamp text of a real instant in years 0001-9999 passes; PostgreSQL has no year 0000, so a cursor's keyset cast to timestamp(3) cannot fail.
-function isLocalTimestampText(text: string): boolean {
+/** Whether `text` is exact local `timestamp(3)` text of a real instant. */
+export function isLocalTimestampText(text: string): boolean {
   const date = new Date(text.replace(' ', 'T'));
   return /^(?!0000)\d{4}-/.test(text) && !Number.isNaN(date.getTime()) && localTimestamp(date) === text;
 }
 
 // The NoteCreate contract matches parameter names ignoring case, as legacy request scopes do; legacyParamsOf keeps the caller's spelling.
-function lowerCaseKeys(value: unknown): unknown {
+/** `value` with its own keys lower-cased when it is a plain object; any other value unchanged. */
+export function lowerCaseKeys(value: unknown): unknown {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return value;
   return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key.toLowerCase(), entry]));
 }

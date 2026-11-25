@@ -2,10 +2,10 @@
 import { fixtureKeys, specForKey, type FixtureContext, type FixtureRow, type FixtureTables } from '../fixture-tables.js';
 
 /** Builds the people fixture tables; no archives are seeded, so every person stays open to archive. */
-export function buildPeopleFixtures(ctx: FixtureContext): FixtureTables {
+export function buildPeopleFixtures(_ctx: FixtureContext): FixtureTables {
   return Object.fromEntries(
-    fixtureKeys(ctx.config)
-      .filter((key) => specForKey(key).spec.module === 'people')
+    fixtureKeys()
+      .filter((key) => specForKey(key).module === 'people')
       .map((key): [string, FixtureRow[]] => [key, []]),
   );
 }

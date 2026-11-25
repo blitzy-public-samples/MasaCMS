@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { loadCatalogue, scenarioById, type SeedRef, type SessionSpec } from '../../src/golden/catalogue.js';
+import type { SeedRef, SessionSpec } from '../../src/golden/catalogue.js';
 import { GoldenConfigError, MissingSecretError } from '../../src/golden/errors.js';
 import {
   DEFAULT_SESSION,
@@ -30,7 +30,7 @@ import { inventoryRouteKeyForRequest } from '../../src/inventory/route-keys.js';
 import type { FetchLike } from '../../src/lib/http.js';
 import type { EnvLike } from '../../src/lib/paths.js';
 
-const SCENARIO = 'GS-ID-05';
+const SCENARIO = 'GS-ID-75';
 const LEGACY_PORT = '20080';
 const LEGACY_URL = `http://127.0.0.1:${LEGACY_PORT}`;
 const ADMIN_PASSWORD = 'FIXTURE-ADMIN-PW';
@@ -55,6 +55,15 @@ const BUSINESS_DATE = '2026-03-02';
 const NO_LOGIN: SessionSpec = { login: 'none', via: 'admin' };
 const GENERATED_NAME = 'new-user';
 const GENERATED_PW = 'FIXTURE-PW-NEW-USER';
+/** Public and Global Config application reloads, as a scenario's steps request them. */
+const RELOAD_SCENARIO: ScenarioInput = {
+  id: 'GS-PS-74',
+  sessions: { anon: { login: 'none', via: 'public' }, admin: { login: 'admin', via: 'admin' } },
+};
+const RELOAD_ROUTES = [
+  '/?${urlencode:${secret:appreload}}',
+  '/admin/?${urlencode:${secret:appreload}}&reload=${urlencode:${secret:appreload}}',
+];
 
 // Shape of `SeedCredentials` from legacy-fixtures/seed/src/credentials.ts.
 const CREDENTIALS = {
@@ -1101,25 +1110,22 @@ describe('secretValues', () => {
     ],
     ['default', {}, 'appreload', 'appreload', [], true],
   ])(
-    'resolves the GS-PS-04 routes with the %s reload key to URL-encoded reload:application requests',
+    'resolves the reload routes with the %s reload key to URL-encoded reload:application requests',
     async (_label, vars, key, encoded, listed, literalReloads) => {
-      const scenario = scenarioById(await loadCatalogue(), 'GS-PS-04');
       const secrets = loadSecretStore({ ...env, ...vars });
       const seed = loadSeedStore(env);
-      const ctx = createScenarioContext(scenario, { origin: 'legacy', env, secrets, seed, fetch: fakeFetch().fetch });
-      const requested = scenario.steps.map((step) => step.route);
-      const routes = resolvePlaceholders(requested, ctx);
+      const ctx = createScenarioContext(RELOAD_SCENARIO, { origin: 'legacy', env, secrets, seed, fetch: fakeFetch().fetch });
+      const routes = resolvePlaceholders(RELOAD_ROUTES, ctx);
 
       expect(routes).toEqual([`/?${encoded}`, `/admin/?${encoded}&reload=${encoded}`]);
       expect(secretValues(ctx)).toEqual(listed);
-      expect(scenario.covers).toEqual(['reload:application']);
       expect(routes.map(queryNames)).toEqual([[key], [key, 'reload']]);
       expect(new URL(routes[1] ?? '', LEGACY_URL).searchParams.get('reload')).toBe(key);
       expect(queryNames(`/?${key}`).includes(key)).toBe(key === encoded);
       for (const route of routes) expect(await routeKeyOf(route, key)).toBe('reload:application');
       expect((await routeKeyOf('/?appreload', key)) === 'reload:application').toBe(literalReloads);
       const err = thrown(() => resolvePlaceholders('/?${secret:appreload}&${public-reload.missing}', ctx));
-      expect(err).toMatchObject({ message: 'GS-PS-04: unresolved placeholder ${public-reload.missing}' });
+      expect(err).toMatchObject({ message: 'GS-PS-74: unresolved placeholder ${public-reload.missing}' });
     },
   );
 });

@@ -192,10 +192,10 @@ describe('RedactingSpanExporter', () => {
   it.each<{ name: string; path: string; expected?: string }>([
     { name: 'a double-encoded email', path: `/opt2/stub/x/${SECRET}%2540example.test`, expected: `/opt2/stub/x/${REDACTED}` },
     { name: 'an encoded secret pair', path: `/opt2/stub/y/session%3A${SECRET}`, expected: `/opt2/stub/y/session%3A${REDACTED}` },
-    { name: 'an e-signature path', path: '/opt2/e-signature/envelopes/A1B2C3D4-E5F6-A7B8-C9D0E1F2A3B4C5D6%3Asign' },
+    { name: 'a counter-signature path', path: '/opt2/counter-signature/envelopes/A1B2C3D4-E5F6-A7B8-C9D0E1F2A3B4C5D6%3Asign' },
     {
       name: 'an encoded object path',
-      path: '/opt2/files/esignature-documents%2Fedec963e-3516-5bb6-845d-d01a710e32a7%2Fesignature%3A1.pdf',
+      path: '/opt2/files/countersignature-documents%2Fedec963e-3516-5bb6-845d-d01a710e32a7%2Fcountersignature%3A1.pdf',
     },
     { name: 'a word containing sig', path: '/opt2/people/Designation%3DManager' },
     { name: 'malformed escapes', path: '/opt2/stub/y/password%3G1/x%2Gsig%3D1/bob%254example.test' },

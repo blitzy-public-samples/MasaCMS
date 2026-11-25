@@ -1,4 +1,3 @@
-import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
 import { parse } from 'yaml';
 import {
@@ -10,7 +9,7 @@ import {
   type ServiceRequest,
   type ServiceResponse,
 } from '@opt2/platform/service-kit';
-import { assertResponseMatchesOpenApi, findOperation } from '@opt2/platform/testing';
+import { assertResponseMatchesOpenApi, findOperation, loadOpenApiDocument } from '@opt2/platform/testing';
 import {
   createIdentityClient,
   type AccountCommitRequest,
@@ -23,7 +22,7 @@ import {
 } from '../../src/legacy/identity-client.js';
 import { LegacyStorageError } from '../../src/repo/repository.js';
 
-const IDENTITY_CONTRACT = parse(readFileSync(new URL('../../../identity/contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
+const IDENTITY_CONTRACT = loadOpenApiDocument(new URL('../../../identity/contracts/openapi.yaml', import.meta.url), parse) as object;
 
 const USER_ID = 'A1B2C3D4-E5F6-A7B8-C9D0E1F2A3B4C5D6';
 const OPERATION_ID = '0F1E2D3C-4B5A-6978-8796A5B4C3D2E1F0';

@@ -158,12 +158,6 @@ describe('file routes over local storage', () => {
     }).toEqual({ status: 200, length: String(BYTES.length), disposition, bytes: BYTES });
   });
 
-  it('answers a signed URL of another bucket with the legacy 404', async () => {
-    const url = await local.signedUrl('finance-attachments', `${FILE_POOL}/${FILE_ID}.pdf`);
-    const res = await app.inject({ method: 'GET', url });
-    expect(res.statusCode).toBe(404);
-  });
-
   it('answers a storage failure other than a missing object with the legacy 500', async () => {
     const failing: LocalStorageAdapter = { ...local, open: () => Promise.reject(new Error('disk unreadable')) };
     const built = await buildApp(failing);

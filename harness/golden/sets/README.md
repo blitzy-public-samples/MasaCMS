@@ -27,7 +27,7 @@ Outputs captured from legacy Masa that parity replay compares against. This READ
  steps: [{name, index, matrixKey?, routeKey, request{method, url, headers, body},
           response{status, headers, body | domModel | export, rawSha256}, normalised,
           expected?, decisionListRef?, exceptionId?, gap?, candidateIndex?}],
- sideEffects{mail[], rows{}, tasks[], files[], transitions[]?}, generatedBy, generatedAt}
+ sideEffects{mail[], rows{}, files[], transitions[]?}, generatedBy, generatedAt}
 ```
 
 | Field | Content |
@@ -45,21 +45,23 @@ Outputs captured from legacy Masa that parity replay compares against. This READ
 | `response` | `status`, normalised `headers`, `rawSha256` of the raw bytes, and exactly one of `body`, `domModel` or `export` |
 | `response.body` | JSON or text. A JSON API body keeps legacy's envelope as served: `params` is absent under `suppressAPIParams`, and `data` is flattened when `useDataNamespace` is false [core/mura/client/api/json/v1/jsonApiUtility.cfc:1471-1511] |
 | `response.domModel` | Cheerio DOM model of admin HTML |
-| `response.export` | CSV/XLSX cell values, PDF text per page, a ZIP's files and directories by name, SHA-256 and size of their content (text files normalised, directories empty, nested archives expanded, each also listed empty as `<name>!/`; entry times and order not compared), or SHA-256 plus content type of any other download |
+| `response.export` | CSV cell values, a ZIP's files and directories by name, SHA-256 and size of their content (text files normalised, directories empty, nested archives expanded, each also listed empty as `<name>!/`; entry times and order not compared), or SHA-256 plus content type of any other download |
 | `normalised` | Output of the one normaliser, `harness/src/golden/normalise/`, applying `harness/golden/normalise.yaml`. This is what `compare.ts` compares |
 | `expected`, `decisionListRef`, `exceptionId` | `withheld`, `halted` or `gap`, with the decision-list or exceptions-list entry the step points to |
 | `gap`, `candidateIndex` | A step no candidate request triggers deterministically, recorded as a halted `EX-GAP-*` entry in `opt2/exceptions-list.json`; the index of the candidate kept, which replay resends |
-| `sideEffects` | `mail[]`: Mailpit To, From, Subject, text body and HTML text. `rows{}`: canonical rows per touched table. `tasks[]`: kind, target route and offset. `files[]`: stored file variants by name, content type and SHA-256. `transitions[]`: ordered states per aggregate |
+| `sideEffects` | `mail[]`: Mailpit To, From, Subject, text body and HTML text. `rows{}`: canonical rows per touched table. `files[]`: stored file variants by name, content type and SHA-256. `transitions[]`: ordered states per aggregate |
 | `generatedBy`, `generatedAt` | Writer stamps |
 
 ## No secrets
 
 - A request value that held a resolved credential is stored as `<secret>`; the catalogue keeps the `${secret:…}` placeholders. Credentials are resolved at run time from `MURA_ADMIN_PASSWORD`, `MASA_TEST_EDITOR_PASSWORD`, `MURA_APPRELOADKEY` and `${OPT2_STATE_DIR}/secrets/seed-credentials.json`.
+- A stored `tusers.password` bcrypt hash that a resolved credential verifies is stored as `$<rev>$<cost>$<verifies:NAME>`, so a hash salted afresh on another run compares equal; others stay literal. In a scenario that compares rows, each account a `masa.users` seedRef selects resolves its password as `seed:<username>`.
 - `Authorization` credentials, cookies and token values (`csrf_token`, `csrf_token_expires`, `access_token` and the other `tokens` of `normalise.yaml`) appear as `<token>`, in `request` and `response` as well as in `normalised`, except an `Authorization` credential that secret redaction already replaced whole, such as `Basic <secret>`, which stays `<secret>`. The CSRF fields come from forms such as `admin/core/views/clogin/main.cfm` (`renderCSRFTokens`, context `login`).
 - A configured `MURA_APPRELOADKEY` is redacted wherever it stands as a URL query parameter, as the bare parameter or the `reload` value, whether or not a step resolves it, because every admin page renders it in the Reload Application link (`admin/common/layouts/includes/nav.cfm:338`). Other text equal to the key is kept. That link normalises to `/admin/?<token>&reload=<token>` (`tokens.valuelessParamsNamedBy` of `normalise.yaml`).
 - Capture refuses to write a set in which a resolved secret remains, or the configured reload key remains as a URL query parameter, so the committed sets give gitleaks nothing to find.
+- The legacy webroot (this checkout) and `${OPT2_STATE_DIR}`, which ACF error envelopes and rendered pages name, appear as `<webroot>` and `<state>` in `response` and `normalised` (`hostPaths` of `normalise.yaml`), so no set names a host directory.
 - No runtime state is stored here. Runtime state lives in `${OPT2_STATE_DIR}`.
 
 ## Skipped sets
 
-When `fixtures.json` reports the fixtures unavailable, every `fixtures: required` scenario (the synthetic modules and the seams) is written with `skipped: "skipped: fixtures unavailable"` and no steps, and the parity report marks it `skipped: fixtures unavailable`.
+When `fixtures.json` reports the fixtures unavailable, every `fixtures: required` scenario (the people archive scenarios GS-PE-03 and GS-PE-RH-03) is written with `skipped: "skipped: fixtures unavailable"` and no steps, and the parity report marks it `skipped: fixtures unavailable`.

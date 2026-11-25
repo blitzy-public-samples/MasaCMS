@@ -9,7 +9,7 @@ import { FIXTURES_UNAVAILABLE, readFixtureStatus } from '../golden/catalogue.js'
 import { isMainModule, parseFlags, runCli, UsageError, type CliOutcome } from '../lib/cli.js';
 import { REPO_ROOT, isInsideRepo, reportsDir, stateDir, type EnvLike } from '../lib/paths.js';
 import { readJson, stableStringify, writeJsonReport, writeMarkdown, type ReportOptions } from '../lib/report.js';
-import { TEN_SERVICES, type ServiceName } from './check-reviewability.js';
+import { SERVICES, type ServiceName } from './check-reviewability.js';
 import { vitestResultPath } from './speed.js';
 
 /** Recorded as the report's `generatedBy`. */
@@ -36,7 +36,7 @@ export const LAST_STAGE = STAGE_NAMES.length - 1;
 export const STAGE_RESULTS = ['pass', 'fail', 'unmet', 'skipped', 'timing-variance', 'not-run'] as const;
 export type StageResult = (typeof STAGE_RESULTS)[number];
 
-/** Columns of the ten-service matrix after `service`. */
+/** Columns of the service matrix after `service`. */
 export const MATRIX_COLUMNS = ['parity', 'contract', 'isolation', 'events', 'security'] as const;
 export type MatrixColumn = (typeof MATRIX_COLUMNS)[number];
 
@@ -75,7 +75,7 @@ export const EXIT_CODES: Readonly<Record<'0' | '1' | '2', string>> = Object.free
 });
 
 /** Unmet items added when the legacy fixtures are unavailable. */
-export const FIXTURE_UNMET_ITEMS = ['all ten services pass parity', 'rollback archive-to-blackout leg'] as const;
+export const FIXTURE_UNMET_ITEMS = ['all services pass parity', 'rollback archive leg'] as const;
 
 /** Unmet item of a `timing-variance` baseline. */
 export const BASELINE_UNMET_ITEM = 'Done: legacy baseline';
@@ -478,10 +478,10 @@ export function packageKey(dir: string): string {
   return path.posix.normalize(dir.split('\\').join('/')).replace(/\/+$/, '');
 }
 
-/** The ten-service matrix; pure over its inputs. */
+/** The service matrix; pure over its inputs. */
 export function buildServiceMatrix(inputs: MatrixInputs): ServiceMatrixRow[] {
   const security = securityPart(inputs.security);
-  return TEN_SERVICES.map((service) => {
+  return SERVICES.map((service) => {
     const vitest = inputs.vitest[service];
     const cells: Record<MatrixColumn, MatrixCell> = {
       parity: combine([parityPart(service, inputs.parity)]),
@@ -617,7 +617,7 @@ export function collectUnmet(
       const cell = row[column];
       if (cell.state !== 'unmet' && cell.state !== 'pending-run') continue;
       addUnmet(items, {
-        item: `Done: ten services: ${row.service} ${column}`,
+        item: `Done: services: ${row.service} ${column}`,
         reason: `${cell.state}: ${cell.reason}`,
         evidence: columnEvidence(column, row.service, inputs),
       });
@@ -628,7 +628,7 @@ export function collectUnmet(
     const why = `legacy fixtures unavailable: ${inputs.fixtures.reason ?? 'no reason recorded'}`;
     addUnmet(items, {
       item: FIXTURE_UNMET_ITEMS[0],
-      reason: `${why}; parity covers four of ten services`,
+      reason: `${why}; parity skips the fixture-dependent scenarios`,
       evidence: [inputs.evidence.fixtures, inputs.parity.path],
     });
     addUnmet(items, {
@@ -713,7 +713,7 @@ export function renderTestAllMarkdown(report: TestAllReport): string[] {
   ];
   if (report.fixtures.available !== true) {
     lines.push(
-      `With fixtures unavailable, parity covers four of ten services; "${FIXTURE_UNMET_ITEMS[0]}" and the ` +
+      `With fixtures unavailable, parity skips the fixture-dependent scenarios; "${FIXTURE_UNMET_ITEMS[0]}" and the ` +
         `${FIXTURE_UNMET_ITEMS[1]} are unmet.`,
       '',
     );
@@ -760,7 +760,7 @@ export async function readTestAllInputs(env: EnvLike, generatedAt: string): Prom
   const stageNumbers = STAGE_NAMES.map((_, n) => n);
   const records = await Promise.all(stageNumbers.map((n) => readSource(stageRecordPath(n, env), stageRecordSchema, env)));
   const vitestEntries = await Promise.all(
-    TEN_SERVICES.map(async (service) => {
+    SERVICES.map(async (service) => {
       const source = await readSource(vitestResultPath(`services/${service}`, env), vitestInputSchema, env);
       return [service, source] as const;
     }),

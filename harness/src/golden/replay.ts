@@ -58,6 +58,7 @@ import {
   loadSecretStore,
   loadSeedStore,
   originBaseUrl,
+  resolveSeedAccountSecrets,
   secretValues,
   type ScenarioContext,
   type SecretStore,
@@ -470,7 +471,9 @@ interface Halt {
 
 /** Exceptions-list fields replay reads; everything else is left to `appendExceptionEntry`. */
 const exceptionEntriesSchema = z.looseObject({
-  entries: z.array(z.looseObject({ id: z.string(), scenario: z.string(), routeKey: z.string(), status: z.string() })),
+  entries: z.array(
+    z.looseObject({ id: z.string(), scenario: z.string().optional(), routeKey: z.string(), status: z.string() }),
+  ),
 });
 
 function stepKey(name: string, matrixKey: string | undefined): string {
@@ -732,7 +735,7 @@ interface StepRun {
 }
 
 function emptySideEffects(): GoldenSideEffects {
-  return { mail: [], rows: {}, tasks: [], files: [] };
+  return { mail: [], rows: {}, files: [] };
 }
 
 function describeError(err: unknown, secrets: readonly string[]): string {
@@ -935,9 +938,10 @@ async function replayRun(
     secrets: io.secrets,
     seed: deps.seed,
   });
+  resolveSeedAccountSecrets(ctx, scenario);
   if (range.state !== undefined) await restoreSessions(ctx, range.state, observed.fetch);
   const run = await withFaults(deps, scenario.replayFaults ?? [], () =>
-    runSteps(ctx, scenario, golden, range, { ...deps, observed, config }, settleHook(ctx, scenario, sideDeps)),
+    runSteps(ctx, scenario, golden, range, { ...deps, observed, config }, settleHook(ctx, sideDeps)),
   );
   const records = [...(range.state?.records ?? []), ...run.records];
 
@@ -949,7 +953,7 @@ async function replayRun(
   }
 
   let { error } = run;
-  let effects: SideEffects = { mail: [], rows: {}, tasks: [], files: [] };
+  let effects: SideEffects = { mail: [], rows: {}, files: [] };
   // A halted or failed run leaves its units fail-closed or its steps unfinished, so its side effects are not read.
   if (error === undefined && run.stop === undefined) {
     try {

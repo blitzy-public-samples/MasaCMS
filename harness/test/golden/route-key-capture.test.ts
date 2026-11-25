@@ -63,7 +63,7 @@ function envFor(): EnvLike {
 
 function scenario(step: Record<string, unknown>): Scenario {
   return scenarioSchema.parse({
-    id: 'GS-CO-15',
+    id: 'GS-CO-85',
     title: 'Route-key fixture',
     service: 'strategies-content',
     role: 'admin',

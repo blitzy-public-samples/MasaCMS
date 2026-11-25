@@ -45,12 +45,6 @@ export const OPT2_LOCKFILES: readonly string[] = [
   'services/people/package-lock.json',
   'services/programs-sites/package-lock.json',
   'services/strategies-content/package-lock.json',
-  'services/communications/package-lock.json',
-  'services/reporting/package-lock.json',
-  'services/surveys/package-lock.json',
-  'services/timesheets/package-lock.json',
-  'services/finance/package-lock.json',
-  'services/e-signature/package-lock.json',
   'services/stub/package-lock.json',
 ];
 

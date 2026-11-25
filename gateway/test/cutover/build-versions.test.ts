@@ -15,10 +15,8 @@ import {
   buildVersions,
   globRoute,
   main,
-  resolveFixtures,
   rosterGroupSet,
   serialiseVersion,
-  servesSyntheticRoutes,
 } from '../../src/cutover/build-versions.js';
 import { loadVersion } from '../../src/cutover/loader.js';
 import { resolveGatewayPaths, type GatewayPaths } from '../../src/cutover/paths.js';
@@ -72,45 +70,24 @@ const CLOSED_FOLDER_GLOBS = [
   'static:/legacy-fixtures/**',
 ];
 const NATIVE_TARGETS = ['bridge:/gateway/legacy-bridge/**', ...CLOSED_FOLDER_GLOBS, 'opt2:/opt2/stub/**', 'static:/_next/**'].sort();
-const HTTP_METHODS: ReadonlySet<string> = new Set(['get', 'put', 'post', 'delete', 'patch', 'head', 'options']);
-/** Units each synthetic module's screens read and actions write through its `/v1/` operations. */
-const SCREEN_UNITS: Readonly<Record<string, readonly string[]>> = {
-  communications: ['communications.delivery_status', 'communications.message', 'communications.message_template'],
-  'e-signature': ['esignature.audit_entry', 'esignature.signature', 'esignature.signature_request'],
-  finance: ['finance.attachment', 'finance.record', 'finance.record_version', 'finance.rollup'],
-  reporting: ['reporting.export_definition', 'reporting.export_job'],
-  surveys: [
-    'communications.scheduled_task',
-    'surveys.survey',
-    'surveys.survey_reminder',
-    'surveys.survey_response',
-    'surveys.survey_schedule',
-    'surveys.survey_target',
-  ],
-  timesheets: ['timesheets.approval_action', 'timesheets.blackout', 'timesheets.timesheet', 'timesheets.timesheet_day'],
-};
-const SCREEN_UNIT_SET: ReadonlySet<string> = new Set(Object.values(SCREEN_UNITS).flat());
-
 // ---- Committed inputs ----
 
 describe('committed inputs', () => {
   let ctx: ValidationContext;
-  let available: CutoverTable[];
-  let unavailable: CutoverTable[];
+  let built: CutoverTable[];
 
   beforeAll(async () => {
     ctx = await loadValidationContext(committed, 'ci');
-    available = buildVersions(ctx, { available: true });
-    unavailable = buildVersions(ctx, { available: false });
+    built = buildVersions(ctx);
   });
 
   it('builds byte-identical versions on every run', () => {
-    const again = buildVersions(ctx, { available: true });
-    expect(again.map(serialiseVersion)).toEqual(available.map(serialiseVersion));
+    const again = buildVersions(ctx);
+    expect(again.map(serialiseVersion)).toEqual(built.map(serialiseVersion));
   });
 
   it('chains v0001-v0003 with the pinned sha and fixed createdAt values', () => {
-    expect(available.map((t) => [t.tableVersion, t.previous, t.createdAt, t.sourceSha])).toEqual([
+    expect(built.map((t) => [t.tableVersion, t.previous, t.createdAt, t.sourceSha])).toEqual([
       ['v0001', null, VERSION_CREATED_AT.v0001, SHA],
       ['v0002', 'v0001', VERSION_CREATED_AT.v0002, SHA],
       ['v0003', 'v0002', VERSION_CREATED_AT.v0003, SHA],
@@ -119,7 +96,7 @@ describe('committed inputs', () => {
   });
 
   it('lists every inventoried key once, sorted, with sorted group authority and units', () => {
-    for (const table of available) {
+    for (const table of built) {
       const routes = table.entries.map((entry) => entry.route);
       expect(routes).toEqual([...routes].sort());
       expect(new Set(routes).size).toBe(routes.length);
@@ -134,18 +111,16 @@ describe('committed inputs', () => {
     await mkdir(join(dir, 'versions'));
     await copyFile(committed.schemaFile, join(dir, 'cutover-table.schema.json'));
     const paths = resolveGatewayPaths({ OPT2_CUTOVER_DIR: dir });
-    for (const chain of [available, unavailable]) {
-      for (const [i, table] of chain.entries()) {
-        const prior = chain[i - 1];
-        expect(validateVersion(table, prior === undefined ? ctx : { ...ctx, prior })).toEqual([]);
-        await writeFile(join(paths.versionsDir, `${table.tableVersion}.json`), serialiseVersion(table));
-        expect(await loadVersion(paths, table.tableVersion)).toEqual(table);
-      }
+    for (const [i, table] of built.entries()) {
+      const prior = built[i - 1];
+      expect(validateVersion(table, prior === undefined ? ctx : { ...ctx, prior })).toEqual([]);
+      await writeFile(join(paths.versionsDir, `${table.tableVersion}.json`), serialiseVersion(table));
+      expect(await loadVersion(paths, table.tableVersion)).toEqual(table);
     }
   });
 
   it('keeps every inventoried entry legacy in v0001 and targets only the OPT-2 platform entries', () => {
-    const [v0001] = available as [CutoverTable];
+    const [v0001] = built as [CutoverTable];
     expect(targetRoutes(v0001)).toEqual(NATIVE_TARGETS);
     expect(Object.values(v0001.groupAuthority).every((authority) => authority === 'legacy')).toBe(true);
     expect(new Set(v0001.entries.map((entry) => entry.tableVersion))).toEqual(new Set(['v0001']));
@@ -162,7 +137,7 @@ describe('committed inputs', () => {
   });
 
   it('moves sitemonitor:run in v0002 and keeps withheld and halted keys on legacy', () => {
-    const v0002 = available[1] as CutoverTable;
+    const v0002 = built[1] as CutoverTable;
     expect(entryOf(v0002, 'sitemonitor:run')).toMatchObject({ kind: 'job', state: 'target', tableVersion: 'v0002' });
     const withheld = ctx.decisionList.actionVariants.flatMap((v) => [v.routeKey, ...(v.entryPoints ?? []).flatMap((e) => e.routeKey ?? [])]);
     const listed = withheld.filter((key) => ctx.inventoryKeys.has(key));
@@ -180,7 +155,7 @@ describe('committed inputs', () => {
   });
 
   it('makes a write entry follow its group and a read target only over target units', () => {
-    const v0002 = available[1] as CutoverTable;
+    const v0002 = built[1] as CutoverTable;
     const unitGroup = new Map(ctx.groups.groups.flatMap((g) => g.units.map((unit): [string, string] => [unit, g.id])));
     for (const entry of v0002.entries) {
       if (entry.kind === 'write' && entry.group !== null) expect(entry.state).toBe(v0002.groupAuthority[entry.group ?? '']);
@@ -192,7 +167,7 @@ describe('committed inputs', () => {
   });
 
   it('returns exactly the roster group set to legacy in v0003 with its rollback reference', () => {
-    const [, v0002, v0003] = available as [CutoverTable, CutoverTable, CutoverTable];
+    const [, v0002, v0003] = built as [CutoverTable, CutoverTable, CutoverTable];
     const roster = rosterGroupSet(ctx.groups);
     expect(roster).toContain(ctx.groups.groups.find((g) => g.writeEntries.includes('admin:cusers.update{type=2,action=add}'))?.id);
     for (const [group, authority] of Object.entries(v0003.groupAuthority)) {
@@ -203,7 +178,7 @@ describe('committed inputs', () => {
   });
 
   it('shares one entry set across versions, differing only in tableVersion and state', () => {
-    const [v0001, v0002, v0003] = available as [CutoverTable, CutoverTable, CutoverTable];
+    const [v0001, v0002, v0003] = built as [CutoverTable, CutoverTable, CutoverTable];
     expect(withoutState(v0002)).toEqual(withoutState(v0001));
     expect(withoutState(v0003)).toEqual(withoutState(v0001));
     for (const [prior, table] of [
@@ -217,99 +192,8 @@ describe('committed inputs', () => {
     }
   });
 
-  it('adds the synthetic /v1/ entries from v0002 only when fixtures are unavailable', () => {
-    expect(serialiseVersion(unavailable[0] as CutoverTable)).toBe(serialiseVersion(available[0] as CutoverTable));
-    const added = (unavailable[1] as CutoverTable).entries.filter((entry) => !entryOf(available[1] as CutoverTable, entry.route));
-    expect(added.map((entry) => [entry.route, entry.owningService, entry.state, entry.kind])).toEqual([
-      ['opt2:/v1/esignature/**', 'e-signature', 'target', 'write'],
-      ['opt2:/v1/finance/**', 'finance', 'target', 'write'],
-      ['opt2:/v1/messages/**', 'communications', 'target', 'write'],
-      ['opt2:/v1/reporting/**', 'reporting', 'target', 'write'],
-      ['opt2:/v1/surveys/**', 'surveys', 'target', 'write'],
-      ['opt2:/v1/templates/**', 'communications', 'target', 'write'],
-      ['opt2:/v1/timesheets/**', 'timesheets', 'target', 'write'],
-    ]);
-    const [messages, templates] = ['opt2:/v1/messages/**', 'opt2:/v1/templates/**'].map((route) => entryOf(unavailable[1] as CutoverTable, route));
-    expect([templates?.group, templates?.units]).toEqual([messages?.group, messages?.units]);
-    expect(servesSyntheticRoutes(unavailable[1] as CutoverTable)).toBe(true);
-    expect(available.some(servesSyntheticRoutes)).toBe(false);
-  });
-
-  it.each<[string, readonly string[], 'target' | 'legacy']>([
-    ['communications', [], 'target'],
-    ['e-signature', [], 'target'],
-    ['finance', [], 'target'],
-    // The inventory lists no writer of synthetic.export_definition or Program_N.timesheet, so neither gates a screen.
-    ['reporting', ['reporting.export_definition'], 'target'],
-    ['surveys', [], 'target'],
-    // timesheets.blackout is in the roster group set, which v0003 returns to legacy.
-    ['timesheets', ['timesheets.timesheet'], 'legacy'],
-  ])('routes the %s screens and actions over their units less the writer-less %j, %s in v0003', (module, writerless, v0003State) => {
-    const [v0001, v0002, v0003] = available as [CutoverTable, CutoverTable, CutoverTable];
-    const unitGroup = new Map(ctx.groups.groups.flatMap((g) => g.units.map((unit): [string, string] => [unit, g.id])));
-    const screens = `opt2:/opt2/admin/${module}/**`;
-    const actions = `opt2:/opt2/admin-actions/${module}/**`;
-    const units = (SCREEN_UNITS[module] ?? []).filter((unit) => !writerless.includes(unit));
-    const tables = ctx.ownership.units.filter((unit) => writerless.includes(unit.unit)).flatMap((unit) => unit.legacyTables);
-    expect(tables.map((table) => ctx.inventory.tables.find((t) => t.table === table)?.writers.length)).toEqual(tables.map(() => 0));
-    expect(entryOf(v0002, screens)).toMatchObject({ owningService: 'web', kind: 'read', group: null, units });
-    expect(entryOf(v0002, actions)).toMatchObject({ owningService: 'web', kind: 'write', group: null, units: [] });
-    expect([...units, ...writerless].map((unit) => v0002.groupAuthority[unitGroup.get(unit) ?? ''])).toEqual([
-      ...units.map(() => 'target'),
-      ...writerless.map(() => 'legacy'),
-    ]);
-    const v0003Version = v0003State === 'target' ? 'v0002' : 'v0003';
-    expect(
-      [v0001, v0002, v0003].map((table) => [entryOf(table, screens), entryOf(table, actions)].map((e) => [e?.state, e?.tableVersion])),
-    ).toEqual([
-      [
-        ['legacy', 'v0001'],
-        ['legacy', 'v0001'],
-      ],
-      [
-        ['target', 'v0002'],
-        ['target', 'v0002'],
-      ],
-      [
-        [v0003State, v0003Version],
-        [v0003State, v0003Version],
-      ],
-    ]);
-  });
-
-  it.each(['communications', 'e-signature', 'finance', 'reporting', 'surveys', 'timesheets'])(
-    "routes every /v1/ path of %s's contract to its own entry only when fixtures are unavailable",
-    async (service) => {
-      const contract = parse(await readFile(join(committed.repoRoot, `services/${service}/contracts/openapi.yaml`), 'utf8')) as {
-        paths: Record<string, Record<string, unknown>>;
-      };
-      const calls = Object.entries(contract.paths)
-        .filter(([path]) => path.startsWith('/v1/'))
-        .flatMap(([path, item]) =>
-          Object.keys(item)
-            .filter((method) => HTTP_METHODS.has(method))
-            .map((method) => [method.toUpperCase(), path.replaceAll(/\{[^}]+\}/g, 'x')]),
-        );
-      expect(calls.length).toBeGreaterThan(0);
-      for (const [table, owner] of [
-        [unavailable[1] as CutoverTable, service],
-        [available[1] as CutoverTable, undefined],
-      ] as const) {
-        const routes = table.entries.map((entry) => entry.route);
-        for (const [method = '', path = ''] of calls) {
-          const result = routeKeyForRequest({ method, path, query: { siteid: 'tenant-a' }, headers: {} });
-          const routed = entryOf(table, matchRouteKey(result, routes) ?? '');
-          expect([result.family, result.siteId], `${method} ${path}`).toEqual(['opt2', 'tenant-a']);
-          expect(routed === undefined ? undefined : [routed.owningService, routed.state], `${table.tableVersion} ${method} ${path}`).toEqual(
-            owner === undefined ? undefined : [owner, 'target'],
-          );
-        }
-      }
-    },
-  );
-
   it('keys each OPT-2 glob so live requests under it resolve to it', async () => {
-    const v0002 = available[1] as CutoverTable;
+    const v0002 = built[1] as CutoverTable;
     const routes = v0002.entries.map((entry) => entry.route);
     const resolve = (path: string) => matchRouteKey(routeKeyForRequest({ method: 'GET', path, query: {}, headers: {} }), routes);
     const stub = parse(await readFile(join(committed.repoRoot, 'services/stub/contracts/openapi.yaml'), 'utf8')) as {
@@ -330,17 +214,13 @@ describe('committed inputs', () => {
     expect(resolve('/_next/static/chunks/main.js')).toBe('static:/_next/**');
     expect(resolve('/admin/assets/css/admin.min.css')).toBe('static:/admin/assets/**');
     expect(resolve('/opt2/files/content-files/tenant/file.png')).toBe('opt2:/opt2/files/content-files/**');
-    expect(resolve('/opt2/admin/timesheets/sheets')).toBe('opt2:/opt2/admin/timesheets/**');
-    expect(entryOf(v0002, 'opt2:/opt2/files/finance-attachments/**')).toMatchObject({ owningService: 'finance', units: ['finance.attachment'] });
-    expect(entryOf(v0002, 'opt2:/opt2/files/reporting-exports/**')).toMatchObject({ owningService: 'reporting', units: ['reporting.export_job'] });
+    expect(resolve('/opt2/admin/module/screen')).toBe('opt2:/opt2/**');
     expect(entryOf(v0002, 'opt2:/opt2/files/content-files/**')?.units).toEqual(['content.file']);
   });
 
   it.each<[string, string, string?]>([
     ['/opt2/stub', 'opt2:/opt2/stub/**'],
     ['/core/vendor', 'static:/core/vendor/**'],
-    ['/v1/finance', 'opt2:/v1/finance/**'],
-    ['/v1/messages', 'opt2:/v1/messages/**'],
     ['/harness', 'cfm:/harness/**', 'probe.cfm'],
     ['/harness', 'cfc:/harness/**', 'probe.cfc'],
   ])('derives the glob of %s from the route-key family', (prefix, key, probe) => {
@@ -364,8 +244,8 @@ describe.runIf(VERSION_IDS.every((id) => existsSync(join(committed.versionsDir, 
 
 const ADD = 'admin:cusers.update{type=2,action=add}';
 const ARCHIVE = 'fixture:people/persons/{id}/archive@post';
-const EXPORT = 'fixture:reporting/exports@post';
-const EXPORTS = 'fixture:reporting/exports@get';
+const RECORD = 'fixture:sample/records@post';
+const RECORDS = 'fixture:sample/records@get';
 const IMAGE = 'admin:carch.update{upload=image}';
 const EDIT = 'admin:carch.edit';
 const JOB = 'sitemonitor:run';
@@ -412,9 +292,9 @@ function fixtureRoute(routeKey: string, owner: string, writes: InventoryWrite[] 
 
 function writer(table: string, fields: Partial<InventoryWriter>): InventoryTable {
   const record: InventoryWriter = {
-    component: 'legacy-fixtures/cfml/modules/reporting.cfc',
-    method: 'createExport',
-    source: { path: 'legacy-fixtures/cfml/modules/reporting.cfc', lines: [10, 20] },
+    component: 'core/mura/content/contentServer.cfc',
+    method: 'handleAPIRequest',
+    source: { path: 'core/mura/content/contentServer.cfc', lines: [669, 747] },
     op: 'update',
     routeKeys: [],
     keyScope: [],
@@ -429,37 +309,30 @@ function writer(table: string, fields: Partial<InventoryWriter>): InventoryTable
 
 /** An inventory table with no writer. */
 const unwritten = (table: string): InventoryTable => ({ ...writer(table, {}), writers: [] });
-// As in the committed inventory, nothing writes the export definitions.
-const DEFAULT_TABLES = [unwritten('synthetic.export_definition')];
+// Nothing in the fixture inventory writes the image sizes.
+const DEFAULT_TABLES = [unwritten('timagesizes')];
 
 const UNITS: Record<string, readonly string[]> = {
   'people.person': ['tusers'],
   'identity.user_account': ['tusers'],
   'people.person_archive': ['synthetic.person_archive'],
-  'timesheets.blackout': ['Program_N.blackout'],
-  'timesheets.timesheet': ['Program_N.timesheet'],
-  'reporting.export_job': ['synthetic.export_job'],
-  'reporting.export_definition': ['synthetic.export_definition'],
-  'reporting.session_tracking': ['tsessiontracking'],
+  'programs_sites.site': ['tsettings'],
+  'programs_sites.image_size': ['timagesizes'],
   'content.content': ['tcontent'],
 };
+
+/** The owning service of a unit: its schema prefix, with `content` for strategies-content and `_` for `-`. */
+const ownerOfUnit = (unit: string): string => (unit.startsWith('content.') ? 'strategies-content' : (unit.split('.')[0] as string).replace('_', '-'));
 
 function ownershipOf(units: Record<string, readonly string[]>): OwnershipDoc {
   return {
     sourceSha: SHA,
-    units: Object.entries(units).map(([unit, legacyTables]) => ({
-      unit,
-      owner: unit.startsWith('content.') ? 'strategies-content' : (unit.split('.')[0] as string),
-      legacyTables,
-    })),
+    units: Object.entries(units).map(([unit, legacyTables]) => ({ unit, owner: ownerOfUnit(unit), legacyTables })),
     tables: Object.entries(units).flatMap(([unit, [table]]) =>
-      table === undefined ? [] : [{ table, owner: unit.split('.')[0] as string, targets: [{ unit, rowPredicate: null, ownedColumns: [] }] }],
+      table === undefined ? [] : [{ table, owner: ownerOfUnit(unit), targets: [{ unit, rowPredicate: null, ownedColumns: [] }] }],
     ),
   };
 }
-
-// The synthetic screens' units, tableless unless UNITS or a spec maps them, so every fixture context can build their entries.
-const SCREEN_ONLY_UNITS: Record<string, readonly string[]> = Object.fromEntries([...SCREEN_UNIT_SET].map((unit) => [unit, []]));
 
 interface FixtureSpec {
   tables?: InventoryTable[];
@@ -492,9 +365,9 @@ function fixtureContext(spec: FixtureSpec = {}): ValidationContext {
       },
     ],
     routes: [
-      fixtureRoute(ARCHIVE, 'people', [write('people.person_archive'), write('timesheets.blackout')]),
-      fixtureRoute(EXPORT, 'reporting', [write('reporting.export_job')]),
-      fixtureRoute(EXPORTS, 'reporting'),
+      fixtureRoute(ARCHIVE, 'people', [write('people.person_archive')]),
+      fixtureRoute(RECORD, 'programs-sites', [write('programs_sites.site')]),
+      fixtureRoute(RECORDS, 'programs-sites'),
       { ...fixtureRoute(JOB, 'programs-sites'), kind: 'job', family: 'sitemonitor' },
     ],
     frontEnd: [],
@@ -510,7 +383,7 @@ function fixtureContext(spec: FixtureSpec = {}): ValidationContext {
     ],
     tables: spec.tables ?? DEFAULT_TABLES,
   };
-  const ownership = ownershipOf({ ...SCREEN_ONLY_UNITS, ...(spec.units ?? UNITS) });
+  const ownership = ownershipOf(spec.units ?? UNITS);
   const exceptions = { sourceSha: SHA, entries: spec.exceptions ?? [] };
   const groups = buildGroups({
     sourceSha: SHA,
@@ -547,17 +420,17 @@ describe('buildVersions on fixture inventories', () => {
     expect(rosterGroupSet(ctx.groups)).toEqual(['grp:identity.user_account', 'grp:people.person_archive']);
     const seamOnly: Pick<GroupsFile, 'groups'> = {
       groups: [
-        { id: 'grp:timesheets.blackout', units: ['timesheets.blackout'], writeEntries: [], hasCarryWrite: false },
+        { id: 'grp:people.person_archive', units: ['people.person_archive'], writeEntries: [], hasCarryWrite: false },
         { id: 'grp:content.content', units: ['content.content'], writeEntries: [' Admin:CUsers.Update{type=2,action=update} '], hasCarryWrite: true },
         { id: 'grp:content.file', units: ['content.file'], writeEntries: [EDIT], hasCarryWrite: true },
       ],
     };
-    expect(rosterGroupSet(seamOnly)).toEqual(['grp:content.content', 'grp:timesheets.blackout']);
+    expect(rosterGroupSet(seamOnly)).toEqual(['grp:content.content', 'grp:people.person_archive']);
   });
 
   it('derives kinds, units and states from the inventory', () => {
     const ctx = fixtureContext();
-    const [v0001, v0002, v0003] = buildVersions(ctx, { available: true }) as [CutoverTable, CutoverTable, CutoverTable];
+    const [v0001, v0002, v0003] = buildVersions(ctx) as [CutoverTable, CutoverTable, CutoverTable];
     expect(entryOf(v0002, ADD)).toMatchObject({
       kind: 'write',
       group: 'grp:identity.user_account',
@@ -566,122 +439,64 @@ describe('buildVersions on fixture inventories', () => {
       tableVersion: 'v0002',
     });
     expect(entryOf(v0002, IMAGE)).toMatchObject({ kind: 'legacy-write', group: null, units: ['content.content'], state: 'legacy' });
-    expect(entryOf(v0002, EXPORTS)).toMatchObject({
-      kind: 'read',
-      units: ['reporting.export_definition', 'reporting.export_job', 'reporting.session_tracking'],
-      state: 'legacy',
-    });
+    // Nothing writes the image sizes, so the read over every programs-sites unit stays legacy.
+    expect(entryOf(v0002, RECORDS)).toMatchObject({ kind: 'read', units: ['programs_sites.image_size', 'programs_sites.site'], state: 'legacy' });
     expect(entryOf(v0002, EDIT)).toMatchObject({ kind: 'read', units: ['content.content'], state: 'legacy' });
     expect(entryOf(v0001, JOB)).toMatchObject({ kind: 'job', units: ['content.content'], state: 'legacy' });
     expect(entryOf(v0002, JOB)?.state).toBe('target');
     expect(entryOf(v0003, ADD)).toMatchObject({ state: 'legacy', tableVersion: 'v0003' });
-    expect(entryOf(v0003, EXPORT)).toMatchObject({ state: 'target', tableVersion: 'v0002' });
+    expect(entryOf(v0003, RECORD)).toMatchObject({ state: 'target', tableVersion: 'v0002' });
     expect(v0003.rollbackRefs[0]?.groups).toEqual(rosterGroupSet(ctx.groups));
-    // Nothing writes the export definitions, so the screens move over the export jobs while the fixture list, over every
-    // reporting unit, stays legacy.
-    expect(entryOf(v0002, 'opt2:/opt2/admin/reporting/**')).toMatchObject({ kind: 'read', units: ['reporting.export_job'], state: 'target' });
-    expect(entryOf(v0002, 'opt2:/opt2/admin-actions/reporting/**')).toMatchObject({ kind: 'write', units: [], state: 'target' });
-    // No fixture carry entry writes the sheet days or approval actions, so the timesheet screens stay legacy.
-    expect(entryOf(v0002, 'opt2:/opt2/admin/timesheets/**')).toMatchObject({ kind: 'read', state: 'legacy' });
-  });
-
-  it.each<[string, InventoryTable[], readonly string[], 'target' | 'legacy']>([
-    ['lists it with no writer', [unwritten('synthetic.export_definition')], ['reporting.export_job'], 'target'],
-    ['lists a writer of it', [writer('synthetic.export_definition', {})], ['reporting.export_definition', 'reporting.export_job'], 'legacy'],
-    ['does not list it', [], ['reporting.export_definition', 'reporting.export_job'], 'legacy'],
-  ])('gates the reporting screens on the export definitions unless nothing writes them: the inventory %s', (_label, tables, units, state) => {
-    const ctx = fixtureContext({ tables });
-    const v0002 = buildVersions(ctx, { available: true })[1] as CutoverTable;
-    expect(v0002.groupAuthority[groupOfUnit(ctx, 'reporting.export_definition')]).toBe('legacy');
-    expect(entryOf(v0002, 'opt2:/opt2/admin/reporting/**')).toMatchObject({ kind: 'read', units, state });
-    expect(entryOf(v0002, 'opt2:/opt2/admin-actions/reporting/**')).toMatchObject({ kind: 'write', units: [], state });
   });
 
   it.each([
-    ['prevented', 'createExport', 'target'],
-    ['unprevented', 'resumeExport', 'legacy'],
-  ] as const)('keeps a group legacy only while its thread writer is %s', (_label, method, expected) => {
-    const ctx = fixtureContext({ tables: [...DEFAULT_TABLES, writer('synthetic.export_job', { method, trigger: 'thread' })] });
-    const v0002 = buildVersions(ctx, { available: true })[1] as CutoverTable;
-    expect(v0002.groupAuthority[groupOfUnit(ctx, 'reporting.export_job')]).toBe(expected);
-    expect(entryOf(v0002, EXPORT)?.state).toBe(expected);
-    expect(entryOf(v0002, 'opt2:/opt2/admin/reporting/**')?.state).toBe(expected);
+    ['prevented', 'handleAPIRequest', 'target'],
+    ['unprevented', 'handleRootRequest', 'legacy'],
+  ] as const)('keeps a group legacy only while its scheduler writer is %s', (_label, method, expected) => {
+    const ctx = fixtureContext({ tables: [...DEFAULT_TABLES, writer('tsettings', { method, trigger: 'scheduler' })] });
+    const v0002 = buildVersions(ctx)[1] as CutoverTable;
+    expect(v0002.groupAuthority[groupOfUnit(ctx, 'programs_sites.site')]).toBe(expected);
+    expect(entryOf(v0002, RECORD)?.state).toBe(expected);
   });
 
   it('keeps a halted carry read on legacy', () => {
-    const exceptions: ExceptionEntry[] = [{ id: 'EX-1', routeKey: 'fixture:reporting/exports@get', decision: 'preserve', status: 'halted' }];
-    const ctx = fixtureContext({ units: { ...UNITS, 'reporting.session_tracking': ['synthetic.session_tracking'] }, exceptions });
-    const v0002 = buildVersions(ctx, { available: true })[1] as CutoverTable;
-    expect(entryOf(v0002, EXPORTS)).toMatchObject({ kind: 'read', state: 'legacy' });
-  });
-
-  it("leaves a synthetic service's split units out of its reads and keeps a migrated service's", () => {
-    const { 'reporting.session_tracking': _s, ...units } = UNITS;
-    const base = fixtureContext({ units: { ...units, 'content.trash': ['ttrash'], 'reporting.trash': ['ttrash'] } });
-    const trash = {
-      table: 'ttrash',
-      owner: 'split',
-      targets: ['content.trash', 'reporting.trash'].map((unit) => ({ unit, rowPredicate: null, ownedColumns: [] })),
-    };
-    const tables = [...base.ownership.tables.filter((table) => table.table !== 'ttrash'), trash];
-    const v0002 = buildVersions({ ...base, ownership: { ...base.ownership, tables } }, { available: true })[1] as CutoverTable;
-    expect(entryOf(v0002, EXPORTS)).toMatchObject({ kind: 'read', units: ['reporting.export_definition', 'reporting.export_job'] });
-    expect(entryOf(v0002, EDIT)).toMatchObject({ kind: 'read', units: ['content.content', 'content.trash'], state: 'legacy' });
-  });
-
-  it('names the uncarried fixture-backed group of a synthetic service when fixtures are unavailable', () => {
-    const ctx = fixtureContext({ units: { ...UNITS, 'reporting.session_tracking': ['synthetic.session_tracking'] } });
-    expect(() => buildVersions(ctx, { available: false })).toThrow(/opt2:\/v1\/reporting\/\*\*: fixture-backed units span groups/);
-    const single = fixtureContext();
-    const v0002 = buildVersions(single, { available: false })[1] as CutoverTable;
-    expect(entryOf(v0002, 'opt2:/v1/reporting/**')).toMatchObject({
-      kind: 'write',
-      group: 'grp:reporting.export_definition',
-      units: ['reporting.export_definition'],
-      state: 'target',
-    });
-    expect(entryOf(v0002, 'opt2:/v1/timesheets/**')).toMatchObject({ group: 'grp:timesheets.timesheet', state: 'target' });
-    expect(entryOf(v0002, 'opt2:/v1/finance/**')).toMatchObject({ group: null, units: [], state: 'target' });
-    expect(v0002.groupAuthority['grp:reporting.export_definition']).toBe('target');
+    // Without the image sizes, every unit the read covers moves, so only the halt keeps it on legacy.
+    const { 'programs_sites.image_size': _imageSize, ...units } = UNITS;
+    expect(entryOf(buildVersions(fixtureContext({ units, tables: [] }))[1] as CutoverTable, RECORDS)?.state).toBe('target');
+    const exceptions: ExceptionEntry[] = [{ id: 'EX-1', routeKey: RECORDS, decision: 'preserve', status: 'halted' }];
+    const v0002 = buildVersions(fixtureContext({ units, tables: [], exceptions }))[1] as CutoverTable;
+    expect(entryOf(v0002, RECORDS)).toMatchObject({ kind: 'read', state: 'legacy' });
   });
 
   it('fails when a carry write entry is in no generated group', () => {
     const ctx = fixtureContext();
     const groups = { ...ctx.groups, groups: ctx.groups.groups.map((g) => ({ ...g, writeEntries: g.writeEntries.filter((k) => k !== ADD) })) };
-    expect(() => buildVersions({ ...ctx, groups }, { available: true })).toThrow(`carry write entry ${ADD} is in 0 groups`);
-  });
-
-  it('fails when a screen unit is not in the ownership file', () => {
-    const ctx = fixtureContext();
-    const ownership = { ...ctx.ownership, units: ctx.ownership.units.filter((unit) => unit.unit !== 'finance.rollup') };
-    const build = (): CutoverTable[] => buildVersions({ ...ctx, ownership }, { available: true });
-    expect(build).toThrow(CutoverBuildError);
-    expect(build).toThrow('opt2:/opt2/admin/finance/**: units finance.rollup are not in opt2/table-ownership.json');
+    expect(() => buildVersions({ ...ctx, groups })).toThrow(`carry write entry ${ADD} is in 0 groups`);
   });
 
   it('fails on an owner the cut-over table cannot name', () => {
-    expect(() => buildVersions(fixtureContext({ owner: 'split' }), { available: true })).toThrow(/owner split is not a cut-over owning service/);
+    expect(() => buildVersions(fixtureContext({ owner: 'split' }))).toThrow(/owner split is not a cut-over owning service/);
   });
 
   it('never returns a version the validator rejects', () => {
     let error: unknown;
     try {
-      buildVersions(fixtureContext({ withheld: [EXPORT] }), { available: true });
+      buildVersions(fixtureContext({ withheld: [RECORD] }));
     } catch (caught) {
       error = caught;
     }
     expect(error).toBeInstanceOf(CutoverBuildError);
-    expect((error as CutoverBuildError).message).toMatch(/^v0002 fails validation:\nwithheld-never-target fixture:reporting\/exports@post/);
+    expect((error as CutoverBuildError).message).toMatch(/^v0002 fails validation:\nwithheld-never-target fixture:sample\/records@post/);
     expect((error as CutoverBuildError).findings.map((finding) => finding.rule)).toContain('withheld-never-target');
   });
 
   it('returns no rollback reference when no group holds the roster', () => {
     const ctx = fixtureContext();
     const groups = { ...ctx.groups, groups: ctx.groups.groups.filter((g) => !rosterGroupSet(ctx.groups).includes(g.id)) };
-    const units = ctx.ownership.units.filter((u) => SCREEN_UNIT_SET.has(u.unit) || groups.groups.some((g) => g.units.includes(u.unit)));
+    const units = ctx.ownership.units.filter((u) => groups.groups.some((g) => g.units.includes(u.unit)));
     const inventory = { ...ctx.inventory, controllers: [], routes: ctx.inventory.routes.filter((r) => r.routeKey !== ARCHIVE) };
     const trimmed = { ...ctx, groups, inventory, inventoryKeys: inventoryKeyFacts(inventory), ownership: { ...ctx.ownership, units } };
-    expect(buildVersions(trimmed, { available: true })[2]?.rollbackRefs).toEqual([]);
+    expect(buildVersions(trimmed)[2]?.rollbackRefs).toEqual([]);
   });
 });
 
@@ -698,8 +513,6 @@ function parseError(text: string): string {
 }
 
 describe('main', () => {
-  const noState = { OPT2_STATE_DIR: join(tmpdir(), 'opt2-build-versions-no-state') };
-
   /** Paths of a new cut-over directory holding the committed schema, variants, groups and `versions`. */
   const casePaths = async (versions: readonly string[] = []): Promise<GatewayPaths> => {
     const dir = await tempDir();
@@ -710,10 +523,10 @@ describe('main', () => {
     return paths;
   };
 
-  const run = async (paths: GatewayPaths, argv: string[], env: Record<string, string> = noState) => {
+  const run = async (paths: GatewayPaths, argv: string[]) => {
     const stdout: string[] = [];
     const stderr: string[] = [];
-    const code = await main(argv, { paths, env, stdout: (text) => stdout.push(text), stderr: (text) => stderr.push(text) });
+    const code = await main(argv, { paths, stdout: (text) => stdout.push(text), stderr: (text) => stderr.push(text) });
     return { code, stdout, stderr };
   };
   const fileOf = (paths: GatewayPaths, id: string) => join(paths.versionsDir, `${id}.json`);
@@ -729,29 +542,25 @@ describe('main', () => {
     });
   });
 
-  it.each([
-    ['available', true, VERSION_IDS],
-    ['unavailable', false, ['v0001']],
-  ] as const)('writes with --write (repeatable) under --fixtures %s and then reports no difference', async (mode, available, unchanged) => {
+  it('writes with --write (repeatable) and then reports no difference', async () => {
     const paths = await casePaths();
-    const written = await run(paths, ['--write', '--write', '--fixtures', mode]);
+    const written = await run(paths, ['--write', '--write', '--fixtures', 'available']);
     expect(written).toEqual({ code: 0, stdout: VERSION_IDS.map((id) => `build-versions: wrote ${fileOf(paths, id)}`), stderr: [] });
-    const built = buildVersions(await loadValidationContext(paths, 'ci'), { available });
+    const built = buildVersions(await loadValidationContext(paths, 'ci'));
     for (const table of built) expect(await readFile(fileOf(paths, table.tableVersion), 'utf8')).toBe(`${JSON.stringify(table)}\n`);
-    for (const id of unchanged) expect(await readFile(fileOf(paths, id), 'utf8'), id).toBe(await committedBytes(id));
+    for (const id of VERSION_IDS) expect(await readFile(fileOf(paths, id), 'utf8'), id).toBe(await committedBytes(id));
     expect(await run(paths, [])).toEqual({ code: 0, stdout: VERSION_IDS.map((id) => `build-versions: ${fileOf(paths, id)} is up to date`), stderr: [] });
   });
 
-  it('builds as fixtures.json says under --fixtures auto', async () => {
+  it('builds the same files under every --fixtures mode', async () => {
     const paths = await casePaths(VERSION_IDS);
-    const state = await tempDir();
-    await writeFile(join(state, 'fixtures.json'), JSON.stringify({ available: false, reason: 'no CREATE SCHEMA' }));
-    const { code, stdout, stderr } = await run(paths, ['--fixtures', 'auto'], { OPT2_STATE_DIR: state });
-    expect(code).toBe(1);
-    expect(stdout[0]).toBe(`build-versions: ${fileOf(paths, 'v0001')} is up to date`);
-    for (const id of ['v0002', 'v0003']) expect(stdout).toContain(`--- ${fileOf(paths, id)} (pretty-printed)`);
-    expect(stdout).toContain('+      "route": "opt2:/v1/finance/**",');
-    expect(stderr).toEqual(['v0002', 'v0003'].map((id) => `build-versions: ${fileOf(paths, id)} differs from the build; run with --write`));
+    for (const mode of ['available', 'unavailable', 'auto']) {
+      expect(await run(paths, ['--fixtures', mode])).toEqual({
+        code: 0,
+        stdout: VERSION_IDS.map((id) => `build-versions: ${fileOf(paths, id)} is up to date`),
+        stderr: [],
+      });
+    }
   });
 
   it('prints a line diff when a version differs', async () => {
@@ -775,31 +584,20 @@ describe('main', () => {
     });
   });
 
-  it.each<[string, (paths: GatewayPaths, error: string) => { stdout: string[]; stderr: string[] }]>([
-    [
-      'auto',
-      (paths, error) => ({
-        stdout: [],
-        stderr: [`build-versions: ${fileOf(paths, 'v0002')} does not match its cut-over schema: / is not valid JSON: ${error}`],
-      }),
-    ],
-    [
-      'available',
-      (paths, error) => ({
-        stdout: [
-          `build-versions: ${fileOf(paths, 'v0001')} is up to date`,
-          `${fileOf(paths, 'v0002')} is not valid JSON: ${error}`,
-          `build-versions: ${fileOf(paths, 'v0003')} is up to date`,
-        ],
-        stderr: [`build-versions: ${fileOf(paths, 'v0002')} differs from the build; run with --write`],
-      }),
-    ],
-  ])('reports a v0002 that is not valid JSON under --fixtures %s with exit 1', async (mode, expected) => {
+  it('reports a v0002 that is not valid JSON with exit 1', async () => {
     const paths = await casePaths(VERSION_IDS);
     const current = await committedBytes('v0002');
     const cut = current.slice(0, Math.floor(current.length / 2));
     await writeFile(fileOf(paths, 'v0002'), cut);
-    expect(await run(paths, ['--fixtures', mode])).toEqual({ code: 1, ...expected(paths, parseError(cut)) });
+    expect(await run(paths, [])).toEqual({
+      code: 1,
+      stdout: [
+        `build-versions: ${fileOf(paths, 'v0001')} is up to date`,
+        `${fileOf(paths, 'v0002')} is not valid JSON: ${parseError(cut)}`,
+        `build-versions: ${fileOf(paths, 'v0003')} is up to date`,
+      ],
+      stderr: [`build-versions: ${fileOf(paths, 'v0002')} differs from the build; run with --write`],
+    });
   });
 
   it.each([[['--check']], [['--fixtures']], [['--fixtures', 'maybe']], [['--fixtures', 'auto', '--fixtures', 'auto']]])(
@@ -812,15 +610,8 @@ describe('main', () => {
     },
   );
 
-  it('reports an unreadable fixture status and an input of another commit with exit 1', async () => {
+  it('reports an input of another commit with exit 1', async () => {
     const paths = await casePaths();
-    const home = await tempDir();
-    await mkdir(join(home, '.opt2', 'state'), { recursive: true });
-    await writeFile(join(home, '.opt2', 'state', 'fixtures.json'), JSON.stringify({ available: 'yes' }));
-    expect(await run(paths, [], { HOME: home })).toMatchObject({
-      code: 1,
-      stderr: [`build-versions: ${join(home, '.opt2', 'state', 'fixtures.json')}: available must be true or false`],
-    });
     const other = join(paths.cutoverDir, 'other-pin.json');
     const pin = JSON.parse(await readFile(committed.exceptionsListFile, 'utf8')) as { sourceSha: string };
     await writeFile(other, JSON.stringify({ ...pin, sourceSha: '0'.repeat(40) }));
@@ -829,44 +620,5 @@ describe('main', () => {
       code: 1,
       stderr: [`build-versions: ${other} does not match its cut-over schema: /sourceSha must equal the pinned sha ${SHA}`],
     });
-  });
-
-  it.each([
-    ['state', 'must be an absolute path'],
-    [join(committed.packageRoot, '.opt2-state'), 'must be outside the repository checkout'],
-  ])('rejects OPT2_STATE_DIR %j with exit 1', async (value, reason) => {
-    expect(await run(await casePaths(), ['--fixtures', 'auto'], { OPT2_STATE_DIR: value })).toEqual({
-      code: 1,
-      stdout: [],
-      stderr: [`build-versions: OPT2_STATE_DIR: ${reason} (${value})`],
-    });
-  });
-});
-
-describe('resolveFixtures', () => {
-  it('takes explicit modes as given and infers auto from the committed v0002, else available', async () => {
-    const empty = resolveGatewayPaths({ OPT2_CUTOVER_DIR: await tempDir() });
-    const env = { OPT2_STATE_DIR: join(tmpdir(), 'opt2-build-versions-no-state') };
-    expect(await resolveFixtures('unavailable', committed, env)).toBe(false);
-    expect(await resolveFixtures('available', committed, env)).toBe(true);
-    expect(await resolveFixtures('auto', empty, env)).toBe(true);
-
-    const dir = await tempDir();
-    await copyFile(committed.schemaFile, join(dir, 'cutover-table.schema.json'));
-    await mkdir(join(dir, 'versions'));
-    const paths = resolveGatewayPaths({ OPT2_CUTOVER_DIR: dir });
-    const v0002 = buildVersions(await loadValidationContext(committed, 'ci'), { available: false })[1] as CutoverTable;
-    await writeFile(join(paths.versionsDir, 'v0002.json'), serialiseVersion(v0002));
-    expect(await resolveFixtures('auto', paths, env)).toBe(false);
-    await writeFile(join(paths.versionsDir, 'v0002.json'), '{}');
-    await expect(resolveFixtures('auto', paths, env)).rejects.toThrow(/does not match its cut-over schema/);
-  });
-
-  it.each(['', '  '])('reads <HOME>/.opt2/state/fixtures.json when OPT2_STATE_DIR is %j', async (blank) => {
-    const home = await tempDir();
-    await mkdir(join(home, '.opt2', 'state'), { recursive: true });
-    await writeFile(join(home, '.opt2', 'state', 'fixtures.json'), JSON.stringify({ available: false }));
-    const empty = resolveGatewayPaths({ OPT2_CUTOVER_DIR: await tempDir() });
-    expect(await resolveFixtures('auto', empty, { OPT2_STATE_DIR: blank, HOME: home })).toBe(false);
   });
 });

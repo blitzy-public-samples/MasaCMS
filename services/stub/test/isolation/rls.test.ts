@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { CONSUMER_AGGREGATE_VERSION_TABLE, INBOX_TABLE, type EventEnvelope } from '@opt2/platform/events';
 import { CHANGELOG_TABLE } from '@opt2/platform/migration-kit';
-import { createPool, type SiteChangedPayload, type TenantTx } from '@opt2/platform/tenancy';
+import { createPool, writeGrant, type SiteChangedPayload, type TenantTx } from '@opt2/platform/tenancy';
 import {
   PLATFORM_TABLE_GROUPS,
   TENANT_A,
@@ -17,6 +17,7 @@ import {
   expectPlatformTables,
   fixtureForTenant,
   pgAvailable,
+  pushTo,
   registryPayloads,
   seedRegistry,
   testEnvelope,
@@ -25,8 +26,25 @@ import {
   type TenantFixture,
   type ThrowawaySchema,
 } from '@opt2/platform/testing';
+import {
+  NOTE_COMMENT_GRANT,
+  commentToRow,
+  newComment,
+  noteCommentedPayload,
+  type NoteActivityRow,
+  type NoteCommentRow,
+  type NoteCommentedPayload,
+} from '../../src/domain/comment.js';
 import { newNote, noteCreatedPayload, noteToRow, type Note, type NoteProjectionRow, type NoteRow } from '../../src/domain/note.js';
-import { NOTE_CREATED_SUBSCRIPTION, NOTE_CREATED_TOPIC, SITE_CHANGED_SUBSCRIPTION, SITE_CHANGED_TOPIC } from '../../src/events/topics.js';
+import { noteProjectionConsumer } from '../../src/events/consumers.js';
+import {
+  NOTE_COMMENTED_SUBSCRIPTION,
+  NOTE_COMMENTED_TOPIC,
+  NOTE_CREATED_SUBSCRIPTION,
+  NOTE_CREATED_TOPIC,
+  SITE_CHANGED_SUBSCRIPTION,
+  SITE_CHANGED_TOPIC,
+} from '../../src/events/topics.js';
 import { createStubRepository, type StubRepository } from '../../src/repo/repository.js';
 import { TEST_CLOCK, buildDbApp, headersFor } from '../helpers/app.js';
 
@@ -50,7 +68,7 @@ interface Reply {
 }
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../../db/migrations/', import.meta.url));
-const TABLES = ['note', 'note_projection'] as const;
+const TABLES = ['note', 'note_projection', 'note_comment', 'note_activity'] as const;
 // Platform tables the consumers write besides the note tables: receipts, state versions and the projection changelog.
 const CONSUMER_PLATFORM_TABLES: readonly string[] = [CHANGELOG_TABLE, INBOX_TABLE, CONSUMER_AGGREGATE_VERSION_TABLE];
 const SUITE_TABLES = [...TABLES, ...CONSUMER_PLATFORM_TABLES];
@@ -58,6 +76,8 @@ const ALL_PLATFORM_GROUPS = Object.keys(PLATFORM_TABLE_GROUPS) as PlatformTableG
 const NOTES_URL = '/opt2/stub/notes';
 const WHOLE_LIST = `${NOTES_URL}?limit=1000`;
 const FOREIGN_TENANTS: readonly TenantFixture[] = [TENANT_B, TENANT_UMBRELLA];
+/** Tenant A note the grant case stores and grants `note-comment` on. */
+const GRANT_NOTE = newNote({ title: 'rls grant', body: '' }, TEST_CLOCK);
 
 const RLS_FLAGS_SQL = `
 SELECT c.relname::text AS relname, c.relrowsecurity AS enabled, c.relforcerowsecurity AS forced
@@ -82,6 +102,11 @@ function built(): { schema: ThrowawaySchema; repository: StubRepository; ctx: Ap
   }
   return { schema, repository, ctx };
 }
+
+/** The suite repository reached at call time, since the fan-out case's consumer exists before the throwaway schema does. */
+const suiteRepository = new Proxy({} as StubRepository, {
+  get: (_target, name) => Reflect.get(built().repository, name) as unknown,
+});
 
 /** A fresh note of `tenant`, as the create route builds it. */
 function noteFor(tenant: TenantFixture): Note {
@@ -108,12 +133,27 @@ function projectionRowFor(tenant: TenantFixture, noteId?: string): NoteProjectio
   };
 }
 
+/** A comment row of `tenant` on a fresh note id, as the comment route builds it. */
+function commentRowFor(tenant: TenantFixture): NoteCommentRow {
+  return commentToRow(newComment(noteFor(tenant).noteId, tenant.siteId, `rls ${tenant.key}`, TEST_CLOCK));
+}
+
+/** An activity row of `tenant` for a fresh event, note and comment, as the comment consumer builds it. */
+function activityRowFor(tenant: TenantFixture): NoteActivityRow {
+  const comment = commentRowFor(tenant);
+  return { event_id: randomUUID(), note_id: comment.note_id, comment_id: comment.comment_id, aggregate_version: 2, applied_at: comment.created };
+}
+
 function rowFor(table: string, tenant: TenantFixture): Row {
   switch (table) {
     case 'note':
       return noteRowFor(tenant);
     case 'note_projection':
       return projectionRowFor(tenant);
+    case 'note_comment':
+      return commentRowFor(tenant);
+    case 'note_activity':
+      return activityRowFor(tenant);
     case CHANGELOG_TABLE:
       return { table: 'note', op: 'insert', key: noteFor(tenant).noteId, after: 's0:', origin: 'target' };
     case INBOX_TABLE:
@@ -137,6 +177,10 @@ async function writeAs(tx: TenantTx, table: string, tenant: TenantFixture): Prom
     storedNotes.set(tx.tenantId, note);
   } else if (table === 'note_projection') {
     await stub.upsertProjection(tx, projectionRowFor(tenant));
+  } else if (table === 'note_comment') {
+    await stub.insert(tx, 'note_comment', commentRowFor(tenant));
+  } else if (table === 'note_activity') {
+    await stub.insertActivity(tx, activityRowFor(tenant));
   } else {
     const values: Row = { tenant_id: tx.tenantId, ...rowFor(table, tenant) };
     const columns = Object.keys(values);
@@ -162,6 +206,29 @@ function noteCreatedEnvelope(tenantId: string): EventEnvelope<NoteCreatedPayload
     aggregateVersion: note.rowVersion,
     payload: noteCreatedPayload(note),
   });
+}
+
+/** A `stub.note.commented.v1` envelope of a new comment on the note writeAs stored for `tenantId`. */
+function noteCommentedEnvelope(tenantId: string): EventEnvelope<NoteCommentedPayload> {
+  const note = noteCreatedEnvelope(tenantId).payload;
+  const site = fixtureForTenant(tenantId)?.siteId ?? TENANT_A.siteId;
+  return testEnvelope({
+    topic: NOTE_COMMENTED_TOPIC,
+    tenantId,
+    aggregateType: 'note',
+    aggregateId: note.noteId,
+    aggregateVersion: 2,
+    payload: noteCommentedPayload(newComment(note.noteId, site, 'rls comment', TEST_CLOCK)),
+  });
+}
+
+/** Comments on the grant note as a system user of `acting`, naming `grantor`'s site; allowed on 200, denied on the legacy 404. */
+async function commentAsGrantee(grantor: TenantFixture, acting: TenantFixture): Promise<'allowed' | 'denied'> {
+  const url = `${NOTES_URL}/${GRANT_NOTE.noteId}/comments`;
+  const reply = await send('POST', url, 'system-user', acting, { grantorsiteid: grantor.siteId, body: `rls ${acting.key}` });
+  if (reply.status === 200) return 'allowed';
+  if (reply.status === 404) return 'denied';
+  throw new Error(`a ${acting.key} comment on the ${grantor.key} grant note answered ${reply.status}`);
 }
 
 /** A contract-valid site.changed envelope re-announcing the fixture site of `tenantId` at version 2 with one more domain. */
@@ -240,7 +307,7 @@ describe.skipIf(!available)('rls-isolation', () => {
       const db = built().schema;
       expect(await checkCatalog(db)).toEqual([]);
       const { rows } = await db.adminPool.query(RLS_FLAGS_SQL, [db.schema, [...TABLES]]);
-      expect(rows).toEqual(TABLES.map((relname) => ({ relname, enabled: true, forced: true })));
+      expect(rows).toEqual([...TABLES].sort().map((relname) => ({ relname, enabled: true, forced: true })));
     });
 
     it('platform tables present', async () => {
@@ -260,7 +327,22 @@ describe.skipIf(!available)('rls-isolation', () => {
       events: [
         { app: () => ctx?.app, subscription: NOTE_CREATED_SUBSCRIPTION, envelopeFor: noteCreatedEnvelope, publisher },
         { app: () => ctx?.app, subscription: SITE_CHANGED_SUBSCRIPTION, envelopeFor: siteChangedEnvelope, publisher },
+        { app: () => ctx?.app, subscription: NOTE_COMMENTED_SUBSCRIPTION, envelopeFor: noteCommentedEnvelope, publisher },
       ],
+      fanout: {
+        definition: noteProjectionConsumer(suiteRepository, TEST_CLOCK),
+        envelopeFrom: (tenant) => noteCreatedEnvelope(tenant.tenantId),
+        effectsIn: async (tx) => (await readAs(tx, 'note_projection')).length,
+      },
+      grant: {
+        kind: NOTE_COMMENT_GRANT,
+        resourceId: GRANT_NOTE.noteId,
+        async grant(tx, grantee) {
+          await built().repository.insert(tx, 'note', noteToRow(GRANT_NOTE));
+          await writeGrant(tx, { grantee: grantee.tenantId, kind: NOTE_COMMENT_GRANT, resourceId: GRANT_NOTE.noteId });
+        },
+        guardedWrite: commentAsGrantee,
+      },
     },
   );
 
@@ -309,6 +391,34 @@ describe.skipIf(!available)('rls-isolation', () => {
 
       expect(list.status).toBe(200);
       expect(listedIds(list)).not.toContain(noteId);
+    });
+
+    it('stores only the granted tenant comment on tenant A note, lists it to tenant A alone and applies its event once', async () => {
+      const commentsUrl = `${NOTES_URL}/${noteId}/comments`;
+      const granted = await send('POST', `${NOTES_URL}/${noteId}/grants`, 'system-user', TENANT_A, { granteesiteid: TENANT_B.siteId });
+      const fromB = await send('POST', commentsUrl, 'system-user', TENANT_B, { grantorsiteid: TENANT_A.siteId, body: 'from b' });
+      const fromUmbrella = await send('POST', commentsUrl, 'member', TENANT_UMBRELLA, { grantorsiteid: TENANT_A.siteId, body: 'from umbrella' });
+      const listA = await send('GET', `${commentsUrl}?limit=1000`, 'system-user', TENANT_A);
+      const listB = await send('GET', commentsUrl, 'system-user', TENANT_B);
+
+      expect([granted.status, fromB.status, fromUmbrella.status, listA.status, listB.status]).toEqual([200, 200, 404, 200, 404]);
+      const comment = fromB.body.data as { commentid: string; authorsiteid: string };
+      expect((listA.body.data as { items: unknown[] }).items).toEqual([
+        expect.objectContaining({ commentid: comment.commentid, authorsiteid: TENANT_B.siteId, body: 'from b' }),
+      ]);
+
+      const ofComment = ({ envelope }: (typeof publisher.published)[number]): boolean =>
+        (envelope.payload as { commentId?: string }).commentId === comment.commentid;
+      const event = publisher.published.find(ofComment)?.envelope;
+      if (event === undefined) throw new Error(`no stub.note.commented.v1 event of comment ${comment.commentid} was published`);
+      expect(event).toMatchObject({ tenantId: TENANT_A.tenantId, aggregateId: noteId, aggregateVersion: 2 });
+      const deliveries = [];
+      for (let copy = 0; copy < 2; copy += 1) deliveries.push((await pushTo(built().ctx.app, NOTE_COMMENTED_SUBSCRIPTION, event)).statusCode);
+      expect(deliveries).toEqual([204, 204]);
+      const activity = await built().schema.app.withTenant(TENANT_A.tenantId, async (tx) =>
+        (await tx.query(`SELECT event_id, comment_id FROM "${tx.schema}".note_activity WHERE note_id = $1`, [noteId])).rows,
+      );
+      expect(activity).toEqual([{ event_id: event.eventId, comment_id: comment.commentid }]);
     });
 
     it('cross-tenant delete leaves the note', async () => {

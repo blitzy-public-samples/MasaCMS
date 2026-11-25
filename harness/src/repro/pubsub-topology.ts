@@ -8,6 +8,8 @@ import {
   consumerOfSubscription,
   dlqReplaySubscriptionName,
   dlqTopicName,
+  InvalidEventNameError,
+  isTopicName,
   parseTopic,
   PubSub,
   PUSH_PATH_PREFIX,
@@ -389,11 +391,20 @@ export interface SubscriptionHandleLike {
   delete(): Promise<unknown>;
 }
 
+/** A listed subscription: its full `projects/<project>/subscriptions/<name>` name and the full name of its topic. */
+export interface ListedSubscriptionLike {
+  name: string;
+  metadata?: { topic?: string | null } | null;
+}
+
 /** The emulator client surface `applyLocalTopology` uses; a `PubSub` from `@opt2/platform/events` satisfies it. */
 export interface PubSubLike {
   createTopic(name: string): Promise<unknown>;
-  topic(name: string): { createSubscription(name: string, options?: PushSubscriptionOptions): Promise<unknown> };
+  topic(name: string): { createSubscription(name: string, options?: PushSubscriptionOptions): Promise<unknown>; delete(): Promise<unknown> };
   subscription(name: string): SubscriptionHandleLike;
+  /** Every topic of the project, by full `projects/<project>/topics/<name>` name. */
+  getTopics(): Promise<[{ name: string }[], ...unknown[]]>;
+  getSubscriptions(): Promise<[ListedSubscriptionLike[], ...unknown[]]>;
 }
 
 /** Inputs of {@link applyLocalTopology}; `emulatorHost` is required unless a client is injected. */
@@ -406,13 +417,18 @@ export interface LocalApplyOptions {
   pubsub?: PubSubLike;
 }
 
-/** Resources created by {@link applyLocalTopology}; `updated` counts existing push subscriptions brought to the derived settings. */
+/**
+ * Resources created, updated and retired by {@link applyLocalTopology}; `updated` counts existing push subscriptions
+ * brought to the derived settings, `retired*` the undeclared topology-named resources deleted.
+ */
 export interface LocalApplyResult {
   topics: number;
   dlqTopics: number;
   pushSubscriptions: number;
   replaySubscriptions: number;
   updated: number;
+  retiredSubscriptions: number;
+  retiredTopics: number;
 }
 
 /** Runs `create`; false when the resource already exists. */
@@ -426,8 +442,80 @@ async function createIfAbsent(create: () => Promise<unknown>): Promise<boolean> 
   }
 }
 
+// Package test suites create resources in the same grammar in the stack's project, each with an 8-hex per-run suffix
+// on a name segment (`stub.run-1a2b3c4d.event.v1`, `stub-1a2b3c4d.<topic>`); those are never retired.
+const TEST_RUN_SEGMENT = /-[0-9a-f]{8}(?:\.|$)/;
+
+/** Runs `test`; false when the event naming rules reject a name it builds or splits. */
+function holdsForName(test: () => boolean): boolean {
+  try {
+    return test();
+  } catch (err) {
+    if (err instanceof InvalidEventNameError) return false;
+    throw err;
+  }
+}
+
+/** Whether `name` is `derive(<push subscription>)` for one of its own dot-separated prefixes. */
+function derivedFromPushSubscription(name: string, derive: (subscription: string) => string): boolean {
+  const segments = name.split('.');
+  return segments.some((_, end) => holdsForName(() => derive(segments.slice(0, end).join('.')) === name));
+}
+
+/** Whether the local topology names subscriptions like `name`: a push subscription or its DLQ replay subscription. */
+export function isTopologySubscriptionName(name: string): boolean {
+  if (TEST_RUN_SEGMENT.test(name)) return false;
+  const push = holdsForName(() => subscriptionName(consumerOfSubscription(name), topicOfSubscription(name)) === name);
+  return push || derivedFromPushSubscription(name, dlqReplaySubscriptionName);
+}
+
+/** Whether the local topology names topics like `name`: an event topic or a push subscription's dead-letter topic. */
+export function isTopologyTopicName(name: string): boolean {
+  if (TEST_RUN_SEGMENT.test(name)) return false;
+  return isTopicName(name) || derivedFromPushSubscription(name, dlqTopicName);
+}
+
+/**
+ * Deletes the project's topology-named subscriptions that `topology` does not declare, then its undeclared
+ * topology-named topics that no remaining subscription is attached to; counts both into `result`.
+ */
+async function retireUndeclared(client: PubSubLike, topology: Topology, projectId: string, result: LocalApplyResult): Promise<void> {
+  const declared = Object.entries(topology.subscriptions);
+  const declaredSubscriptions = new Set(declared.flatMap(([name, entry]) => [name, entry.dlq_replay_subscription]));
+  const declaredTopics = new Set([...Object.keys(topology.topics), ...declared.map(([, entry]) => entry.dead_letter_topic)]);
+  const shortName = (name: string, prefix: string): string => (name.startsWith(prefix) ? name.slice(prefix.length) : name);
+  const byName = (a: { name: string }, b: { name: string }): number => compareCodeUnits(a.name, b.name);
+
+  const attached = new Set<string>();
+  const [subscriptions] = await client.getSubscriptions();
+  for (const listed of [...subscriptions].sort(byName)) {
+    const name = shortName(listed.name, `projects/${projectId}/subscriptions/`);
+    if (declaredSubscriptions.has(name) || !isTopologySubscriptionName(name)) {
+      if (listed.metadata?.topic) attached.add(listed.metadata.topic);
+      continue;
+    }
+    await client.subscription(name).delete();
+    result.retiredSubscriptions += 1;
+  }
+  const [topics] = await client.getTopics();
+  for (const { name: fullName } of [...topics].sort(byName)) {
+    const name = shortName(fullName, `projects/${projectId}/topics/`);
+    if (declaredTopics.has(name) || !isTopologyTopicName(name) || attached.has(fullName)) continue;
+    await client.topic(name).delete();
+    result.retiredTopics += 1;
+  }
+}
+
 async function reconcileEmulator(client: PubSubLike, topology: Topology, opts: LocalApplyOptions): Promise<LocalApplyResult> {
-  const result: LocalApplyResult = { topics: 0, dlqTopics: 0, pushSubscriptions: 0, replaySubscriptions: 0, updated: 0 };
+  const result: LocalApplyResult = {
+    topics: 0,
+    dlqTopics: 0,
+    pushSubscriptions: 0,
+    replaySubscriptions: 0,
+    updated: 0,
+    retiredSubscriptions: 0,
+    retiredTopics: 0,
+  };
   const topicPath = (topic: string): string => `projects/${opts.projectId}/topics/${topic}`;
 
   for (const topic of Object.keys(topology.topics).sort(compareCodeUnits)) {
@@ -485,10 +573,14 @@ async function reconcileEmulator(client: PubSubLike, topology: Topology, opts: L
     }
     result.updated += 1;
   }
+  await retireUndeclared(client, topology, opts.projectId, result);
   return result;
 }
 
-/** Creates or updates the local topology's topics and subscriptions on the Pub/Sub emulator, never on Google Cloud. */
+/**
+ * Creates or updates the local topology's topics and subscriptions on the Pub/Sub emulator, never on Google Cloud,
+ * then retires the undeclared ones named in its grammar.
+ */
 export async function applyLocalTopology(topology: Topology, opts: LocalApplyOptions): Promise<LocalApplyResult> {
   if (topology.target !== 'local') {
     throw new TopologyError(`only a local topology is applied to the emulator, got target ${topology.target}`);
@@ -518,7 +610,7 @@ Derives topics, push subscriptions, DLQs, queues and the service_calls map from 
 
 Options:
   --target local|cloud  required. local: create or update the topics and subscriptions, for every package up.sh
-                        starts, on the Pub/Sub emulator.
+                        starts, on the Pub/Sub emulator, then delete the topology-named ones no longer declared.
                         cloud: write ${TFVARS_RELATIVE_PATH} for the deployed
                         services listed in ${PLAN_TFVARS_RELATIVE_PATH}
   --out <file>          cloud only: write <file> instead of that variables file
@@ -620,15 +712,16 @@ export async function main(argv: string[], opts: TopologyCliOptions = {}): Promi
   }
   const env = opts.env ?? process.env;
   const projectId = env.GOOGLE_CLOUD_PROJECT || DEFAULT_PROJECT_ID;
-  const created = await applyLocalTopology(topology, {
+  const { retiredSubscriptions, retiredTopics, ...created } = await applyLocalTopology(topology, {
     emulatorHost: env.PUBSUB_EMULATOR_HOST,
     projectId,
     pushKey: readSecret(LOCAL_SECRET_FILES.pubsubPushKey, { env }),
     ports: opts.ports ?? loadPorts(),
     pubsub: opts.pubsub,
   });
+  const retired = { subscriptions: retiredSubscriptions, topics: retiredTopics };
   // Local queues need no emulator resource: their rows live in each creator's schema.
-  return { summary: { target, projectId, emulatorHost: env.PUBSUB_EMULATOR_HOST, created, queues } };
+  return { summary: { target, projectId, emulatorHost: env.PUBSUB_EMULATOR_HOST, created, retired, queues } };
 }
 
 if (isMainModule(import.meta.url)) {

@@ -32,7 +32,7 @@ const SECRET_SUFFIX = anyCase(String.raw`csrf[_-]?token[_-]?expires|passw(?:or)?
 const SECRET_WORD = anyCase(String.raw`session|sig|cfid`);
 // A percent escape (`%26`, re-encoded `%2526`) is a key boundary in encoded text; it stays in the name group, so it is kept.
 const ESCAPE = String.raw`%(?:25)*[\dA-Fa-f]{2}`;
-// `signature` only at a key boundary or camelCase hump (`oauth_signature`, `webhookSignature`), never inside a word (`esignature`).
+// `signature` only at a key boundary or camelCase hump (`oauth_signature`, `webhookSignature`), never inside a word (`countersignature`).
 const SECRET_KEY = String.raw`(?:(?<![A-Za-z\d])|${ESCAPE})${anyCase('signature')}|(?<=[A-Za-z\d])Signature`;
 // Percent-encoded `:` or `=` after an optional encoded quote, re-encoding included (`%3D`, `%22%3A`, `%253d`).
 const ENCODED_SEPARATOR = String.raw`(?:%(?:25)*2[27])?%(?:25)*3[aAdD]`;

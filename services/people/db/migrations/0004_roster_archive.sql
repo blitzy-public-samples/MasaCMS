@@ -1,4 +1,4 @@
--- People-only tables: person archive (seam 1), roster write operations, group-name projection.
+-- People-only tables: person archive, roster write operations, group-name projection.
 CREATE TABLE people.person_archive (
   tenant_id uuid NOT NULL,
   archive_id char(35) NOT NULL,

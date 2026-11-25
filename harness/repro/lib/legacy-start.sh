@@ -7,7 +7,7 @@ usage() {
 usage: legacy-start.sh [--fresh | --tasks-file <cfconfig.json> | --original]
 
   (no argument)              restart: stop and start opt2-legacy, then resume the tasks that were running
-  --fresh                    first start from up.sh: record the legacy start environment, drop stale opt2-survey-* tasks
+  --fresh                    first start from up.sh: record the legacy start environment
   --tasks-file <file>        start with the scheduled tasks of a CFConfig export, all paused (checkpoint.sh)
   --original                 start the captured original server without the OPT-2 variables (down.sh)
 
@@ -64,7 +64,6 @@ TASKS_IMPORT="$COMMANDBOX_DIR/tasks-import.json"
 # opt2-legacy's java.io.tmpdir, hence Masa's getTempDirectory(); emptied before every start.
 LEGACY_TMP_DIR="$OPT2_STATE_DIR/legacy-tmp"
 STARTUP_ROUTE_KEY=startup:legacy-start
-SURVEY_TASK_PREFIX=opt2-survey-
 START_TIMEOUT_S="${OPT2_LEGACY_START_TIMEOUT_S:-900}"
 
 WINDOW_ID=""
@@ -319,10 +318,6 @@ import_paused_tasks() {
   local source=$1
   node "$LIB_DIR/cfconfig-tasks.mjs" pause-all --in "$source" --out "$TASKS_IMPORT" ||
     die "cannot pause the scheduled tasks of $source"
-  if [[ $MODE == fresh ]]; then
-    node "$LIB_DIR/cfconfig-tasks.mjs" drop-prefix --prefix "$SURVEY_TASK_PREFIX" --in "$TASKS_IMPORT" --out "$TASKS_IMPORT" ||
-      die "cannot drop the $SURVEY_TASK_PREFIX tasks of $source"
-  fi
   cfconfig_import "$TASKS_IMPORT" >&2 || die "cannot import the paused scheduled tasks"
   rm -f -- "$TASKS_IMPORT"
 }
@@ -335,11 +330,9 @@ start_server() {
   # setsid keeps the JVM out of the caller's process group, which the migration service may signal on a timeout.
   # Plugin discovery and DB updates stay off, so application start-up runs neither writer.
   # MURA_BROADCASTCLUSTERCOMMANDS=false: no cluster reload commands, as the start-up guard on content units requires.
-  # The port file's Mailpit, as process_env hands it to target communications.
   PORT="$LEGACY_PORT" MURA_PING=false MURA_AUTODISCOVERPLUGINS=false MURA_APPLYDBUPDATES=false \
     MURA_BROADCASTCLUSTERCOMMANDS=false OPT2_BRIDGE_HMAC_KEY="$key" OPT2_HARNESS_KEY="$harness_key" \
     OPT2_GATEWAY_ORIGIN="$OPT2_GATEWAY_ORIGIN_LOCAL" \
-    SMTP_HOST=127.0.0.1 SMTP_PORT="$OPT2_TOOL_PORT_MAILPIT_SMTP" MAILPIT_API_URL="$MAILPIT_API_LOCAL" \
     setsid --wait box server start serverConfigFile="$SERVER_JSON" --noSaveSettings </dev/null >&2 ||
     die "box server start serverConfigFile=$SERVER_JSON failed"
 }
@@ -503,24 +496,13 @@ mapfile -t described <<<"$fields"
 [[ -z ${described[2]:-} ]] || die "scheduled tasks not paused after boot: ${described[2]}"
 paused_json=${described[1]}
 
-if [[ $MODE == fresh ]]; then
-  log_step j "delete surviving $SURVEY_TASK_PREFIX tasks"
-  deleted="$(bridge_scheduler delete --json "{\"prefix\":\"$SURVEY_TASK_PREFIX\"}")" || die "scheduler.cfm delete failed"
-  # shellcheck disable=SC2016 # JavaScript source
-  paused_json="$(node -e '
-const [paused, deleted] = process.argv.slice(1);
-const gone = new Set(JSON.parse(deleted).tasks ?? []);
-process.stdout.write(JSON.stringify(JSON.parse(paused).filter((name) => !gone.has(name))));
-' -- "$paused_json" "$deleted")" || die "cannot read the scheduler.cfm delete answer"
-fi
-
-log_step k "close the start-up window"
+log_step j "close the start-up window"
 close_window || exit 1
 trap - EXIT INT TERM
 
 resumed_json="[]"
 if [[ $resume_json != "[]" ]]; then
-  log_step l "resume the tasks that were running"
+  log_step k "resume the tasks that were running"
   resumed="$(bridge_scheduler resume --json "{\"tasks\":$resume_json}")" || die "scheduler.cfm resume failed"
   resumed_json="$(printf '%s\n' "$resumed" | json_get - tasks)" || die "scheduler.cfm resume answered no tasks"
 fi

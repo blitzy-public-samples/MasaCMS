@@ -21,14 +21,7 @@ describe('UnitCatalog.siteColumnOf', () => {
       toauthclients: 'siteid',
       tcontentrelated: 'siteID',
       tcontenttags: 'siteID',
-      'synthetic.export_definition': 'siteID',
-      'synthetic.export_job': 'siteID',
-      'synthetic.message': 'siteID',
-      'synthetic.message_template': 'siteID',
       'synthetic.person_archive': 'siteID',
-      'synthetic.signature_request': 'siteID',
-      'synthetic.survey': 'siteID',
-      'synthetic.survey_response': 'siteID',
     });
   });
 
@@ -39,7 +32,6 @@ describe('UnitCatalog.siteColumnOf', () => {
     ['a split table resolved by siteID', 'ttrash', null],
     ['a pool table', 'tcontent', null],
     ['a table whose tenant comes from its parent', 'toauthtokens', null],
-    ['a folded program table with a site column', 'Program_1.finance_record', null],
   ])('answers %s', (_label, table, expected) => {
     expect(catalog.siteColumnOf(table)).toBe(expected);
   });
@@ -52,15 +44,15 @@ describe('UnitCatalog.siteColumnOf', () => {
 describe('LegacyTableTarget.objectColumns', () => {
   const targets = tables.flatMap((table) => catalog.unitsForLegacyTable(table));
 
-  it('maps the object columns of exactly the finance attachment and export job targets to their buckets', () => {
+  it('maps no committed target to an object bucket', () => {
     const backed = Object.fromEntries(targets.flatMap((target) => (Object.keys(target.objectColumns).length === 0 ? [] : [[target.unit, target.objectColumns]])));
 
-    expect(backed).toEqual({ 'finance.attachment': { content: 'finance-attachments' }, 'reporting.export_job': { output: 'reporting-exports' } });
+    expect(targets.length).toBeGreaterThan(0);
+    expect(backed).toEqual({});
   });
 
   it.each([
-    ['a folded program table', 'Program_2.finance_attachment', 'finance.attachment'],
-    ['a synthetic table', 'synthetic.export_job', 'reporting.export_job'],
+    ['a synthetic table', 'synthetic.person_archive', 'people.person_archive'],
     ['a table without object columns', 'tcontent', 'content.content'],
   ])('freezes the object columns of %s', (_label, table, unit) => {
     const target = catalog.unitsForLegacyTable(table).find((candidate) => candidate.unit === unit);

@@ -11,7 +11,6 @@ import {
   LOCAL_USER_TOKEN,
   PUBSUB_INVOKER_ROLE,
   Roles,
-  SYNTHETIC_ROLES,
   TASKS_INVOKER_ROLE,
   loadLocalSigningKeys,
   localSecretPath,
@@ -179,7 +178,7 @@ describe('service and task tokens', () => {
       roles: rolesForService('gateway'),
     });
     await expect(overrides.invocationVerifier.verify(`Bearer ${token}`)).resolves.toMatchObject({ name: 'gateway' });
-    const other = await mintServiceToken({ caller: 'gateway', audience: 'finance' });
+    const other = await mintServiceToken({ caller: 'gateway', audience: 'identity' });
     expect((await denialOf(overrides.invocationVerifier.verify(`Bearer ${other}`))).reason).toBe('invalid-credential');
   });
 
@@ -227,9 +226,8 @@ describe('ROLE_SET', () => {
       's2',
       'other-tenant',
     ]);
-    expect(names).toEqual(expect.arrayContaining([...SYNTHETIC_ROLES]));
     expect(names).toEqual(expect.arrayContaining(SERVICE_CALLERS.map((caller) => `service:${caller}`)));
-    expect(names).toHaveLength(7 + SYNTHETIC_ROLES.length + SERVICE_CALLERS.length);
+    expect(names).toHaveLength(7 + SERVICE_CALLERS.length);
   });
 
   it('builds user and service roles from the auth role constants', () => {
@@ -237,7 +235,7 @@ describe('ROLE_SET', () => {
     expect(byName.get('s2')).toMatchObject({ kind: 'user', roles: [Roles.systemUser, Roles.s2], s2: true });
     expect(byName.get('other-tenant')).toMatchObject({ crossTenant: true });
     expect(byName.get('other-tenant')).not.toHaveProperty('siteOverride');
-    expect(byName.get(Roles.financeApprover)?.roles).toEqual([Roles.systemUser, Roles.financeApprover]);
+    expect(byName.get(Roles.siteAdmin)?.roles).toEqual([Roles.systemUser, Roles.siteAdmin]);
     expect(byName.get('service:migration')).toMatchObject({
       kind: 'service',
       caller: 'migration',

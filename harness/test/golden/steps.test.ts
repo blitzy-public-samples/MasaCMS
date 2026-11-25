@@ -39,7 +39,7 @@ import type { EnvLike } from '../../src/lib/paths.js';
 const BASE = 'http://127.0.0.1:8500';
 /** tenant-a's seeded domain on the legacy port, where a session with `site: tenant-a` sends its requests. */
 const SITE = 'http://tenant-a.localhost:8500';
-const SCENARIO = 'GS-CO-15';
+const SCENARIO = 'GS-CO-85';
 const ADMIN_PASSWORD = 'FIXTURE-ADMIN-PASSWORD';
 const RELOAD_KEY = 'FIXTURE-reload-key';
 const MASK = '<secret>';
@@ -1356,7 +1356,7 @@ describe('runStep poll', () => {
     expect(fake.calls.length).toBeGreaterThanOrEqual(1);
   });
 
-  const JOB = '/legacy-fixtures/cfml/api.cfm/reporting/exports/FIXTURE-JOB?siteid=tenant-a';
+  const JOB = '/_api/json/v1/tenant-a/jobs/FIXTURE-JOB';
   const CREATED = '2026-06-30T12:00:00';
   const LIFECYCLE = [
     { state: 'queued', at: 'data.created' },

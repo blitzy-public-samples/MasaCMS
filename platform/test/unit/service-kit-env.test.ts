@@ -421,7 +421,7 @@ describe('processEnvSchema', () => {
   it.each<[string, ProcessEnvRequirements, Record<string, string | undefined>, string[]]>([
     ['its own name and callees', { service: 'people', callees: ['identity'], database: true }, localEnv, []],
     ['another process name', { service: 'identity' }, localEnv, ['OPT2_SERVICE_NAME: must be identity']],
-    ['a missing callee', { service: 'people', callees: ['identity', 'timesheets', 'strategies-content'] }, localEnv, ['OPT2_SERVICE_URLS.timesheets: is required', 'OPT2_SERVICE_URLS.strategies-content: is required']],
+    ['a missing callee', { service: 'people', callees: ['identity', 'programs-sites', 'strategies-content'] }, localEnv, ['OPT2_SERVICE_URLS.programs-sites: is required', 'OPT2_SERVICE_URLS.strategies-content: is required']],
     ['no callee map', { service: 'people', callees: ['identity'] }, { ...localEnv, OPT2_SERVICE_URLS: undefined }, ['OPT2_SERVICE_URLS.identity: is required']],
     ['the gateway by OPT2_GATEWAY_URL', { service: 'people', callees: ['gateway'] }, { ...localEnv, OPT2_GATEWAY_URL: GATEWAY }, []],
     ['the gateway by its map entry', { service: 'people', callees: ['gateway'] }, { ...localEnv, OPT2_SERVICE_URLS: `{"gateway":"${GATEWAY}"}` }, []],
@@ -441,13 +441,13 @@ describe('processEnvSchema', () => {
     ['a callee map that is not an object, without callee issues', { service: 'people', callees: ['identity', 'migration'] }, { ...localEnv, OPT2_SERVICE_URLS: '["http://x"]' }, ['OPT2_SERVICE_URLS: Invalid input: expected record, received array']],
     [
       'every issue, with the parse and cross-variable ones',
-      { service: 'people', callees: ['identity', 'timesheets', 'gateway'], database: true },
+      { service: 'people', callees: ['identity', 'programs-sites', 'gateway'], database: true },
       { ...localEnv, PORT: 'abc', OPT2_SERVICE_NAME: 'identity', OPT2_DB_AUTH: undefined, OPT2_TASKS_ADAPTER: 'cloud' },
       [
         'PORT: Invalid input: expected number, received NaN',
         'OPT2_SERVICE_NAME: must be people',
         'OPT2_DB_AUTH: is required',
-        'OPT2_SERVICE_URLS.timesheets: is required',
+        'OPT2_SERVICE_URLS.programs-sites: is required',
         'OPT2_GATEWAY_URL: is required (or OPT2_SERVICE_URLS.gateway)',
         'OPT2_TASKS_ADAPTER: must equal OPT2_ENV',
       ],

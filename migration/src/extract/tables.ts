@@ -20,7 +20,7 @@ export interface MigratableTable {
 }
 
 /**
- * A live table that stays on legacy. `owner` is the recorded owner — `decision-list`, `retired`, or the service of a fixture
+ * A live table that stays on legacy. `owner` is the recorded owner — `decision-list`, `retired`, `legacy`, or the service of a fixture
  * table the ownership file marks unmigrated — or `unassigned` when no ownership entry matches.
  */
 export interface SkippedTable {

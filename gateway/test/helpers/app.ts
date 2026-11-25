@@ -2,7 +2,7 @@
 import { rm } from 'node:fs/promises';
 import { IDENTITY_SERVICE, createServiceClient, type Clock, type FastifyInstance } from '@opt2/platform/service-kit';
 import type { TenantDb } from '@opt2/platform/tenancy';
-import { ROLE_SET, authHeadersFor, testInvocationMinter, testVerifier, type RoleSubject } from '@opt2/platform/testing';
+import { ROLE_SET, createHeadersFor, testInvocationMinter, testVerifier, type RoleSubject } from '@opt2/platform/testing';
 import { SERVICE_NAME, buildApp, type BuildAppOptions, type GatewayEnv } from '../../src/app.js';
 import { resolveGatewayPaths } from '../../src/cutover/paths.js';
 import type { CutoverStatus } from '../../src/cutover/state.js';
@@ -316,9 +316,7 @@ function serviceSubjectHolding(role: string): RoleSubject {
 }
 
 /** `app.inject` headers presenting `subject` to the gateway; user tokens are minted for `site`, `default` unless given. */
-export function headersFor(subject: RoleSubject, opts: { site?: string; audience?: string } = {}): Promise<Record<string, string>> {
-  return authHeadersFor(subject, { site: opts.site ?? DEFAULT_SITE, audience: opts.audience ?? SERVICE_NAME });
-}
+export const headersFor = createHeadersFor({ audience: SERVICE_NAME, site: DEFAULT_SITE });
 
 /** Headers of the `platform.operator` workload, as the cut-over routes require. */
 export function operatorHeaders(): Promise<Record<string, string>> {

@@ -5,8 +5,6 @@ import { isDeepStrictEqual } from 'node:util';
 import { LegacyFaultError, LegacyServiceUnavailableError, cfEq, cfListToArray } from '@opt2/platform/legacy-compat';
 import { requestIdFrom, systemClock } from '@opt2/platform/service-kit';
 import {
-  findOpt2Action,
-  findOpt2Screen,
   findScreen,
   shellHooks,
   type PageRedirect,
@@ -72,18 +70,6 @@ import { fw1RedirectTarget } from './urls';
 /** Path params of the admin trees: the route key's circuit and action. */
 export interface AdminRouteParams {
   readonly circuit: string;
-  readonly action: string;
-}
-
-/** Path params of a synthetic-module screen. */
-export interface Opt2ScreenParams {
-  readonly module: string;
-  readonly screen: string;
-}
-
-/** Path params of a synthetic-module post action. */
-export interface Opt2ActionParams {
-  readonly module: string;
   readonly action: string;
 }
 
@@ -155,16 +141,14 @@ const RESPONSE_ANSWERS: Answers<Response> = {
 /** One admin request as an entry point received it. */
 interface PipelineRequest {
   readonly mode: AdminMode;
-  /** Logged and handed to the request context; OPT-2 routes give their module and screen or action. */
+  /** Logged and handed to the request context. */
   readonly route: AdminRouteParams;
   readonly method: string;
   readonly path: string;
-  /** The query as received, `?` included; `''` without one. */
-  readonly search: string;
   readonly headers: Headers;
   readonly searchParams: AdminRequestInput['searchParams'];
-  /** The request whose body is the form scope; absent on the synthetic-module screens, which read none. */
-  readonly bodySource?: Request;
+  /** The request whose body is the form scope. */
+  readonly bodySource: Request;
 }
 
 /** An answer, plus session values it adds to the request set-up's writes. */
@@ -260,13 +244,12 @@ async function withAdminPipeline<T>(input: PipelineRequest, answers: Answers<T>,
     try {
       const auth = await authenticateRequest(input.headers, input.path);
       user = auth.user;
-      received = input.bodySource === undefined ? undefined : await receiveRequestBody(input.bodySource);
+      received = await receiveRequestBody(input.bodySource);
       const calls = { userToken: auth.userToken, requestId, inbound: input.headers };
       const now = systemClock.now();
       const req = await buildAdminRequest({
         params: input.route,
         searchParams: input.searchParams,
-        receivedTarget: `${input.path}${input.search}`,
         headers: input.headers,
         form: received?.form,
         auth,
@@ -286,7 +269,7 @@ async function withAdminPipeline<T>(input: PipelineRequest, answers: Answers<T>,
         // The set-up echoes the Origin only past its no-site redirects (admin/Application.cfc:440-451,521-533).
         ...(applicationGate(req).kind === 'allow' ? { accessControl: req.accessControlHeaders } : {}),
       };
-      const dispatch = resolve(req, received === undefined ? [] : uploadsOf(received.form));
+      const dispatch = resolve(req, uploadsOf(received.form));
       if (dispatch === undefined) return answers.notFound(context);
       // Legacy's set-up stores these before its gate and controller run, so every service the screen calls reads them.
       await saveSessionWrites(gateway, auth, setupWrites, storedMura);
@@ -578,18 +561,17 @@ function rawDispatch(
 const pageResponse = (doc: AdminDocument, req: AdminRequest, context: LegacyResponseContext): Response =>
   documentResponse(doc, 200, cookiesOf(req), context);
 
-/** Entry facts of a route-handler request; `withBody` reads its body as the form scope. */
-function requestInput(mode: AdminMode, route: AdminRouteParams, request: Request, withBody: boolean): PipelineRequest {
+/** Entry facts of a route-handler request; its body is the form scope. */
+function requestInput(mode: AdminMode, route: AdminRouteParams, request: Request): PipelineRequest {
   const url = new URL(request.url);
   return {
     mode,
     route,
     method: request.method,
     path: url.pathname,
-    search: url.search,
     headers: request.headers,
     searchParams: url.searchParams,
-    bodySource: withBody ? request : undefined,
+    bodySource: request,
   };
 }
 
@@ -597,14 +579,14 @@ function requestInput(mode: AdminMode, route: AdminRouteParams, request: Request
 
 /** Page mode as the complete legacy response: status, headers, cookies and the serialized layout. */
 export function handleAdminPage(request: Request, params: AdminRouteParams): Promise<Response> {
-  return withAdminPipeline(requestInput('page', params, request, true), RESPONSE_ANSWERS, (req, uploads) =>
+  return withAdminPipeline(requestInput('page', params, request), RESPONSE_ANSWERS, (req, uploads) =>
     pageDispatch(req, uploads, params, RESPONSE_ANSWERS, pageResponse),
   );
 }
 
 /** Redirect mode: an FW/1 post action, answered with its redirect, re-rendered form or bare body. */
 export function handleAdminAction(request: Request, params: AdminRouteParams): Promise<Response> {
-  return withAdminPipeline(requestInput('redirect', params, request, true), RESPONSE_ANSWERS, (req, uploads) => {
+  return withAdminPipeline(requestInput('redirect', params, request), RESPONSE_ANSWERS, (req, uploads) => {
     const screen = findScreen(params.circuit, params.action, req.rc, uploads);
     if (screen === undefined || screen.mode !== 'redirect') return undefined;
     return submitDispatch(screen.gate, (ctx) => screen.submit(ctx));
@@ -613,7 +595,7 @@ export function handleAdminAction(request: Request, params: AdminRouteParams): P
 
 /** Fragment, JSON and download modes: the bare legacy body of a carried action. */
 export function handleAdminRaw(request: Request, params: AdminRouteParams): Promise<Response> {
-  return withAdminPipeline(requestInput('raw', params, request, true), RESPONSE_ANSWERS, (req, uploads) => {
+  return withAdminPipeline(requestInput('raw', params, request), RESPONSE_ANSWERS, (req, uploads) => {
     const screen = findScreen(params.circuit, params.action, req.rc, uploads);
     switch (screen?.mode) {
       case 'fragment':
@@ -625,25 +607,5 @@ export function handleAdminRaw(request: Request, params: AdminRouteParams): Prom
       default:
         return undefined;
     }
-  });
-}
-
-/** A synthetic-module screen inside the legacy layout, answered like a page-mode view. */
-export function handleOpt2Page(request: Request, params: Opt2ScreenParams): Promise<Response> {
-  const route = { circuit: params.module, action: params.screen };
-  return withAdminPipeline(requestInput('opt2', route, request, false), RESPONSE_ANSWERS, () => {
-    const def = findOpt2Screen(params.module, params.screen);
-    return def === undefined
-      ? undefined
-      : documentDispatch(def.gate, async (ctx) => def.render(ctx, await def.load(ctx)), pageResponse);
-  });
-}
-
-/** A synthetic-module post action, answered like an FW/1 post action. */
-export function handleOpt2Action(request: Request, params: Opt2ActionParams): Promise<Response> {
-  const route = { circuit: params.module, action: params.action };
-  return withAdminPipeline(requestInput('opt2', route, request, true), RESPONSE_ANSWERS, () => {
-    const def = findOpt2Action(params.module, params.action);
-    return def === undefined ? undefined : submitDispatch(def.gate, (ctx) => def.submit(ctx));
   });
 }

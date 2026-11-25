@@ -14,6 +14,7 @@ import {
   assertRequestMatchesOpenApi,
   assertResponseMatchesOpenApi,
   findOperation,
+  loadOpenApiDocument,
   pushTo,
   registryPayloads,
   testEnvelope,
@@ -41,7 +42,7 @@ type Json = Record<string, unknown>;
 
 const OPENAPI_URL = new URL('../../contracts/openapi.yaml', import.meta.url);
 const OPENAPI = parse(readFileSync(OPENAPI_URL, 'utf8')) as { paths: Record<string, { post?: Json }>; 'x-opt2-calls'?: unknown };
-const PROGRAMS_SITES_OPENAPI = parse(readFileSync(new URL('../../../programs-sites/contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
+const PROGRAMS_SITES_OPENAPI = loadOpenApiDocument(new URL('../../../programs-sites/contracts/openapi.yaml', import.meta.url), parse) as object;
 const SITE_A = TENANT_A.siteId;
 const GROUP_ID = 'A1B2C3D4-0001-4A5B-8C7D9E0F1A2B3C4D';
 const OTHER_GROUP = 'A1B2C3D4-0002-4A5B-8C7D9E0F1A2B3C4D';

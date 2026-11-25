@@ -431,13 +431,13 @@ describe('decodeLegacyChange', () => {
     { name: 'Fname', type: 's' },
     { name: 'Type', type: 'i' },
   ];
-  const ENTRY: CanonicalColumn[] = [
-    { name: 'entry_id', type: 's' },
-    { name: 'hours', type: 'd', scale: 2 },
+  const ENROLMENT: CanonicalColumn[] = [
+    { name: 'enrolment_id', type: 's' },
+    { name: 'credits', type: 'd', scale: 2 },
     { name: 'legacy_program_id', type: 'i' },
   ];
   const PERSON_CTX = { owner: 'people', tenantId: TENANT, unit: 'people.person', columns: PERSON };
-  const ENTRY_CTX = { owner: 'timesheets', tenantId: TENANT, unit: 'timesheets.entry', columns: ENTRY };
+  const ENROLMENT_CTX = { owner: 'programs-sites', tenantId: TENANT, unit: 'programs_sites.enrolment', columns: ENROLMENT };
   const KEY = encodeRow([{ name: 'UserID', type: 's' }], { UserID: 'u1' });
 
   function projected(op: ChangeOp, legacy: ProjectedChangeRow['legacy'], operationId: string | null = null): ProjectedChangeRow {
@@ -530,26 +530,26 @@ describe('decodeLegacyChange', () => {
     { source: 'image', legacyProgramId: undefined, imageProgramId: 1, programId: 1 },
   ])('addresses a folded row to Program_<id> from its $source without the program column', ({ legacyProgramId, imageProgramId, programId }) => {
     const projection = {
-      unit: 'timesheets.entry',
-      legacyTable: 'timesheet',
+      unit: 'programs_sites.enrolment',
+      legacyTable: 'enrolment',
       key: 's2:e1',
-      before: encodeRow(ENTRY, { entry_id: 'e1', hours: '7.50', legacy_program_id: imageProgramId }),
-      after: encodeRow(ENTRY, { entry_id: 'e1', hours: '8.00', legacy_program_id: imageProgramId }),
-      columns: ['hours', 'legacy_program_id'],
+      before: encodeRow(ENROLMENT, { enrolment_id: 'e1', credits: '7.50', legacy_program_id: imageProgramId }),
+      after: encodeRow(ENROLMENT, { enrolment_id: 'e1', credits: '8.00', legacy_program_id: imageProgramId }),
+      columns: ['credits', 'legacy_program_id'],
       ...(legacyProgramId === undefined ? {} : { legacyProgramId }),
     };
-    const decoded = decodeLegacyChange({ ...projected('update', [projection]), table: 'entry' }, ENTRY_CTX);
+    const decoded = decodeLegacyChange({ ...projected('update', [projection]), table: 'enrolment' }, ENROLMENT_CTX);
 
     expect(decoded).toMatchObject({
-      legacyTable: `Program_${String(programId)}.timesheet`,
-      physicalTable: { schema: `Program_${String(programId)}`, table: 'timesheet', qualified: `Program_${String(programId)}.timesheet` },
-      columns: ENTRY.slice(0, 2),
-      before: { entry_id: 'e1', hours: '7.50' },
-      after: { entry_id: 'e1', hours: '8.00' },
-      changedColumns: ['hours'],
+      legacyTable: `Program_${String(programId)}.enrolment`,
+      physicalTable: { schema: `Program_${String(programId)}`, table: 'enrolment', qualified: `Program_${String(programId)}.enrolment` },
+      columns: ENROLMENT.slice(0, 2),
+      before: { enrolment_id: 'e1', credits: '7.50' },
+      after: { enrolment_id: 'e1', credits: '8.00' },
+      changedColumns: ['credits'],
       programId,
     });
-    expect(Object.keys(decoded?.after ?? {})).toEqual(['entry_id', 'hours']);
+    expect(Object.keys(decoded?.after ?? {})).toEqual(['enrolment_id', 'credits']);
   });
 });
 

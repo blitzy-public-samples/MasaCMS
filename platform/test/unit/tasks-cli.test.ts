@@ -22,8 +22,8 @@ interface Received {
 const NO_CREATOR = 'opt2-tasks: OPT2_SERVICE_URLS names no creator of the selected queues';
 // Assembled at run time, so no literal credential appears in source.
 const SECRET = ['s3cr3t', 'tasks', 'cli', 'value'].join('-');
-const CREATOR = 'communications';
-const QUEUE = 'communications-outbox-sweep';
+const CREATOR = 'programs-sites';
+const QUEUE = 'programs-sites-outbox-sweep';
 
 let server: Server;
 let serverUrl: string;

@@ -349,6 +349,37 @@ describe('runFault failed reconciliation', () => {
   });
 });
 
+describe('runFault report paths', () => {
+  const name = 'forced-reinit' satisfies FaultName;
+
+  it.each([
+    { label: 'a zero-difference', reconcileError: undefined },
+    { label: 'a failed', reconcileError: new Error('snapshot database unreachable') },
+  ])('writes the fault block of $label reconciliation with report paths relative to the repository', async ({ reconcileError }) => {
+    const t = await context();
+    const feedReport = path.join(reconciliationDir(t), 'after-feed-4.json');
+    const outside = path.join(path.dirname(t.dirs.reportsDir), 'elsewhere', 'after-feed-5.json');
+    const propagated = pass('feed-propagated', { snapshotSeq: 4, point: 'after-feed-4', result: 'zero-difference', reportPath: feedReport });
+    const events: string[] = [];
+    const { script, resume } = doubleScript(name, { assertions: [propagated], details: { reconciliation: { reportPath: feedReport } } }, events);
+    resume.mockResolvedValueOnce({ steps: ['rerun-feed'], assertions: [], details: { reruns: [{ reportPath: outside }] } });
+    const d = doubles({ [name]: script }, events);
+    if (reconcileError !== undefined) d.reconcile.mockRejectedValueOnce(reconcileError);
+
+    const result = await runFault(t.ctx, name, {}, d.deps);
+
+    const ref = 'opt2/reports/reconciliation/after-feed-4.json';
+    const reportPath = path.join(reconciliationDir(t), `after-fault-${name}.json`);
+    const report = await readReport(reportPath);
+    expect(report.fault.assertions).toStrictEqual([{ ...propagated, detail: { ...(propagated.detail as object), reportPath: ref } }]);
+    expect(report.fault.details).toStrictEqual({ run: { reconciliation: { reportPath: ref } }, resume: { reruns: [{ reportPath: 'after-feed-5.json' }] } });
+    expect(JSON.stringify(report)).not.toContain(path.dirname(t.dirs.reportsDir));
+    // The CLI result keeps the paths as written.
+    expect(result.assertions).toStrictEqual([propagated]);
+    expect(result.reconciliation?.reportPath).toBe(reportPath);
+  });
+});
+
 describe('runFault parameters', () => {
   const schema = z.object({ rows: z.number().int().min(1).default(10), units: z.array(z.string()).min(1).optional() }).strict();
 

@@ -41,12 +41,6 @@ const SERVICE_NAMES = [
   'people',
   'programs-sites',
   'strategies-content',
-  'communications',
-  'reporting',
-  'surveys',
-  'timesheets',
-  'finance',
-  'e-signature',
   'stub',
   'gateway',
   'migration',
@@ -95,6 +89,11 @@ export interface TestEnvOptions {
 
 /** The parsed local migration env from loopback placeholders, parsed as production parses it; `PG_*` come from the process when set. */
 export function testEnv(options: TestEnvOptions = {}): MigrationEnv {
+  return loadMigrationEnv(testEnvSource(options));
+}
+
+/** The raw variables {@link testEnv} parses, for a suite that parses them under another schema. */
+export function testEnvSource(options: TestEnvOptions = {}): Record<string, string | undefined> {
   const { dirs, bridgeOrigin, serviceUrls, ...variables } = options;
   const defaults = Object.fromEntries(SERVICE_NAMES.map((name) => [name, UNREACHABLE_URL])) as Record<
     (typeof SERVICE_NAMES)[number],
@@ -140,7 +139,7 @@ export function testEnv(options: TestEnvOptions = {}): MigrationEnv {
     if (value !== undefined && typeof value !== 'string') throw new TypeError(`testEnv: variable ${name} must be a string`);
     source[name] = value;
   }
-  return loadMigrationEnv(source);
+  return source;
 }
 
 /** A clock tests step forward or reset; each `now()` returns a fresh Date. */

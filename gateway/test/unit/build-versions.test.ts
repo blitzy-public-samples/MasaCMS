@@ -3,14 +3,13 @@ import {
   NUL_TEXT_HALT_VARIANT,
   REQUEST_HALT_VARIANTS,
   ROUTE_FAMILIES,
-  SURROGATE_TEXT_HALT_VARIANT,
   matchRouteKey,
   normaliseRouteKey,
   type RouteFamily,
   type RouteKeyResult,
 } from '@opt2/platform/legacy-compat';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { ROLLBACK_REPORT, buildVersions, rosterGroupSet } from '../../src/cutover/build-versions.js';
+import { ROLLBACK_REPORT, rosterGroupSet } from '../../src/cutover/build-versions.js';
 import { loadGroups } from '../../src/cutover/loader.js';
 import { resolveGatewayPaths } from '../../src/cutover/paths.js';
 import type { CutoverEntry, CutoverTable, GroupsFile } from '../../src/cutover/types.js';
@@ -21,13 +20,13 @@ const paths = resolveGatewayPaths({});
 const ADD = 'admin:cusers.update{type=2,action=add}';
 const UPDATE = 'admin:cusers.update{type=2,action=update}';
 const ARCHIVE = 'fixture:people/persons/{id}/archive@post';
-const IMAGE_UPLOADS = ['admin:carch.update{upload=image}', 'admin:carch.multifileupload{upload=image}', 'api:file.save{upload=image}'];
-const SYNTHETIC_V1 = /^\w+:\/v1\//;
+const IMAGE_UPLOADS = ['admin:carch.update{upload=image}', 'api:file.save{upload=image}'];
+const MULTI_UPLOAD_IMAGE = 'admin:carch.multifileupload{upload=image}';
 const FAMILY_VARIANT = /^(\w+):\*\{([^{}]+)\}$/;
 const VARIANT_SUFFIX = /\{[^{}]*\}$/;
 const KEY_VARIANT = /^(\w+:[^*]+)\{([^{}]+)\}$/;
 /** Variants the dispatcher halts a listed key under; no version lists them. */
-const HALT_VARIANTS: readonly string[] = [NUL_TEXT_HALT_VARIANT, SURROGATE_TEXT_HALT_VARIANT, ...REQUEST_HALT_VARIANTS];
+const HALT_VARIANTS: readonly string[] = [NUL_TEXT_HALT_VARIANT, ...REQUEST_HALT_VARIANTS];
 
 const byRoute = (table: CutoverTable): Map<string, CutoverEntry> => new Map(table.entries.map((entry) => [entry.route, entry]));
 
@@ -90,6 +89,12 @@ describe('committed versions', () => {
       ),
     ];
     expect(held).toEqual(expect.arrayContaining(IMAGE_UPLOADS));
+    // The multi-file upload page is a halted read whose form posts carch.update, so no rendition entry lists it.
+    const holders = ctx.exceptions.entries
+      .filter((entry) => [entry.routeKey, ...(entry.appliesTo ?? [])].map(normaliseRouteKey).includes(MULTI_UPLOAD_IMAGE))
+      .map((entry) => entry.id);
+    expect(holders).toEqual(['EX-CARCH-UPLOAD-PAGELIMIT']);
+    expect(held).toContain(MULTI_UPLOAD_IMAGE);
     const entries = byRoute(versions.v0002);
     const routes = versions.v0002.entries.map((entry) => entry.route);
     for (const key of held) {
@@ -112,7 +117,7 @@ describe('committed versions', () => {
         expect(entries.get(baseKey)?.kind, key).toMatch(/^(legacy-)?write$/);
         continue;
       }
-      // A held key with no recorded write, such as the multi-file upload page, stays a read.
+      // A held key with no recorded write stays a read.
       const writes = (ctx.inventoryKeys.get(key)?.writeSet.length ?? 0) > 0;
       expect(entries.get(key), key).toMatchObject({ kind: writes ? 'legacy-write' : 'read', state: 'legacy' });
     }
@@ -149,12 +154,9 @@ describe('committed versions', () => {
     const roster = new Set(rosterGroupSet(groups));
     const rosterUnits = new Set(groups.groups.filter((group) => roster.has(group.id)).flatMap((group) => group.units));
     const before = byRoute(versions.v0002);
-    const after = byRoute(versions.v0003);
     for (const entry of versions.v0003.entries) {
-      // A module's actions follow its screens' units.
-      const rule = after.get(entry.route.replace('opt2:/opt2/admin-actions/', 'opt2:/opt2/admin/')) ?? entry;
       const overRoster =
-        rule.kind === 'write' ? roster.has(rule.group ?? '') : rule.kind === 'read' && rule.units.some((unit) => rosterUnits.has(unit));
+        entry.kind === 'write' ? roster.has(entry.group ?? '') : entry.kind === 'read' && entry.units.some((unit) => rosterUnits.has(unit));
       expect(entry.state, entry.route).toBe(overRoster ? 'legacy' : before.get(entry.route)?.state);
     }
     expect([before.get(ARCHIVE)?.state, byRoute(versions.v0003).get(ARCHIVE)?.state]).toEqual(['target', 'legacy']);
@@ -168,40 +170,12 @@ describe('rosterGroupSet', () => {
       { id: 'grp:y', units: ['identity.user_account'], writeEntries: [UPDATE] },
       { id: 'grp:x', units: ['people.user_address'], writeEntries: [ARCHIVE] },
       { id: 'grp:w', units: ['people.person_archive'] },
-      { id: 'grp:v', units: ['timesheets.blackout', 'timesheets.timesheet_day'] },
       {
         id: 'grp:a',
         units: ['identity.membership'],
         writeEntries: ['admin:cusers.update{type=2,action=delete}', 'fixture:people/persons/{id}/archive@get'],
       },
     ]);
-    expect(rosterGroupSet({ groups: [...file.groups].reverse() })).toEqual(['grp:v', 'grp:w', 'grp:x', 'grp:y', 'grp:z']);
-  });
-});
-
-describe('a fixtures-unavailable build', () => {
-  it('keeps every fixture route and moves the groups its /v1/ entries name, and the fixture reads over them, to target', () => {
-    const { v0002 } = versions;
-    const unavailable = buildVersions(ctx, { available: false })[1] as CutoverTable;
-    const after = byRoute(unavailable);
-    const fixtureRoutes = v0002.entries.map((entry) => entry.route).filter((route) => route.startsWith('fixture:'));
-    expect(fixtureRoutes.length).toBeGreaterThan(0);
-    for (const route of fixtureRoutes) expect(after.has(route), route).toBe(true);
-
-    const named = [
-      ...new Set(unavailable.entries.flatMap((entry) => (SYNTHETIC_V1.test(entry.route) && entry.group ? [entry.group] : []))),
-    ].sort();
-    expect(named.length).toBeGreaterThan(0);
-    const flipped = Object.keys(v0002.groupAuthority).filter((group) => unavailable.groupAuthority[group] !== v0002.groupAuthority[group]);
-    expect(flipped).toEqual(named);
-    for (const group of flipped) expect(unavailable.groupAuthority[group], group).toBe('target');
-
-    const namedUnits = new Set(groups.groups.filter((group) => named.includes(group.id)).flatMap((group) => group.units));
-    const changed = v0002.entries.filter((entry) => after.get(entry.route)?.state !== entry.state);
-    expect(changed.some((entry) => entry.route.startsWith('fixture:') && entry.kind === 'read')).toBe(true);
-    for (const entry of changed) {
-      expect(entry.state, entry.route).toBe('legacy');
-      if (entry.kind === 'read') expect(entry.units.some((unit) => namedUnits.has(unit)), entry.route).toBe(true);
-    }
+    expect(rosterGroupSet({ groups: [...file.groups].reverse() })).toEqual(['grp:w', 'grp:x', 'grp:y', 'grp:z']);
   });
 });

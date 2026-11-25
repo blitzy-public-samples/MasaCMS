@@ -859,20 +859,27 @@ describe('probeServices', () => {
     ['a null package list without cfpmError', { cfpmPackages: null }, 'cfpm', { status: 'unavailable', detail: 'no package list in the answer' }, ['coldfusion']],
     [
       'packages listed with versions, two missing',
-      { cfpmPackages: ['adminapi 2023.0.13.330833', 'mail 2023.0.13.330833', 'scheduler 2023.0.13.330833'] },
+      { cfpmPackages: ['adminapi 2023.0.13.330833', 'document 2023.0.13.330833', 'spreadsheet 2023.0.13.330833'] },
       'cfpm',
       {
         status: 'mismatch',
-        recorded: 'adminapi 2023.0.13.330833; mail 2023.0.13.330833; scheduler 2023.0.13.330833',
-        detail: 'missing: spreadsheet, document',
+        recorded: 'adminapi 2023.0.13.330833; document 2023.0.13.330833; spreadsheet 2023.0.13.330833',
+        detail: 'missing: mail, scheduler',
       },
+      [],
+    ],
+    [
+      'packages in the cfpm list format, none missing',
+      { cfpmPackages: ['mail, version : 2023.0.26.331018', 'scheduler, version : 2023.0.26.331018'] },
+      'cfpm',
+      { status: 'ok', recorded: 'mail, version : 2023.0.26.331018; scheduler, version : 2023.0.26.331018', detail: null },
       [],
     ],
     [
       'an empty package list',
       { cfpmPackages: [] },
       'cfpm',
-      { status: 'mismatch', recorded: 'none', detail: 'missing: spreadsheet, document, mail, scheduler' },
+      { status: 'mismatch', recorded: 'none', detail: 'missing: mail, scheduler' },
       [],
     ],
     [

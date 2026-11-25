@@ -9,10 +9,10 @@ Generated at: 2026-11-21T06:37:58Z
 
 | Field | Value |
 |---|---|
-| Clone path (`opt2-clean-<timestamp>`, outside the working tree; never a directory named `mura`) | `/tmp/blitzy/scratch/48d51ddc-539f-48aa-8086-5041e07a1be6/w-020/proofs/opt2-clean-20261121T034533Z` |
+| Clone path (`opt2-clean-<timestamp>`, outside the working tree; never a directory named `mura`) | `$OPT2_CLONE_PARENT/opt2-clean-20261121T034533Z` |
 | Commit (`git rev-parse HEAD` of the clone) | `999329155266e0fbb1ac97f8f8953f33b08d904a` |
-| `OPT2_STATE_DIR` (fresh per clone) | `/tmp/blitzy/scratch/48d51ddc-539f-48aa-8086-5041e07a1be6/w-020/proofs/opt2-clean-20261121T034533Z.state` |
-| `OPT2_PRISTINE_DIR` (shared, default `$HOME/.opt2/pristine`) | `/root/.opt2/c20/w020-pristine` |
+| `OPT2_STATE_DIR` (fresh per clone) | `$OPT2_CLONE_PARENT/opt2-clean-20261121T034533Z.state` |
+| `OPT2_PRISTINE_DIR` (shared, default `$HOME/.opt2/pristine`) | `$OPT2_PRISTINE_DIR` |
 | `harness/repro/up.sh` exit code (pass: 0) | 0 |
 | `harness/repro/test-all.sh` exit code (pass: 0, or 2 when fixtures are unavailable) | 2 |
 | `sha256` of the clone's `opt2/reports/test-all.json` | `50153f1037f2cd6cf171efb6eebd5794fe760599b8bbe4a0fe329c807c95172f` |

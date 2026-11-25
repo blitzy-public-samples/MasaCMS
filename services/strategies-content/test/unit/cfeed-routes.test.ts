@@ -1,5 +1,4 @@
 /** cfeed admin routes and raw actions (`routes/v1/cfeed.ts`) over a throwaway `content` schema: the gate, list, import preview, update outcomes and fail-closed reads. */
-import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import { INVOCATION_HEADER, Roles, moduleRole } from '@opt2/platform/auth';
@@ -25,7 +24,7 @@ import {
   type FastifyRequest,
   type ServiceRequest,
 } from '@opt2/platform/service-kit';
-import { TENANT_B, assertResponseMatchesOpenApi, mintServiceToken, mintUserToken, pgAvailable, testVerifier } from '@opt2/platform/testing';
+import { TENANT_B, assertResponseMatchesOpenApi, loadOpenApiDocument, mintServiceToken, mintUserToken, pgAvailable, testVerifier } from '@opt2/platform/testing';
 import { saveContent } from '../../src/domain/content.js';
 import { actorFromClaims } from '../../src/domain/context.js';
 import { REMOTE_FEED_LIMIT_BYTES, RemoteFeedTooLargeError, createFeed, importRemoteFeed, readFeed, type FetchRemote } from '../../src/domain/feeds.js';
@@ -36,7 +35,7 @@ import { rawSurfaceOf } from '../../src/routes/v1/raw.js';
 import { SITE_CONFIG_FLAGS_PATH, feedManagerFlagsAnswer, type StoredFeedManager } from '../helpers/app.js';
 import { ADMIN, END, HOME, SITE, SITE_ID, createContentFixture, type ContentFixture } from '../helpers/content-fixture.js';
 
-const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
+const OPENAPI = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as object;
 const SERVICE = 'strategies-content';
 const USER = 'U0000001-AAAA-BBBB-CCCCDDDDEEEEFFFF';
 const FEED_URL = 'http://feeds.example/rss';

@@ -86,17 +86,7 @@ export type ValidationPaths = Pick<
   | 'reconciliationDir'
 >;
 
-const SYNTHETIC_SERVICES: ReadonlySet<string> = new Set([
-  'communications',
-  'reporting',
-  'surveys',
-  'timesheets',
-  'finance',
-  'e-signature',
-]);
 const UNROUTED_OWNERS: ReadonlySet<string> = new Set(['gateway', 'web']);
-const SYNTHETIC_PATH_PREFIX = '/v1/';
-const FIXTURE_SCHEMA_TABLE = /^(?:synthetic|program_\w+)\./i;
 // A key ends in `{<variant>}` only when a declared variant matched (route-key.ts); fixture `{id}` segments end in `@<method>`.
 const VARIANT_SUFFIX = /\{[^{}]*\}$/;
 const ZERO_DIFFERENCE = 'zero-difference';
@@ -437,22 +427,11 @@ function viewOf(table: CutoverTable, ctx: ValidationContext): VersionView {
   };
 }
 
-/** Whether an entry is a synthetic service's own `/v1/` route. */
-function isSyntheticRoute(route: string, entry: CutoverEntry): boolean {
-  const family = familyOf(route);
-  return (
-    SYNTHETIC_SERVICES.has(entry.owningService) &&
-    family !== undefined &&
-    route.slice(family.length + 1).startsWith(SYNTHETIC_PATH_PREFIX)
-  );
-}
-
 /** Whether an entry without an inventoried key may stand in a version. */
 function mayBeUninventoried(route: string, entry: CutoverEntry): boolean {
   if (familyOf(route) === 'opt2' || UNROUTED_OWNERS.has(entry.owningService)) return true;
-  if (isSyntheticRoute(route, entry)) return true;
   // Legacy static assets (/admin/assets/**, /core/vendor/**, /core/modules/**) are listed as legacy `static`
-  // entries; such an entry routes exactly as an unlisted key does, so it is allowed beside the three listed cases.
+  // entries; such an entry routes exactly as an unlisted key does, so it is allowed beside the two listed cases.
   return entry.kind === 'static' && entry.state === 'legacy';
 }
 
@@ -668,29 +647,6 @@ function chainFindings(view: VersionView): Finding[] {
   return findings;
 }
 
-/** Groups a synthetic service's own non-inventoried `/v1/` target carry writes name after the first version. */
-function syntheticWriteGroups(view: VersionView): Set<string> {
-  const groups = new Set<string>();
-  if (view.table.previous === null) return groups;
-  const owners = new Map(view.ctx.ownership.units.map((unit) => [unit.unit, unit.owner]));
-  // Only a synthetic module's fixture-backed units lack a legacy oracle once the fixtures are unavailable.
-  const fixtureBacked = (unit: string, service: string): boolean => {
-    const tables = view.unitTables.get(unit) ?? [];
-    return owners.get(unit) === service && tables.length > 0 && tables.every((table) => FIXTURE_SCHEMA_TABLE.test(table));
-  };
-  for (const [route, entries] of view.entriesByKey) {
-    if (view.ctx.inventoryKeys.has(route)) continue;
-    for (const entry of entries) {
-      const group = entry.group;
-      if (entry.kind !== 'write' || entry.disposition !== 'carry' || entry.state !== 'target' || !group) continue;
-      const units = view.groupUnits.get(group);
-      if (units === undefined || entry.units.length === 0 || !isSyntheticRoute(route, entry)) continue;
-      if ([...units].every((unit) => fixtureBacked(unit, entry.owningService))) groups.add(group);
-    }
-  }
-  return groups;
-}
-
 function groupAuthorityFindings(view: VersionView): Finding[] {
   const ids = new Set(view.ctx.groups.groups.map((group) => group.id));
   const listed = new Set(Object.keys(view.table.groupAuthority));
@@ -701,9 +657,8 @@ function groupAuthorityFindings(view: VersionView): Finding[] {
   for (const group of listed) {
     if (!ids.has(group)) findings.push({ rule: 'group-authority', group, message: 'authority names a group not in groups.json' });
   }
-  const synthetic = syntheticWriteGroups(view);
   for (const group of view.ctx.groups.groups) {
-    if (group.writeEntries.length > 0 || synthetic.has(group.id) || view.authority(group.id) !== 'target') continue;
+    if (group.writeEntries.length > 0 || view.authority(group.id) !== 'target') continue;
     findings.push({ rule: 'group-authority', group: group.id, message: 'group without a carry write entry is target' });
   }
   return findings;

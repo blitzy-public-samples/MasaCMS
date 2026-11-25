@@ -12,8 +12,7 @@ CK_DIR="$OPT2_STATE_DIR/checkpoint"
 
 # Prints the OPT-2 PostgreSQL schemas, DB_SCHEMAS of harness/src/repro/secrets.ts.
 _ck_schemas() {
-  printf '%s\n' identity people programs_sites content communications reporting surveys timesheets finance esignature \
-    stub gateway migration
+  printf '%s\n' identity people programs_sites content stub gateway migration
 }
 
 # Prints $1 as a double-quoted SQL identifier.
@@ -349,8 +348,8 @@ process.stdout.write(`${JSON.stringify({ taken: true, seq: doc.seq, takenAt, dir
 # ColdFusion restarted with Ck's tasks paused, the OPT-2 schemas and local storage restored, and the subscriptions
 # sought back to Ck's time; prints one JSON summary line.
 checkpoint_restore() {
-  local fields kind first second seq="" taken_at="" storage="$OPT2_STATE_DIR/storage" site_dir output name describe
-  local extra restore_body="$CK_DIR/scheduler.restore.json" i
+  local fields kind first second seq="" taken_at="" storage="$OPT2_STATE_DIR/storage" site_dir output name
+  local ck_tasks restore_body="$CK_DIR/scheduler.restore.json" i
   local -a site_dirs=() dump_tenants=() dump_files=() removed=()
   require_env PG_HOST PG_PORT PG_USER PG_PASSWORD PG_DATABASE
   require_cmd box psql pg_restore tar curl node
@@ -397,27 +396,17 @@ checkpoint_restore() {
     die "legacy-start.sh --tasks-file $CK_DIR/tasks.paused.cfconfig.json failed"
 
   log_step ck-restore.6 "ACF scheduled tasks"
-  describe="$(_ck_scheduler describe)" || die "scheduler.cfm describe failed"
-  # Prints the opt2-survey-* tasks Ck lacks as a JSON array, and writes the restore body of Ck's tasks.
+  # Writes the restore body of Ck's tasks and prints their count.
   # shellcheck disable=SC2016 # JavaScript source
-  extra="$(printf '%s' "$describe" | node -e '
+  ck_tasks="$(node -e '
 const fs = require("fs");
 const [ckFile, bodyFile] = process.argv.slice(1);
-const tasksOf = (doc, where) => {
-  if (!Array.isArray(doc?.tasks)) throw new Error(`${where} is not a scheduler describe answer`);
-  return doc.tasks;
-};
-const ck = tasksOf(JSON.parse(fs.readFileSync(ckFile, "utf8")), ckFile);
-const now = tasksOf(JSON.parse(fs.readFileSync(0, "utf8")), "scheduler.cfm describe");
-const kept = new Set(ck.map((task) => String(task.task)));
-fs.writeFileSync(bodyFile, `${JSON.stringify({ tasks: ck, repoint: false, paused: true })}\n`, { mode: 0o600 });
-const extra = now.map((task) => String(task.task)).filter((name) => name.startsWith("opt2-survey-") && !kept.has(name));
-process.stdout.write(`${JSON.stringify(extra)}\n${ck.length}\n`);
-' -- "$CK_DIR/scheduler.json" "$restore_body")" || die "cannot compare the scheduled tasks with $CK_DIR/scheduler.json"
-  if [[ ${extra%%$'\n'*} != "[]" ]]; then
-    _ck_scheduler delete --json "{\"tasks\":${extra%%$'\n'*}}" >&2 || die "scheduler.cfm delete failed"
-  fi
-  if [[ ${extra#*$'\n'} != 0 ]]; then
+const doc = JSON.parse(fs.readFileSync(ckFile, "utf8"));
+if (!Array.isArray(doc?.tasks)) throw new Error(`${ckFile} is not a scheduler describe answer`);
+fs.writeFileSync(bodyFile, `${JSON.stringify({ tasks: doc.tasks, repoint: false, paused: true })}\n`, { mode: 0o600 });
+process.stdout.write(`${doc.tasks.length}\n`);
+' -- "$CK_DIR/scheduler.json" "$restore_body")" || die "cannot read the scheduled tasks of $CK_DIR/scheduler.json"
+  if [[ $ck_tasks != 0 ]]; then
     _ck_scheduler restore --json "@$restore_body" >&2 || die "scheduler.cfm restore failed"
   fi
 
@@ -440,10 +429,9 @@ process.stdout.write(`${JSON.stringify(extra)}\n${ck.length}\n`);
 
   # shellcheck disable=SC2016 # JavaScript source
   node -e '
-const [seq, takenAt, deleted, ...removedSiteDirs] = process.argv.slice(1);
-process.stdout.write(`${JSON.stringify({ restored: true, seq: Number(seq), takenAt, removedSiteDirs,
-  deletedTasks: JSON.parse(deleted) })}\n`);
-' -- "$seq" "$taken_at" "${extra%%$'\n'*}" "${removed[@]}"
+const [seq, takenAt, ...removedSiteDirs] = process.argv.slice(1);
+process.stdout.write(`${JSON.stringify({ restored: true, seq: Number(seq), takenAt, removedSiteDirs })}\n`);
+' -- "$seq" "$taken_at" "${removed[@]}"
 }
 
 # Compares the current state with Ck: table checksums, file-store and storage manifests, an empty Mailpit, the ACF tasks

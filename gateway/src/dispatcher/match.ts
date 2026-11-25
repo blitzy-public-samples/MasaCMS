@@ -40,9 +40,6 @@ export const WRITE_KINDS: ReadonlySet<EntryKind> = new Set<EntryKind>(['write', 
 /** Owner of each bucket, the service its `/opt2/files/<bucket>/**` entry names. */
 export const BUCKET_OWNERS: Readonly<Record<BucketName, OwningService>> = Object.freeze({
   'content-files': 'strategies-content',
-  'reporting-exports': 'reporting',
-  'finance-attachments': 'finance',
-  'esignature-documents': 'e-signature',
 });
 
 const RELAY_PATH_PREFIX = `${RELAY_ALIAS_PREFIX}/`;

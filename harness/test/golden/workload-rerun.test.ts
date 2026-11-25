@@ -22,11 +22,9 @@ import type { EnvLike } from '../../src/lib/paths.js';
 // Nothing listens on this port: every request goes to the fake legacy behind it.
 const GATEWAY = 'http://127.0.0.1:8599';
 const ADMIN_PASSWORD = 'FIXTURE-ADMIN-PASSWORD';
-const ROLE_PASSWORD = 'FIXTURE-ROLE-PASSWORD';
 const ADMIN_CFID = 'FIXTURE-CFID-ADMIN';
 const FORM_TOKEN = 'FIXTURECSRFTOKEN0000000000000007';
 const LOGIN_TOKEN = 'FIXTURECSRFTOKEN0000000000000001';
-const JSON_TOKEN = 'FIXTURECSRFTOKEN0000000000000009';
 const EXPIRES = '260630120000000';
 const SEEDED_CONTACT = 'fixture-contact@tenant-b.example';
 const SEEDED_GROUP_EMAIL = 'fixture-editors@tenant-a.example';
@@ -35,11 +33,7 @@ const HOME_ID = '00000000000000000000000000000000001';
 const CLOCK = new Date('2026-06-30T12:00:00.000Z');
 const INTERRUPTED = 'FIXTURE-PROCESS-INTERRUPTED';
 const LOGIN_HTML = readFileSync(new URL('../fixtures/html/admin-login.html', import.meta.url), 'utf8');
-const EMPLOYEE = 'fixture.tenant-a.timesheets.employee';
-const PREPARER = 'fixture.tenant-a.finance.preparer';
 const JSON_API = /^\/_api\/json\/v1\/([^/]+)\/(.*)$/;
-const FIXTURE_API = '/legacy-fixtures/cfml/api.cfm/';
-const LOGINS: readonly string[] = ['admin-login', 'employee-login', 'preparer-login'];
 
 const PAGES = [1, 2, 3, 4, 5].map((n) => ({
   contentID: `FIXTURE-PAGE-A-000${n}`,
@@ -50,26 +44,7 @@ const PAGES = [1, 2, 3, 4, 5].map((n) => ({
   isNav: 1,
 }));
 const PAGE_TITLES: ReadonlyMap<string, string> = new Map(PAGES.map((page) => [page.contentID, page.title] as const));
-const SHEETS = [1, 2].map((n) => ({
-  timesheet_id: `FIXTURE-SHEET-A-000${n}`,
-  person_id: `FIXTURE-PERSON-A-000${n}`,
-  siteID: 'tenant-a',
-}));
-const DAYS = [1, 2, 3, 4].map((n) => ({
-  day_id: `FIXTURE-DAY-A-000${n}`,
-  timesheet_id: `FIXTURE-SHEET-A-000${(n % 2) + 1}`,
-  state: 'DRAFT',
-}));
-const RECORDS = [1, 2, 3].map((n) => ({
-  record_id: `FIXTURE-RECORD-A-000${n}`,
-  siteID: 'tenant-a',
-  state: 'IN-PROGRESS',
-  title: `Fixture Record ${n}`,
-  amount: `${n}00.0000`,
-  period: '2026-06',
-}));
-
-// Shape of the generated `dataset.json` fields the workload reads; Program_1 is tenant-a's fixture schema.
+// Shape of the generated `dataset.json` fields the workload reads.
 const DATASET: WorkloadDataset = {
   masa: {
     users: [1, 2, 3].map((n) => ({
@@ -86,7 +61,6 @@ const DATASET: WorkloadDataset = {
     memberships: [],
     content: PAGES,
   },
-  fixtures: { 'Program_1.timesheet': SHEETS, 'Program_1.timesheet_day': DAYS, 'Program_1.finance_record': RECORDS },
 };
 
 /** One request the fake received. */
@@ -117,9 +91,6 @@ interface FakeLegacy {
   drafts: Map<string, string[]>;
   /** Address names added per user; every seeded user also holds `Primary`. */
   addresses: Map<string, string[]>;
-  dayStates: Map<string, string>;
-  financeTitles: Map<string, string>;
-  financeEdits: number;
   /** Answers a request in place of the fake when it returns a response. */
   override?: (call: Call) => Response | undefined;
 }
@@ -128,20 +99,10 @@ const fakes: FakeLegacy[] = [];
 let dir = '';
 let env: EnvLike = {};
 
-/** `${OPT2_STATE_DIR}/fixtures.json` as `load-fixtures.sh` writes it. */
-function writeFixtureStatus(available: boolean): void {
-  const status = { available, reason: available ? null : 'CREATE SCHEMA denied', checkedAt: CLOCK.toISOString() };
-  writeFileSync(path.join(dir, 'fixtures.json'), `${JSON.stringify(status)}\n`);
-}
-
 beforeEach(() => {
   dir = mkdtempSync(path.join(os.tmpdir(), 'opt2-workload-rerun-'));
   mkdirSync(path.join(dir, 'seed'), { recursive: true });
   writeFileSync(path.join(dir, 'seed', 'dataset.json'), `${JSON.stringify(DATASET)}\n`);
-  mkdirSync(path.join(dir, 'secrets'), { recursive: true, mode: 0o700 });
-  const credentials = { users: { 'tenant-a': { [EMPLOYEE]: ROLE_PASSWORD, [PREPARER]: ROLE_PASSWORD } } };
-  writeFileSync(path.join(dir, 'secrets', 'seed-credentials.json'), JSON.stringify(credentials), { mode: 0o600 });
-  writeFixtureStatus(true);
   env = { OPT2_GATEWAY_URL: GATEWAY, OPT2_STATE_DIR: dir, MURA_ADMIN_PASSWORD: ADMIN_PASSWORD };
 });
 
@@ -198,22 +159,10 @@ function append(lists: Map<string, string[]>, key: string, value: string): void 
   lists.set(key, [...(lists.get(key) ?? []), value]);
 }
 
-/** JSON API: CSRF tokens, role logins, and the admin reads of page history, page listings and addresses. */
+/** JSON API: the admin reads of page history, page listings and addresses. */
 function jsonApi(fake: FakeLegacy, req: Received, site: string, rest: string): Response | undefined {
-  const { method, form } = req;
+  const { method } = req;
   const query = req.url.searchParams;
-  if (method === 'GET' && rest === 'generateCSRFTokens') {
-    return json({ data: { csrf_token: JSON_TOKEN, csrf_token_expires: EXPIRES } });
-  }
-  if (method === 'POST' && site === 'tenant-a' && rest === 'login') {
-    const username = form.get('username') ?? '';
-    const ok =
-      req.headers['x-csrf_token'] === JSON_TOKEN &&
-      [EMPLOYEE, PREPARER].includes(username) &&
-      form.get('password') === ROLE_PASSWORD;
-    if (!ok) return json({ error: { code: 'invalidlogin' } }, 401);
-    return json({ data: { status: 'success' } }, 200, { 'set-cookie': `CFID=FIXTURE-CFID-${username}; Path=/` });
-  }
   if (method !== 'GET' || req.session !== ADMIN_CFID) return undefined;
   const content = /^content\/([^/]+?)(\/history)?$/.exec(rest);
   if (site === 'tenant-a' && content !== null) {
@@ -233,39 +182,6 @@ function jsonApi(fake: FakeLegacy, req: Received, site: string, rest: string): R
     const names = ['Primary', ...(fake.addresses.get(userid) ?? [])];
     // Upper-case keys, as ACF serialises query columns.
     return json({ data: { items: names.map((name) => ({ USERID: userid, ADDRESSNAME: name })) } });
-  }
-  return undefined;
-}
-
-/** Fixture API: sheet reads and day submits as the employee, record reads and edits as the preparer. */
-function fixtureApi(fake: FakeLegacy, req: Received, rest: string): Response | undefined {
-  const { method } = req;
-  if (req.url.searchParams.get('siteid') !== 'tenant-a') return undefined;
-  if (method === 'POST' && req.headers['x-csrf_token'] !== JSON_TOKEN) return json({ error: { code: 'csrf' } }, 403);
-  if (req.session === `FIXTURE-CFID-${EMPLOYEE}`) {
-    const sheet = /^timesheets\/sheets\/([^/]+)$/.exec(rest)?.[1];
-    if (method === 'GET' && sheet !== undefined) {
-      const days = DAYS.filter((day) => day.timesheet_id === sheet).map((day) => day.day_id);
-      return json({ data: { days: days.map((id) => ({ DAY_ID: id, STATE: fake.dayStates.get(id) })) } });
-    }
-    const day = /^timesheets\/days\/([^/]+)\/submit$/.exec(rest)?.[1];
-    if (method === 'POST' && day !== undefined) {
-      // The fixture state machine refuses a day that has left DRAFT.
-      if (fake.dayStates.get(day) !== 'DRAFT') return json({ error: { code: 'conflict' } }, 409);
-      fake.dayStates.set(day, 'SUBMITTED');
-      return json({ data: { day_id: day, state: 'SUBMITTED' } });
-    }
-  }
-  if (req.session === `FIXTURE-CFID-${PREPARER}`) {
-    const [, id = '', edit] = /^finance\/records\/([^/]+?)(\/edit)?$/.exec(rest) ?? [];
-    if (method === 'GET' && id !== '' && edit === undefined) {
-      return json({ data: { record_id: id, title: fake.financeTitles.get(id), state: 'IN-PROGRESS' } });
-    }
-    if (method === 'POST' && id !== '' && edit !== undefined) {
-      fake.financeTitles.set(id, String((JSON.parse(req.body) as { title: unknown }).title));
-      fake.financeEdits += 1;
-      return json({ data: { record_id: id } });
-    }
   }
   return undefined;
 }
@@ -330,9 +246,6 @@ function fakeLegacy(): FakeLegacy {
     pages: new Map(),
     drafts: new Map(),
     addresses: new Map(),
-    dayStates: new Map(DAYS.map((day) => [day.day_id, day.state] as const)),
-    financeTitles: new Map(RECORDS.map((row) => [row.record_id, row.title] as const)),
-    financeEdits: 0,
     fetch: async (input, init) => {
       const url = new URL(input);
       const method = init.method ?? 'GET';
@@ -353,7 +266,7 @@ function fakeLegacy(): FakeLegacy {
   return fake;
 }
 
-/** The fake's answer to `req`: admin login, JSON API, fixture API or admin pages; undefined when none matches. */
+/** The fake's answer to `req`: admin login, JSON API or admin pages; undefined when none matches. */
 function answerOf(fake: FakeLegacy, req: Received, mint: () => number): Response | undefined {
   const { method, url, form } = req;
   const route = `${method} ${url.pathname} ${(url.searchParams.get('muraAction') ?? '').toLowerCase()}`;
@@ -367,13 +280,12 @@ function answerOf(fake: FakeLegacy, req: Received, mint: () => number): Response
   }
   const api = JSON_API.exec(url.pathname);
   if (api !== null) return jsonApi(fake, req, api[1] ?? '', api[2] ?? '');
-  if (url.pathname.startsWith(FIXTURE_API)) return fixtureApi(fake, req, url.pathname.slice(FIXTURE_API.length));
   if (url.pathname === '/admin/' && req.session !== ADMIN_CFID) return redirect('./?muraAction=clogin.main');
   if (method === 'POST' && form.get('csrf_token') !== FORM_TOKEN) return html('invalid token', 403);
   return adminPages(fake, req, route, mint);
 }
 
-/** Env-backed admin secret and seed role passwords; role usernames are fixtures, as seeded references need them. */
+/** Env-backed admin secret; role usernames are fixtures, as seeded references need them. */
 function secretStore(): SecretStore {
   const store = loadSecretStore(env);
   return {
@@ -390,11 +302,7 @@ const SEED_STORE: SeedStore = {
       ? 'FIXTURE-RESERVED-0001'
       : ref.path === 'masa.sites'
         ? { siteID: 'tenant-a', domain: 'tenant-a.localhost' }
-        : {
-            userID: 'FIXTURE-CATALOGUE-USER',
-            timesheet_id: 'FIXTURE-CATALOGUE-SHEET',
-            contentID: 'FIXTURE-CATALOGUE-CONTENT',
-          },
+        : { userID: 'FIXTURE-CATALOGUE-USER', contentID: 'FIXTURE-CATALOGUE-CONTENT' },
   businessDate: () => '2026-06-30',
 };
 
@@ -477,8 +385,6 @@ function counts(fake: FakeLegacy): Record<string, unknown> {
     pages: fake.pages.size,
     drafts: total(fake.drafts),
     addresses: total(fake.addresses),
-    submits: [...fake.dayStates.values()].filter((state) => state !== 'DRAFT').length,
-    financeEdits: fake.financeEdits,
     contact: fake.contact,
     jobtitles: [...fake.jobtitles.values()].sort(),
     groupEmail: fake.groupEmail,
@@ -489,8 +395,6 @@ const UNTOUCHED = {
   pages: 0,
   drafts: 0,
   addresses: 0,
-  submits: 0,
-  financeEdits: 0,
   contact: SEEDED_CONTACT,
   jobtitles: ['', '', ''],
   groupEmail: SEEDED_GROUP_EMAIL,
@@ -499,8 +403,6 @@ const APPLIED = {
   pages: 2,
   drafts: 5,
   addresses: 3,
-  submits: 3,
-  financeEdits: 2,
   contact: WORKLOAD_CONTACT,
   jobtitles: ['OPT-2 Workload Analyst 1', 'OPT-2 Workload Analyst 2', 'OPT-2 Workload Analyst 3'],
   groupEmail: 'opt2-workload-group-1@workload.opt2.test',
@@ -510,10 +412,7 @@ const APPLIED = {
 type ProbeShape = Pick<Step, 'name' | 'method' | 'route' | 'as' | 'extract'>;
 
 /** The writes and probes the plan must hold, derived from the ids its own write items post and the dataset. */
-function expectedReconciliation(
-  workload: WorkloadPlan,
-  available: boolean,
-): { writes: WorkloadWrite[]; probes: ProbeShape[] } {
+function expectedReconciliation(workload: WorkloadPlan): { writes: WorkloadWrite[]; probes: ProbeShape[] } {
   const body = (bodyPath: string) => ({ from: 'body', path: bodyPath }) as const;
   const dom = (input: string) => ({ from: 'dom', selector: `input[name=${input}]`, attr: 'value' }) as const;
   const idIn = (name: string, pattern: RegExp): string => pattern.exec(itemOf(workload, name).route)?.[1] ?? '';
@@ -601,53 +500,11 @@ function expectedReconciliation(
     'admin',
     { contact: dom('contact') },
   );
-  if (!available) return { writes, probes };
-  for (const n of [1, 2, 3]) {
-    const name = `timesheet-submit-${n}`;
-    const day = DAYS.find((row) => row.day_id === idIn(name, /\/days\/([^/]+)\/submit/));
-    if (day === undefined) throw new Error(`${name} submits no dataset day`);
-    add(
-      {
-        name,
-        probe: `${name}-probe`,
-        check: {
-          kind: 'keyed-not-equals',
-          binding: 'days',
-          key: 'day_id',
-          id: day.day_id,
-          field: 'state',
-          value: 'DRAFT',
-        },
-        skip: [name],
-      },
-      `/legacy-fixtures/cfml/api.cfm/timesheets/sheets/${day.timesheet_id}?siteid=tenant-a`,
-      'employee',
-      { days: body('data.days') },
-    );
-  }
-  for (const n of [1, 2]) {
-    const name = `finance-edit-${n}`;
-    add(
-      {
-        name,
-        probe: `${name}-probe`,
-        check: { kind: 'equals', binding: 'title', value: `OPT-2 workload edit ${n}` },
-        skip: [name],
-      },
-      `/legacy-fixtures/cfml/api.cfm/finance/records/${idIn(name, /\/records\/([^/]+)\/edit/)}?siteid=tenant-a`,
-      'preparer',
-      { title: body('data.title') },
-    );
-  }
   return { writes, probes };
 }
 
 describe('runWorkload per-write reconciliation', () => {
-  it.each<[boolean, Record<string, unknown>]>([
-    [true, APPLIED],
-    [false, { ...APPLIED, submits: 0, financeEdits: 0 }],
-  ])('a clean run with fixtures available=%s sends every write once and completes', async (available, applied) => {
-    writeFixtureStatus(available);
+  it('a clean run sends every write once and completes', async () => {
     const workload = await plan();
     const fake = fakeLegacy();
     const run = await runWorkload(workload, depsFor(fake));
@@ -657,11 +514,10 @@ describe('runWorkload per-write reconciliation', () => {
     expect(run.items.map((item) => item.name)).toStrictEqual(names(workload));
     expect(run.items.filter((item) => item.skipped !== undefined || item.status === null)).toStrictEqual([]);
     expect(writes(fake)).toStrictEqual(postsExcept(workload, []));
-    expect(counts(fake)).toStrictEqual(applied);
+    expect(counts(fake)).toStrictEqual(APPLIED);
     expect(journal()).toMatchObject({ planDigest: planDigest(workload), status: 'complete', failures: [] });
     expect(journal().items).toStrictEqual(run.items);
     expect(journalText()).not.toContain(ADMIN_PASSWORD);
-    expect(journalText()).not.toContain(ROLE_PASSWORD);
   });
 
   it('a rerun after a complete run is already-applied: it posts only logins, changes nothing, exits 0', async () => {
@@ -692,11 +548,7 @@ describe('runWorkload per-write reconciliation', () => {
     });
 
     const logins = postsExcept(workload, workload.writes.map((write) => write.name));
-    expect(logins).toStrictEqual([
-      'POST /admin/index.cfm',
-      'POST /_api/json/v1/tenant-a/login',
-      'POST /_api/json/v1/tenant-a/login',
-    ]);
+    expect(logins).toStrictEqual(['POST /admin/index.cfm']);
     expect(writes(fake, from)).toStrictEqual([...logins, ...logins]);
     expect(counts(fake)).toStrictEqual(APPLIED);
     expect(journal()).toMatchObject({ status: 'complete', failures: [] });
@@ -706,8 +558,8 @@ describe('runWorkload per-write reconciliation', () => {
     const workload = await plan();
     const fake = fakeLegacy();
     await runWorkload(workload, depsFor(fake));
-    // GS-PS-02 sets the tenant-b contact and restores it in a later step; a capture interrupted between leaves it set.
-    fake.contact = 'gs-ps-02@seed.opt2.test';
+    // An edit of the site contact between the runs leaves it other than the workload's value.
+    fake.contact = 'edited-contact@seed.opt2.test';
     const from = fake.calls.length;
 
     const rerun = await runWorkload(workload, depsFor(fake));
@@ -766,23 +618,17 @@ describe('runWorkload per-write reconciliation', () => {
       'binding items lacks what its some-equals check reads',
     ],
     [
-      'lacks the keyed element',
-      'timesheet-submit-1',
-      () => json({ data: { days: [] } }),
-      'binding days lacks what its keyed-not-equals check reads',
-    ],
-    [
       'answers a non-scalar value',
-      'finance-edit-1',
-      () => json({ data: { title: null } }),
-      'binding title lacks what its equals check reads',
+      'content-edit-2',
+      () => json({ data: { items: [{ contentid: 'FIXTURE-OTHER-PAGE', title: null }] } }),
+      'binding items lacks what its some-equals check reads',
     ],
   ])('withholds a write whose probe %s, still sends the others, and exits 1', async (_case, name, answer, cause) => {
     const workload = await plan();
     const write = writeOf(workload, name);
     const target = new URL(itemOf(workload, write.probe).route, GATEWAY).href;
     const fake = fakeLegacy();
-    // Only this write's probe: another write may probe the same timesheet.
+    // Only the first request to this write's probe route.
     let answered = false;
     fake.override = (call) => {
       if (answered || call.method !== 'GET' || call.url.href !== target) return undefined;
@@ -811,39 +657,33 @@ describe('runWorkload per-write reconciliation', () => {
     expect(writes(fake)).toStrictEqual(postsExcept(workload, [name]));
   });
 
-  it.each([true, false])(
-    'buildWorkloadPlan with fixtures available=%s is pure data: catalogue steps, each write after its probe',
-    async (available) => {
-      writeFixtureStatus(available);
-      const first = await plan();
-      const second = await plan();
-      expect(second).toStrictEqual(first);
-      expect(JSON.parse(JSON.stringify(first))).toStrictEqual(first);
-      for (const item of first.items) expect(stepSchema.parse(item)).toStrictEqual(item);
-      const order = names(first);
-      expect(new Set(order).size).toBe(order.length);
-      const skipped = first.writes.flatMap((write) => write.skip);
-      expect(new Set(skipped).size).toBe(skipped.length);
-      for (const write of first.writes) {
-        const at = order.indexOf(write.probe);
-        expect(at).toBeGreaterThan(-1);
-        expect(skipped).not.toContain(write.probe);
-        for (const name of write.skip) expect(order.indexOf(name)).toBeGreaterThan(at);
-      }
-      const posted = first.items.filter((item) => item.method === 'POST').map((item) => item.name);
-      expect(posted.filter((name) => !skipped.includes(name))).toStrictEqual(
-        LOGINS.filter((name) => available || name === 'admin-login'),
-      );
-      const expected = expectedReconciliation(first, available);
-      expect(first.writes).toStrictEqual(expected.writes);
-      expect(
-        first.writes.map((write) => {
-          const { name, method, route, as, extract } = itemOf(first, write.probe);
-          return { name, method, route, as, extract };
-        }),
-      ).toStrictEqual(expected.probes);
-    },
-  );
+  it('buildWorkloadPlan is pure data: catalogue steps, each write after its probe', async () => {
+    const first = await plan();
+    const second = await plan();
+    expect(second).toStrictEqual(first);
+    expect(JSON.parse(JSON.stringify(first))).toStrictEqual(first);
+    for (const item of first.items) expect(stepSchema.parse(item)).toStrictEqual(item);
+    const order = names(first);
+    expect(new Set(order).size).toBe(order.length);
+    const skipped = first.writes.flatMap((write) => write.skip);
+    expect(new Set(skipped).size).toBe(skipped.length);
+    for (const write of first.writes) {
+      const at = order.indexOf(write.probe);
+      expect(at).toBeGreaterThan(-1);
+      expect(skipped).not.toContain(write.probe);
+      for (const name of write.skip) expect(order.indexOf(name)).toBeGreaterThan(at);
+    }
+    const posted = first.items.filter((item) => item.method === 'POST').map((item) => item.name);
+    expect(posted.filter((name) => !skipped.includes(name))).toStrictEqual(['admin-login']);
+    const expected = expectedReconciliation(first);
+    expect(first.writes).toStrictEqual(expected.writes);
+    expect(
+      first.writes.map((write) => {
+        const { name, method, route, as, extract } = itemOf(first, write.probe);
+        return { name, method, route, as, extract };
+      }),
+    ).toStrictEqual(expected.probes);
+  });
 
   it.each<[string, (workload: WorkloadPlan) => WorkloadPlan]>([
     ['is missing', (w) => ({ ...w, items: w.items.filter((item) => item.name !== 'site-edit-form') })],

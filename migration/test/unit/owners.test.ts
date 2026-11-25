@@ -34,7 +34,6 @@ import {
   UnknownUnitError,
   createOwnersClient,
   loadUnitCatalog,
-  type AdoptScheduledTasksRequest,
   type DataOwner,
   type FileObject,
   type LegacyTableTarget,
@@ -118,7 +117,7 @@ describe('loadUnitCatalog over the fixture ownership file', () => {
 
   it('lists every unit in file order with its owner, schema and legacy tables', () => {
     expect(catalog.units().map((unit) => unit.id)).toEqual(FIXTURE_OWNERSHIP.units.map((unit) => unit.unit));
-    expect(catalog.unit(UNITS.blackout)).toEqual({ id: UNITS.blackout, owner: 'timesheets', schema: 'timesheets', legacyTables: ['Program_N.blackout'] });
+    expect(catalog.unit(UNITS.enrolment)).toEqual({ id: UNITS.enrolment, owner: 'programs-sites', schema: 'programs_sites', legacyTables: ['Program_N.enrolment'] });
     expect(catalog.ownerOf(UNITS.person)).toBe('people');
     expect(catalog.legacyTablesOf(UNITS.person)).toEqual(['tusers']);
     expect(Object.isFrozen(catalog.units())).toBe(true);
@@ -127,7 +126,7 @@ describe('loadUnitCatalog over the fixture ownership file', () => {
   it.each<[string, string[]]>([
     ['identity', [UNITS.credential, UNITS.groupAccount, UNITS.loginState, UNITS.userAccount]],
     ['people', [UNITS.person, UNITS.personArchive]],
-    ['reporting', []],
+    ['stub', []],
     ['nobody', []],
   ])('unitsOfOwner(%s) lists exactly the units of that owner', (owner, units) => {
     expect(catalog.unitsOfOwner(owner).map((unit) => unit.id)).toEqual(units);
@@ -197,18 +196,18 @@ describe('loadUnitCatalog over the fixture ownership file', () => {
   });
 
   it.each<[string, string, number | null]>([
-    ['Program_2.blackout', 'Program_N.blackout', 2],
-    ['[Program_1].[blackout]', 'Program_N.blackout', 1],
-    ['Program_3.timesheet', 'Program_3.timesheet', null],
+    ['Program_2.enrolment', 'Program_N.enrolment', 2],
+    ['[Program_1].[enrolment]', 'Program_N.enrolment', 1],
+    ['Program_3.unregistered', 'Program_3.unregistered', null],
     ['tusers', 'tusers', null],
   ])('foldProgramTable(%s) answers legacy table %s of program %s', (table, legacyTable, programId) => {
     expect(catalog.foldProgramTable(table)).toEqual({ legacyTable, programId });
   });
 
   it('looks a concrete program table up through its folded entry', () => {
-    expect(catalog.unitsForLegacyTable('Program_2.blackout').map((target) => target.unit)).toEqual([UNITS.blackout]);
-    expect(catalog.ownersForLegacyTable('[Program_1].[blackout]')).toEqual(['timesheets']);
-    expect(catalog.keyColumnsOf('Program_2.blackout')).toEqual(['blackout_id']);
+    expect(catalog.unitsForLegacyTable('Program_2.enrolment').map((target) => target.unit)).toEqual([UNITS.enrolment]);
+    expect(catalog.ownersForLegacyTable('[Program_1].[enrolment]')).toEqual(['programs-sites']);
+    expect(catalog.keyColumnsOf('Program_2.enrolment')).toEqual(['enrolment_id']);
   });
 
   it.each<[string, (lookup: UnitCatalog) => unknown]>([
@@ -242,10 +241,10 @@ describe('loadUnitCatalog over the fixture ownership file', () => {
     [
       'data owners that leave out an owner of units',
       () => undefined,
-      `unit ${UNITS.mailingList}: owner "communications" is not a data owner`,
-      { dataOwners: ['identity', 'people', 'programs-sites', 'strategies-content', 'timesheets'] },
+      `unit ${UNITS.mailingList}: owner "programs-sites" is not a data owner`,
+      { dataOwners: ['identity', 'people', 'strategies-content'] },
     ],
-    ['a unit outside the schema of its owner', (doc) => (unitDocOf(doc, UNITS.mailingList).owner = 'people'), `unit ${UNITS.mailingList}: schema "communications" is not people's schema "people"`],
+    ['a unit outside the schema of its owner', (doc) => (unitDocOf(doc, UNITS.mailingList).owner = 'people'), `unit ${UNITS.mailingList}: schema "programs_sites" is not people's schema "people"`],
     ['a unit listed twice', (doc) => doc.units.push({ ...unitDocOf(doc, UNITS.site) }), `unit ${UNITS.site}: listed more than once`],
     ['a table owner that is no owner', (doc) => (tableDocOf(doc, 'tcontent').owner = 'nobody'), 'table tcontent: unknown owner "nobody"'],
     ['a table listed twice', (doc) => doc.tables.push({ ...tableDocOf(doc, 'tglobals') }), 'table tglobals: listed more than once'],
@@ -275,7 +274,7 @@ describe('loadUnitCatalog over the fixture ownership file', () => {
       (doc) => (targetDocOf(doc, 'timagesizes', UNITS.imageSize).keyColumns = ['siteID']),
       `table timagesizes: target ${UNITS.imageSize} keyColumns [siteID] do not carry the legacy key [sizeID]`,
     ],
-    ['a unit id outside <schema>.<table>', (doc) => (unitDocOf(doc, UNITS.mailingList).unit = 'Mailing List'), 'units.0.unit: must be <schema>.<table>'],
+    ['a unit id outside <schema>.<table>', (doc) => (unitDocOf(doc, UNITS.content).unit = 'Content Page'), 'units.0.unit: must be <schema>.<table>'],
     ['an explicit target without owned columns', (doc) => (targetDocOf(doc, 'tusers', UNITS.loginState).ownedColumns = []), 'tables.0.targets.3.ownedColumns: '],
     ['a document without tables', (doc) => Reflect.deleteProperty(doc, 'tables'), '\n  tables: '],
   ])('rejects %s with a UnitCatalogError naming the file and the problem', async (_label, mutate, issue, options) => {
@@ -404,9 +403,6 @@ const WATERMARK: WatermarkRecord = {
   finishedAt: '2026-03-01T10:00:00.000',
 };
 const MONITOR_STATE: SiteMonitorState = { lastMonitored: '2026-03-01 10:15:00.000', updatedAt: '2026-03-01 10:15:02.000' };
-const ADOPT_REQUEST: AdoptScheduledTasksRequest = {
-  tasks: [{ name: 'survey-1', siteId: 'tenant-a', scheduleTime: '2026-03-02 09:00:00.000', scheduleVersion: 1 }],
-};
 
 function exportPage(next: string | null): ExportResponse {
   return { unit: UNIT, tenantId: TENANT, tables: [], next };
@@ -502,8 +498,8 @@ describe('createOwnersClient', () => {
     },
     {
       name: 'position asks for the registered tenants',
-      call: (owners) => owners.position('timesheets', { registeredTenants: true }),
-      request: { service: 'timesheets', method: 'GET', path: '/internal/v1/migration/position', query: { registeredTenants: 'true' }, userToken: null },
+      call: (owners) => owners.position('programs-sites', { registeredTenants: true }),
+      request: { service: 'programs-sites', method: 'GET', path: '/internal/v1/migration/position', query: { registeredTenants: 'true' }, userToken: null },
       answer: POSITION_ANSWER,
     },
     {
@@ -541,30 +537,6 @@ describe('createOwnersClient', () => {
         userToken: null,
       },
       answer: MONITOR_STATE,
-    },
-    {
-      name: 'adoptScheduledTasks posts the tasks to communications',
-      call: (owners) => owners.adoptScheduledTasks(ADOPT_REQUEST),
-      request: {
-        service: 'communications',
-        method: 'POST',
-        path: '/internal/v1/migration/adopt-scheduled-tasks',
-        json: ADOPT_REQUEST,
-        userToken: null,
-      },
-      answer: { adopted: 1, existing: 0, scheduledImmediately: 0 },
-    },
-    {
-      name: 'cancelAdoptedScheduledTasks posts the names to communications',
-      call: (owners) => owners.cancelAdoptedScheduledTasks({ names: ['survey-1'] }),
-      request: {
-        service: 'communications',
-        method: 'POST',
-        path: '/internal/v1/migration/cancel-adopted-scheduled-tasks',
-        json: { names: ['survey-1'] },
-        userToken: null,
-      },
-      answer: { cancelled: 1 },
     },
   ])('$name', async ({ call, request, answer }) => {
     const { owners, calls } = routedClient({ [routeOf(request)]: [{ body: answer }] });
@@ -788,30 +760,6 @@ describe('createOwnersClient', () => {
     expect(calls).toEqual([{ service: 'strategies-content', method: 'DELETE', path: '/internal/v1/migration/objects', query: { key }, userToken: null }]);
   });
 
-  it.each<[string, 'finance' | 'reporting', Record<string, string>, (owners: OwnersClient) => Promise<Readable>]>([
-    [
-      'getAttachmentObject streams one finance attachment by tenant and attachment id',
-      'finance',
-      { tenantId: TENANT, attachmentId: FILE_ID },
-      (owners) => owners.getAttachmentObject({ tenantId: TENANT, attachmentId: FILE_ID }),
-    ],
-    [
-      'getExportObject streams one reporting export output by tenant and job id',
-      'reporting',
-      { tenantId: TENANT, jobId: FILE_ID },
-      (owners) => owners.getExportObject({ tenantId: TENANT, jobId: FILE_ID }),
-    ],
-  ])('%s as its undecoded bytes', async (_label, service, query, read) => {
-    const bytes = Buffer.from([0x25, 0x50, 0x44, 0x46, 0x00, 0xff]);
-    const served = Readable.from([bytes]);
-    const { owners, calls } = routedClient({ [`${service} GET /internal/v1/migration/objects`]: [{ body: served }] });
-
-    const body = await read(owners);
-
-    expect(body).toBe(served);
-    expect(calls).toEqual([{ service, method: 'GET', path: '/internal/v1/migration/objects', query, stream: true, userToken: null }]);
-  });
-
   it.each<QueueControlOp>(['pause', 'resume', 'ensure'])('queueControl posts %s to the queue on the given service', async (op) => {
     const answer: QueueControlResult = { queue: SITEMONITOR_QUEUE, service: 'programs-sites' };
     const path = `/internal/v1/task-queues/${SITEMONITOR_QUEUE}/${op}`;
@@ -895,24 +843,6 @@ describe('createOwnersClient', () => {
       status: 500,
       body: { apiversion: 'v1', method: 'invalid', error: { message: 'Internal error', code: 'internal' } },
       call: (owners) => owners.deleteObject(`${TENANT}/${FILE_ID}.pdf`),
-    },
-    {
-      name: 'getAttachmentObject answering 404',
-      owner: 'finance',
-      method: 'GET',
-      path: '/internal/v1/migration/objects',
-      status: 404,
-      body: { apiversion: 'v1', method: 'invalid', error: { message: 'Invalid method call', code: 'invalid_request' } },
-      call: (owners) => owners.getAttachmentObject({ tenantId: TENANT, attachmentId: FILE_ID }),
-    },
-    {
-      name: 'getExportObject answering 404',
-      owner: 'reporting',
-      method: 'GET',
-      path: '/internal/v1/migration/objects',
-      status: 404,
-      body: { apiversion: 'v1', method: 'invalid', error: { message: 'Invalid method call', code: 'invalid_request' } },
-      call: (owners) => owners.getExportObject({ tenantId: TENANT, jobId: FILE_ID }),
     },
     {
       name: 'gate answering 409 without a gate conflict',

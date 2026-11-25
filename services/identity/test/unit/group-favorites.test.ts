@@ -1,5 +1,4 @@
 /** lookupGroupFavorites over a throwaway `identity` schema: char(35) matching, every registered tenant, request order, auth denials, the legacy 400s and the window read gate. */
-import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -15,6 +14,7 @@ import {
   assertResponseMatchesOpenApi,
   createThrowawaySchema,
   fixedClock,
+  loadOpenApiDocument,
   mintServiceToken,
   mintUserToken,
   pgAvailable,
@@ -27,7 +27,7 @@ import { createIdentityRepository, type GroupInput, type IdentityRepository } fr
 import { GROUP_FAVORITE, IDENTITY_UNITS } from '../../src/repo/tables.js';
 import { registerGroupFavoriteRoutes } from '../../src/routes/internal-group-favorites.js';
 
-const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
+const OPENAPI = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as object;
 const LOOKUP_URL = '/internal/v1/group-favorites:lookup';
 const CLOCK = fixedClock(new Date(2026, 5, 30, 12, 0, 0));
 const SHORT_MS = 300;

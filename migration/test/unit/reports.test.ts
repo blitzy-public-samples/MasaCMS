@@ -1,6 +1,6 @@
 // Unit tests for the source-pin reader, the JSON and Markdown report writers, report redaction and the run logs.
 import { createHash } from 'node:crypto';
-import { readdirSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { copyFile, mkdir, mkdtemp, readdir, readFile, rm, unlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -22,6 +22,7 @@ import {
   type TransitionLogEntry,
   type WindowLogEntry,
 } from '../../src/reports/append-log.js';
+import { ARCHIVE_DIR, readArchive, reconstructPoint } from '../../src/reconcile/archive.js';
 import { projectReportValue, redactReportMarkdown, redactReportText } from '../../src/reports/redact.js';
 import { SourcePinError, readSourcePin, readSourceSha, resetSourcePinCache } from '../../src/reports/source-pin.js';
 import {
@@ -49,14 +50,23 @@ const OTHER_SHA = '0123456789abcdef0123456789abcdef01234567';
 const REPO_PIN_FILE = fileURLToPath(new URL('../../../opt2/source-pin.json', import.meta.url));
 const REPO_REPORTS_DIR = fileURLToPath(new URL('../../../opt2/reports/', import.meta.url));
 const REPO_GROUPS_FILE = fileURLToPath(new URL('../../../gateway/cutover/groups.json', import.meta.url));
+const REPO_ARCHIVE_DIR = path.join(REPO_REPORTS_DIR, 'reconciliation', ARCHIVE_DIR);
 const PLACEHOLDER_JSON = [
   'migration-order.json',
   'transitions.json',
   'windows.json',
-  ...readdirSync(path.join(REPO_REPORTS_DIR, 'reconciliation'))
+  ...[...new Set([...readdirSync(path.join(REPO_REPORTS_DIR, 'reconciliation')), ...readdirSync(REPO_ARCHIVE_DIR)])]
     .filter((name) => name.endsWith('.json'))
+    .sort()
     .map((name) => `reconciliation/${name}`),
 ];
+
+/** A committed report file, or the reconstruction of a point archived under `reconciliation/archive/`. */
+async function committedReport(file: string): Promise<unknown> {
+  const full = path.join(REPO_REPORTS_DIR, file);
+  if (existsSync(full)) return JSON.parse(await readFile(full, 'utf8'));
+  return reconstructPoint(await readArchive(REPO_ARCHIVE_DIR), path.basename(file, '.json'));
+}
 const FIXED_AT = '2026-01-02T03:04:05.678Z';
 
 // Synthetic credential-shaped values, assembled at run time so secret scanners do not match the source.
@@ -265,7 +275,7 @@ describe('reportFilePath', () => {
   it.each([
     ['report.json', 'report.json'],
     ['reconciliation/after-backfill.json', 'reconciliation/after-backfill.json'],
-    ['./state-machines/finance.json', 'state-machines/finance.json'],
+    ['./reconciliation/summary.md', 'reconciliation/summary.md'],
     ['a/../b.md', 'b.md'],
     ['..notes.md', '..notes.md'],
   ])('resolves %s inside the reports directory', (relPath, expected) => {
@@ -992,29 +1002,24 @@ describe('projectReportValue', () => {
       },
     },
     {
-      label: 'keeps values keyed by the e-signature service and schema names',
-      input: { totals: { 'e-signature': 4, esignature: 2 }, perOwner: { 'e-signature': { inbox: 3, ok: true } } },
-      expected: { totals: { 'e-signature': 4, esignature: 2 }, perOwner: { 'e-signature': { inbox: 3, ok: true } } },
-    },
-    {
       label: 'masks credential names containing signature',
       input: {
         totals: { signature: 4 },
         signature: TOKEN,
-        eSignatureKey: TOKEN,
-        esignature_token: TOKEN,
+        requestSignatureKey: TOKEN,
+        request_signature_token: TOKEN,
         signatureSecret: TOKEN,
-        'e-signature-key': TOKEN,
-        ESIGNATURE: TOKEN,
+        'request-signature-key': TOKEN,
+        SIGNATURE: TOKEN,
       },
       expected: {
         totals: { signature: REDACTED },
         signature: REDACTED,
-        eSignatureKey: REDACTED,
-        esignature_token: REDACTED,
+        requestSignatureKey: REDACTED,
+        request_signature_token: REDACTED,
         signatureSecret: REDACTED,
-        'e-signature-key': REDACTED,
-        ESIGNATURE: REDACTED,
+        'request-signature-key': REDACTED,
+        SIGNATURE: REDACTED,
       },
     },
     {
@@ -1224,22 +1229,22 @@ describe('projectReportValue', () => {
     { name: 'reportPath', value: '/srv/opt2/reports/reconciliation/after-feed-4.json', credential: `/srv/${EMAIL}/r.json`, masked: digestOf(`/srv/${EMAIL}/r.json`) },
     { name: 'droppedDatabase', value: 'muradb_opt2_snap_3', credential: BEARER, masked: digestOf(BEARER) },
     { name: 'since', value: '2026-06-30T08:00:00.000Z', credential: BEARER, masked: digestOf(BEARER) },
-    { name: 'endpoint', value: 'http://127.0.0.1:20118/internal/v1/events/push', credential: `https://u:${TOKEN}@h/push`, masked: digestOf(`https://u:${TOKEN}@h/push`) },
+    { name: 'endpoint', value: 'http://127.0.0.1:20111/internal/v1/events/push', credential: `https://u:${TOKEN}@h/push`, masked: digestOf(`https://u:${TOKEN}@h/push`) },
     { name: 'order', value: ['freeze', 'commit', 'reload-window', 'unfreeze'], credential: [BEARER], masked: [digestOf(BEARER)] },
     { name: 'targetUnits', value: ['strategies-content.content'], credential: [EMAIL], masked: [digestOf(EMAIL)] },
     { name: 'feedUnits', value: ['strategies-content.content'], credential: [EMAIL], masked: [digestOf(EMAIL)] },
-    { name: 'skippedTables', value: ['Program_1.timesheet_day'], credential: [EMAIL], masked: [digestOf(EMAIL)] },
+    { name: 'skippedTables', value: ['Program_1.enrolment'], credential: [EMAIL], masked: [digestOf(EMAIL)] },
     { name: 'producers', value: ['identity', 'people', 'programs-sites'], credential: [BEARER], masked: [digestOf(BEARER)] },
-    { name: 'subscriptions', value: ['timesheets.people.person.archived.v1'], credential: [EMAIL], masked: [digestOf(EMAIL)] },
-    { name: 'inPullMode', value: ['timesheets.people.person.archived.v1'], credential: [EMAIL], masked: [digestOf(EMAIL)] },
+    { name: 'subscriptions', value: ['identity.people.person.changed.v1'], credential: [EMAIL], masked: [digestOf(EMAIL)] },
+    { name: 'inPullMode', value: ['identity.people.person.changed.v1'], credential: [EMAIL], masked: [digestOf(EMAIL)] },
     { name: 'unproven', value: [EVENT_ID], credential: [BEARER], masked: [digestOf(BEARER)] },
     { name: 'differing', value: [CHECKSUM_KEY], credential: [`people|people.person|dbo.tusers|${EMAIL}`], masked: [digestOf(`people|people.person|dbo.tusers|${EMAIL}`)] },
-    { name: 'unchecked', value: ['timesheets'], credential: [EMAIL], masked: [digestOf(EMAIL)] },
+    { name: 'unchecked', value: ['identity'], credential: [EMAIL], masked: [digestOf(EMAIL)] },
     { name: 'left', value: [WITNESS], credential: [`token=${TOKEN}`], masked: [digestOf(`token=${TOKEN}`)] },
     { name: 'deleted', value: [WITNESS], credential: [EMAIL], masked: [digestOf(EMAIL)] },
     { name: 'routes', value: [FLAG_ROUTE], credential: [RESET_ROUTE], masked: [digestOf(RESET_ROUTE)] },
     { name: 'name', value: 'replayed:programs-sites', credential: `token:${TOKEN}`, masked: digestOf(`token:${TOKEN}`) },
-    { name: 'name', value: 'redelivered:timesheets.people.person.archived.v1', credential: 'Avery Quinn', masked: digestOf('Avery Quinn') },
+    { name: 'name', value: 'redelivered:identity.people.person.changed.v1', credential: 'Avery Quinn', masked: digestOf('Avery Quinn') },
     { name: 'stderrTail', value: 'apply people: Service people unavailable (ECONNREFUSED)', credential: BEARER, masked: `Bearer ${REDACTED}` },
     { name: 'failedAfterRestart', value: 'Service people unavailable (ECONNREFUSED)', credential: `failed for ${EMAIL}`, masked: `failed for ${REDACTED}` },
     { name: 'completeError', value: 'Window W1 is import-pending', credential: `password=${PASSWORD}`, masked: `password=${REDACTED}` },
@@ -1355,7 +1360,7 @@ describe('projectReportValue', () => {
 
 describe('committed report placeholders', () => {
   it.each(PLACEHOLDER_JSON)('project %s unchanged', async (file) => {
-    const doc: unknown = JSON.parse(await readFile(path.join(REPO_REPORTS_DIR, file), 'utf8'));
+    const doc = await committedReport(file);
     expect(projectReportValue(doc)).toEqual(doc);
   });
 

@@ -376,7 +376,7 @@ describe('UnitResolver.project trash-class targets', () => {
       { unit: 'content.trash', owner: 'strategies-content' },
       { unit: 'identity.trash', owner: 'identity' },
       { unit: 'people.trash', owner: 'people' },
-      { unit: 'timesheets.trash', owner: 'timesheets' },
+      { unit: 'programs_sites.trash', owner: 'programs-sites' },
     ],
     tables: [
       {
@@ -389,6 +389,7 @@ describe('UnitResolver.project trash-class targets', () => {
         ],
       },
       { table: 'tfiles', owner: 'strategies-content', ruleSteps: [1], targets: [{ unit: 'content.file', owner: 'strategies-content' }] },
+      { table: 'temails', owner: 'legacy', ruleSteps: [], targets: [] },
       {
         table: 'ttrash',
         owner: 'split',
@@ -398,7 +399,7 @@ describe('UnitResolver.project trash-class targets', () => {
           trashTarget('content.trash', 'strategies-content'),
           trashTarget('identity.trash', 'identity'),
           trashTarget('people.trash', 'people'),
-          trashTarget('timesheets.trash', 'timesheets'),
+          trashTarget('programs_sites.trash', 'programs-sites'),
         ],
       },
     ],
@@ -408,12 +409,14 @@ describe('UnitResolver.project trash-class targets', () => {
   const throwIn = trash('insert', 3, 'throwIn');
   const users = write('tusers', null, ['userDAO.delete'], { op: 'delete' });
   const files = write('tfiles', null, ['fileDAO.deleteVersion']);
-  const EVERY = ['content.trash', 'identity.trash', 'people.trash', 'timesheets.trash'];
+  const mails = write('temails', null, ['emailDAO.delete'], { op: 'delete' });
+  const EVERY = ['content.trash', 'identity.trash', 'people.trash', 'programs_sites.trash'];
 
   it.each([
     ['a single-object write takes the owners a split co-write resolves to', [users, throwIn], facts({ type: '2' }), ['people.trash']],
     ['a single-object write takes the owner of a direct co-write', [files, throwIn], facts(), ['content.trash']],
     ['a single-object write no co-write selects keeps every target', [throwIn], facts(), EVERY],
+    ['a single-object write of a co-written legacy-only entity takes no target', [mails, throwIn], facts(), ['legacy:ttrash']],
     ['a delete of each row of a looped query keeps every target', [files, trash('delete', 6, 'empty')], facts(), EVERY],
     ['a delete by siteid keeps every target', [files, trash('delete', 9, 'deleteSite')], facts(), EVERY],
     ['an owner held in stored data keeps every target', [files, throwIn], facts({}, true), EVERY],

@@ -31,8 +31,6 @@ export interface ShellView {
   readonly originalCircuit?: string;
   /** Overrides `rc.originalfuseaction`, which otherwise derives from `ctx.action`. */
   readonly originalFuseaction?: string;
-  /** OPT-2 module of a synthetic screen (`timesheets`, `finance`, …); marks the OPT-2 nav group active. */
-  readonly opt2Module?: string;
 }
 
 /** Legacy layout file: `template.cfm` or `compact.cfm` (`default.cfm`). */

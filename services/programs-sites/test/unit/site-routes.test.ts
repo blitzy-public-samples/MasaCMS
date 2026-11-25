@@ -1,5 +1,4 @@
 /** Request mapping, CSRF skip semantics and contract shape of the site-settings routes over a recording SitesDomain. */
-import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { createServer, request, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -16,6 +15,7 @@ import {
   ROLE_SET,
   assertResponseMatchesOpenApi,
   authHeadersFor,
+  loadOpenApiDocument,
   mintServiceToken,
   mintUserToken,
   testVerifier,
@@ -29,7 +29,7 @@ import { TEST_CLOCK, createRecordingDb } from '../helpers/app.js';
 
 type ContractOperation = Record<string, unknown>;
 
-const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as {
+const OPENAPI = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as {
   paths: Record<string, Record<string, ContractOperation>>;
 };
 const SITE_PATHS = [

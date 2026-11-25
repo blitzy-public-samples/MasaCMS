@@ -70,8 +70,6 @@ TOOLING_FILE="$OPT2_STATE_DIR/tooling.json"
 CAPTURE_FILE="$OPT2_PRISTINE_DIR/server-capture.json"
 PRISTINE_FILE="$OPT2_PRISTINE_DIR/pristine.json"
 NATIVE_CFCONFIG_FILE="$OPT2_PRISTINE_DIR/native-tasks.cfconfig.json"
-TASKS_EXPORT="$OPT2_STATE_DIR/commandbox/down-tasks.json"
-SURVEY_TASK_PREFIX=opt2-survey-
 STOPPED_AT="$(date -u +%Y%m%dT%H%M%SZ)"
 
 SUMMARY=()
@@ -397,9 +395,9 @@ restore_pristine() {
     "$MURA_DATABASE" "$backup" "${removed:-none}"
 }
 
-# Re-imports the captured scheduled tasks into the original server, then deletes any opt2-survey-* task left over.
+# Re-imports the captured scheduled tasks into the original server.
 restore_tasks() {
-  local target leftover
+  local target
   local -a captured=()
   if [[ ! -f $NATIVE_CFCONFIG_FILE ]]; then
     printf 'scheduled tasks: left as they are, none captured (ColdFusion was not running when up.sh first ran)\n'
@@ -408,22 +406,6 @@ restore_tasks() {
   target="$(capture_value cfconfigTarget)"
   [[ -n $target ]] || die "$CAPTURE_FILE has no cfconfigTarget"
   cfconfig_import "$NATIVE_CFCONFIG_FILE" "$target" >&2 || die "cannot import $NATIVE_CFCONFIG_FILE into $target"
-  # The export holds task credentials decrypted.
-  trap 'rm -f -- "$TASKS_EXPORT"' EXIT
-  rm -f -- "$TASKS_EXPORT"
-  cfconfig_export "$TASKS_EXPORT" "$target" >&2 || die "cannot export the scheduled tasks of $target"
-  leftover="$(node "$LIB_DIR/cfconfig-tasks.mjs" names --in "$TASKS_EXPORT" --prefix "$SURVEY_TASK_PREFIX")"
-  if [[ -n $leftover ]]; then
-    printf 'opt2: deleting leftover tasks: %s\n' "${leftover//$'\n'/, }" >&2
-    node "$LIB_DIR/cfconfig-tasks.mjs" drop-prefix --prefix "$SURVEY_TASK_PREFIX" \
-      --in "$TASKS_EXPORT" --out "$TASKS_EXPORT"
-    cfconfig_import "$TASKS_EXPORT" "$target" >&2 ||
-      die "cannot import the scheduled tasks of $target without $SURVEY_TASK_PREFIX*"
-    rm -f -- "$TASKS_EXPORT"
-    cfconfig_export "$TASKS_EXPORT" "$target" >&2 || die "cannot export the scheduled tasks of $target"
-    leftover="$(node "$LIB_DIR/cfconfig-tasks.mjs" names --in "$TASKS_EXPORT" --prefix "$SURVEY_TASK_PREFIX")"
-    [[ -z $leftover ]] || die "$SURVEY_TASK_PREFIX* tasks survive the re-import into $target: ${leftover//$'\n'/, }"
-  fi
   mapfile -t captured < <(node "$LIB_DIR/cfconfig-tasks.mjs" names --in "$NATIVE_CFCONFIG_FILE")
   printf 'scheduled tasks: the %d captured task(s) re-imported into %s\n' "${#captured[@]}" "$target"
 }

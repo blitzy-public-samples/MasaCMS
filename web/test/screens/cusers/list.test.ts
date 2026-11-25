@@ -282,16 +282,16 @@ describe('cUsers.list group table', () => {
     const $ = await render(contextFor(siteAdminList({ ispublic: '0' }), tenantAPrivateGroupsPage));
     expect(modelOf($, 'table#temp').tables[0]?.rows.map((row) => row[1])).toEqual([
       'Admin (2)',
-      'communications.sender (0)',
-      'esignature.auditor (0)',
-      'esignature.signer (0)',
-      'finance.approver (0)',
-      'finance.preparer (0)',
-      'reporting.exporter (0)',
-      'surveys.manager (0)',
-      'timesheets.employee (0)',
-      'timesheets.primary-approver (0)',
-      'timesheets.secondary-approver (0)',
+      'archive.viewer (0)',
+      'gallery.curator (0)',
+      'gallery.uploader (0)',
+      'library.approver (0)',
+      'library.writer (0)',
+      'records.clerk (0)',
+      'studio.manager (0)',
+      'team.member (0)',
+      'team.primary-lead (0)',
+      'team.secondary-lead (0)',
     ]);
   });
 

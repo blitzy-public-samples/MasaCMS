@@ -13,6 +13,7 @@ import {
   TENANT_A,
   assertResponseMatchesOpenApi,
   createThrowawaySchema,
+  loadOpenApiDocument,
   mintServiceToken,
   mintUserToken,
   pgAvailable,
@@ -33,7 +34,7 @@ type Row = Record<string, unknown>;
 const SERVICE = 'strategies-content';
 const HOLDER = 'cperm-crumbs-test';
 const CLOCK = fixedClock(new Date(2026, 5, 30, 10, 0, 0, 0));
-const OPENAPI = parse(readFileSync(fileURLToPath(new URL('../../contracts/openapi.yaml', import.meta.url)), 'utf8')) as {
+const OPENAPI = loadOpenApiDocument(fileURLToPath(new URL('../../contracts/openapi.yaml', import.meta.url)), parse) as {
   paths: Record<string, Record<string, Record<string, unknown>>>;
 };
 const SITE = TENANT_A.siteId;

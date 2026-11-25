@@ -29,7 +29,7 @@ const disposition = (name: string, filename?: string): string =>
   `Content-Disposition: form-data; name="${name}"${filename === undefined ? '' : `; filename="${filename}"`}`;
 
 describe('fileUploadContentType', () => {
-  // Measured on ColdFusion 2023 with finance.cfc's fileUpload; the last two rows are lines legacy answers with HTTP 500.
+  // Measured on ColdFusion 2023 with a fixture fileUpload; the last two rows are lines legacy answers with HTTP 500.
   it.each<[string, readonly string[], string]>([
     ['type and parameters', ['Content-Type: Text/Plain; Charset=UTF-8'], 'text/plain; charset=utf-8'],
     ['a second space after the colon', ['Content-Type:  text/plain'], ' text/plain'],

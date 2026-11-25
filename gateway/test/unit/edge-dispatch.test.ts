@@ -451,14 +451,14 @@ describe("bodies legacy's servlet container rejects", () => {
     ].flatMap(([body, contentType, payload]) =>
       [
         { route: 'legacy-bound', script: { destination: 'legacy' } as Script },
-        { route: 'target-bound', script: { entry: { route: 'fixture:finance/records@post', kind: 'write', state: 'target' }, destination: 'target', family: 'fixture' } as Script },
+        { route: 'target-bound', script: { entry: { route: 'fixture:people/persons/{id}/archive@post', kind: 'write', state: 'target' }, destination: 'target', family: 'fixture' } as Script },
       ].map((destination) => ({ body, contentType, payload, ...destination })),
     ),
   )('relays a $route request with $body to legacy as sent and passes its answer through untouched', async ({ contentType, payload, script }) => {
     const h = await harness();
     h.setScript(() => script);
     h.legacy.setHandler((_req, res) => containerAnswer(res));
-    const url = '/legacy-fixtures/cfml/api.cfm/finance/records?x=1';
+    const url = '/legacy-fixtures/cfml/api.cfm/people/persons/P1/archive?x=1';
     const res = await h.app.inject({ method: 'POST', url, headers: { 'content-type': contentType, cookie: 'CFID=1' }, payload });
     expect(res.statusCode).toBe(500);
     expect(res.headers['content-type']).toBe('text/html;charset=UTF-8');
@@ -546,14 +546,14 @@ describe('forwarding', () => {
         {
           route: 'target-bound',
           side: 'svc' as const,
-          script: { entry: { route: 'fixture:finance/records@post', kind: 'write', state: 'target' }, destination: 'target', family: 'fixture' } as Script,
+          script: { entry: { route: 'fixture:people/persons/{id}/archive@post', kind: 'write', state: 'target' }, destination: 'target', family: 'fixture' } as Script,
         },
       ].map((destination) => ({ ...body, ...destination })),
     ),
   )('forwards a $route multipart body ending $ending as sent, its Content-Length intact', async ({ payload, side, script }) => {
     const h = await harness();
     h.setScript(() => script);
-    const url = '/legacy-fixtures/cfml/api.cfm/finance/records';
+    const url = '/legacy-fixtures/cfml/api.cfm/people/persons/P1/archive';
     const res = await h.app.inject({ method: 'POST', url, headers: { 'content-type': 'multipart/form-data; boundary=x' }, payload });
     expect(res.statusCode).toBe(200);
     expect(h[side].requests).toHaveLength(1);
@@ -2649,8 +2649,8 @@ describe('request start cookies and Content-Encoding of target-served responses'
     ],
     [
       'an OPT-2 path',
-      { entry: { route: 'opt2:/opt2/finance/**', kind: 'read', state: 'target' }, destination: 'target', family: 'opt2' },
-      '/opt2/finance/v1/invoices',
+      { entry: { route: 'opt2:/opt2/web-sample/**', kind: 'read', state: 'target' }, destination: 'target', family: 'opt2' },
+      '/opt2/web-sample/list',
       undefined,
       undefined,
     ],

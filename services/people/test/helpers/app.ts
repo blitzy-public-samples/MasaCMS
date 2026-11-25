@@ -2,7 +2,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { INVOCATION_HEADER, LOCAL_USER_TOKEN } from '@opt2/platform/auth';
+import { INVOCATION_HEADER } from '@opt2/platform/auth';
 import type { EventPublisher } from '@opt2/platform/events';
 import {
   CHANGELOG_TABLE,
@@ -12,31 +12,23 @@ import {
   type UnitGate,
 } from '@opt2/platform/migration-kit';
 import { loadEnv, type Clock, type FastifyInstance } from '@opt2/platform/service-kit';
+import type { TaskPort } from '@opt2/platform/tasks';
+import type { QueryResult, QueryResultRow, TenantDb } from '@opt2/platform/tenancy';
 import {
-  assertCreateInput,
-  resolvePageSize,
-  type CreateTaskInput,
-  type CreateTaskResult,
-  type DeleteTaskResult,
-  type QueueState,
-  type TaskInfo,
-  type TaskPage,
-  type TaskPageRequest,
-  type TaskPort,
-} from '@opt2/platform/tasks';
-import { tenantDbFromPool, type Pool, type QueryConfig, type QueryResult, type QueryResultRow, type TenantDb } from '@opt2/platform/tenancy';
-import {
-  ROLE_SET,
-  TENANT_A,
-  authHeadersFor,
   businessClock,
+  collapseSql,
   createCapturingPublisher,
+  createFakeTaskPort as createSharedFakeTaskPort,
+  createHeadersFor,
+  fakePoolTenantDb,
+  localTestEnv,
   mintServiceToken,
   mintUserToken,
   testVerifier,
   writeTestSecrets,
   type CapturingPublisher,
-  type RoleSubject,
+  type FakeTask,
+  type FakeTaskPort as SharedFakeTaskPort,
 } from '@opt2/platform/testing';
 import { SERVICE_NAME, buildApp, peopleEnvSchema, type PeopleEnv } from '../../src/app.js';
 import { NO_FAULTS, type FaultHooks } from '../../src/domain/faults.js';
@@ -46,11 +38,6 @@ import { createIdentityDouble, type IdentityDouble } from './identity-double.js'
 const STATE_DIR_PREFIX = 'opt2-people-test-';
 const SCHEMA = 'people';
 const GATEWAY_CALLER = 'gateway';
-
-/** Local ports of people and its identity and strategies-content callees, as `harness/repro/ports.env` fixes them. */
-const LOCAL_PORTS = Object.freeze({ identity: 8111, people: 8112, 'strategies-content': 8114 } as const);
-
-const localUrl = (port: number): string => `http://127.0.0.1:${String(port)}`;
 
 /** State directories this module created; only these are given test secrets and removed when their app closes. */
 const helperStateDirs = new Set<string>();
@@ -74,34 +61,12 @@ export async function createTestStateDir(): Promise<string> {
   return dir;
 }
 
-/**
- * Parsed local people environment from literals and `TZ`; `overrides` merge last, `undefined` removing a variable.
- * `OPT2_STATE_DIR` defaults to `stateDir`, else a fresh directory of this module; `PG_*` are placeholders, as suites inject the database.
- */
+/** Parsed local people environment; `overrides` merge last, `undefined` removing a variable; `OPT2_STATE_DIR` defaults to `stateDir`, else a fresh directory of this module. */
 export function testEnv(overrides: Readonly<Record<string, string | undefined>> = {}, stateDir?: string): PeopleEnv {
-  const source: Record<string, string | undefined> = {
-    PORT: String(LOCAL_PORTS.people),
-    OPT2_SERVICE_NAME: SERVICE_NAME,
-    OPT2_ENV: 'local',
-    OPT2_DB_AUTH: 'password',
-    PG_HOST: '127.0.0.1',
-    PG_PORT: '5432',
-    PG_DATABASE: 'opt2_people_test',
-    PG_USER: 'people_app',
-    PG_PASSWORD: 'unused',
-    OPT2_TOKEN_ISSUER: LOCAL_USER_TOKEN.issuer,
-    OPT2_TOKEN_AUDIENCE: LOCAL_USER_TOKEN.audience,
-    OPT2_JWKS_URL: `${localUrl(LOCAL_PORTS.identity)}/.well-known/jwks.json`,
-    // The self entry is the outbox-sweep chain's task target.
-    OPT2_SERVICE_URLS: JSON.stringify(Object.fromEntries(Object.entries(LOCAL_PORTS).map(([service, port]) => [service, localUrl(port)]))),
-    OPT2_STATE_DIR: 'OPT2_STATE_DIR' in overrides ? undefined : (stateDir ?? newStateDir()),
-    OPT2_TASKS_ADAPTER: 'local',
-    OPT2_STORAGE_ADAPTER: 'local',
-    TZ: process.env.TZ || 'UTC',
-    ...overrides,
-  };
-  const defined = Object.entries(source).filter((entry): entry is [string, string] => entry[1] !== undefined);
-  return loadEnv(peopleEnvSchema, Object.fromEntries(defined));
+  // The self entry is the outbox-sweep chain's task target.
+  const callees = ['identity', 'people', 'strategies-content'];
+  const database = { name: 'opt2_people_test', user: 'people_app' };
+  return loadEnv(peopleEnvSchema, localTestEnv({ service: SERVICE_NAME, database, callees, stateDir: () => stateDir ?? newStateDir(), extra: { OPT2_STORAGE_ADAPTER: 'local' } }, overrides));
 }
 
 /** Clock every suite shares: local `2026-06-30T12:00:00`, the seed's business date. */
@@ -191,7 +156,6 @@ interface Answer {
 
 const RECORDING_HOLDER = 'recording-db';
 const FIRST_XID = 1000n;
-const ENDED_POOL = 'Cannot use a pool after calling end on the pool';
 const TRANSACTION_CONTROL: ReadonlySet<string> = new Set(['BEGIN', 'START', 'COMMIT', 'END', 'ROLLBACK', 'SAVEPOINT', 'RELEASE']);
 const WRITE_VERBS: ReadonlySet<string> = new Set(['INSERT', 'UPDATE', 'DELETE']);
 const CTE_WRITE = /\b(?:INSERT\s+INTO|DELETE\s+FROM|UPDATE\s+\S+(?:\s+AS\s+\S+)?\s+SET)\b/i;
@@ -199,10 +163,6 @@ const GATE_TABLE = new RegExp(`(?:"?[a-z_][a-z0-9_]*"?\\.)?"?${UNIT_GATE_TABLE}"
 const CHANGELOG_INSERT = new RegExp(`^INSERT INTO (?:"?[a-z_][a-z0-9_]*"?\\.)?"?${CHANGELOG_TABLE}"?\\s`, 'i');
 const RETURNING_XID = /\bRETURNING\s+xid(?:::\w+)?(?:\s+AS\s+"?([\w$]+)"?)?\s*$/i;
 const SELECT_COLUMNS = /^SELECT\s+(.+?)\s+FROM\s/i;
-
-function collapse(text: string): string {
-  return text.replace(/\s+/g, ' ').trim();
-}
 
 function firstWord(text: string): string {
   return /^\s*([A-Za-z_]+)/.exec(text)?.[1]?.toUpperCase() ?? '';
@@ -244,7 +204,6 @@ export function createRecordingDb(seed: RecordingDbSeed = {}): RecordingDb {
   const responders: Array<readonly [StatementMatcher, ResponderRows]> = [...(seed.responses ?? [])];
   let recorded: RecordedStatement[] = [];
   let nextXid = FIRST_XID;
-  let ended = false;
 
   function gateAnswer(text: string, values: readonly unknown[]): Answer | undefined {
     const verb = firstWord(text);
@@ -291,10 +250,8 @@ export function createRecordingDb(seed: RecordingDbSeed = {}): RecordingDb {
     if (verb === 'COMMIT' || verb === 'END' || (verb === 'ROLLBACK' && !/^ROLLBACK TO\b/i.test(text))) conn.xid = undefined;
   }
 
-  async function run(conn: Connection, input: string | QueryConfig, params?: unknown[]): Promise<QueryResult> {
-    if (ended) throw new Error(ENDED_POOL);
-    const text = collapse(typeof input === 'string' ? input : input.text);
-    const values: unknown[] = [...((typeof input === 'string' ? undefined : input.values) ?? params ?? [])];
+  async function run(conn: Connection, sql: string, values: unknown[]): Promise<QueryResult> {
+    const text = collapseSql(sql);
     recorded.push({ text, values });
     const responder = responders.findLast(([matcher]) => matches(matcher, text, values));
     let answer: Answer;
@@ -310,35 +267,17 @@ export function createRecordingDb(seed: RecordingDbSeed = {}): RecordingDb {
     return { command: firstWord(text), rowCount: answer.rowCount, oid: 0, fields: [], rows: answer.rows };
   }
 
-  const newConnection = (): Connection => ({ xid: undefined });
-  const fakePool = {
-    async connect() {
-      if (ended) throw new Error(ENDED_POOL);
-      const conn = newConnection();
-      return {
-        query: (input: string | QueryConfig, params?: unknown[]): Promise<QueryResult> => run(conn, input, params),
-        // A connection released mid-transaction is destroyed, which ends its transaction uncommitted.
-        release: (): void => {
-          conn.xid = undefined;
-        },
-      };
-    },
-    query: (input: string | QueryConfig, params?: unknown[]): Promise<QueryResult> => run(newConnection(), input, params),
-    async end(): Promise<void> {
-      ended = true;
-    },
-    // tenantDbFromPool subscribes to pool events; no connection of this pool ever emits one.
-    on: (): void => undefined,
-  };
-  const base = tenantDbFromPool(fakePool as unknown as Pool, { schema: SCHEMA });
-
-  // tenantDbFromPool freezes its TenantDb, so the recording members sit on an object that delegates to it; `listen` is left
-  // out, as no LISTEN session can open without a server.
+  // `listen` is left out, as no LISTEN session can open without a server.
   return {
-    schema: base.schema,
-    withTenant: (tenantId, fn, options) => base.withTenant(tenantId, fn, options),
-    withMetadata: (fn, options) => base.withMetadata(fn, options),
-    end: () => base.end(),
+    ...fakePoolTenantDb<Connection>({
+      schema: SCHEMA,
+      session: () => ({ xid: undefined }),
+      // A connection released mid-transaction is destroyed, which ends its transaction uncommitted.
+      release: (conn) => {
+        conn.xid = undefined;
+      },
+      run,
+    }),
     statements: () => [...recorded],
     writes: () => recorded.filter((statement) => isWrite(statement.text)),
     clear() {
@@ -354,101 +293,17 @@ export function createRecordingDb(seed: RecordingDbSeed = {}): RecordingDb {
   };
 }
 
-/** A task the fake port holds; a deleted task is a tombstone whose name stays reserved. */
-export interface FakeTask {
-  readonly input: CreateTaskInput;
-  readonly deleted: boolean;
-}
-
-/** In-memory `TaskPort` keyed by `(queue, name)` that records every created task and never dispatches. */
-export interface FakeTaskPort extends TaskPort {
-  readonly kind: 'local';
-  /** Every created task, tombstones included, in creation order. */
+/** The platform fake task port with `tasks` as the list of every created task, tombstones included, in creation order. */
+export interface FakeTaskPort extends Omit<SharedFakeTaskPort, 'tasks' | 'failCreate'> {
   readonly tasks: readonly FakeTask[];
   /** Makes the next `times` creates on `queue`, or on any queue when omitted, reject after their input is checked. */
   failCreate(times?: number, queue?: string): void;
 }
 
-interface StoredTask {
-  input: CreateTaskInput;
-  deleted: boolean;
-}
-
 /** Creates a {@link FakeTaskPort}; a repeated `(queue, name)`, live or deleted, answers `created: false` as ALREADY_EXISTS does. */
 export function createFakeTaskPort(): FakeTaskPort {
-  const tasks: StoredTask[] = [];
-  const paused = new Set<string>();
-  const failures: Array<{ queue: string | undefined; remaining: number }> = [];
-
-  const find = (queue: string, name: string): StoredTask | undefined =>
-    tasks.find((task) => task.input.queue === queue && task.input.name === name);
-  const live = (queue: string, name: string): StoredTask | undefined => {
-    const task = find(queue, name);
-    return task === undefined || task.deleted ? undefined : task;
-  };
-  const infoOf = ({ input }: StoredTask): TaskInfo => ({
-    queue: input.queue,
-    name: input.name,
-    scheduleTime: new Date(input.scheduleTime.getTime()),
-    ...(input.tenantId === undefined ? {} : { tenantId: input.tenantId }),
-    status: 'pending',
-    attempts: 0,
-  });
-
-  return {
-    kind: 'local',
-    tasks,
-
-    async create(input: CreateTaskInput): Promise<CreateTaskResult> {
-      assertCreateInput(input);
-      const failure = failures.find((entry) => entry.remaining > 0 && (entry.queue === undefined || entry.queue === input.queue));
-      if (failure !== undefined) {
-        failure.remaining -= 1;
-        throw new Error(`fake task port: injected create failure on ${input.queue}/${input.name}`);
-      }
-      if (find(input.queue, input.name) !== undefined) return { name: input.name, created: false };
-      tasks.push({ input, deleted: false });
-      return { name: input.name, created: true };
-    },
-
-    async delete(queue: string, name: string): Promise<DeleteTaskResult> {
-      const task = live(queue, name);
-      if (task !== undefined) task.deleted = true;
-      return { name, deleted: task !== undefined };
-    },
-
-    async list(queue: string, page?: TaskPageRequest): Promise<TaskPage> {
-      const pageSize = resolvePageSize(page?.pageSize);
-      const queued = tasks.filter((task) => task.input.queue === queue && !task.deleted);
-      const start = page?.pageToken === undefined ? 0 : Number(page.pageToken);
-      const end = start + pageSize;
-      const listed = queued.slice(start, end).map(infoOf);
-      return end < queued.length ? { tasks: listed, nextPageToken: String(end) } : { tasks: listed };
-    },
-
-    async get(queue: string, name: string): Promise<TaskInfo | undefined> {
-      const task = live(queue, name);
-      return task === undefined ? undefined : infoOf(task);
-    },
-
-    async pauseQueue(queue: string): Promise<void> {
-      paused.add(queue);
-    },
-
-    async resumeQueue(queue: string): Promise<void> {
-      paused.delete(queue);
-    },
-
-    async queueState(queue: string): Promise<QueueState> {
-      return { queue, paused: paused.has(queue) };
-    },
-
-    close: (): Promise<void> => Promise.resolve(),
-
-    failCreate(times = 1, queue) {
-      failures.push({ queue, remaining: times });
-    },
-  };
+  const port = createSharedFakeTaskPort();
+  return { ...port, tasks: port.created, failCreate: (times = 1, queue) => port.failCreate(queue, times) };
 }
 
 /** Options of {@link buildTestApp}; it creates every fake it is not given. */
@@ -548,31 +403,8 @@ export async function buildTestApp(
   return { ...parts, close };
 }
 
-/** Options of {@link headersFor}. */
-export interface HeadersForOptions {
-  /** Site of a user token; `tenant-a` by default. */
-  site?: string;
-  /** Callee of the invocation credential; people by default. */
-  audience?: string;
-  /** Masa `UserID` of a user token; one per subject by default. */
-  sub?: string;
-}
-
-function roleSubjectNamed(name: string): RoleSubject {
-  const found = ROLE_SET.find((candidate) => candidate.name === name);
-  if (found === undefined) throw new TypeError(`ROLE_SET has no subject named ${name}`);
-  return found;
-}
-
-/** `app.inject` headers presenting `subject`, or the `ROLE_SET` subject of that name, to people; rejects with TypeError for an unknown name. */
-export async function headersFor(subject: RoleSubject | string, opts: HeadersForOptions = {}): Promise<Record<string, string>> {
-  const resolved = typeof subject === 'string' ? roleSubjectNamed(subject) : subject;
-  return authHeadersFor(resolved, {
-    site: opts.site ?? TENANT_A.siteId,
-    audience: opts.audience ?? SERVICE_NAME,
-    ...(opts.sub === undefined ? {} : { sub: opts.sub }),
-  });
-}
+/** `app.inject` headers presenting a subject, or the `ROLE_SET` subject of that name, to people. */
+export const headersFor = createHeadersFor({ audience: SERVICE_NAME });
 
 /** Claims of a user token; a people `TestActor` has this shape. */
 export interface UserHeadersInput {

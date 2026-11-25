@@ -13,9 +13,7 @@ import {
   decodeJwt,
   isServiceRole,
   moduleRole,
-  renderAuthDenial,
   serviceRole,
-  type DenialResponse,
   type RouteMatrix,
   type RouteMatrixEntry,
   type Transport,
@@ -23,16 +21,22 @@ import {
 import { buildPushBody, encodeEnvelope, type EventEnvelope } from '@opt2/platform/events';
 import { cfUuid } from '@opt2/platform/legacy-compat';
 import {
+  MINIMUM_SUBJECTS,
   ROLE_SET,
   TENANT_A,
   TENANT_B,
+  createCredentialCache,
   fixtureForSite,
   mintServiceToken,
   mintTasksInvokerToken,
   mintUserToken,
   pushKeyQuery,
   registryPayloads,
+  renderedDenial,
+  roleSubjectNamed,
+  routeTableCoverage,
   testEnvelope,
+  withQuery,
   type InjectResponse,
   type RoleSubject,
 } from '@opt2/platform/testing';
@@ -46,37 +50,16 @@ type Headers = Record<string, string>;
 const SITE_A = TENANT_A.siteId;
 const SITE_B = TENANT_B.siteId;
 
-const SYNTHETIC = [
-  'timesheets.employee',
-  'timesheets.primary-approver',
-  'timesheets.secondary-approver',
-  'finance.preparer',
-  'finance.approver',
-  'esignature.signer',
-  'esignature.auditor',
-  'reporting.exporter',
-  'surveys.manager',
-  'communications.sender',
-] as const;
-
 /** Workloads whose invocation credential carries `service:<name>` alone. */
 const PLAIN_WORKLOADS = [
   'service:identity',
   'service:people',
   'service:programs-sites',
   'service:strategies-content',
-  'service:communications',
-  'service:reporting',
-  'service:surveys',
-  'service:timesheets',
-  'service:finance',
-  'service:e-signature',
   'service:stub',
   'service:gateway',
   'service:web',
 ] as const;
-
-const MINIMUM_SUBJECTS = ['anonymous', 'member', 'system-user', 'editor', 'site-admin', 's2', 'other-tenant'] as const;
 
 const REQUIRED_WORKLOADS = [
   'service:gateway',
@@ -128,7 +111,6 @@ const RECORDS: Readonly<Record<string, SubjectRecord>> = Object.freeze({
   'site-admin': throughGateway(['system-user', 'site-admin']),
   s2: throughGateway(['system-user', 's2']),
   'other-tenant': throughGateway(['system-user', 'site-admin'], SITE_B),
-  ...Object.fromEntries(SYNTHETIC.map((role) => [role, throughGateway(['system-user', role])])),
   'users-module': throughGateway(['system-user', 'm:008']),
   'users-and-site-manager': throughGateway(['system-user', 'm:008', 'm:000']),
   ...Object.fromEntries(PLAIN_WORKLOADS.map((role) => [role, { credential: 'invocation', roles: [role] } satisfies SubjectRecord])),
@@ -229,12 +211,6 @@ const CONSUME_CALLERS = [
   'service:strategies-content',
   'service:identity',
   'service:gateway',
-  'service:communications',
-  'service:e-signature',
-  'service:finance',
-  'service:reporting',
-  'service:surveys',
-  'service:timesheets',
 ] as const;
 
 function service(allow: Row['allow'], probe: Probe, extra: Omit<Partial<Row>, 'transport' | 'allow' | 'probe'> = {}): Row {
@@ -525,21 +501,9 @@ function labelOf(outcome: Outcome): string {
   return outcome === ADMITTED ? 'admitted' : `denied ${outcome.statusCode}`;
 }
 
-function withQuery(url: string, query: string): string {
-  return `${url}${url.includes('?') ? '&' : '?'}${query}`;
-}
-
 /** The URL `record` requests: the push invoker's key travels in the query, as the emulator's push endpoint carries it. */
 function urlFor(probe: Probe, record: SubjectRecord): string {
   return record.credential === 'push-key' ? withQuery(probe.url, pushKeyQuery()) : probe.url;
-}
-
-type DenialRequest = Parameters<typeof renderAuthDenial>[1];
-
-/** The response the platform renders `denial` with for a request to `url`; renderAuthDenial reads only the request's query. */
-function denialResponse(denial: AuthDenial, url: string): DenialResponse {
-  const query = Object.fromEntries(new URL(url, 'http://identity.test').searchParams);
-  return renderAuthDenial(denial, { query } as unknown as DenialRequest);
 }
 
 let t: TestApp;
@@ -564,24 +528,9 @@ function effects(): Effects {
   };
 }
 
-const credentialCache = new Map<string, { mintedAt: number; headers: Promise<Headers> }>();
-
-// User tokens live 300 s; re-minting after 120 s keeps a slow run from presenting an expired one.
-const CREDENTIAL_REUSE_MS = 120_000;
-
-function credentialsOf(subject: RoleSubject): Promise<Headers> {
-  const hit = credentialCache.get(subject.name);
-  if (hit !== undefined && Date.now() - hit.mintedAt < CREDENTIAL_REUSE_MS) return hit.headers;
-  const headers = headersFor(subject);
-  credentialCache.set(subject.name, { mintedAt: Date.now(), headers });
-  return headers;
-}
-
-function subjectNamed(name: string): RoleSubject {
-  const found = SUBJECTS.find((subject) => subject.name === name);
-  if (found === undefined) throw new TypeError(`No subject named ${name}`);
-  return found;
-}
+const cached = createCredentialCache<Headers>();
+const credentialsOf = (subject: RoleSubject): Promise<Headers> => cached(subject.name, () => headersFor(subject));
+const subjectNamed = (name: string): RoleSubject => roleSubjectNamed(name, SUBJECTS);
 
 function rowAt(key: string): Row {
   const row = EXPECTED[key];
@@ -611,7 +560,7 @@ async function relayedCredentials(caller: string, sid: string, sub: string = USE
 
 /** How a response departs from `denial` rendered for `url` with no effect beyond `before`; empty when it matches. */
 function denialMismatch(res: InjectResponse, denial: AuthDenial, url: string, before: Effects): Record<string, unknown> {
-  const owed = denialResponse(denial, url);
+  const owed = renderedDenial(denial, url);
   const actual = { status: res.statusCode, body: res.body, challenge: res.headers['www-authenticate'], effects: effects() };
   const wanted = { status: owed.status, body: owed.body, challenge: owed.headers['WWW-Authenticate'], effects: before };
   return isDeepStrictEqual(actual, wanted) ? {} : { actual, wanted };
@@ -633,7 +582,7 @@ async function cellMismatch(key: string, row: Row, subject: RoleSubject): Promis
   }
   const mismatch = denialMismatch(res, expected, url, before);
   if (Object.keys(mismatch).length === 0) return undefined;
-  const owed = denialResponse(expected, url);
+  const owed = renderedDenial(expected, url);
   return `${at} ${res.body.slice(0, 200)} · owed ${owed.status} ${owed.body.slice(0, 200)} · effects ${JSON.stringify({ before, after: effects() })}`;
 }
 
@@ -691,13 +640,7 @@ afterAll(async () => {
 
 describe('route table', () => {
   it('expected table covers exactly the routes collectRouteMatrix returns', () => {
-    const registered = matrix.routes.map(keyOf);
-    const listed = Object.keys(EXPECTED);
-    expect({
-      missing: registered.filter((key) => !listed.includes(key)),
-      extra: listed.filter((key) => !registered.includes(key)),
-      duplicated: registered.filter((key, index) => registered.indexOf(key) !== index),
-    }).toEqual({ missing: [], extra: [], duplicated: [] });
+    expect(routeTableCoverage(matrix.routes.map(keyOf), Object.keys(EXPECTED))).toEqual({ missing: [], extra: [], duplicated: [] });
   });
 
   it("declares each route with the table's transport, roles and site check", () => {
@@ -708,9 +651,9 @@ describe('route table', () => {
 });
 
 describe('subjects', () => {
-  it('probes the user archetypes, every synthetic role and the workloads of the platform subject set', () => {
+  it('probes the user archetypes and the workloads of the platform subject set', () => {
     const names = ROLE_SET.map((subject) => subject.name);
-    expect(names).toEqual(expect.arrayContaining([...MINIMUM_SUBJECTS, ...SYNTHETIC, ...REQUIRED_WORKLOADS]));
+    expect(names).toEqual(expect.arrayContaining([...MINIMUM_SUBJECTS, ...REQUIRED_WORKLOADS]));
     const presented = new Set(SUBJECTS.flatMap((subject) => RECORDS[subject.name]?.roles ?? []));
     expect(['platform.migration', 'platform.operator'].filter((role) => !presented.has(role))).toEqual([]);
   });

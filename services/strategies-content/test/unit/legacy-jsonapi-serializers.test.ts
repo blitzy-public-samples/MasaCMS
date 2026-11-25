@@ -166,7 +166,7 @@ function resolver(overrides: Partial<ExpansionResolver> = {}): ExpansionResolver
 const page = (recordCount: number, maxRecordsPerPage: number, entityName = 'content', pageIndex?: number) =>
   iteratorPage({ recordCount, maxRecordsPerPage, entityName, pageIndex });
 
-describe('recorded GS-CO-05 content reads', () => {
+describe('recorded JSON API content reads', () => {
   const home = () => contentView(FX.rows.home, ORACLE, { editUrl: HOME_EDIT_URL });
   const findOne = { pk: 'contentid', editableCheck: true };
 
@@ -292,7 +292,7 @@ describe('recorded GS-CO-05 content reads', () => {
   });
 });
 
-describe('recorded GS-CO-11 comment entity', () => {
+describe('recorded comment entity', () => {
   it('findQuery serializes comments under the field list allowQueryParams writes into url.fields', async () => {
     const ctx = context(OWN, { contentid: BETA, fields: COMMENT_PUBLIC_FIELDS, isspam: 0, isdeleted: 0, entityname: 'comment' }, { method: 'findQuery' });
     const comment = entityView('comment', FX.rows.comment, { primaryKey: 'commentID' });

@@ -9,11 +9,5 @@ cloud_run_services = [
   "people",
   "programs-sites",
   "strategies-content",
-  "communications",
-  "reporting",
-  "surveys",
-  "timesheets",
-  "finance",
-  "e-signature",
   "migration",
 ]

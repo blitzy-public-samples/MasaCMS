@@ -441,8 +441,8 @@ export const environmentEnvSchema = z.object({
 /** Parsed {@link environmentEnvSchema} variables. */
 export type EnvironmentConfig = z.output<typeof environmentEnvSchema>;
 
-/** `cfpm` packages the fixtures need: `cfspreadsheet`, `cfdocument`, `cfmail` and `cfschedule`. */
-const REQUIRED_CFPM = ['spreadsheet', 'document', 'mail', 'scheduler'] as const;
+/** `cfpm` packages the services phase requires: `cfmail` and `cfschedule`. */
+const REQUIRED_CFPM = ['mail', 'scheduler'] as const;
 
 /** Services-phase rows, in report order. */
 const SERVICE_ROWS = {
@@ -462,8 +462,7 @@ const SERVICE_ROWS = {
     id: 'cfpm',
     label: '`cfpm` packages',
     source: `${INFO_SOURCE} package list`,
-    planned:
-      'Includes `spreadsheet` (`cfspreadsheet`) and `document` (`cfdocument`), plus `mail` and `scheduler`, which `legacy-fixtures/load-fixtures.sh` also checks',
+    planned: 'Includes `mail` (`cfmail`) and `scheduler` (`cfschedule`)',
   },
   sqlserver: { id: 'sqlserver', label: 'SQL Server', source: '`SELECT @@VERSION`', planned: 'SQL Server 2022' },
   postgresql: {

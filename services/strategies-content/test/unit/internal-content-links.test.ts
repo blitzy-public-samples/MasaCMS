@@ -1,5 +1,4 @@
 /** `lookupContentLinks` over a throwaway `content` schema: registry tenancy, active-version reads, legacy link forms under the `MURA_<KEY>` URL settings, auth and body validation. */
-import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -16,6 +15,7 @@ import {
   TENANT_B,
   assertResponseMatchesOpenApi,
   createThrowawaySchema,
+  loadOpenApiDocument,
   mintServiceToken,
   mintUserToken,
   pgAvailable,
@@ -34,7 +34,7 @@ import {
 
 type ContractOperation = Record<string, unknown>;
 
-const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as {
+const OPENAPI = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as {
   paths: Partial<Record<string, Partial<Record<string, ContractOperation>>>>;
 };
 const SERVICE = 'strategies-content';

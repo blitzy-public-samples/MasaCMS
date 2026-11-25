@@ -35,18 +35,18 @@ Pins: the root module and every module's `versions.tf` set `required_version = "
 
 | Resource | Count | Detail |
 |---|---|---|
-| Cloud Run services | 13 | `gateway`, `web`, `identity`, `people`, `programs-sites`, `strategies-content`, `communications`, `reporting`, `surveys`, `timesheets`, `finance`, `e-signature`, `migration`. The stub service is not deployed. `min_instance_count` is 0 everywhere except `migration` (1), whose reverse projector and write windows must keep running |
+| Cloud Run services | 7 | `gateway`, `web`, `identity`, `people`, `programs-sites`, `strategies-content`, `migration`. The stub service is not deployed. `min_instance_count` is 0 everywhere except `migration` (1), whose reverse projector and write windows must keep running |
 | Cloud Run job | 1 | `db-bootstrap`: the migration image running `node dist/db-bootstrap/cli.js bootstrap --target cloud`, `max_retries = 0`. Declared only, with no trigger or execution |
 | Network | 1 | VPC and subnet `opt2` (Private Google Access), private services range `opt2-psa` peered through `servicenetworking.googleapis.com`, router `opt2-router` with NAT `opt2-nat` |
-| Cloud SQL | 1 instance, 1 database, 13 IAM users | Instance `opt2-postgres`: `POSTGRES_16`, `ENTERPRISE` edition, tier `db-custom-1-3840`, private IP only, flag `cloudsql.iam_authentication = on`, daily backups with point-in-time recovery. Database `database_name`. One `CLOUD_IAM_SERVICE_ACCOUNT` user per database account: the 12 runtime services other than `web`, plus `db-bootstrap` |
+| Cloud SQL | 1 instance, 1 database, 7 IAM users | Instance `opt2-postgres`: `POSTGRES_16`, `ENTERPRISE` edition, tier `db-custom-1-3840`, private IP only, flag `cloudsql.iam_authentication = on`, daily backups with point-in-time recovery. Database `database_name`. One `CLOUD_IAM_SERVICE_ACCOUNT` user per database account: the 6 runtime services other than `web`, plus `db-bootstrap` |
 | Pub/Sub | from the topology | Per topic: the topic. Per subscription: a push subscription, its dead-letter topic and a pull subscription on that topic for replay |
-| Cloud Tasks | 11 queues | See [Generated topology](#generated-topology) |
-| Cloud Storage | 4 buckets | `content-files`, `reporting-exports`, `finance-attachments`, `esignature-documents`; uniform bucket-level access, versioning off |
+| Cloud Tasks | 6 queues | See [Generated topology](#generated-topology) |
+| Cloud Storage | 1 bucket | `content-files`; uniform bucket-level access, versioning off |
 | Identity Platform | config + 4 tenants | Multi-tenant config; tenants `default`, `umbrella`, `tenant-a`, `tenant-b`, one per user-pool site of the seed |
-| Service accounts | 16 | `opt2-<name>` for the 13 runtime services, `opt2-db-bootstrap`, `opt2-pubsub-invoker` and `opt2-tasks-invoker` |
-| Secret Manager | 4 secrets | See [Secrets](#secrets) |
+| Service accounts | 10 | `opt2-<name>` for the 7 runtime services, `opt2-db-bootstrap`, `opt2-pubsub-invoker` and `opt2-tasks-invoker` |
+| Secret Manager | 3 secrets | See [Secrets](#secrets) |
 
-Guards in the code: a `check "topology"` block requires `cloud_run_services` to list exactly the 13 runtime services, every push consumer and task target to be a domain service, and every queue target path to be fixed. Module validations require `INGRESS_TRAFFIC_ALL` on the gateway and `INGRESS_TRAFFIC_INTERNAL_ONLY` elsewhere, `allUsers` as invoker on the gateway only and `allAuthenticatedUsers` nowhere, `min_instance_count` 1 for `migration` and 0 elsewhere, `cpu_idle` false for `migration` and true elsewhere, the pinned collector image, and no `PORT` in a service's app environment (Cloud Run injects it).
+Guards in the code: a `check "topology"` block requires `cloud_run_services` to list exactly the 7 runtime services, every push consumer and task target to be a domain service, and every queue target path to be fixed. Module validations require `INGRESS_TRAFFIC_ALL` on the gateway and `INGRESS_TRAFFIC_INTERNAL_ONLY` elsewhere, `allUsers` as invoker on the gateway only and `allAuthenticatedUsers` nowhere, `min_instance_count` 1 for `migration` and 0 elsewhere, `cpu_idle` false for `migration` and true elsewhere, the pinned collector image, and no `PORT` in a service's app environment (Cloud Run injects it).
 
 ## Running the plan
 
@@ -82,15 +82,17 @@ The report `opt2/reports/terraform-plan.json` wraps the `show` output. A run wri
 | `terraformVersion`, `providerVersion` | `1.17.1`, `hashicorp/google 8.9.0` |
 | `commands` | The five commands above, with `<state-dir>` unexpanded |
 | `applied` | Always `false` |
-| `expected` | The planning-time expectation: the 13 Cloud Run services, job `db-bootstrap`, minimum instances 0 by default and 1 for `migration` |
+| `expected` | The planning-time expectation: the 7 Cloud Run services, job `db-bootstrap`, minimum instances 0 by default and 1 for `migration` |
 | `minInstanceCounts` | Planned `min_instance_count` per Cloud Run service, read from the plan; the performance report reads it |
-| `plan` | The JSON plan |
+| `plan` | The JSON plan, each value terraform marks sensitive replaced with `(redacted)` |
 
 Callers: `.github/workflows/terraform.yml` (job `plan`) and `harness/repro/test-all.sh` (stage 7, before the performance suite).
 
 ## No-credential planning
 
 - `providers.tf` sets `access_token = var.plan_access_token`. The variable is `sensitive` with a placeholder default, so the provider never looks for real credentials.
+- `plan.sh` exits 1 before `init` when a token could reach the plan: `TF_VAR_plan_access_token`, `TF_CLI_ARGS` or `TF_CLI_ARGS_<command>` is set, or `plan.tfvars`, `terraform.tfvars[.json]` or a `*.auto.tfvars[.json]` in `envs/plan` names `plan_access_token`. It unsets `GOOGLE_APPLICATION_CREDENTIALS`, `GOOGLE_CREDENTIALS`, `GOOGLE_CLOUD_KEYFILE_JSON`, `GCLOUD_KEYFILE_JSON`, `GOOGLE_OAUTH_ACCESS_TOKEN`, `CLOUDSDK_AUTH_ACCESS_TOKEN` and `GOOGLE_IMPERSONATE_SERVICE_ACCOUNT` before running terraform.
+- The report replaces with `(redacted)` each sensitive variable's value, default and constant module argument, each resource attribute marked in `sensitive_values`, `before_sensitive` or `after_sensitive`, each sensitive output, and constant provider `access_token` or `credentials` values. Addresses, counts and every other value are kept.
 - The configuration has no `data` blocks, so nothing reads a Google API.
 - `init -backend=false` skips backend initialization, `plan -refresh=false` plans against the recorded state without reading remote objects, and `-lock=false` takes no state lock. No `backend` block is declared, so state is local and nothing remote is read or locked, but a `terraform.tfstate` in `envs/plan` would still be read and shape the plan; none is committed (`.gitignore` excludes `*.tfstate`) and `plan.sh` writes none: `tfplan` stays in `OPT2_STATE_DIR`.
 - Project id, project number and region are variables. Every URL, email, IAM member and the Pub/Sub service agent `service-<project_number>@gcp-sa-pubsub.iam.gserviceaccount.com` is a string built from them at plan time. Only values Google assigns on creation, such as `sql_connection_name`, stay unknown in the plan.
@@ -107,17 +109,14 @@ Every value in `plan.tfvars` points at nothing real: hosts use the reserved `.in
 | `plan_access_token` | Provider token, sensitive | Not set; its placeholder default is used |
 | `image_repository` | Image prefix; each service runs `<image_repository>/<name>:<image_tag>` | `us-central1-docker.pkg.dev/opt2-plan-only/opt2` |
 | `image_tag` | Tag of every image | `plan-only` |
-| `cloud_run_services` | Deployed services; the topology generator reads this list | The 13 runtime services |
+| `cloud_run_services` | Deployed services; the topology generator reads this list | The 7 runtime services |
 | `legacy_origin` | `LEGACY_ORIGIN` of `gateway` and `migration` | `https://legacy.invalid` |
 | `legacy_db_host` | `MURA_DBHOST` of `migration`; its SQL Server certificate must be CA-trusted and name this host, as `migration` verifies it | `legacy-db.invalid` |
 | `legacy_db_port` | `MURA_DBPORT` of `migration` (default 1433) | `1433` |
 | `legacy_db_name` | `MURA_DATABASE` of `migration`, `strategies-content`, `identity` and `people` | `masa` |
 | `legacy_db_username` | `MURA_DBUSERNAME` of `migration` | `opt2-migration` |
-| `operator_secret_ids` | Ids of existing secrets the operator provides (see [Secrets](#secrets)): `legacy_db_password`, `legacy_reload_key` (optional; null keeps Masa's default `appreload`), `identity_platform_api_key`. Each must be a Secret Manager id (`^[A-Za-z0-9_-]{1,255}$`) and none of the four secrets this tree creates | `opt2-legacy-db-password`, `opt2-legacy-reload-key`, `opt2-identity-platform-api-key` (ids only, never values) |
+| `operator_secret_ids` | Ids of existing secrets the operator provides (see [Secrets](#secrets)): `legacy_db_password`, `legacy_reload_key` (optional; null keeps Masa's default `appreload`), `identity_platform_api_key`. Each must be a Secret Manager id (`^[A-Za-z0-9_-]{1,255}$`) and none of the three secrets this tree creates | `opt2-legacy-db-password`, `opt2-legacy-reload-key`, `opt2-identity-platform-api-key` (ids only, never values) |
 | `legacy_settings` | Non-secret Masa `MURA_<KEY>` settings of the legacy origin (see [Legacy compatibility settings](#legacy-compatibility-settings)); default `{}` | `MURA_DATASOURCE = "masa"`, `MURA_DBTYPE = "mssql"`, `MURA_INDEXFILEINURLS = "false"`, `MURA_SITEIDINURLS = "false"` |
-| `smtp_host` | `SMTP_HOST` of `communications` | `smtp.invalid` |
-| `smtp_port` | `SMTP_PORT` of `communications` | `587` |
-| `mailpit_api_url` | `MAILPIT_API_URL` of `communications` | `https://mailpit.invalid` |
 | `time_zone` | `TZ` of every service: the legacy server time zone | `UTC` |
 | `database_name` | Cloud SQL database, also `PG_DATABASE` | `opt2` |
 | `subnet_cidr` | Direct VPC egress subnet, `/26` or larger | `10.10.0.0/24` |
@@ -157,13 +156,13 @@ Masa reads each configBean setting from its `MURA_<KEY>` variable over the setti
 | `MURA_ASSETPATH`, `MURA_COREPATH`, `MURA_FILEASSETPATH`, `MURA_FILEDIR`, `MURA_PLUGINSPATH`, `MURA_PROXYSERVER`, `MURA_S3ASSETS` | `web` | Any text without URL credentials (`scheme://user[:password]@`) |
 | `MURA_ADMINDIR`, `MURA_ADMINEMAIL`, `MURA_DBTYPE`, `MURA_FILEDELIM`, `MURA_HTMLEDITORTYPE`, `MURA_MODE`, `MURA_PROXYUSER`, `MURA_TITLE`, `MURA_WEBROOT`, `MURA_WINDOWDOCUMENTDOMAIN` | `web` | Any text |
 
-A CFML boolean is `true`, `false`, `yes`, `no`, `1` or `0`, in any case. Plan-time validation rejects any other key, a secret-like key (one containing `PASSWORD`, `SECRET` or `TOKEN`, or ending in `KEY`), a null value and a value outside the accepted set; every accepted value parses in each reader at start-up. The table is every non-secret `MURA_<KEY>` a target reads: `web` reads the 44 it lists for it (`web/src/lib/env.ts`), `gateway` the four it lists for it (`gateway/src/app.ts`), and `migration` and the six synthetic services read none beyond `MURA_APPRELOADKEY` and `migration`'s connection settings, whose `MURA_DBTYPE` stays `mssql`. Every value lands as plain env, so the seven keys that may hold a URL refuse embedded credentials; a secret reaches a service only as an `operator_secret_ids` id. `harness/test/repro/legacy-settings.test.ts` derives each service's `MURA_*` reads from its source and fails when its readers, connection env and secret env differ from them.
+A CFML boolean is `true`, `false`, `yes`, `no`, `1` or `0`, in any case. Plan-time validation rejects any other key, a secret-like key (one containing `PASSWORD`, `SECRET` or `TOKEN`, or ending in `KEY`), a null value and a value outside the accepted set; every accepted value parses in each reader at start-up. The table is every non-secret `MURA_<KEY>` a target reads: `web` reads the 44 it lists for it (`web/src/lib/env.ts`), `gateway` the four it lists for it (`gateway/src/app.ts`), and `migration` reads none beyond `MURA_APPRELOADKEY` and its connection settings, whose `MURA_DBTYPE` stays `mssql`. Every value lands as plain env, so the seven keys that may hold a URL refuse embedded credentials; a secret reaches a service only as an `operator_secret_ids` id. `harness/test/repro/legacy-settings.test.ts` derives each service's `MURA_*` reads from its source and fails when its readers, connection env and secret env differ from them.
 
 ## Deterministic URLs
 
 Every callee URL is computed as `https://<name>-<project_number>.<region>.run.app` (`local.urls`), never read from a resource attribute. The same strings feed `OPT2_SERVICE_URLS`, `OPT2_GATEWAY_URL`, `OPT2_MIGRATION_URL`, each push endpoint (`<consumer URL><push_path>`), each push subscription's OIDC audience, each service's `custom_audiences`, and the `service_urls` output. All are known at plan time, and services that call each other, such as `gateway` and `identity`, form no dependency cycle.
 
-Cloud Run admits a managed delivery's OIDC token only when its audience is the service URL or exactly one of the service's `custom_audiences` (`local.custom_audiences`). These are every push endpoint the service consumes and the target URL of every queue it serves, `<target URL><target_path>`. Every queue's target path is fixed, such as `/internal/v1/tasks/surveys/launch`, `/internal/v1/outbox/sweep` or `/internal/v1/jobs/sitemonitor`, so each task's audience is the exact URL it calls; the id a task acts on travels in its body, never in its path. The platform's `managedAudience` derives that audience for both the Cloud Tasks adapter and the `cloud-tasks` verifier, `check "topology"` refuses a target path holding `{`, and `harness/test/repro/cloud-audiences.test.ts` checks the composition for every subscription and queue.
+Cloud Run admits a managed delivery's OIDC token only when its audience is the service URL or exactly one of the service's `custom_audiences` (`local.custom_audiences`). These are every push endpoint the service consumes and the target URL of every queue it serves, `<target URL><target_path>`. Every queue's target path is fixed, such as `/internal/v1/jobs/feed-auto-import`, `/internal/v1/outbox/sweep` or `/internal/v1/jobs/sitemonitor`, so each task's audience is the exact URL it calls; the id a task acts on travels in its body, never in its path. The platform's `managedAudience` derives that audience for both the Cloud Tasks adapter and the `cloud-tasks` verifier, `check "topology"` refuses a target path holding `{`, and `harness/test/repro/cloud-audiences.test.ts` checks the composition for every subscription and queue.
 
 ## Generated topology
 
@@ -186,11 +185,6 @@ Terraform reads the producers, push paths, dead-letter settings, queue creators,
 | `programs-sites-sitemonitor` | `programs-sites` | `programs-sites` |
 | `content-scheduled-publish` | `strategies-content` | `programs-sites`, `strategies-content` |
 | `content-feed-import` | `strategies-content` | `programs-sites` |
-| `communications-outbox-sweep` | `communications` | `communications` |
-| `communications-reminders` | `communications` | `communications` |
-| `surveys-launch` | `surveys` | `communications` |
-| `surveys-outbox-sweep` | `surveys` | `surveys` |
-| `reporting-export-run` | `reporting` | `reporting` |
 
 Regenerate after a contract or `cloud_run_services` change, from `harness/` (its `npm ci` also installs and builds `platform`):
 
@@ -209,11 +203,11 @@ Only the gateway is public: it is `INGRESS_TRAFFIC_ALL` with `allUsers` as invok
 
 | Grant | Scope | Members | Purpose |
 |---|---|---|---|
-| `roles/logging.logWriter`, `roles/telemetry.tracesWriter` | Project | The 13 runtime accounts | Logs and trace export |
-| `roles/cloudsql.client`, `roles/cloudsql.instanceUser` | Project | The 13 database accounts | IAM database connections |
+| `roles/logging.logWriter`, `roles/telemetry.tracesWriter` | Project | The 7 runtime accounts | Logs and trace export |
+| `roles/cloudsql.client`, `roles/cloudsql.instanceUser` | Project | The 7 database accounts | IAM database connections |
 | `roles/firebaseauth.admin` | Project | `opt2-identity` | Identity Platform custom tokens |
 | `roles/pubsub.viewer` | Project | `opt2-migration` | The transition drain lists subscriptions and reads their metadata |
-| `roles/iam.serviceAccountTokenCreator` | Own account | `identity`, `strategies-content`, `reporting`, `finance`, `e-signature` | Keyless signing of custom tokens and v4 signed URLs |
+| `roles/iam.serviceAccountTokenCreator` | Own account | `identity`, `strategies-content` | Keyless signing of custom tokens and v4 signed URLs |
 | `roles/run.invoker` | `gateway` | `allUsers` | Public entry point |
 | `roles/run.invoker` | `web` | `opt2-gateway` | Admin screens |
 | `roles/run.invoker` | Each domain service | `gateway`, `migration`, its callers in `service_calls`, `opt2-pubsub-invoker` if it consumes events, `opt2-tasks-invoker` if it is a task target | Service calls, push and task delivery |
@@ -225,19 +219,18 @@ Only the gateway is public: it is `INGRESS_TRAFFIC_ALL` with `allUsers` as invok
 | `roles/pubsub.subscriber` | Each DLQ replay subscription | `opt2-migration` | The transition drain peeks dead letters without acknowledging them |
 | `roles/cloudtasks.enqueuer`, `roles/cloudtasks.queueAdmin`, `roles/cloudtasks.viewer`, `roles/cloudtasks.taskDeleter` | Each queue | The queue's creators | Create, list and delete tasks; get, pause and resume the queue during transitions |
 | `roles/iam.serviceAccountUser` | `opt2-tasks-invoker` | Every queue creator | Tasks carry the `opt2-tasks-invoker` OIDC identity |
-| `roles/storage.objectAdmin` | Each bucket | Its one writer: `strategies-content` (`content-files`), `reporting` (`reporting-exports`), `finance` (`finance-attachments`), `e-signature` (`esignature-documents`) | Objects and signed URLs |
+| `roles/storage.objectAdmin` | Each bucket | Its one writer: `strategies-content` (`content-files`) | Objects and signed URLs |
 | `roles/secretmanager.secretAccessor` | Each secret | Its accessors (next section); on each operator-provided secret, its readers, granted by `modules/service_account` (`secret_access`) | Secret env and the collector configuration |
 
 ## Secrets
 
-Nothing secret is in this tree. Services reach Cloud SQL through IAM database authentication, so they have no Cloud SQL passwords. Identity Platform signs end-user tokens and Google signs service OIDC tokens, so no service holds a signing key. The four secrets below are the only ones this tree creates; an operator adds their values outside this configuration.
+Nothing secret is in this tree. Services reach Cloud SQL through IAM database authentication, so they have no Cloud SQL passwords. Identity Platform signs end-user tokens and Google signs service OIDC tokens, so no service holds a signing key. The three secrets below are the only ones this tree creates; an operator adds their values outside this configuration.
 
 | Secret | Versions | Accessors | Consumed as |
 |---|---|---|---|
-| `communications-smtp` | None | `communications` | `SMTP_CREDENTIAL` |
 | `legacy-bridge-hmac` | None | `gateway`, `migration` | `OPT2_BRIDGE_HMAC_KEY` |
 | `cloudsql-admin-password` | None | `db-bootstrap` | `OPT2_CLOUDSQL_ADMIN_PASSWORD` of the job |
-| `otel-collector-config` | One: the committed, non-secret `modules/cloud_run_service/otel-collector.yaml` | The 13 runtime accounts | Sidecar volume `/etc/otelcol-google/config.yaml` |
+| `otel-collector-config` | One: the committed, non-secret `modules/cloud_run_service/otel-collector.yaml` | The 7 runtime accounts | Sidecar volume `/etc/otelcol-google/config.yaml` |
 
 Operator-provided secrets already exist in the project with their values. Terraform never creates them or their versions: it references each id from `operator_secret_ids` as a secret env and grants each reader `roles/secretmanager.secretAccessor` on it.
 

@@ -1,5 +1,4 @@
 /** The JSON API `user` and `address` routes through `app.inject` over a throwaway `people` schema and an identity double. */
-import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
@@ -22,6 +21,7 @@ import {
   businessClock,
   createCapturingPublisher,
   createThrowawaySchema,
+  loadOpenApiDocument,
   mintServiceToken,
   mintUserToken,
   pgAvailable,
@@ -51,7 +51,7 @@ import {
 import { createIdentityDouble, silentLogger, type IdentityDouble } from '../helpers/route-app.js';
 
 const SERVICE = 'people';
-const OPENAPI = parse(readFileSync(fileURLToPath(new URL('../../contracts/openapi.yaml', import.meta.url)), 'utf8')) as object;
+const OPENAPI = loadOpenApiDocument(fileURLToPath(new URL('../../contracts/openapi.yaml', import.meta.url)), parse) as object;
 const MIGRATIONS_DIR = fileURLToPath(new URL('../../db/migrations', import.meta.url));
 const SETTINGS: LegacyApiSettings = Object.freeze({ adminSSL: false, serverPort: '', context: '', appReloadKey: 'appreload', adminDomain: '' });
 const FORM = Object.freeze({ 'content-type': 'application/x-www-form-urlencoded' });

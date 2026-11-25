@@ -94,7 +94,7 @@ function start(io: EngineImageIo, dir: string, properties: readonly string[], dr
 describe.runIf(IMAGE_IO !== undefined)('legacy ColdFusion JVM PNG codec, over the engine JAI Image I/O plugins', () => {
   let dir = '';
 
-  // The probe compiled into `dir`, beside the image fixture GS-CO-07 and GS-CO-17 upload.
+  // The probe compiled into `dir`, beside the catalogue's image file fixture.
   beforeAll(() => {
     dir = mkdtempSync(path.join(os.tmpdir(), 'opt2-png-codec-test-'));
     writeFileSync(path.join(dir, 'fixture.png'), fixtureBytes('image-png-8x8'));

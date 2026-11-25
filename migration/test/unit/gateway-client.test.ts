@@ -1,9 +1,7 @@
 // Unit tests for the gateway cut-over client, using recording service clients whose answers are checked against the gateway contract.
-import { readFileSync } from 'node:fs';
-
 import { rolesForService } from '@opt2/platform/auth';
 import { ServiceUnavailableError, fixedClock, type Clock, type ServiceClient, type ServiceRequest, type ServiceResponse } from '@opt2/platform/service-kit';
-import { assertResponseMatchesOpenApi, findOperation } from '@opt2/platform/testing';
+import { assertResponseMatchesOpenApi, findOperation, loadOpenApiDocument } from '@opt2/platform/testing';
 import { describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 
@@ -17,7 +15,7 @@ import {
   type InflightClearRequest,
 } from '../../src/cutover/gateway-client.js';
 
-const CONTRACT = parse(readFileSync(new URL('../../../gateway/contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
+const CONTRACT = loadOpenApiDocument(new URL('../../../gateway/contracts/openapi.yaml', import.meta.url), parse) as object;
 
 const STATUS_V1_PATH = '/internal/v1/cutover/status';
 const STATUS_V2_PATH = '/internal/v2/cutover/status';

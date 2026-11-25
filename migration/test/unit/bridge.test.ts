@@ -279,14 +279,14 @@ const CALL_CASES: CallCase[] = [
   },
   {
     label: 'schedulerPause by prefix',
-    invoke: (client, opts) => client.schedulerPause({ prefix: 'opt2-survey-' }, opts),
+    invoke: (client, opts) => client.schedulerPause({ prefix: 'opt2-ops-' }, opts),
     method: 'POST',
     page: 'scheduler',
     query: [['op', 'pause']],
     op: 'scheduler.pause',
     siteId: '',
-    json: { prefix: 'opt2-survey-' },
-    answer: { op: 'pause', tasks: ['opt2-survey-1'], expired: ['opt2-survey-2'], serverTime: SERVER_TIME },
+    json: { prefix: 'opt2-ops-' },
+    answer: { op: 'pause', tasks: ['opt2-ops-1'], expired: ['opt2-ops-2'], serverTime: SERVER_TIME },
     timeoutMs: CALL_MS,
   },
   {
@@ -303,13 +303,13 @@ const CALL_CASES: CallCase[] = [
   },
   {
     label: 'schedulerDelete by name and prefix',
-    invoke: (client, opts) => client.schedulerDelete({ tasks: [NATIVE_TASK.task], prefix: 'opt2-survey-' }, opts),
+    invoke: (client, opts) => client.schedulerDelete({ tasks: [NATIVE_TASK.task], prefix: 'opt2-ops-' }, opts),
     method: 'POST',
     page: 'scheduler',
     query: [['op', 'delete']],
     op: 'scheduler.delete',
     siteId: '',
-    json: { tasks: [NATIVE_TASK.task], prefix: 'opt2-survey-' },
+    json: { tasks: [NATIVE_TASK.task], prefix: 'opt2-ops-' },
     answer: { op: 'delete', tasks: [], serverTime: SERVER_TIME },
     timeoutMs: CALL_MS,
   },
@@ -930,7 +930,7 @@ describe('bridge client errors', () => {
     const fake = capturingFetch(() => new Response(text === '' ? null : text, { status }));
     const client = createBridgeClient({ origin: ORIGIN, key: KEY, fetch: fake.fetch });
 
-    const error = await rejectionOf(client.schedulerPause({ prefix: 'opt2-survey-' }));
+    const error = await rejectionOf(client.schedulerPause({ prefix: 'opt2-ops-' }));
 
     expect(error).toBeInstanceOf(BridgeError);
     expect(error).not.toBeInstanceOf(UnsupportedFileStoreError);

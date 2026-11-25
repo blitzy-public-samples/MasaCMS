@@ -5,7 +5,6 @@ import os from 'node:os';
 import path from 'node:path';
 import { TENANT_A, TENANT_B, TENANT_UMBRELLA, type CatalogFinding } from '@opt2/platform/testing';
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
-import { FIXTURES_UNAVAILABLE } from '../../src/golden/catalogue.js';
 import { evaluateCatalog, type CatalogRows, type CatalogRunResult } from '../../src/isolation/catalog.js';
 import type { CaseResult, GatewayIsolationResult, IsolationCase } from '../../src/isolation/gateway-matrix.js';
 import { LEGACY_SERVED } from '../../src/isolation/gateway-matrix.js';
@@ -63,14 +62,16 @@ const E2E_SOURCE = `\${OPT2_STATE_DIR}/${E2E_RESULT_RELATIVE}`;
 const NO_E2E_RESULT = `no end-to-end result at ${E2E_SOURCE}; harness/e2e/isolation writes it after the gateway matrix`;
 const ROWS_SEEN = 'the same connection after the transaction, in person: expected { n: 1 } to equal { n: 0 }';
 const NO_RLS_COUNTS = { tables: 0, enabled: 0, forced: 0, usingAndWithCheck: 0 };
+const USER_LIST_LEGACY = `${LEGACY_SERVED} api:user.findquery in v0002`;
+const CONTENT_SAVE_LEGACY = `${LEGACY_SERVED} api:content.save in v0002`;
 
 const CATALOG_ROWS = JSON.parse(
   readFileSync(new URL('../fixtures/catalog/pg-catalog-rows.sample.json', import.meta.url), 'utf8'),
 ) as CatalogRows;
 
 const ARCHIVED: ConsumerSubscription = {
-  subscription: 'timesheets.people.person.archived.v1',
-  consumer: 'timesheets',
+  subscription: 'stub.people.person.archived.v1',
+  consumer: 'stub',
   topic: 'people.person.archived.v1',
   fanout: true,
 };
@@ -81,9 +82,9 @@ const CHANGED: ConsumerSubscription = {
   fanout: false,
 };
 const DLQ_REPLAY: ConsumerSubscription = {
-  subscription: 'timesheets.people.person.archived.v1.dlq.replay',
-  consumer: 'timesheets',
-  topic: 'timesheets.people.person.archived.v1.dlq',
+  subscription: 'stub.people.person.archived.v1.dlq.replay',
+  consumer: 'stub',
+  topic: 'stub.people.person.archived.v1.dlq',
   fanout: false,
 };
 
@@ -187,19 +188,19 @@ function withResults(
 function compliantRows(): CatalogRows {
   const rows = structuredClone(CATALOG_ROWS);
   for (const table of rows.tables) {
-    if (table.schema === 'timesheets' && table.table === 'blackout') table.relforcerowsecurity = true;
+    if (table.schema === 'programs_sites' && table.table === 'changelog') table.relforcerowsecurity = true;
   }
-  for (const role of rows.roles) if (role.rolname === 'finance_app') role.rolbypassrls = false;
+  for (const role of rows.roles) if (role.rolname === 'content_app') role.rolbypassrls = false;
   return rows;
 }
 
-/** The compliant catalog rows with people.person left unforced and finance_app given BYPASSRLS. */
+/** The compliant catalog rows with people.person left unforced and content_app given BYPASSRLS. */
 function defectiveRows(): CatalogRows {
   const rows = compliantRows();
   for (const table of rows.tables) {
     if (table.schema === 'people' && table.table === 'person') table.relforcerowsecurity = false;
   }
-  for (const role of rows.roles) if (role.rolname === 'finance_app') role.rolbypassrls = true;
+  for (const role of rows.roles) if (role.rolname === 'content_app') role.rolbypassrls = true;
   return rows;
 }
 
@@ -220,9 +221,9 @@ function gatewayCase(id: string, result: CaseResult, reason?: string): Isolation
   };
 }
 
-/** A gateway run with zero cross-tenant counts and grant-only survey responses, then `overrides`. */
+/** A gateway run with zero cross-tenant counts and grant-only granted writes, then `overrides`. */
 function gatewayRun(cases: IsolationCase[], overrides: Partial<GatewayIsolationResult> = {}): GatewayIsolationResult {
-  return { crossTenantReads: 0, crossTenantWrites: 0, surveyGrantOnly: true, cases, ...overrides };
+  return { crossTenantReads: 0, crossTenantWrites: 0, grantOnly: true, cases, ...overrides };
 }
 
 /** The parsed end-to-end result file of `gateway` run against `baseUrl`. */
@@ -235,12 +236,12 @@ function passingInput(overrides: Partial<IsolationReportInput> = {}): IsolationR
   return {
     sha: SHA,
     generatedAt: GENERATED_AT,
-    packages: passingPackages({ timesheets: eventAssertions(ARCHIVED), identity: eventAssertions(CHANGED) }),
+    packages: passingPackages({ stub: eventAssertions(ARCHIVED), identity: eventAssertions(CHANGED) }),
     endToEnd: endToEnd(
       gatewayRun([
         gatewayCase('content:read-list:a->b', 'pass'),
-        gatewayCase('surveys:survey-grant:a->b', 'skipped', FIXTURES_UNAVAILABLE),
-        gatewayCase('finance:read-list:a->b', 'skipped', FIXTURES_UNAVAILABLE),
+        gatewayCase('user:read-list:a->b', 'skipped', USER_LIST_LEGACY),
+        gatewayCase('content:write-owner-site:a->b', 'skipped', CONTENT_SAVE_LEGACY),
       ]),
       GATEWAY_URL,
     ),
@@ -276,7 +277,7 @@ describe('categoriseAssertion', () => {
     ['applies a tenant-b group.changed delivery in tenant-b only and dead-letters nothing', UNCATEGORISED],
     [fanoutTitle(ARCHIVED.topic), 'fanoutRegistryOnly'],
     ['the consumer fans out only to registry tenants', 'fanoutRegistryOnly'],
-    ['a tenant A survey grant to tenant B admits tenant B and not tenant umbrella', 'grant'],
+    ['a tenant A note-comment grant to tenant B admits tenant B and not tenant umbrella', 'grant'],
     ['every tenant table has forced RLS with USING and WITH CHECK, and no schema role can bypass it', 'catalog'],
     ['the repository guard refuses tenant work outside withTenant', 'catalog'],
     [effectTitle(ARCHIVED.subscription), 'crossTenantEffects'],
@@ -297,18 +298,12 @@ describe('categoriseAssertion', () => {
 });
 
 describe('ISOLATION_PACKAGES', () => {
-  it('lists the ten services and the stub with their schema and services/ folder', () => {
+  it('lists the four services and the stub with their schema and services/ folder', () => {
     expect(ISOLATION_PACKAGES.map(({ service, schema, pkg }) => `${service}:${schema}:${pkg}`)).toEqual([
       'identity:identity:services/identity',
       'people:people:services/people',
       'programs-sites:programs_sites:services/programs-sites',
       'strategies-content:content:services/strategies-content',
-      'communications:communications:services/communications',
-      'reporting:reporting:services/reporting',
-      'surveys:surveys:services/surveys',
-      'timesheets:timesheets:services/timesheets',
-      'finance:finance:services/finance',
-      'e-signature:esignature:services/e-signature',
       'stub:stub:services/stub',
     ]);
     expect(Object.isFrozen(ISOLATION_PACKAGES)).toBe(true);
@@ -425,7 +420,7 @@ describe('end-to-end result file', () => {
   it('round-trips a gateway run through the file, keeping only the case fields the report reads', async () => {
     const cases = [
       gatewayCase('content:read-list:a->b', 'pass'),
-      gatewayCase('surveys:survey-grant:a->b', 'skipped', FIXTURES_UNAVAILABLE),
+      gatewayCase('user:read-list:a->b', 'skipped', USER_LIST_LEGACY),
     ];
 
     const file = await writeEndToEndResult(gatewayRun(cases, { crossTenantReads: 2 }), env, {
@@ -443,10 +438,10 @@ describe('end-to-end result file', () => {
       gateway: {
         crossTenantReads: 2,
         crossTenantWrites: 0,
-        surveyGrantOnly: true,
+        grantOnly: true,
         cases: [
           { id: 'content:read-list:a->b', kind: 'read-list', result: 'pass' },
-          { id: 'surveys:survey-grant:a->b', kind: 'read-list', result: 'skipped', reason: FIXTURES_UNAVAILABLE },
+          { id: 'user:read-list:a->b', kind: 'read-list', result: 'skipped', reason: USER_LIST_LEGACY },
         ],
       },
     });
@@ -470,7 +465,7 @@ describe('buildIsolationReport', () => {
 
     expect(built.findings).toEqual([]);
     expect(built.servicesFailing).toEqual([]);
-    expect(built.endToEndSkipped).toEqual(['finance:read-list:a->b', 'surveys:survey-grant:a->b']);
+    expect(built.endToEndSkipped).toEqual(['content:write-owner-site:a->b', 'user:read-list:a->b']);
     expect(report.result).toBe('pass');
     expect(report).toMatchObject({
       sourceSha: SHA,
@@ -502,7 +497,7 @@ describe('buildIsolationReport', () => {
       via: `gateway ${GATEWAY_URL}`,
       crossTenantReads: 0,
       crossTenantWrites: 0,
-      surveyGrantOnly: true,
+      grantOnly: true,
       fanoutRegistryOnly: null,
       source: E2E_SOURCE,
     });
@@ -628,9 +623,9 @@ describe('buildIsolationReport', () => {
 
   it.each<[CatalogFinding, string | undefined, string]>([
     [
-      { kind: 'rls-not-forced', object: 'timesheets.blackout', detail: 'missing FORCE ROW LEVEL SECURITY' },
-      'timesheets',
-      'rls-not-forced timesheets.blackout: missing FORCE ROW LEVEL SECURITY',
+      { kind: 'rls-not-forced', object: 'programs_sites.changelog', detail: 'missing FORCE ROW LEVEL SECURITY' },
+      'programs-sites',
+      'rls-not-forced programs_sites.changelog: missing FORCE ROW LEVEL SECURITY',
     ],
     [
       { kind: 'rls-disabled', object: 'programs_sites', detail: 'no tenant-owned tables' },
@@ -638,14 +633,14 @@ describe('buildIsolationReport', () => {
       'rls-disabled programs_sites: no tenant-owned tables',
     ],
     [
-      { kind: 'role-bypassrls', object: 'finance_app', detail: 'role has BYPASSRLS' },
-      'finance',
-      'role-bypassrls finance_app: role has BYPASSRLS',
+      { kind: 'role-bypassrls', object: 'content_app', detail: 'role has BYPASSRLS' },
+      'strategies-content',
+      'role-bypassrls content_app: role has BYPASSRLS',
     ],
     [
-      { kind: 'role-member-of-privileged', object: 'esignature_migrator' },
-      'e-signature',
-      'role-member-of-privileged esignature_migrator',
+      { kind: 'role-member-of-privileged', object: 'people_migrator' },
+      'people',
+      'role-member-of-privileged people_migrator',
     ],
     [
       { kind: 'role-superuser', object: 'gateway_owner', detail: 'role has SUPERUSER' },
@@ -664,7 +659,7 @@ describe('buildIsolationReport', () => {
 
   it('copies the privileged service roles without sharing the catalog arrays', () => {
     const roles: CatalogRunResult['roles'] = {
-      rolbypassrls: ['finance_app'],
+      rolbypassrls: ['content_app'],
       rolsuper: ['people_owner'],
       membershipViolations: [{ member: 'people_app', ancestor: 'postgres', via: ['people_owner'] }],
     };
@@ -675,7 +670,7 @@ describe('buildIsolationReport', () => {
     roles.membershipViolations[0]?.via.push('identity_owner');
 
     expect(report.roles).toEqual({
-      rolbypassrls: ['finance_app'],
+      rolbypassrls: ['content_app'],
       rolsuper: ['people_owner'],
       membershipViolations: [{ member: 'people_app', ancestor: 'postgres', via: ['people_owner'] }],
     });
@@ -726,35 +721,35 @@ describe('buildIsolationReport', () => {
       [],
     ],
   ])('fails a consumer that %s', (_label, events, row, consumerFindings) => {
-    const assertions = [...serviceAssertions('blackout'), ...events];
+    const assertions = [...serviceAssertions('note'), ...events];
 
-    const built = buildIsolationReport(inputWithAssertions('timesheets', assertions, { subscriptions: [ARCHIVED] }));
+    const built = buildIsolationReport(inputWithAssertions('stub', assertions, { subscriptions: [ARCHIVED] }));
 
     expect(built.report.consumers).toEqual([{ subscription: ARCHIVED.subscription, ...row }]);
     const scope = `consumer ${ARCHIVED.subscription}`;
     expect(built.findings.filter((finding) => finding.scope === scope).map((finding) => finding.detail)).toEqual(
       consumerFindings,
     );
-    expect(built.servicesFailing).toEqual(['timesheets']);
+    expect(built.servicesFailing).toEqual(['stub']);
     expect(built.report.result).toBe('fail');
   });
 
   it('applies to each subscription only the assertions naming it or its topic, in either tenantless word order', () => {
     const archived: ConsumerSubscription = { ...ARCHIVED, fanout: false };
     const changed: ConsumerSubscription = {
-      subscription: 'timesheets.people.person.changed.v1',
-      consumer: 'timesheets',
+      subscription: 'stub.people.person.changed.v1',
+      consumer: 'stub',
       topic: 'people.person.changed.v1',
       fanout: false,
     };
     const group: ConsumerSubscription = {
-      subscription: 'timesheets.identity.group.changed.v1',
-      consumer: 'timesheets',
+      subscription: 'stub.identity.group.changed.v1',
+      consumer: 'stub',
       topic: 'identity.group.changed.v1',
       fanout: false,
     };
     const assertions = [
-      ...serviceAssertions('blackout'),
+      ...serviceAssertions('note'),
       assertion(`dead-letters a tenant-less ${archived.subscription} delivery`),
       assertion(effectTitle(archived.subscription)),
       assertion(tenantlessTitle(changed.subscription), 'failed'),
@@ -762,7 +757,7 @@ describe('buildIsolationReport', () => {
     ];
 
     const built = buildIsolationReport(
-      inputWithAssertions('timesheets', assertions, { subscriptions: [group, changed, archived] }),
+      inputWithAssertions('stub', assertions, { subscriptions: [group, changed, archived] }),
     );
 
     expect(built.report.consumers).toEqual([
@@ -776,7 +771,7 @@ describe('buildIsolationReport', () => {
       [changed, 'tenantless-event assertions did not all pass'],
     ];
     expect(built.findings.filter((finding) => finding.scope.startsWith('consumer '))).toEqual(
-      consumerFindings.map(([{ subscription }, detail]) => ({ scope: `consumer ${subscription}`, service: 'timesheets', detail })),
+      consumerFindings.map(([{ subscription }, detail]) => ({ scope: `consumer ${subscription}`, service: 'stub', detail })),
     );
     expect(built.report.result).toBe('fail');
   });
@@ -813,7 +808,7 @@ describe('buildIsolationReport', () => {
       via: 'gateway',
       crossTenantReads: null,
       crossTenantWrites: null,
-      surveyGrantOnly: null,
+      grantOnly: null,
       fanoutRegistryOnly: null,
       source: null,
     });
@@ -821,15 +816,15 @@ describe('buildIsolationReport', () => {
     expect(built.report.result).toBe('fail');
   });
 
-  it('reports every gateway case that did not pass, the cross-tenant counts and an ungranted survey response', () => {
+  it('reports every gateway case that did not pass, the cross-tenant counts and an ungranted tenant-grant write', () => {
     const run = gatewayRun(
       [
         gatewayCase('content:read-list:a->b', 'pass'),
         gatewayCase('user:read-by-id:b->a', 'violation'),
-        gatewayCase('finance:write-foreign-id:a->umbrella', 'inconclusive', 'owner re-read failed'),
-        gatewayCase('timesheets:read-list:a->b', 'skipped', 'not run'),
+        gatewayCase('notes:write-site-mismatch:a->b', 'inconclusive', 'owner re-read failed'),
+        gatewayCase('notes:read-list:b->a', 'skipped', 'not run'),
       ],
-      { crossTenantReads: 2, crossTenantWrites: 1, surveyGrantOnly: false },
+      { crossTenantReads: 2, crossTenantWrites: 1, grantOnly: false },
     );
 
     const built = buildIsolationReport(passingInput({ endToEnd: endToEnd(run) }));
@@ -837,11 +832,11 @@ describe('buildIsolationReport', () => {
     expect(built.findings).toEqual(
       [
         'case user:read-by-id:b->a violation',
-        'case finance:write-foreign-id:a->umbrella inconclusive: owner re-read failed',
-        'case timesheets:read-list:a->b skipped: not run',
+        'case notes:write-site-mismatch:a->b inconclusive: owner re-read failed',
+        'case notes:read-list:b->a skipped: not run',
         '2 cross-tenant reads through the gateway',
         '1 cross-tenant writes through the gateway',
-        'surveyGrantOnly is false: no survey-grant case showed responses admitted for granted sites only',
+        'grantOnly is false: no tenant-grant case showed writes admitted for granted sites only',
       ].map((detail) => ({ scope: 'endToEnd', detail })),
     );
     expect(built.endToEndSkipped).toEqual([]);
@@ -849,7 +844,7 @@ describe('buildIsolationReport', () => {
       via: 'gateway',
       crossTenantReads: 2,
       crossTenantWrites: 1,
-      surveyGrantOnly: false,
+      grantOnly: false,
       fanoutRegistryOnly: null,
       source: E2E_SOURCE,
     });
@@ -871,7 +866,7 @@ describe('buildIsolationReport', () => {
     expect(built.findings.filter((finding) => finding.scope === 'endToEnd')).toEqual(
       collected ? [] : [{ scope: 'endToEnd', detail: `case ${id} ${result}: ${reason}` }],
     );
-    expect(built.report.endToEnd).toMatchObject({ crossTenantReads: 0, crossTenantWrites: 0, surveyGrantOnly: true });
+    expect(built.report.endToEnd).toMatchObject({ crossTenantReads: 0, crossTenantWrites: 0, grantOnly: true });
   });
 });
 
@@ -913,9 +908,9 @@ describe('consumerSubscriptions', () => {
     await writeTopicSchema('people.person.changed.v1', { 'x-opt2-kind': 'state' });
     const topology: Pick<Topology, 'subscriptions'> = {
       subscriptions: {
-        'timesheets.people.person.archived.v1': entry('timesheets', 'people.person.archived.v1'),
+        'stub.people.person.archived.v1': entry('stub', 'people.person.archived.v1'),
         'identity.people.person.changed.v1': entry('identity', 'people.person.changed.v1'),
-        'reporting.people.person.archived.v1': entry('reporting', 'people.person.archived.v1'),
+        'strategies-content.people.person.archived.v1': entry('strategies-content', 'people.person.archived.v1'),
       },
     };
 
@@ -927,14 +922,14 @@ describe('consumerSubscriptions', () => {
         fanout: false,
       },
       {
-        subscription: 'reporting.people.person.archived.v1',
-        consumer: 'reporting',
+        subscription: 'strategies-content.people.person.archived.v1',
+        consumer: 'strategies-content',
         topic: 'people.person.archived.v1',
         fanout: true,
       },
       {
-        subscription: 'timesheets.people.person.archived.v1',
-        consumer: 'timesheets',
+        subscription: 'stub.people.person.archived.v1',
+        consumer: 'stub',
         topic: 'people.person.archived.v1',
         fanout: true,
       },
@@ -943,7 +938,7 @@ describe('consumerSubscriptions', () => {
 
   it('throws when a subscribed topic has no schema under the repository root', () => {
     const topology = {
-      subscriptions: { 'timesheets.people.person.archived.v1': entry('timesheets', 'people.person.archived.v1') },
+      subscriptions: { 'stub.people.person.archived.v1': entry('stub', 'people.person.archived.v1') },
     };
 
     expect(() => consumerSubscriptions(topology, repoRoot)).toThrow(/ENOENT/);
@@ -1025,7 +1020,7 @@ describe('main', () => {
           via: `gateway ${GATEWAY_URL}`,
           crossTenantReads: 0,
           crossTenantWrites: 0,
-          surveyGrantOnly: true,
+          grantOnly: true,
           fanoutRegistryOnly: null,
           source: E2E_SOURCE,
         },
@@ -1059,13 +1054,13 @@ describe('main', () => {
       expect.arrayContaining([
         `services/people: no vitest results at ${resultLabel('people')}; isolation was not shown`,
         'catalog: rls-not-forced people.person: missing FORCE ROW LEVEL SECURITY',
-        'catalog: role-bypassrls finance_app: role has BYPASSRLS',
+        'catalog: role-bypassrls content_app: role has BYPASSRLS',
         `endToEnd: ${NO_E2E_RESULT}`,
       ]),
     );
     const report = JSON.parse(await readFile(path.join(scratch, 'reports', REPORT_FILE), 'utf8')) as IsolationReport;
     expect(report.result).toBe('fail');
-    expect(report.roles.rolbypassrls).toEqual(['finance_app']);
+    expect(report.roles.rolbypassrls).toEqual(['content_app']);
     expect(serviceRowOf(report, 'people').rlsCatalog).toEqual({ tables: 2, enabled: 2, forced: 1, usingAndWithCheck: 2 });
     expect(client.close).toHaveBeenCalledOnce();
   });

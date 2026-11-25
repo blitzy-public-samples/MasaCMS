@@ -1,9 +1,8 @@
 // Stand-in for identity's internal session, token and CSRF-claim operations; success answers are checked against identity's contract.
-import { readFileSync } from 'node:fs';
 import type { ServerResponse } from 'node:http';
 import { INVOCATION_HEADER, createLocalInvocationVerifier, type InvocationVerifier } from '@opt2/platform/auth';
 import { apiUnavailableResponse, legacyErrorResponse, type SerializedLegacyResponse } from '@opt2/platform/legacy-compat';
-import { assertResponseMatchesOpenApi, mintUserToken, testJwks, testSigningKeys, testVerifier } from '@opt2/platform/testing';
+import { assertResponseMatchesOpenApi, loadOpenApiDocument, mintUserToken, testJwks, testSigningKeys, testVerifier } from '@opt2/platform/testing';
 import { parse } from 'yaml';
 import type { components } from '../../src/generated/clients/identity.js';
 import { IDENTITY_OPERATIONS } from '../../src/session/identity-client.js';
@@ -13,9 +12,7 @@ import { sendBytes, sendJson, startHttpDouble, type HttpDouble, type RecordedReq
 type Schemas = components['schemas'];
 
 /** The identity contract, the producer schema every answer of the double must satisfy. */
-const IDENTITY_CONTRACT = parse(
-  readFileSync(new URL('../../../services/identity/contracts/openapi.yaml', import.meta.url), 'utf8'),
-) as object;
+const IDENTITY_CONTRACT = loadOpenApiDocument(new URL('../../../services/identity/contracts/openapi.yaml', import.meta.url), parse) as object;
 
 const GATEWAY_CALLER = 'gateway';
 const CLAIM_KEY_SEPARATOR = '\u0000';

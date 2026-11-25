@@ -65,7 +65,7 @@ export interface JsonApiSiteLinks {
 
 // legacy: core/mura/client/api/json/v1/jsonApiUtility.cfc:3374-3470
 // No `edit` (the site bean has no edit URL) and no has-one/has-many links (site registers none);
-// golden capture GS-CO-05/GS-PS is the evidence.
+// test/unit/json-api-site.test.ts pins the links.
 /** Links of the site entity `siteId` under `baseUrl`, in ColdFusion struct order. */
 export function jsonApiSiteLinks(baseUrl: string, siteId: string): JsonApiSiteLinks {
   return ordered<JsonApiSiteLinks>({

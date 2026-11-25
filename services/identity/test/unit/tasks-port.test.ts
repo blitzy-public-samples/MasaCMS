@@ -1,5 +1,4 @@
 /** Identity's task port, outbox-sweep chain and queue-control wiring over the local tasks adapter in a throwaway `identity` schema, with every route answer checked against the contract. */
-import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -30,6 +29,7 @@ import {
   businessClock,
   createCapturingPublisher,
   createThrowawaySchema,
+  loadOpenApiDocument,
   mintServiceToken,
   mintTasksInvokerToken,
   pgAvailable,
@@ -41,7 +41,7 @@ import { IDENTITY_SERVICE, createIdentityTaskPort, ensureStartupChains, register
 
 type ContractOperation = Record<string, unknown>;
 
-const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as {
+const OPENAPI = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as {
   paths: Record<string, Record<string, ContractOperation>>;
 };
 const SWEEP_QUEUE = 'identity-outbox-sweep';

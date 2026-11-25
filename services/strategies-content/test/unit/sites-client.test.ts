@@ -1,12 +1,11 @@
 /** strategies-content's programs-sites client over a recording service client: the custom image size read, its answer and fail-closed errors, checked against the programs-sites contract. */
-import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import { ServiceUnavailableError, type ServiceClient, type ServiceRequest, type ServiceResponse } from '@opt2/platform/service-kit';
-import { assertResponseMatchesOpenApi } from '@opt2/platform/testing';
+import { assertResponseMatchesOpenApi, loadOpenApiDocument } from '@opt2/platform/testing';
 import { createSitesClient, type SitesClient } from '../../src/legacy/sites-client.js';
 
-const SITES_CONTRACT = parse(readFileSync(new URL('../../../programs-sites/contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
+const SITES_CONTRACT = loadOpenApiDocument(new URL('../../../programs-sites/contracts/openapi.yaml', import.meta.url), parse) as object;
 
 const CAROUSEL = { sizeID: 'C63AB001-1111-2222-3333444455556666', siteID: 'default', name: 'carouselimage', height: '400', width: '1200', isNew: 0 };
 const HERO = { sizeID: 'C63AB002-1111-2222-3333444455556666', siteID: 'default', name: 'hero', height: 'AUTO', width: '800', isNew: 0 };

@@ -1,9 +1,10 @@
-/** The only data-access path of schema `stub`: the platform repository plus typed note and projection helpers. */
+/** The only data-access path of schema `stub`: the platform repository plus typed note, projection, comment and activity helpers. */
 import { createRepository, qualified, type Repository } from '@opt2/platform/migration-kit';
 import type { TenantTx } from '@opt2/platform/tenancy';
 import type { Clock } from '@opt2/platform/service-kit';
+import { commentCursorOf, type CommentCursor, type NoteActivityRow, type NoteCommentRow } from '../domain/comment.js';
 import { NOTE_PAGE_MAX, noteCursorOf, type NoteCursor, type NoteProjectionRow, type NoteRow } from '../domain/note.js';
-import { NOTE_PROJECTION_TABLE, NOTE_TABLE, STUB_TABLES } from './tables.js';
+import { NOTE_ACTIVITY_TABLE, NOTE_COMMENT_TABLE, NOTE_PROJECTION_TABLE, NOTE_TABLE, STUB_TABLES } from './tables.js';
 
 /** Service name the stub write positions carry, as `stub=<xid>`. */
 export const STUB_OWNER = 'stub';
@@ -35,7 +36,28 @@ export type StubRepository = Repository & {
   findProjection(tx: TenantTx, noteId: string): Promise<NoteProjectionRow | null>;
   /** Inserts `row`, or sets its columns on the stored projection with the same `note_id`. */
   upsertProjection(tx: TenantTx, row: NoteProjectionRow): Promise<void>;
+  /**
+   * Stores `comment` on its note and advances the note's `row_version`, holding the note's row lock until `tx` ends.
+   * @returns the note's new `row_version`, the comment event's aggregate version; null when the note is absent or another tenant's.
+   */
+  addComment(tx: TenantTx, comment: NoteCommentRow): Promise<number | null>;
+  /** One page of note `noteId`'s comments, ordered by `created` then `comment_id`; RangeError unless `limit` is an integer from 1 to NOTE_PAGE_MAX. */
+  listComments(tx: TenantTx, noteId: string, page: CommentPageRequest): Promise<CommentPage>;
+  /** Inserts one `stub.note_activity` row. */
+  insertActivity(tx: TenantTx, row: NoteActivityRow): Promise<void>;
 };
+
+/** A comment list request: up to `limit` comments after `after`, or from the first when `after` is null. */
+export interface CommentPageRequest {
+  after: CommentCursor | null;
+  limit: number;
+}
+
+/** One page of comments; `next` positions the following page and is null after the last one. */
+export interface CommentPage {
+  rows: NoteCommentRow[];
+  next: CommentCursor | null;
+}
 
 /** Builds the stub repository over the platform repository of `STUB_TABLES`; `schema` differs from `stub` only for throwaway test schemas. */
 export function createStubRepository({ clock, schema = STUB_SCHEMA }: { clock: Clock; schema?: string }): StubRepository {
@@ -76,5 +98,53 @@ export function createStubRepository({ clock, schema = STUB_SCHEMA }: { clock: C
     await base.upsert(tx, NOTE_PROJECTION_TABLE.table, row);
   }
 
-  return Object.freeze({ ...base, findNote, listNotes, deleteNote, findProjection, upsertProjection });
+  // The note's row lock serialises its comments, so each comment event gets the next row_version.
+  const lockNoteSql = `SELECT row_version FROM ${notes} WHERE tenant_id = $1 AND note_id = $2 FOR UPDATE`;
+  const comments = qualified(schema, NOTE_COMMENT_TABLE.table);
+  const commentOrder = 'ORDER BY created, comment_id COLLATE "C"';
+  const firstCommentsSql = `SELECT * FROM ${comments} WHERE tenant_id = $1 AND note_id = $2 ${commentOrder} LIMIT $3`;
+  const nextCommentsSql = `SELECT * FROM ${comments} WHERE tenant_id = $1 AND note_id = $2 AND (created, comment_id COLLATE "C") > ($3::timestamp(3), $4::bpchar) ${commentOrder} LIMIT $5`;
+
+  async function addComment(tx: TenantTx, comment: NoteCommentRow): Promise<number | null> {
+    const locked = await base.read(
+      tx,
+      NOTE_TABLE.unit,
+      async () => (await tx.query<Pick<NoteRow, 'row_version'>>(lockNoteSql, [tx.tenantId, comment.note_id])).rows[0],
+    );
+    if (locked === undefined) return null;
+    const version = Number(locked.row_version) + 1;
+    await base.update(tx, NOTE_TABLE.table, { note_id: comment.note_id }, { row_version: version });
+    await base.insert(tx, NOTE_COMMENT_TABLE.table, comment);
+    return version;
+  }
+
+  async function listComments(tx: TenantTx, noteId: string, { after, limit }: CommentPageRequest): Promise<CommentPage> {
+    if (!Number.isInteger(limit) || limit < 1 || limit > NOTE_PAGE_MAX) {
+      throw new RangeError(`comment page limit must be an integer from 1 to ${NOTE_PAGE_MAX}, got ${String(limit)}`);
+    }
+    const rows = await base.read(tx, NOTE_COMMENT_TABLE.unit, async () =>
+      after === null
+        ? (await tx.query<NoteCommentRow>(firstCommentsSql, [tx.tenantId, noteId, limit + 1])).rows
+        : (await tx.query<NoteCommentRow>(nextCommentsSql, [tx.tenantId, noteId, after.created, after.commentId, limit + 1])).rows,
+    );
+    return rows.length > limit
+      ? { rows: rows.slice(0, limit), next: commentCursorOf(rows[limit - 1] as NoteCommentRow) }
+      : { rows, next: null };
+  }
+
+  async function insertActivity(tx: TenantTx, row: NoteActivityRow): Promise<void> {
+    await base.insert(tx, NOTE_ACTIVITY_TABLE.table, row);
+  }
+
+  return Object.freeze({
+    ...base,
+    findNote,
+    listNotes,
+    deleteNote,
+    findProjection,
+    upsertProjection,
+    addComment,
+    listComments,
+    insertActivity,
+  });
 }

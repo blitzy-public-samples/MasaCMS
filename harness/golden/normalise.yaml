@@ -15,6 +15,16 @@ origins:
   schemes: [http, https]
   match: [scheme-origin, host-port, percent-encoded-host-port]
 
+# ACF error envelopes and rendered pages name the legacy webroot (this checkout) and OPT2_STATE_DIR, which differ per
+# run. Each root, as given and as its real path, becomes its placeholder in all text, before origins and ids.
+hostPaths:
+  id: host-path
+  roots:
+    - root: checkout
+      placeholder: "<webroot>"
+    - root: state-dir
+      placeholder: "<state>"
+
 ids:
   id: cf-uuid
   pattern: "[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16}"
@@ -38,15 +48,6 @@ ids:
     placeholder: "<uuid:{n}>"
     ordinal: scenario
     ordinalKey: exact
-  # Opaque ids known by their key only; a non-empty string value takes the rule's own ordinal, an empty one stays.
-  keyed:
-    - id: mailpit-id
-      # Mailpit message ID: fixture communications.cfc detail() history and DeliveryStatusEntry; mailpitId in events.
-      keys: [mailpit_id, mailpitId]
-      keyMatch: case-insensitive
-      placeholder: "<mailpit:{n}>"
-      ordinal: scenario
-      ordinalKey: exact
 
 timestamps:
   id: timestamp
@@ -126,14 +127,14 @@ timestamps:
       pattern: "\\d{8},\\d{8}"
       scope: whole-value
       keys: [formfield1234567893]
-  dateOnlyFields: [asOf, effectiveFrom, workDate, businessDate, dueDate]
+  dateOnlyFields: [effectiveFrom, businessDate, dueDate]
   dateOnlyFieldMatch: ignore-case-and-underscores
   dateOnlyFieldKinds: [json-keys, form-fields, query-params, column-headers]
 
 tokens:
   id: token
   placeholder: "<token>"
-  # OAuth code, state and nonce are query-only so error.code and synthetic state values stay compared.
+  # OAuth code, state and nonce are query-only so error.code and JSON state values stay compared.
   fields: [csrf_token, csrf_token_expires, access_token, refresh_token, authToken, returnID, id_token]
   fieldMatch: case-insensitive
   headers: [X-csrf_token, X-csrf_token_expires]
@@ -266,7 +267,7 @@ envelope:
   errorFields: [type, code, message]
   comparison: deep-equal-after-normalisation
   keyCase: exact
-  apply: [signed-url, token, origin, cf-uuid, uuid-rfc4122, mailpit-id, timestamp, chain-hash]
+  apply: [signed-url, token, origin, cf-uuid, uuid-rfc4122, timestamp]
   stacktrace:
     id: error-stacktrace
     optIn: true
@@ -276,11 +277,9 @@ dom:
   id: dom-model
   parser: cheerio
   screenshots: review-only
-  # li#admin-nav-opt2: web's OPT-2 nav group of the synthetic-module screens (web/src/shell/nav.ts opt2Group), shown
-  # to synthetic-role users only; legacy's nav.cfm has no counterpart.
-  exclude: [script, style, noscript, "comment()", "li#admin-nav-opt2"]
+  exclude: [script, style, noscript, "comment()"]
   whitespace: collapse-and-trim
-  apply: [signed-url, token, origin, cf-uuid, uuid-rfc4122, mailpit-id, timestamp]
+  apply: [signed-url, token, origin, cf-uuid, uuid-rfc4122, timestamp]
   extract:
     title:
       selector: "title"
@@ -329,7 +328,7 @@ dom:
 
 exports:
   id: exports
-  apply: [signed-url, token, origin, cf-uuid, uuid-rfc4122, mailpit-id, timestamp]
+  apply: [signed-url, token, origin, cf-uuid, uuid-rfc4122, timestamp]
   csv:
     parser: csv-parse
     compare: cells
@@ -339,15 +338,6 @@ exports:
       match: case-insensitive
       whitespace: collapse-and-trim
       order: row-alone-then-raw
-  xlsx:
-    parser: exceljs
-    compare: cells-per-sheet
-    sheetNames: compare
-    dates: iso-before-timestamp-rule
-  pdf:
-    parser: pdfjs-dist
-    compare: text-per-page
-    whitespace: collapse-and-trim
   zip:
     parser: jszip
     # Entry name, SHA-256 and size, text normalised: Masa stamps entry times, nests archives, has ids and times in WDDX.
@@ -359,7 +349,7 @@ exports:
       order: row-alone-then-raw
   file:
     compare: [sha256, contentType, contentDispositionFilename]
-  neverCompareBytes: [xlsx, pdf, zip]
+  neverCompareBytes: [zip]
 
 transitions:
   id: transitions
@@ -385,9 +375,8 @@ rows:
   order: key
   keyForm: normalised
   keyless: multiset-with-counts
-  apply: [cf-uuid, uuid-rfc4122, timestamp, chain-hash]
+  apply: [cf-uuid, uuid-rfc4122, timestamp]
   literal:
-    money: "^-?\\d+\\.\\d{4}$"
     dateOnlyFields: true
   # Masa salts each bcrypt hash afresh: one a scenario secret verifies becomes $<rev>$<cost>$<verifies:NAME>, others stay literal.
   volatile:
@@ -395,47 +384,11 @@ rows:
       format: "^\\$2[abxy]?\\$\\d{2}\\$[./A-Za-z0-9]{53}$"
       verify: bcrypt-scenario-secrets
 
-tasks:
-  id: tasks
-  compare: [kind, targetRoute, offsetSeconds]
-  base:
-    requestFields: [launchAt, launch_at]
-    fallback: earliest-task-time
-  times: offset-seconds-from-base
-  apply: [origin, cf-uuid, uuid-rfc4122]
-  order: [kind, offsetSeconds, targetRoute]
-
 files:
   id: stored-files
   compare: [variant, name, contentType, sha256, size]
   variants: [original, _source, _small, _medium]
   apply: [cf-uuid, uuid-rfc4122]
-
-chainHashes:
-  id: chain-hash
-  # Audit chain hashes cover the request id and `at`, so they differ per run; entry_hash is checked before it is masked.
-  fields: [prev_hash, entry_hash]
-  fieldMatch: case-insensitive
-  # Case-exact: legacy emits lowercase hex, so an upper-case hash stays a difference.
-  format: "^[0-9a-f]{64}$"
-  placeholder: "<hash:{n}>"
-  ordinal: scenario
-  ordinalKey: exact
-  # The genesis prev_hash: 32 zero bytes.
-  keepLiteral: ["0000000000000000000000000000000000000000000000000000000000000000"]
-  selfConsistency:
-    # The formula of legacy-fixtures/sql/esignature/200_usp_audit_append.sql over the record's own fields.
-    check: usp-audit-append
-    record:
-      requestId: request_id
-      seq: seq
-      action: action
-      actor: actor_user_id
-      detail: detail
-      at: at
-      previous: prev_hash
-      hash: entry_hash
-    mismatchPlaceholder: "<hash:mismatch>"
 
 knownIssues:
   - id: date-mask
@@ -491,7 +444,7 @@ knownIssues:
       - "admin/core/views/cusers/editgroup.cfm:214-218"
       - "admin/core/views/cusers/edituser.cfm:495-500"
     routeKeys: ["admin:cusers.editgroup", "admin:cusers.edituser"]
-    appliesTo: [GS-ID-05, GS-ID-06, GS-PE-01, GS-PE-02, GS-PE-RH-01, GS-PE-RH-02]
+    appliesTo: [GS-PE-01, GS-PE-02, GS-PE-RH-01, GS-PE-RH-02]
     report: known-issue
 
 overrides:

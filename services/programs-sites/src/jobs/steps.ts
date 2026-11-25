@@ -14,7 +14,7 @@ export type SiteMonitorStepName =
   | 'setCursor';
 
 /** Target service owning a step's work; null when the step has no target owner and always runs on legacy. */
-export type StepOwner = 'communications' | 'strategies-content' | null;
+export type StepOwner = 'strategies-content' | null;
 
 /** Site setting that must be set for a per-site step to run for that site. */
 export type SiteGate = 'EmailBroadcaster' | 'FeedManager';
@@ -57,8 +57,8 @@ export const SITE_MONITOR_STEPS: readonly SiteMonitorStep[] = Object.freeze([
   }),
   frozen({
     step: 'emailSend',
-    owner: 'communications',
-    units: ['communications.email', 'communications.email_stat'],
+    owner: null,
+    units: ['legacy:temails', 'legacy:temailstats'],
     perSite: false,
     inventoryStep: 'email-send',
     source: { path: CONTENT_SERVER, lines: '685' },
@@ -101,8 +101,8 @@ export const SITE_MONITOR_STEPS: readonly SiteMonitorStep[] = Object.freeze([
   // legacy: contentServer.cfc:694 discards the listAppend result, so the mail-server dedupe never skips a site.
   frozen({
     step: 'trackBounces',
-    owner: 'communications',
-    units: ['communications.email_stat'],
+    owner: null,
+    units: ['legacy:temailstats'],
     perSite: true,
     gate: 'EmailBroadcaster',
     inventoryStep: 'bounces',

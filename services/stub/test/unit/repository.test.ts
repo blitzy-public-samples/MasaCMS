@@ -13,9 +13,10 @@ import {
 import { newRequestContext, runWithRequestContext } from '@opt2/platform/service-kit';
 import { tenantIdForSite, withMetadata, type TenantTx } from '@opt2/platform/tenancy';
 import { createThrowawaySchema, fixedClock, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
+import type { CommentCursor, NoteCommentRow } from '../../src/domain/comment.js';
 import { NOTE_PAGE_MAX, type NoteCursor, type NoteProjectionRow, type NoteRow } from '../../src/domain/note.js';
 import { STUB_OWNER, STUB_SCHEMA, createStubRepository, type NotePageRequest, type StubRepository } from '../../src/repo/repository.js';
-import { NOTE_PROJECTION_TABLE, NOTE_TABLE, STUB_UNITS } from '../../src/repo/tables.js';
+import { NOTE_ACTIVITY_TABLE, NOTE_COMMENT_TABLE, NOTE_PROJECTION_TABLE, NOTE_TABLE, STUB_UNITS } from '../../src/repo/tables.js';
 
 const CLOCK = fixedClock(new Date(2026, 5, 30, 12, 0, 0));
 const BUDGET_MS = 300;
@@ -280,6 +281,76 @@ describe.skipIf(!available)('stub repository against PostgreSQL', () => {
     );
     expect(rows).toHaveLength(1);
     expect((await changelog(tenantA)).map(({ table, op }) => `${table}:${op}`)).toEqual(['note_projection:insert', 'note_projection:update']);
+  });
+
+  describe('note comments', () => {
+    function commentRow(id: string, note: string, created = AT): NoteCommentRow {
+      return { comment_id: id, note_id: note, author_site_id: 'tenant-b', body: `Comment ${id}`, created };
+    }
+
+    it('stores each comment at the next note row_version, logging both writes; null for a note of another tenant', async () => {
+      await gated(tenantA, (tx) => repository.insert(tx, NOTE_TABLE.table, noteRow(noteId(1))));
+
+      expect(await gated(tenantA, (tx) => repository.addComment(tx, commentRow(noteId(11), noteId(1))))).toBe(2);
+      expect(await gated(tenantA, (tx) => repository.addComment(tx, commentRow(noteId(12), noteId(1))))).toBe(3);
+      expect(await gated(tenantB, (tx) => repository.addComment(tx, commentRow(noteId(13), noteId(1))))).toBeNull();
+
+      expect(await inTenant(tenantA, (tx) => repository.findNote(tx, noteId(1)))).toMatchObject({ row_version: '3' });
+      expect((await changelog(tenantA)).map(({ table, op }) => `${table}:${op}`)).toEqual([
+        'note:insert',
+        'note:update',
+        'note_comment:insert',
+        'note:update',
+        'note_comment:insert',
+      ]);
+      expect(await changelog(tenantB)).toEqual([]);
+    });
+
+    it('gives concurrent comments on one note distinct versions', async () => {
+      await gated(tenantA, (tx) => repository.insert(tx, NOTE_TABLE.table, noteRow(noteId(1))));
+
+      const versions = await Promise.all(
+        [noteId(21), noteId(22), noteId(23)].map((id) => gated(tenantA, (tx) => repository.addComment(tx, commentRow(id, noteId(1))))),
+      );
+
+      expect([...versions].sort()).toEqual([2, 3, 4]);
+    });
+
+    it('pages one note comments by created then comment_id in code-unit order', async () => {
+      await gated(tenantA, async (tx) => {
+        for (const row of [
+          commentRow(noteId(3), noteId(1)),
+          commentRow(noteId(1), noteId(1), LATER),
+          commentRow(LETTER_ID, noteId(1)),
+          commentRow(noteId(2), noteId(1)),
+          commentRow(noteId(9), noteId(2)),
+        ]) {
+          await repository.insert(tx, NOTE_COMMENT_TABLE.table, row);
+        }
+      });
+      const page = (after: CommentCursor | null, limit: number) => inTenant(tenantA, (tx) => repository.listComments(tx, noteId(1), { after, limit }));
+
+      const first = await page(null, 3);
+      const rest = await page(first.next, 3);
+
+      expect(first.rows.map((row) => row.comment_id)).toEqual([noteId(2), noteId(3), LETTER_ID]);
+      expect(first.next).toEqual({ created: AT, commentId: LETTER_ID });
+      expect({ ids: rest.rows.map((row) => row.comment_id), next: rest.next }).toEqual({ ids: [noteId(1)], next: null });
+      expect((await inTenant(tenantB, (tx) => repository.listComments(tx, noteId(1), { after: null, limit: 3 }))).rows).toEqual([]);
+      await expect(page(null, NOTE_PAGE_MAX + 1)).rejects.toBeInstanceOf(RangeError);
+    });
+
+    it('stores one activity row per event and refuses a second one for the same event', async () => {
+      const activity = { event_id: EVENT_1, note_id: noteId(1), comment_id: noteId(11), aggregate_version: 2, applied_at: AT };
+
+      await gated(tenantA, (tx) => repository.insertActivity(tx, activity));
+      await expect(gated(tenantA, (tx) => repository.insertActivity(tx, activity))).rejects.toMatchObject({ code: '23505' });
+
+      const rows = await inTenant(tenantA, async (tx) =>
+        (await tx.query(`SELECT event_id, note_id, comment_id, aggregate_version FROM ${handle.schema}.${NOTE_ACTIVITY_TABLE.table}`)).rows,
+      );
+      expect(rows).toEqual([{ event_id: EVENT_1, note_id: noteId(1), comment_id: noteId(11), aggregate_version: '2' }]);
+    });
   });
 
   it('waits on a closed gate then fails with the legacy 503, and rejects writes of a legacy unit', async () => {

@@ -77,8 +77,8 @@ describe('identifier text', () => {
   });
 
   it.each([
-    ['synthetic.survey', 'synthetic.survey'],
-    ['Program_1.timesheet', 'Program_1.timesheet'],
+    ['synthetic.person_archive', 'synthetic.person_archive'],
+    ['Tenant_1.person_archive', 'Tenant_1.person_archive'],
     [SENTINEL, '<name>'],
     ['Zelda Sentinel', '<name>'],
   ])('nameText(%j) is %s', (name, text) => {

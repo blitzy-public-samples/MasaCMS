@@ -168,7 +168,7 @@ const siteTenantADetail = {
   siteLocale: 'English (US)',
   cacheCapacity: 1000,
   cacheFreeMemoryThreshold: 75,
-  tagline: 'Programs & timesheets for Tenant A',
+  tagline: 'Programs & events for Tenant A',
   hasChangesets: 1,
   baseID: SITE_DETAIL_IDS.tenantABaseId,
   enforcePrimaryDomain: 1,

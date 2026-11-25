@@ -92,7 +92,7 @@ Object.assign(catalogs, {
     ['tcontent_ID'],
   ),
   tsettings: table('tsettings', [column('SiteID', 'nvarchar'), column('Site', 'nvarchar')], ['SiteID']),
-  tmailinglistmembers: table('tmailinglistmembers', [column('MLID', 'char'), column('Email', 'nvarchar'), column('SiteID', 'nvarchar')], []),
+  tsystemobjects: table('tsystemobjects', [column('Object', 'nvarchar'), column('SiteID', 'nvarchar'), column('Name', 'nvarchar')], []),
 });
 
 /** Each unit's legacy table and the columns its owner encodes images over, as its export declares them. */
@@ -107,9 +107,9 @@ const UNITS: Record<string, { legacyTable: string; columns: CanonicalColumn[] }>
     columns: [{ name: 'tcontent_ID', type: 'i' }, { name: 'SiteID', type: 's' }, { name: 'ContentID', type: 's' }, { name: 'Title', type: 's' }],
   },
   'programs_sites.site': { legacyTable: 'tsettings', columns: [{ name: 'SiteID', type: 's' }, { name: 'Site', type: 's' }] },
-  'communications.mailing_list_member': {
-    legacyTable: 'tmailinglistmembers',
-    columns: [{ name: 'MLID', type: 's' }, { name: 'Email', type: 's' }, { name: 'SiteID', type: 's' }],
+  'programs_sites.system_object': {
+    legacyTable: 'tsystemobjects',
+    columns: [{ name: 'Object', type: 's' }, { name: 'SiteID', type: 's' }, { name: 'Name', type: 's' }],
   },
 };
 
@@ -394,8 +394,6 @@ function fakeOwners({ pages = {}, defaultHorizon = '200', exportRows = {}, failP
       return { owner, position: '150', outbox: null, inbox: null };
     },
     getObject: async () => Readable.from([Buffer.from('hel'), Buffer.from('lo')]),
-    getAttachmentObject: vi.fn((_params: { tenantId: string; attachmentId: string }) => Promise.resolve(Readable.from([Buffer.from('%PDF'), Buffer.from('-1')]))),
-    getExportObject: vi.fn((_params: { tenantId: string; jobId: string }) => Promise.resolve(Readable.from([Buffer.from('job,'), Buffer.from('done\r\n')]))),
     async putWatermark(owner: string, record: { legacyTable: string; direction: string }) {
       watermarks.push({ owner, legacyTable: record.legacyTable, direction: record.direction });
       return record;
@@ -561,13 +559,13 @@ describe('runProjectorCycle gating', () => {
 
 describe('runProjectorCycle streams', () => {
   it('advances the checkpoint past origin-skipped rows and the applied horizon of empty pages', async () => {
-    const mail = { MLID: 'M1', Email: 'a@example.com', SiteID: SITE };
-    const unit = 'communications.mailing_list_member';
+    const object = { Object: 'nav', SiteID: SITE, Name: 'Nav' };
+    const unit = 'programs_sites.system_object';
     const pages = {
-      [`communications|${CURSOR_START}`]: page(
+      [`programs-sites|${CURSOR_START}`]: page(
         [
-          changeRow([500, 1], 'mailing_list_member', unit, 'insert', { after: mail }, { origin: 'backfill' }),
-          changeRow([501, 2], 'mailing_list_member', unit, 'insert', { after: mail }, { origin: 'legacy-window' }),
+          changeRow([500, 1], 'system_object', unit, 'insert', { after: object }, { origin: 'backfill' }),
+          changeRow([501, 2], 'system_object', unit, 'insert', { after: object }, { origin: 'legacy-window' }),
         ],
         '502',
         CURSOR_START,
@@ -575,12 +573,12 @@ describe('runProjectorCycle streams', () => {
     };
     const h = harness({ owners: fakeOwners({ pages, defaultHorizon: '777' }) });
     const result = await runProjectorCycle(h.ctx, cycleDeps());
-    // The communications batch, then one batch for each other owner's empty pages.
+    // The programs-sites batch, then one batch for each other owner's empty pages.
     expect(result).toMatchObject({ leader: true, ran: true, rowsApplied: 0, skipped: 2, batches: config.dataOwners.length, errors: [] });
-    expect(h.legacy.checkpoint('communications')).toMatchObject({ cursor_xid: '501', cursor_seq: '2', applied_horizon: '502', rows_applied: 0 });
+    expect(h.legacy.checkpoint('programs-sites')).toMatchObject({ cursor_xid: '501', cursor_seq: '2', applied_horizon: '502', rows_applied: 0 });
     expect(h.legacy.checkpoint('people')).toMatchObject({ cursor_xid: '0', cursor_seq: '0', applied_horizon: '777' });
     expect(h.legacy.applied(/^(INSERT|DELETE|UPDATE \[)/)).toEqual([]);
-    expect(h.db.mirror.get(`communications|${TENANT}`)).toEqual({ cursor: '501:2', horizon: '502' });
+    expect(h.db.mirror.get(`programs-sites|${TENANT}`)).toEqual({ cursor: '501:2', horizon: '502' });
   });
 
   it.each([
@@ -744,173 +742,6 @@ describe('runProjectorCycle streams', () => {
       { tenantId: TENANT },
       `Skipped legacy file ${SITE}/cache/file/${fileId}.pdf from ${TENANT}/${fileId}.pdf: a later change of the key projects it`,
     );
-  });
-
-  catalogs['Program_1.finance_attachment'] = {
-    ...table(
-      'finance_attachment',
-      [
-        column('attachment_id', 'char'),
-        column('record_id', 'char'),
-        column('file_name', 'nvarchar'),
-        column('content_type', 'nvarchar'),
-        column('size_bytes', 'int', 'i'),
-        column('sha256', 'char'),
-        column('content', 'varbinary', 'b'),
-        column('created', 'datetime', 't'),
-        column('createdByID', 'char'),
-      ],
-      ['attachment_id'],
-    ),
-    schema: 'Program_1',
-    qualified: 'Program_1.finance_attachment',
-  };
-  UNITS['finance.attachment'] = {
-    legacyTable: 'Program_1.finance_attachment',
-    columns: [
-      { name: 'attachment_id', type: 's' },
-      { name: 'record_id', type: 's' },
-      { name: 'file_name', type: 's' },
-      { name: 'content_type', type: 's' },
-      { name: 'size_bytes', type: 'i' },
-      { name: 'sha256', type: 's' },
-      { name: 'created', type: 't' },
-      { name: 'createdByID', type: 's' },
-    ],
-  };
-
-  describe('finance attachment bytes', () => {
-    const attachmentId = 'C1D2E3F4-0001-4A5B-8C7D9E0F1A2B3C4D';
-    const served = Buffer.from('%PDF-1');
-    /** A target insert of program 1's attachment recording `recorded`, as finance's change feed projects it. */
-    const attachmentInsert = (recorded: Buffer): ProjectedChangeRow => {
-      const row = changeRow([130, 1], 'attachment', 'finance.attachment', 'insert', {
-        after: {
-          attachment_id: attachmentId,
-          record_id: USER,
-          file_name: 'scan.pdf',
-          content_type: 'application/pdf',
-          size_bytes: String(recorded.byteLength),
-          sha256: createHash('sha256').update(recorded).digest('hex'),
-          created: '2026-06-30 12:00:00.000',
-          createdByID: USER,
-        },
-      });
-      return { ...row, legacy: row.legacy.map((entry) => ({ ...entry, legacyProgramId: 1 })) };
-    };
-    const attachmentWrites = /^(INSERT INTO|UPDATE|DELETE FROM) \[Program_1\]\.\[finance_attachment\]/;
-
-    it('binds the verified bytes into the INSERT, committed in the transaction of its checkpoint', async () => {
-      const legacy = fakeLegacy({ zeroRows: /^UPDATE \[Program_1\]\.\[finance_attachment\]/ });
-      const owners = fakeOwners({ pages: { [`finance|${CURSOR_START}`]: page([attachmentInsert(served)], '131', CURSOR_START) } });
-      const result = await runProjectorCycle(harness({ legacy, owners }).ctx, cycleDeps());
-
-      expect(result).toMatchObject({ rowsApplied: 1, errors: [] });
-      expect(owners.owners.getAttachmentObject).toHaveBeenCalledWith({ tenantId: TENANT, attachmentId });
-      const [inserted, ...others] = legacy.applied(/^INSERT INTO \[Program_1\]\.\[finance_attachment\]/);
-      expect(others).toEqual([]);
-      expect(inserted?.sql).toMatch(/\[content\]/);
-      const bytes = Object.values(inserted?.params ?? {}).filter((value) => Buffer.isBuffer(value));
-      expect(bytes).toEqual([served]);
-      const checkpoint = legacy.applied(/^UPDATE opt2_sync\.projector_checkpoint/).find((statement) => statement.params.owner === 'finance');
-      expect(checkpoint?.tx).toBe(inserted?.tx);
-      expect(legacy.checkpoint('finance')).toMatchObject({ cursor_xid: '130', cursor_seq: '1', applied_horizon: '131', rows_applied: 1 });
-      expect(owners.watermarks).toEqual([{ owner: 'finance', legacyTable: 'Program_1.finance_attachment', direction: 'reverse' }]);
-    });
-
-    it('stops the stream with nothing written when finance serves bytes other than the change recorded', async () => {
-      const legacy = fakeLegacy({ zeroRows: /^UPDATE \[Program_1\]\.\[finance_attachment\]/ });
-      const owners = fakeOwners({ pages: { [`finance|${CURSOR_START}`]: page([attachmentInsert(Buffer.from('%PDF-2'))], '131', CURSOR_START) } });
-      const result = await runProjectorCycle(harness({ legacy, owners }).ctx, cycleDeps());
-
-      expect(result.errors.map((error) => [error.owner, error.cursor, error.error.name])).toEqual([['finance', CURSOR_START, 'AttachmentContentMismatchError']]);
-      expect(legacy.statements.filter((statement) => attachmentWrites.test(statement.sql))).toEqual([]);
-      expect(legacy.checkpoint('finance')).toBeUndefined();
-      expect(owners.watermarks).toEqual([]);
-    });
-  });
-
-  catalogs['synthetic.export_job'] = {
-    ...table(
-      'export_job',
-      [
-        column('job_id', 'char'),
-        column('siteID', 'nvarchar'),
-        column('state', 'varchar'),
-        column('finished_at', 'datetime', 't'),
-        column('file_name', 'nvarchar'),
-        column('content_type', 'varchar'),
-        column('output', 'varbinary', 'b'),
-        column('output_sha256', 'char'),
-      ],
-      ['job_id'],
-    ),
-    schema: 'synthetic',
-    qualified: 'synthetic.export_job',
-  };
-  UNITS['reporting.export_job'] = {
-    legacyTable: 'synthetic.export_job',
-    columns: [
-      { name: 'job_id', type: 's' },
-      { name: 'siteID', type: 's' },
-      { name: 'state', type: 's' },
-      { name: 'finished_at', type: 't' },
-      { name: 'file_name', type: 's' },
-      { name: 'content_type', type: 's' },
-      { name: 'output_sha256', type: 's' },
-    ],
-  };
-
-  describe('reporting export output bytes', () => {
-    const jobId = 'D1E2F3A4-0001-4B5C-8D7E9F0A1B2C3D4E';
-    const served = Buffer.from('job,done\r\n');
-    const running = { job_id: jobId, siteID: SITE, state: 'running', finished_at: null, file_name: null, content_type: null, output_sha256: null };
-    /** The target's done move of the job recording `recorded`, as reporting's change feed projects it. */
-    const doneUpdate = (recorded: Buffer): ProjectedChangeRow =>
-      changeRow(
-        [140, 1],
-        'export_job',
-        'reporting.export_job',
-        'update',
-        {
-          before: running,
-          after: {
-            ...running,
-            state: 'done',
-            finished_at: '2026-06-30 12:00:00.000',
-            file_name: `export-${jobId}.csv`,
-            content_type: 'text/csv',
-            output_sha256: createHash('sha256').update(recorded).digest('hex'),
-          },
-        },
-        { changed: ['state', 'finished_at', 'file_name', 'content_type', 'output_sha256'] },
-      );
-
-    it('binds the verified output into the done UPDATE, committed in the transaction of its checkpoint', async () => {
-      const legacy = fakeLegacy();
-      const owners = fakeOwners({ pages: { [`reporting|${CURSOR_START}`]: page([doneUpdate(served)], '141', CURSOR_START) } });
-      const result = await runProjectorCycle(harness({ legacy, owners }).ctx, cycleDeps());
-
-      expect(result).toMatchObject({ rowsApplied: 1, errors: [] });
-      expect(owners.owners.getExportObject).toHaveBeenCalledWith({ tenantId: TENANT, jobId });
-      const [updated, ...others] = legacy.applied(/^UPDATE \[synthetic\]\.\[export_job\]/);
-      expect(others).toEqual([]);
-      expect(updated?.sql).toMatch(/\[output\] = /);
-      expect(Object.values(updated?.params ?? {}).filter((value) => Buffer.isBuffer(value))).toEqual([served]);
-      const checkpoint = legacy.applied(/^UPDATE opt2_sync\.projector_checkpoint/).find((statement) => statement.params.owner === 'reporting');
-      expect(checkpoint?.tx).toBe(updated?.tx);
-      expect(legacy.checkpoint('reporting')).toMatchObject({ cursor_xid: '140', cursor_seq: '1', applied_horizon: '141', rows_applied: 1 });
-    });
-
-    it('stops the stream with nothing written when reporting serves other output than the change recorded', async () => {
-      const legacy = fakeLegacy();
-      const owners = fakeOwners({ pages: { [`reporting|${CURSOR_START}`]: page([doneUpdate(Buffer.from('job,other\r\n'))], '141', CURSOR_START) } });
-      const result = await runProjectorCycle(harness({ legacy, owners }).ctx, cycleDeps());
-
-      expect(result.errors.map((error) => [error.owner, error.cursor, error.error.name])).toEqual([['reporting', CURSOR_START, 'AttachmentContentMismatchError']]);
-      expect(legacy.statements.filter((statement) => /^(INSERT INTO|UPDATE|DELETE FROM) \[synthetic\]\.\[export_job\]/.test(statement.sql))).toEqual([]);
-      expect(legacy.checkpoint('reporting')).toBeUndefined();
-    });
   });
 
   it('stops a stream whose owner fails and projects the others', async () => {
@@ -1614,7 +1445,7 @@ describe('runProjectorCycle turns', () => {
 describe('runProjectorCycle read-ahead budget and kept scans', () => {
   const OP_B = 'b0000000-0000-4000-8000-00000000000b';
   /** A data owner without rows whose horizon rises every cycle, so that each cycle has an idle advance to commit. */
-  const IDLE_OWNER = 'communications';
+  const IDLE_OWNER = 'strategies-content';
 
   /** Cycle collaborators sharing one tracker and one stream memory across cycles, as a loop's cycles do. */
   function sharedDeps() {
@@ -1937,10 +1768,10 @@ describe('runProjectorCycle idle streams', () => {
 
 describe('crash between the SQL Server commit and the mirror', () => {
   it('rejects, then resumes from the SQL Server checkpoint without re-applying the batch, and the mirror catches up', async () => {
-    const duplicate = { MLID: 'M1', Email: 'd@example.com', SiteID: SITE };
+    const duplicate = { Object: 'nav', SiteID: SITE, Name: 'Nav' };
     const pages = {
-      [`communications|${CURSOR_START}`]: page(
-        [changeRow([600, 1], 'mailing_list_member', 'communications.mailing_list_member', 'delete', { before: duplicate })],
+      [`programs-sites|${CURSOR_START}`]: page(
+        [changeRow([600, 1], 'system_object', 'programs_sites.system_object', 'delete', { before: duplicate })],
         '601',
         CURSOR_START,
       ),
@@ -1952,22 +1783,22 @@ describe('crash between the SQL Server commit and the mirror', () => {
     let crashed = false;
     const hooks: ProjectorHooks = {
       async afterLegacyCommit({ owner }) {
-        if (owner !== 'communications' || crashed) return;
+        if (owner !== 'programs-sites' || crashed) return;
         crashed = true;
         throw crash;
       },
     };
 
     await expect(createProjectorLoop(harness({ legacy, db, owners }).ctx, { hooks, startupGuard: refuseGuard }).runOnce()).rejects.toBe(crash);
-    expect(legacy.applied(/^DELETE TOP \(1\) FROM \[dbo\]\.\[tmailinglistmembers\]/)).toHaveLength(1);
-    expect(legacy.checkpoint('communications')).toMatchObject({ cursor_xid: '600', cursor_seq: '1' });
-    expect(db.mirror.has(`communications|${TENANT}`)).toBe(false);
+    expect(legacy.applied(/^DELETE TOP \(1\) FROM \[dbo\]\.\[tsystemobjects\]/)).toHaveLength(1);
+    expect(legacy.checkpoint('programs-sites')).toMatchObject({ cursor_xid: '600', cursor_seq: '1' });
+    expect(db.mirror.has(`programs-sites|${TENANT}`)).toBe(false);
 
     const restarted = createProjectorLoop(harness({ legacy, db, owners }).ctx, { hooks, startupGuard: refuseGuard });
     expect(await restarted.runOnce()).toMatchObject({ errors: [] });
     expect(legacy.applied(/^DELETE TOP \(1\)/)).toHaveLength(1);
-    expect(owners.changes.filter((read) => read.owner === 'communications').map((read) => read.after)).toEqual([CURSOR_START, '600:1']);
-    expect(db.mirror.get(`communications|${TENANT}`)).toEqual({ cursor: '600:1', horizon: '601' });
+    expect(owners.changes.filter((read) => read.owner === 'programs-sites').map((read) => read.after)).toEqual([CURSOR_START, '600:1']);
+    expect(db.mirror.get(`programs-sites|${TENANT}`)).toEqual({ cursor: '600:1', horizon: '601' });
     expect(restarted.lastTenants()).toEqual([TENANT]);
   });
 });

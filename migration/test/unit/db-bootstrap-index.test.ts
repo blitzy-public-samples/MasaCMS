@@ -218,10 +218,10 @@ describe('local bootstrap', () => {
     const { logger, lines, raw } = capturingLogger();
     const summary = await bootstrap({ target: 'local', env: localEnv(), config, logger, deps: db.deps });
 
-    expect(summary).toMatchObject({ command: 'bootstrap', target: 'local', ok: true, roles: 39, iamGrants: 0, findings: [] });
+    expect(summary).toMatchObject({ command: 'bootstrap', target: 'local', ok: true, roles: 21, iamGrants: 0, findings: [] });
     expect(summary.schemas.map((entry) => entry.schema)).toEqual(schemasInOrder);
     expect(summary.schemas).toContainEqual({ schema: 'content', owner: 'strategies-content', migrations: 1 });
-    expect(db.secretsRead).toHaveLength(26);
+    expect(db.secretsRead).toHaveLength(14);
     expect(db.secretsRead[0]).toBe(secretPathsFor(stateDir, 'identity').app);
     expect(db.connections[0]!.spec).toEqual({ kind: 'admin' });
     expect(db.connections.slice(1).map((connection) => connection.spec)).toEqual(
@@ -269,7 +269,7 @@ describe('local bootstrap', () => {
     const messages = lines.map((line) => line.message);
     expect(messages).toContain('created roles for identity');
     expect(messages).toContain('migrated content: 1 files');
-    expect(messages.at(-1)).toBe('bootstrap finished: 13 schemas');
+    expect(messages.at(-1)).toBe('bootstrap finished: 7 schemas');
     const log = raw.join('');
     expect(log).not.toContain('PASSWORD');
     for (const schema of schemasInOrder) {
@@ -279,12 +279,12 @@ describe('local bootstrap', () => {
   });
 
   it('returns ok false with the findings when the role assertions find a defect', async () => {
-    const db = fakeDatabase({ wrongOwner: 'finance' });
+    const db = fakeDatabase({ wrongOwner: 'programs_sites' });
     const { logger, lines } = capturingLogger();
     const summary = await bootstrap({ target: 'local', env: localEnv(), config, logger, deps: db.deps });
     expect(summary.ok).toBe(false);
     expect(summary.findings).toEqual([
-      { kind: 'schema-owner', subject: 'finance', detail: 'owned by other_role, expected finance_owner' },
+      { kind: 'schema-owner', subject: 'programs_sites', detail: 'owned by other_role, expected programs_sites_owner' },
     ]);
     expect(lines.some((line) => line.severity === 'WARNING')).toBe(true);
   });
@@ -350,7 +350,7 @@ describe('cloud bootstrap', () => {
     const { logger } = capturingLogger();
     const summary = await bootstrap({ target: 'cloud', env: cloudEnv(), config, logger, deps: db.deps });
 
-    expect(summary).toMatchObject({ target: 'cloud', ok: true, roles: 36, iamGrants: 24, findings: [] });
+    expect(summary).toMatchObject({ target: 'cloud', ok: true, roles: 18, iamGrants: 12, findings: [] });
     expect(summary.schemas.map((entry) => entry.schema)).toEqual(schemasInOrder.filter((schema) => schema !== 'stub'));
     expect(db.connections.map((connection) => connection.spec)).toEqual([
       { kind: 'admin' },
@@ -363,14 +363,14 @@ describe('cloud bootstrap', () => {
     expect(admin).toContain('CREATE SCHEMA IF NOT EXISTS "migration" AUTHORIZATION "migration_owner"');
     expect(admin).toContain(`GRANT "identity_app" TO "${iamUser('identity')}"`);
     expect(admin).toContain(`GRANT "content_app" TO "${iamUser('strategies-content')}"`);
-    expect(admin).toContain(`GRANT "esignature_migrator" TO "${iamUser('db-bootstrap')}"`);
+    expect(admin).toContain(`GRANT "programs_sites_migrator" TO "${iamUser('db-bootstrap')}"`);
     expect(admin.some((text) => /stub|cloudsqlsuperuser|^DROP /.test(text))).toBe(false);
     expect(admin.findIndex((text) => text.startsWith('SELECT n.nspname'))).toBeLessThan(
       admin.findIndex((text) => text.startsWith('CREATE')),
     );
     const iam = db.texts(`iam:${iamUser('db-bootstrap')}`);
     expect(iam[0]).toBe('SET ROLE "identity_owner"');
-    expect(iam.filter((text) => text === 'BEGIN')).toHaveLength(12);
+    expect(iam.filter((text) => text === 'BEGIN')).toHaveLength(6);
     expect(db.closed()).toBe(1);
   });
 
@@ -379,7 +379,7 @@ describe('cloud bootstrap', () => {
     const db = fakeDatabase({ roles: existing });
     const { logger } = capturingLogger();
     const summary = await bootstrap({ target: 'cloud', env: cloudEnv(), config, logger, deps: db.deps });
-    expect(summary.roles).toBe(34);
+    expect(summary.roles).toBe(16);
     expect(db.texts('admin').some((text) => /^CREATE ROLE "(identity_owner|people_app)"/.test(text))).toBe(false);
   });
 
@@ -394,7 +394,7 @@ describe('cloud bootstrap', () => {
   });
 
   it('lists the missing Cloud SQL IAM users before any DDL', async () => {
-    const absent = [iamUser('finance'), iamUser('db-bootstrap')];
+    const absent = [iamUser('people'), iamUser('db-bootstrap')];
     const present = cloudIamUsers().filter((user) => !absent.includes(user));
     const db = fakeDatabase({ roles: Object.fromEntries(present.map((user) => [user, true])) });
     const { logger } = capturingLogger();

@@ -2,12 +2,12 @@
 import { randomBytes } from 'node:crypto';
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { Roles, SYNTHETIC_ROLES } from '@opt2/platform/auth';
+import { Roles } from '@opt2/platform/auth';
 import { z } from '@opt2/platform/service-kit';
 import { SITE_ORDER, type SeedConfig } from './config.js';
 import type { Dataset } from './dataset.js';
 import { parseJson, printable } from './errors.js';
-import { indexMasa } from './masa.js';
+import { indexMasa, type SeedRole } from './masa.js';
 
 /** Secrets of the seeded accounts, bound to their dataset by `digest`. */
 export interface SeedCredentials {
@@ -28,7 +28,7 @@ const PASSWORD_BYTES = 18;
 const PASSWORD_SUFFIX = 'a1A';
 // 43 base64url characters, within `toauthclients.clientsecret varchar(100)`.
 const CLIENT_SECRET_BYTES = 32;
-const ROLE_SUBJECTS: readonly string[] = Object.freeze([...SYNTHETIC_ROLES, Roles.siteAdmin, Roles.systemUser]);
+const ROLE_SUBJECTS: readonly SeedRole[] = Object.freeze([Roles.siteAdmin, Roles.systemUser]);
 const STATE_FILE = 'seed-credentials.json';
 
 /** Schema of a JSON object of name to `value`, read through a Map so a name such as `__proto__`, which `z.record` drops, is kept. */

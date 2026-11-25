@@ -12,10 +12,16 @@ import {
   ROLE_SET,
   assertRequestMatchesOpenApi,
   assertResponseMatchesOpenApi,
+  contractOperations,
   findOperation,
+  loadOpenApiDocument,
   mintServiceToken,
   mintUserToken,
+  operationDeclaration,
+  routeDeclaration,
   testVerifier,
+  toContractPath,
+  type ContractOperation,
   type InjectResponse,
   type RoleSubject,
 } from '@opt2/platform/testing';
@@ -58,23 +64,6 @@ interface OpenApiDoc {
   paths: Record<string, Record<string, unknown>>;
 }
 
-/** Auth declaration of a route or operation; absent flags are undefined and `requires` is sorted. */
-interface RouteConfig {
-  transport: unknown;
-  requires: string[] | undefined;
-  public: true | undefined;
-  edge: true | undefined;
-}
-
-/** One contract operation with its auth declaration. */
-interface ContractOperation {
-  operationId: string;
-  method: string;
-  template: string;
-  responses: Json;
-  config: RouteConfig;
-}
-
 /** Cut-over state a gateway starts in: the seeded active version, if any, and the entries frozen over it. */
 interface Start {
   version?: CommittedVersion;
@@ -103,7 +92,7 @@ interface RecordedCall {
 
 /** Parses a contract document resolved from this file. */
 function loadContract(relative: string): OpenApiDoc {
-  return parse(readFileSync(new URL(relative, import.meta.url), 'utf8')) as OpenApiDoc;
+  return loadOpenApiDocument(new URL(relative, import.meta.url), parse) as unknown as OpenApiDoc;
 }
 
 const DOC = loadContract('../../contracts/openapi.yaml');
@@ -207,42 +196,13 @@ const V0001: Start = { version: 'v0001' };
 const V0002: Start = { version: 'v0002' };
 const V0002_FROZEN: Start = { version: 'v0002', frozen: [FREEZE_ROUTE] };
 
-function contractConfig(operation: Json): RouteConfig {
-  const requires = operation['x-opt2-requires'] as string[] | undefined;
-  return {
-    transport: operation['x-opt2-transport'],
-    requires: requires === undefined ? undefined : [...requires].sort(),
-    public: operation['x-opt2-public'] === true ? true : undefined,
-    edge: operation['x-opt2-edge'] === true ? true : undefined,
-  };
-}
-
-function routeConfig(route: RouteMatrixEntry): RouteConfig {
-  return {
-    transport: route.transport,
-    requires: route.requires === undefined ? undefined : [...route.requires].sort(),
-    public: route.public === true ? true : undefined,
-    edge: route.edge === true ? true : undefined,
-  };
-}
+/** Auth declaration members a route and its operation must agree on. */
+const GATEWAY_FIELDS = ['transport', 'requires', 'public', 'edge'] as const;
 
 /** Every operation of the gateway contract, keyed by operationId. */
-const OPERATIONS: ReadonlyMap<string, ContractOperation> = new Map(
-  Object.entries(DOC.paths).flatMap(([template, item]) =>
-    HTTP_METHODS.flatMap((method) => {
-      const operation = item[method] as Json | undefined;
-      if (operation === undefined) return [];
-      const entry: ContractOperation = {
-        operationId: String(operation.operationId),
-        method: method.toUpperCase(),
-        template,
-        responses: (operation.responses ?? {}) as Json,
-        config: contractConfig(operation),
-      };
-      return [[entry.operationId, entry] as const];
-    }),
-  ),
-);
+const OPERATIONS: ReadonlyMap<string, ContractOperation> = new Map(contractOperations(DOC, { methods: HTTP_METHODS }).map((op) => [op.operationId, op]));
+
+const responsesOf = (operation: ContractOperation): Json => (operation.operation.responses ?? {}) as Json;
 
 function operationOf(operationId: string): ContractOperation {
   const operation = OPERATIONS.get(operationId);
@@ -250,14 +210,8 @@ function operationOf(operationId: string): ContractOperation {
   return operation;
 }
 
-/** Contract template of a Fastify url: `::` is a literal colon, `:name(re)` and `:name` are `{name}`, a trailing `*` is `{path}`. */
-function templateOf(url: string): string {
-  return url
-    .replace(/::/g, '\u0000')
-    .replace(/:([A-Za-z_]\w*)(?:\([^)]*\))?/g, '{$1}')
-    .replace(/\u0000/g, ':')
-    .replace(/\*$/, '{path}');
-}
+/** Contract template of a Fastify url; a trailing `*` is `{path}`. */
+const templateOf = (url: string): string => toContractPath(url, { wildcard: { as: '{path}' } });
 
 /** A concrete path the template matches with each parameter one segment, as findOperation matches parameters. */
 function locatorPath(template: string): string {
@@ -266,7 +220,7 @@ function locatorPath(template: string): string {
 
 /** The declared response key a status selects: the status, its range, else `default`. */
 function statusKeyOf(operation: ContractOperation, status: number): string | undefined {
-  return [String(status), `${String(status).charAt(0)}XX`, 'default'].find((key) => key in operation.responses);
+  return [String(status), `${String(status).charAt(0)}XX`, 'default'].find((key) => key in responsesOf(operation));
 }
 
 /** Follows local `$ref`s from a response node to the response it names. */
@@ -296,7 +250,7 @@ function expectContract(operation: ContractOperation, res: InjectResponse): unkn
   if (!bodiless) {
     return assertResponseMatchesOpenApi(DOC, {
       method: operation.method,
-      path: locatorPath(operation.template),
+      path: locatorPath(operation.path),
       status: res.statusCode,
       contentType,
       body: res.body,
@@ -304,7 +258,7 @@ function expectContract(operation: ContractOperation, res: InjectResponse): unkn
   }
   const key = statusKeyOf(operation, res.statusCode);
   expect(key, `${operation.operationId} declares status ${res.statusCode}`).toBeDefined();
-  const content = resolved(operation.responses[key as string]).content as Json | undefined;
+  const content = resolved(responsesOf(operation)[key as string]).content as Json | undefined;
   const mediaType = mediaTypeOf(contentType);
   if (content === undefined) return undefined;
   const declared = Object.keys(content).map((media) => media.toLowerCase());
@@ -1017,8 +971,8 @@ const EDGE_CASES: Case[] = [
     status: '2XX',
     title: 'a web screen of the active version',
     start: V0002,
-    request: async () => ({ method: 'GET', url: '/opt2/admin/finance/claims' }),
-    verify: (_res, _body, tg) => expect(tg.web.requests.at(-1)?.path).toBe('/opt2/admin/finance/claims'),
+    request: async () => ({ method: 'GET', url: '/admin/?muraAction=cArch.list&siteid=tenant-a' }),
+    verify: (_res, _body, tg) => expect(tg.web.requests.at(-1)?.path).toBe('/admin/carch/list'),
   },
   {
     operationId: 'edgeGet',
@@ -1092,7 +1046,7 @@ describe('gateway contract document', () => {
 
   it('exercises every declared response of every operation', () => {
     const declared = [...OPERATIONS.values()].flatMap((operation) =>
-      Object.keys(operation.responses)
+      Object.keys(responsesOf(operation))
         .filter((key) => key !== 'default')
         .map((key) => `${operation.operationId} ${key}`),
     );
@@ -1112,16 +1066,16 @@ describe('registered routes', () => {
 
   it("registers exactly the contract's operations", () => {
     const registered = routes.map((route) => `${route.method} ${templateOf(route.url)}`).sort();
-    const declared = [...OPERATIONS.values()].map((operation) => `${operation.method} ${operation.template}`).sort();
+    const declared = [...OPERATIONS.values()].map((operation) => `${operation.method} ${operation.path}`).sort();
     expect(registered).toEqual(declared);
   });
 
   it.each([...OPERATIONS.values()].map((operation) => [operation.operationId, operation] as const))(
     '%s is registered with its transport, roles, public and edge flags',
     (_operationId, operation) => {
-      const route = routes.find((entry) => entry.method === operation.method && templateOf(entry.url) === operation.template);
-      expect(route, `${operation.method} ${operation.template} is registered`).toBeDefined();
-      expect(routeConfig(route as RouteMatrixEntry)).toEqual(operation.config);
+      const route = routes.find((entry) => entry.method === operation.method && templateOf(entry.url) === operation.path);
+      expect(route, `${operation.method} ${operation.path} is registered`).toBeDefined();
+      expect(routeDeclaration(route as RouteMatrixEntry, GATEWAY_FIELDS)).toEqual(operationDeclaration(operation, GATEWAY_FIELDS));
     },
   );
 });

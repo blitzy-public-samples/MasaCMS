@@ -1,5 +1,4 @@
 /** The Edit Profile routes through `app.inject` over a throwaway `people` schema and an identity double. */
-import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
@@ -25,6 +24,7 @@ import {
   assertResponseMatchesOpenApi,
   createCapturingPublisher,
   createThrowawaySchema,
+  loadOpenApiDocument,
   mintServiceToken,
   mintUserToken,
   pgAvailable,
@@ -47,7 +47,7 @@ import { captureRequestLogs } from '../helpers/request-logs.js';
 const SERVICE = 'people';
 const NOW = new Date(2026, 5, 30, 10, 0, 0, 0);
 const CLOCK = fixedClock(NOW);
-const OPENAPI = parse(readFileSync(fileURLToPath(new URL('../../contracts/openapi.yaml', import.meta.url)), 'utf8')) as object;
+const OPENAPI = loadOpenApiDocument(fileURLToPath(new URL('../../contracts/openapi.yaml', import.meta.url)), parse) as object;
 const FORM = { 'content-type': 'application/x-www-form-urlencoded' };
 const CATEGORY = cfUuid();
 const instant = (): Promise<void> => Promise.resolve();

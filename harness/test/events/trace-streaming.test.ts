@@ -20,7 +20,7 @@ import { upStatePath, writeUpState } from '../../src/repro/up-state.js';
 const CHUNK = 64 * 1024;
 const TARGET_TRACE = '0af7651916cd43dd8448eb211c80319c';
 const ADMIN_TRACE = '4bf92f3577b34da6a3ce929d0e0e4736';
-const ARCHIVE_PATH = '/legacy-fixtures/cfml/api.cfm/people/persons/5E2C1A90-3B7D-4F21-8C6A4D9E0B1F2A37/archive';
+const NOTES_PATH = '/opt2/stub/notes';
 const FIXTURE_GATEWAY_START = '"startTimeUnixNano":"1782810000000000000"';
 const ONE_SHOT_MESSAGE =
   'findSeamTrace without opts.traceId reads its lines twice: pass an array or the result of readTraceLines, or set opts.traceId';
@@ -92,7 +92,7 @@ function distractorTrace(index: number): string {
   return `d${(index + 1).toString(16).padStart(31, '0')}`;
 }
 
-/** Script running archive-mode findSeamTrace over lazily regenerated `/admin/` history with the fixture chain halfway. */
+/** Script running path-mode findSeamTrace over lazily regenerated `/admin/` history with the fixture chain halfway. */
 function historyScript(tracesModule: string, fixtureFile: string, history: number): string {
   return `import { readFileSync } from 'node:fs';
 import { findSeamTrace } from ${JSON.stringify(pathToFileURL(tracesModule).href)};
@@ -271,11 +271,11 @@ describe('findSeamTrace', () => {
   });
 
   it('keeps a candidate open until its last line, past other traffic and another candidate that closes first', async () => {
-    const [gateway = '', admin = '', people = '', consumer = ''] = await fixtureLines('traces.sample.jsonl');
+    const [gateway = '', admin = '', producer = '', consumer = ''] = await fixtureLines('traces.sample.jsonl');
     const other = distractorTrace(0);
     const traffic = (from: number): string[] =>
       Array.from({ length: 200 }, (_, i) => gatewayLine(distractorTrace(from + i), from + i, '/admin/'));
-    const lines = [gateway, ...traffic(1), gatewayLine(other, 0, ARCHIVE_PATH), people, admin, ...traffic(201), consumer];
+    const lines = [gateway, ...traffic(1), gatewayLine(other, 0, NOTES_PATH), producer, admin, ...traffic(201), consumer];
 
     const result = findSeamTrace(lines);
 
@@ -287,7 +287,7 @@ describe('findSeamTrace', () => {
     ['the older first', (older, newer) => [...older, ...newer]],
     ['the newer first', (older, newer) => [...newer, ...older]],
     ['both batched into the same lines', (older, newer) => older.map((line, i) => batched(line, newer[i] ?? ''))],
-  ])('chooses the complete archive trace with the later gateway start, with %s', async (_label, arrange) => {
+  ])('chooses the complete seam trace with the later gateway start, with %s', async (_label, arrange) => {
     const fixture = await fixtureLines('traces.sample.jsonl');
     const older = chainCopy(fixture, distractorTrace(1), 1782810000000000000n);
     const newer = chainCopy(fixture, distractorTrace(2), 1782810060000000000n);
@@ -339,8 +339,8 @@ describe('findSeamTrace', () => {
     });
   });
 
-  it('finds the requested trace by id amid many distractor archive traces, considering only that trace', async () => {
-    const distractors = Array.from({ length: 300 }, (_, i) => gatewayLine(distractorTrace(i), i, ARCHIVE_PATH));
+  it('finds the requested trace by id amid many distractor note traces, considering only that trace', async () => {
+    const distractors = Array.from({ length: 300 }, (_, i) => gatewayLine(distractorTrace(i), i, NOTES_PATH));
     const lines = [
       ...distractors.slice(0, 150),
       ...(await fixtureLines('traces.sample.jsonl')),

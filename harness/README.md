@@ -43,8 +43,7 @@ A variable without a default is required by the commands under "Needed by"; the 
 | `OPT2_PG_START_CMD` | `up.sh` | `pg_ctlcluster 16 main start` | Starts PostgreSQL when it is not answering |
 | `OPT2_PG_STOP_CMD` | `down.sh` | `pg_ctlcluster 16 main stop` | Stops the PostgreSQL `up.sh` started |
 | `OPT2_LEGACY_START_TIMEOUT_S` | `up.sh`, `test-all.sh`, `down.sh` | `900` | Seconds to wait for a legacy start |
-| `MAILPIT_API_URL` | `up.sh`, `test-all.sh` | the port file's Mailpit API, `http://127.0.0.1:8025` | Mailpit API for `legacy-fixtures/load-fixtures.sh`, the service-version probe and the golden and e2e mail checks |
-| `SMTP_HOST`, `SMTP_PORT` | `up.sh` | `127.0.0.1`, the port file's Mailpit SMTP port | Mailpit SMTP listener `legacy-fixtures/load-fixtures.sh` checks; ColdFusion and target communications always get the port file's |
+| `MAILPIT_API_URL` | `up.sh`, `test-all.sh` | the port file's Mailpit API, `http://127.0.0.1:8025` | Mailpit API for the service-version probe and the golden and e2e mail checks |
 | `OPT2_STATE_DIR`, `OPT2_PRISTINE_DIR` | all | see [State outside the checkout](#state-outside-the-checkout) | Run state and the pristine baseline |
 | `OPT2_REPORTS_DIR` | `up.sh`, `test-all.sh` | `opt2/reports` | Reports directory; a relative value resolves against the checkout. Also passed to the gateway, the migration service and the `opt2-*` CLIs |
 | `OPT2_PORTS_FILE` | all | `repro/ports.env` | Absolute path of the port file the scripts and `src/repro/ports.ts` read; see [Ports](#ports) |
@@ -67,12 +66,12 @@ The `MURA_*` and `TZ` entries of the captured legacy server's `server.json` `env
 | 4 | Target tooling | Starts PostgreSQL 16, the Pub/Sub emulator and the OpenTelemetry Collector (`repro/otelcol-config.yaml`), each only if not running. A running collector is reused only when it is this checkout's, with the same `OPT2_STATE_DIR`; any other listener on its port stops `up.sh` |
 | 5 | Quiesce and pristine baseline | Starts SQL Server if needed. If ColdFusion runs, captures its scheduled tasks and original `ping` once, then stops it. Takes the pristine baseline on the first run and restores from it on later runs. Then `load-fixtures.sh --check-only` writes `fixtures.json`. With fixtures unavailable, it builds the cut-over versions for that case in `${OPT2_STATE_DIR}/cutover` (`cutover:versions -- --fixtures unavailable`, then `cutover:validate`, with `v0001` byte-identical to the committed one) and exports `OPT2_CUTOVER_DIR` to every later process and CLI. Otherwise it removes that directory, and every process reads the committed `gateway/cutover` |
 | 6 | Databases | `opt2-db bootstrap --target local` (schemas, roles, migrations); `opt2-migrate init-legacy` (schema `opt2_sync`); `opt2-migrate scheduler import` of the captured tasks |
-| 7 | Topology | `topology -- --target local`: topics, push subscriptions, dead-letter topics and local task queues |
+| 7 | Topology | `topology -- --target local`: topics, push subscriptions, dead-letter topics and local task queues; then deletes the undeclared topology-named subscriptions and topics a reused emulator project still holds |
 | 8 | Target processes | Starts every service, `web` and the migration service; runs `opt2-tasks reconcile` |
 | 9 | Legacy start | `repro/lib/legacy-start.sh --fresh`, with every scheduled task paused at boot; it refuses to start while a deploy bundle exists or `MURA_PROJECTSITEID` is not `default`. An `opt2-legacy` CommandBox registration left by another checkout is released once ColdFusion is stopped, before the start (registry entry only; its server files are kept). Waits for `/` and the admin login form, then settles Masa's start-up (`repro/lib/legacy-settle.mjs`: one reload through `legacy-baseline/cfml/startup.cfm` that runs to completion), as every start through `legacy-start.sh` does; confirms Mailpit; starts the gateway |
 | 10 | Service versions | `baseline:environment -- --phase services`: ColdFusion, SQL Server, PostgreSQL and Mailpit versions, time zone, `ping = false`, cluster settings and the start-up writer guards, which must be closed (`writersClosed`). A non-SQL Server legacy database is recorded as a baseline deviation, and the seed snapshot and backfill are skipped |
 | 11 | Activate `v0001` | `repro:cutover -- activate v0001`; then repoints the native site-monitor task, if one existed, at the gateway and resumes it |
-| 12 | Seed and backfill | Generates the fixed-seed dataset; `legacy-fixtures/load-fixtures.sh` (writes `fixtures.json`, and stops `up.sh` if availability differs from step 5); loads the seed into legacy, settling Masa's start-up after the sites part as step 9 does; takes the seed snapshot with its file manifest and backfills the target |
+| 12 | Seed and backfill | Generates the fixed-seed dataset; `legacy-fixtures/load-fixtures.sh` (writes `fixtures.json`, and stops `up.sh` if availability differs from step 5); loads the seed into legacy, settling Masa's start-up after the sites part as step 9 does; regenerates `opt2/reports/assumptions.md` with live evidence (`inventory:assumptions -- --live`); takes the seed snapshot with its file manifest and backfills the target |
 | 13 | `up.json` | Records pids, ports, snapshot, legacy server, fixture status and `cutoverDir` (the selected `OPT2_CUTOVER_DIR`, or `null` for the committed versions) in `${OPT2_STATE_DIR}/up.json` |
 
 ### `test-all.sh`
@@ -84,18 +83,18 @@ Needs the stack `up.sh` recorded. It exports the `cutoverDir` of `up.json` as `O
 | 0 Pin and labels | `check:pin`, `check:synthetic` |
 | 1 Legacy baseline | `baseline:run` (the official runner, which answers HTTP 500 with 0 specs, and the diagnostic runner); `baseline:compare` |
 | 2 Platform on stub | `npm test` in `platform`, `gateway` and `services/stub`; `test:e2e -- isolation/platform-proof` |
-| 3 Each service | `npm test` in identity, people, programs-sites, strategies-content, communications, reporting, surveys, timesheets, finance and e-signature, then `web`, `migration` and `harness` |
+| 3 Each service | `npm test` in identity, people, programs-sites and strategies-content, then `web`, `migration` and `harness` |
 | 4 Migration | Reconcile `after-backfill`; each reconciling fault whose parameters accept `{"command":"backfill"}` (`applier-killed-mid-batch`, `service-restarted-mid-apply`), in that mode, before the first feed; `golden:workload` through the gateway; feed and reconcile `after-feed-1`; each other reconciling fault except `window-import-interrupted` (stage 6), with default parameters; each fault resumes and reconciles `after-fault-<fault>`; snapshot `Sk`; `feed --snapshot` to `Sk` (reconciles `after-feed-<k>`); `opt2-ops drain-and-suspend`; checkpoint `Ck` |
 | 5 Capture | `golden:capture` against legacy directly (GS-ID-09 first, as stage 6 replays it before stage 7 replays the others), then the browser captures, then `golden:capture -- --rehearsal` (GS-ID-09 again as its rehearsal crossing, then the GS-PE-RH sets, as stage 8 replays them), then `test:e2e -- session/bridge-shared-values` against legacy directly; reset legacy and target to `Ck`, verify, `opt2-ops resume` |
 | 6 Cut-over | `opt2-migrate transition --to v0002`, with GS-ID-09 crossing it; feed; reconcile `post-cutover`; `opt2-migrate fault window-import-interrupted` with default parameters (it needs a target-authoritative unit), which resumes, writes its legacy row back in a second window and reconciles `after-fault-window-import-interrupted` |
-| 7 Equivalence and cross-cutting | `golden:replay`, the browser replay, `golden:compare`, `golden:coverage`; e2e suites for tenant isolation, seams, dead-letter replay, trace, roster protocol, the gateway authorisation matrix and the synthetic modules' `/v1` writes; `security:scan`; `infra/terraform/plan.sh`; `opt2-migrate window report`, then `test:e2e -- performance/performance`; `report:isolation`, `report:events` |
+| 7 Equivalence and cross-cutting | `golden:replay`, the browser replay, `golden:compare`, `golden:coverage`; e2e suites for tenant isolation, seams, dead-letter replay, trace, roster protocol and the gateway authorisation matrix; `security:scan`; `infra/terraform/plan.sh`; `opt2-migrate window report`, then `test:e2e -- performance/performance`; `report:isolation`, `report:events` |
 | 8 Rollback | People-roster rehearsal: `opt2-migrate rollback-set`, transition to `v0003` with GS-ID-09 crossing it (`--rehearsal`), `rollback rebaseline`, `golden:replay -- --rehearsal`, feed, reconcile `rollback-after`, `golden:compare`, `rollback report` |
 | 9 Reports | `opt2-migrate window report`, `report:speed`, `check:reviewability`, `check:deck -- --render`, the migration service's `windows.json` and `transitions.json` |
 
 ### `down.sh` and `clean-checkout-proof.sh`
 
 - `down.sh` stops every target process recorded in `up.json`. While the tooling still runs, it drops the snapshot databases `${MURA_DATABASE}_opt2_snap_<n>` (`opt2-migrate snapshot drop`, or directly where migration holds no record) with their `snap-<n>.bak` backups, then every OPT-2 PostgreSQL schema with its three roles (`opt2-db teardown --target local`). A PostgreSQL that does not answer fails that drop when `tooling.json` records one for this stack, and is only reported when it records none. It then stops the tooling `up.sh` started and ColdFusion, restores the legacy database and file store from the pristine baseline and re-imports the original scheduled tasks. It removes the `/muraWRM` mapping, or restores one that existed before. It then restarts the original legacy server with its own settings and `ping` (`legacy-start.sh --original`), removes this checkout's `opt2-legacy` CommandBox registration (the registry entry only; the server files are kept) and releases the lock. Another checkout's `opt2-legacy` registration is left in place. A failed step keeps the lock, and a failed schema drop also keeps PostgreSQL's `tooling.json` entry and does not stop an `up.sh`-started PostgreSQL, so rerunning `down.sh` retries them.
-- `clean-checkout-proof.sh` runs `down.sh` in this checkout. It then makes a fresh `git clone --no-local` of the current commit into `${OPT2_CLONE_PARENT:-$HOME/.opt2}/opt2-clean-<timestamp>`, outside the working tree and never in a directory named `mura`. There it runs `up.sh` and `test-all.sh` with a fresh `OPT2_STATE_DIR` and the same `OPT2_PRISTINE_DIR`. It records the clone path, commit, both exit codes and the digest of the clone's `test-all.json` in `opt2/reports/reproducibility.md`, then runs the clone's `down.sh`. This checkout starts again only through an explicit `up.sh`.
+- `clean-checkout-proof.sh` runs `down.sh` in this checkout. It then makes a fresh `git clone --no-local` of the current commit into `${OPT2_CLONE_PARENT:-$HOME/.opt2}/opt2-clean-<timestamp>`, outside the working tree and never in a directory named `mura`. There it runs `up.sh` and `test-all.sh` with a fresh `OPT2_STATE_DIR` and the same `OPT2_PRISTINE_DIR`. It records the clone path (as `$OPT2_CLONE_PARENT/opt2-clean-<timestamp>`, with no host path), commit, both exit codes and the digest of the clone's `test-all.json` in `opt2/reports/reproducibility.md`, then runs the clone's `down.sh`. This checkout starts again only through an explicit `up.sh`.
 
 ### One stack at a time
 
@@ -130,12 +129,6 @@ Fixed in `repro/ports.env`, unless `OPT2_PORTS_FILE` names another file in its f
 | people | 8112 |
 | programs-sites | 8113 |
 | strategies-content | 8114 |
-| communications | 8115 |
-| reporting | 8116 |
-| surveys | 8117 |
-| timesheets | 8118 |
-| finance | 8119 |
-| e-signature | 8120 |
 | stub | 8199 |
 | legacy ColdFusion | `${PORT}` |
 
@@ -143,7 +136,7 @@ Shared tooling: Pub/Sub emulator 8085, Mailpit SMTP 1025 and API 8025. The stack
 
 ### Native processes
 
-No Docker is used locally. `up.sh` starts every process natively; each package's `Dockerfile` is only its Cloud Run artefact. ColdFusion is started and restarted only through `repro/lib/legacy-start.sh`, with `MURA_PING=false`, `MURA_AUTODISCOVERPLUGINS=false`, `MURA_APPLYDBUPDATES=false`, `MURA_BROADCASTCLUSTERCOMMANDS=false`, `OPT2_BRIDGE_HMAC_KEY`, `OPT2_HARNESS_KEY`, `OPT2_GATEWAY_ORIGIN`, and `SMTP_HOST`, `SMTP_PORT` and `MAILPIT_API_URL` from the port file's Mailpit ports on the start command, so Masa never registers its site-monitor task itself, its start-up neither discovers plugins nor applies DB updates, it queues no cluster reload commands (the start-up guard on content units), and the communications fixture mails through the Mailpit target communications uses. Its `java.io.tmpdir`, Masa's `getTempDirectory()`, is `${OPT2_STATE_DIR}/legacy-tmp`, emptied before every start, never the host's shared `/tmp`. Its `-Dcom.sun.media.imageio.disableCodecLib=true` leaves ImageIO one PNG reader and writer, the JDK's: the engine's JAI Image I/O codecLib PNG plugins are unordered against them, so otherwise each start may encode image renditions with another codec, and a capture and a replay on either side of a restart write different bytes for the same pixels.
+No Docker is used locally. `up.sh` starts every process natively; each package's `Dockerfile` is only its Cloud Run artefact. ColdFusion is started and restarted only through `repro/lib/legacy-start.sh`, with `MURA_PING=false`, `MURA_AUTODISCOVERPLUGINS=false`, `MURA_APPLYDBUPDATES=false`, `MURA_BROADCASTCLUSTERCOMMANDS=false`, `OPT2_BRIDGE_HMAC_KEY`, `OPT2_HARNESS_KEY` and `OPT2_GATEWAY_ORIGIN` on the start command, so Masa never registers its site-monitor task itself, its start-up neither discovers plugins nor applies DB updates, and it queues no cluster reload commands (the start-up guard on content units). Its `java.io.tmpdir`, Masa's `getTempDirectory()`, is `${OPT2_STATE_DIR}/legacy-tmp`, emptied before every start, never the host's shared `/tmp`. Its `-Dcom.sun.media.imageio.disableCodecLib=true` leaves ImageIO one PNG reader and writer, the JDK's: the engine's JAI Image I/O codecLib PNG plugins are unordered against them, so otherwise each start may encode image renditions with another codec, and a capture and a replay on either side of a restart write different bytes for the same pixels.
 
 ## Package
 
@@ -195,7 +188,7 @@ npm run test:e2e    # e2e/** only, serially; needs the stack up.sh started; call
 | `report:events` | `src/events/report.ts` | `opt2/reports/events.json` |
 | `security:scan` | `src/security/scan.ts` | `${OPT2_STATE_DIR}/security/{osv,gitleaks,summary}.json` |
 | `performance` | `src/performance/run.ts` | `opt2/reports/performance.{json,md}` |
-| `topology` | `src/repro/pubsub-topology.ts` | `--target local`: the emulator topology; `--target cloud`: `infra/terraform/envs/plan/topology.auto.tfvars.json` (`--check` compares instead) |
+| `topology` | `src/repro/pubsub-topology.ts` | `--target local`: the emulator topology, retiring undeclared topology-named subscriptions and topics; `--target cloud`: `infra/terraform/envs/plan/topology.auto.tfvars.json` (`--check` compares instead) |
 | `repro:secrets` | `src/repro/secrets.ts` | `${OPT2_STATE_DIR}/secrets/` |
 | `repro:cutover` | `src/repro/cutover.ts` (`activate <vNNNN>`, `status`) | — (calls the gateway) |
 | `repro:up-state` | `src/repro/up-state.ts` (`read`, `write`) | `${OPT2_STATE_DIR}/up.json` |
@@ -210,7 +203,7 @@ npm run test:e2e    # e2e/** only, serially; needs the stack up.sh started; call
 - `security/`: the gitleaks configuration and its baseline, which holds pre-existing legacy findings only.
 - `src/`: the CLIs in the script table and their libraries (`baseline`, `events`, `golden` with the one normaliser in `golden/normalise/`, `inventory`, `isolation`, `lib`, `performance`, `reporting`, `repro`, `security`). `src/generated/` is build output.
 - `test/`: unit suites over `src/`, with recorded fixtures; no oracle or running stack.
-- `e2e/`: oracle and full-stack suites (`events`, `isolation`, `performance`, `security`, `session`, `synthetic`, `ui`), run only through `test:e2e`.
+- `e2e/`: oracle and full-stack suites (`events`, `isolation`, `performance`, `security`, `session`, `ui`), run only through `test:e2e`.
 - `repro/`: the four commands, `ports.env`, `server.json.template`, `otelcol-config.yaml` and `lib/` (lock, process control, pristine baseline, checkpoint `Ck`, `legacy-start.sh`).
 
 ## Boundaries

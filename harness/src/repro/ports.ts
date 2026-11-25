@@ -16,12 +16,6 @@ export const PACKAGE_NAMES = [
   'people',
   'programs-sites',
   'strategies-content',
-  'communications',
-  'reporting',
-  'surveys',
-  'timesheets',
-  'finance',
-  'e-signature',
   'stub',
 ] as const;
 

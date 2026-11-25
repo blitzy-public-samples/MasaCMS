@@ -31,7 +31,7 @@ import {
   registerRoutes,
   type RouteDeps,
 } from '../../src/routes/index.js';
-import { defaultSiteMonitorRecord, defaultSurveyTasksRecord, type SchedulerService } from '../../src/scheduler/index.js';
+import { defaultSiteMonitorRecord, type SchedulerService } from '../../src/scheduler/index.js';
 import type { TransitionService } from '../../src/transition/index.js';
 import type { WindowService } from '../../src/windows/index.js';
 
@@ -71,7 +71,7 @@ const transitions = {
 const scheduler = {
   state: vi.fn(() =>
     Promise.resolve({
-      stored: { sitemonitor: defaultSiteMonitorRecord(NOW), nativeTasks: null, surveyTasks: defaultSurveyTasksRecord(NOW) },
+      stored: { sitemonitor: defaultSiteMonitorRecord(NOW), nativeTasks: null },
       live: { ping: false, siteMonitorTask: '/index.cfm/_api/sitemonitor/', tasks: [], serverTime: '2026-06-30 12:00:00' },
     }),
   ),

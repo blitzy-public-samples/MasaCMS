@@ -1,13 +1,12 @@
 /** Identity's programs-sites client over a recording service client: the mail-settings lookup, its answer and fail-closed errors, checked against the programs-sites contract. */
-import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import { ServiceUnavailableError, type ServiceClient, type ServiceRequest, type ServiceResponse } from '@opt2/platform/service-kit';
-import { assertRequestMatchesOpenApi, assertResponseMatchesOpenApi } from '@opt2/platform/testing';
+import { assertRequestMatchesOpenApi, assertResponseMatchesOpenApi, loadOpenApiDocument } from '@opt2/platform/testing';
 import { createSitesClient, type SitesClient } from '../../src/legacy/sites-client.js';
 import { siteMailSettingsOf } from '../helpers/app.js';
 
-const SITES_CONTRACT = parse(readFileSync(new URL('../../../programs-sites/contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
+const SITES_CONTRACT = loadOpenApiDocument(new URL('../../../programs-sites/contracts/openapi.yaml', import.meta.url), parse) as object;
 
 const LOOKUP_PATH = '/internal/v1/sites/mail-settings:lookup';
 

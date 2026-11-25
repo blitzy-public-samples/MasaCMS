@@ -50,21 +50,19 @@ const TENANT_A = '0b0c4f7e-3f7a-4c1e-9a55-1d2b3c4d5e6f';
 const TENANT_B = '1c1d5a8f-4a8b-4d2f-8b66-2e3c4d5e6f70';
 const EVENT_A = 'a0000000-0000-4000-8000-00000000000a';
 const EVENT_B = 'b0000000-0000-4000-8000-00000000000b';
-const ARCHIVED = 'people.person.archived.v1';
 const PERSON_CHANGED = 'people.person.changed.v1';
 const GROUP_CHANGED = 'identity.group.changed.v1';
 const SITE_CHANGED = 'programs-sites.site.changed.v1';
-const TIMESHEETS_ARCHIVED = subscriptionName('timesheets', ARCHIVED);
+const IDENTITY_PERSON = subscriptionName('identity', PERSON_CHANGED);
 const PEOPLE_GROUP = subscriptionName('people', GROUP_CHANGED);
 // The subscriptions the consumers' contracts under services/ declare.
-const TIMESHEETS_SITE = subscriptionName('timesheets', SITE_CHANGED);
-const TIMESHEETS_DECLARED = [TIMESHEETS_ARCHIVED, TIMESHEETS_SITE];
+const IDENTITY_SITE = subscriptionName('identity', SITE_CHANGED);
+const IDENTITY_DECLARED = [IDENTITY_PERSON, IDENTITY_SITE];
 const PEOPLE_DECLARED = [PEOPLE_GROUP, subscriptionName('people', SITE_CHANGED)];
-const FINANCE_DECLARED = [subscriptionName('finance', SITE_CHANGED)];
+const PROGRAMS_SITES_DECLARED = [subscriptionName('programs-sites', SITE_CHANGED)];
 const UNIT_OWNERS: Record<string, DataOwner> = {
   'people.person': 'people',
-  'timesheets.day': 'timesheets',
-  'timesheets.week': 'timesheets',
+  'identity.user_account': 'identity',
 };
 
 /** A published event of the fakes; one without `seq` takes its 1-based position in its owner's list. */
@@ -304,9 +302,9 @@ afterEach(() => {
 
 describe('ownerDrainCounts', () => {
   it.each([
-    ['zero outbox counts for an owner without an outbox', answer('reporting'), 0, counts('reporting')],
+    ['zero outbox counts for an owner without an outbox', answer('strategies-content'), 0, counts('strategies-content')],
     ['the outbox unpublished and held rows', answer('people', { outbox: outbox(3, 2) }), 0, counts('people', 3, 2)],
-    ['the pending receipts it is given', answer('timesheets', { outbox: outbox(0, 1) }), 2, counts('timesheets', 0, 1, 2)],
+    ['the pending receipts it is given', answer('identity', { outbox: outbox(0, 1) }), 2, counts('identity', 0, 1, 2)],
   ])('counts %s', (_label, position, pendingReceipts, expected) => {
     expect(ownerDrainCounts(expected.owner, position, pendingReceipts)).toStrictEqual(expected);
   });
@@ -356,10 +354,9 @@ describe('awaitDrained', () => {
     const { pubsub, peeked } = fakePubSub(await declaredOf(...CONFIG.dataOwners));
     const { owners, calls, timeouts } = fakeOwners(world());
     const topics: Partial<Record<DataOwner, string[]>> = {
-      identity: [GROUP_CHANGED, 'identity.membership.changed.v1', 'identity.permission.changed.v1', 'identity.login-mail.requested.v1'],
-      people: [PERSON_CHANGED, ARCHIVED],
+      identity: [GROUP_CHANGED, 'identity.membership.changed.v1', 'identity.permission.changed.v1'],
+      people: [PERSON_CHANGED],
       'programs-sites': [SITE_CHANGED],
-      surveys: ['surveys.survey.scheduled.v1'],
     };
     const sleep = vi.fn<(ms: number) => Promise<void>>(() => Promise.resolve());
 
@@ -380,6 +377,8 @@ describe('awaitDrained', () => {
     ['not deployed', ENV, false, 1, []],
   ])('waits for the stub’s outbox and its projection of its own note only when the stub is %s', async (_label, env, polled, polls, ensured) => {
     const noteCreated = 'stub.note.created.v1';
+    // The stub consumes both its topics, listed in its contract's subscription-name order.
+    const stubTopics = ['stub.note.commented.v1', noteCreated];
     const state = world({ outbox: { stub: { unpublished: 1, held: 0 } } });
     const { pubsub } = fakePubSub(await declaredOf(...CONFIG.dataOwners, 'stub'), state);
     const { owners, calls } = fakeOwners(state);
@@ -403,12 +402,12 @@ describe('awaitDrained', () => {
     expect(calls.filter((call) => call.owner === 'stub')).toEqual(
       polled
         ? [
-            listCall('stub', [noteCreated]),
-            listCall('stub', [noteCreated]),
+            listCall('stub', stubTopics),
+            listCall('stub', stubTopics),
             consumerCall('stub', [EVENT_A]),
-            listCall('stub', [noteCreated], '1'),
+            listCall('stub', stubTopics, '1'),
             consumerCall('stub', [EVENT_A]),
-            listCall('stub', [noteCreated], '1'),
+            listCall('stub', stubTopics, '1'),
           ]
         : [],
     );
@@ -416,32 +415,32 @@ describe('awaitDrained', () => {
 
   it('lists only the checked consumers’ declared topics, at their producers, and takes no obligation from a live subscription no contract declares', async () => {
     const { pubsub, peeked } = fakePubSub([
-      ...TIMESHEETS_DECLARED,
-      subscriptionName('timesheets', PERSON_CHANGED),
+      ...IDENTITY_DECLARED,
+      subscriptionName('identity', 'people.person.archived.v1'),
       subscriptionName('strategies-content', PERSON_CHANGED),
-      subscriptionName('timesheets', 'stub.note.created.v1'),
-      dlqReplaySubscriptionName(TIMESHEETS_ARCHIVED),
+      subscriptionName('identity', 'stub.note.created.v1'),
+      dlqReplaySubscriptionName(IDENTITY_PERSON),
     ]);
-    const { owners, calls } = fakeOwners(world({ published: { people: [event(EVENT_A, PERSON_CHANGED, UMBRELLA)] } }));
+    const { owners, calls } = fakeOwners(world({ published: { people: [event(EVENT_A, 'people.person.archived.v1', UMBRELLA)] } }));
 
-    const result = await awaitDrained(context(owners), { owners: ['identity'], consumersWriting: ['timesheets.day'], timeoutMs: 1000, pubsub });
+    const result = await awaitDrained(context(owners), { owners: ['strategies-content'], consumersWriting: ['identity.user_account'], timeoutMs: 1000, pubsub });
 
-    expect(result).toMatchObject({ owners: [counts('identity'), counts('timesheets')], polls: 1 });
-    expect(calls).toEqual([plainCall('identity'), plainCall('timesheets'), listCall('people', [ARCHIVED]), listCall('programs-sites', [SITE_CHANGED])]);
+    expect(result).toMatchObject({ owners: [counts('strategies-content'), counts('identity')], polls: 1 });
+    expect(calls).toEqual([plainCall('strategies-content'), plainCall('identity'), listCall('people', [PERSON_CHANGED]), listCall('programs-sites', [SITE_CHANGED])]);
     expect(peeked).toStrictEqual([]);
   });
 
   it.each<[string, string[], string[]]>([
-    ['no subscription', [], TIMESHEETS_DECLARED],
-    ['undeclared and other consumers’ subscriptions beside one declared one', [subscriptionName('timesheets', PERSON_CHANGED), PEOPLE_GROUP, TIMESHEETS_SITE], [TIMESHEETS_ARCHIVED]],
+    ['no subscription', [], IDENTITY_DECLARED],
+    ['undeclared and other consumers’ subscriptions beside one declared one', [subscriptionName('identity', GROUP_CHANGED), PEOPLE_GROUP, IDENTITY_SITE], [IDENTITY_PERSON]],
   ])('rejects with MissingSubscriptionError before any position call when Pub/Sub holds %s, and closes the client it created', async (_label, live, missing) => {
-    const state = world({ published: { people: [event(EVENT_A, ARCHIVED, UMBRELLA)] } });
+    const state = world({ published: { people: [event(EVENT_A, PERSON_CHANGED, UMBRELLA)] } });
     const { owners, calls } = fakeOwners(state);
     const { pubsub } = fakePubSub(live, state);
     vi.mocked(createPubSub).mockReturnValueOnce(pubsub);
     const sleep = vi.fn<(ms: number) => Promise<void>>(() => Promise.resolve());
 
-    const failure = await awaitDrained(context(owners), { owners: ['people'], consumersWriting: ['timesheets.day'], timeoutMs: 1000, sleep }).then(
+    const failure = await awaitDrained(context(owners), { owners: ['people'], consumersWriting: ['identity.user_account'], timeoutMs: 1000, sleep }).then(
       () => undefined,
       (error: unknown) => error,
     );
@@ -464,13 +463,13 @@ describe('awaitDrained', () => {
       UnlistedProducerError,
       {
         name: 'UnlistedProducerError',
-        message: `declared subscriptions on topics no data owner lists: ${TIMESHEETS_ARCHIVED}`,
-        subscriptions: [TIMESHEETS_ARCHIVED],
+        message: `declared subscriptions on topics no data owner lists: ${IDENTITY_PERSON}`,
+        subscriptions: [IDENTITY_PERSON],
       },
     ],
     [
       'a checked consumer’s contract is missing',
-      (config) => ({ ...config, owners: { ...config.owners, timesheets: { ...config.owners.timesheets, package: 'services/absent-consumer' } } }),
+      (config) => ({ ...config, owners: { ...config.owners, identity: { ...config.owners.identity, package: 'services/absent-consumer' } } }),
       Error,
       { code: 'ENOENT' },
     ],
@@ -479,7 +478,7 @@ describe('awaitDrained', () => {
 
     const failure = await awaitDrained(
       { ...context(owners), config: configure(CONFIG) },
-      { owners: ['identity'], consumersWriting: ['timesheets.day'], timeoutMs: 1000 },
+      { owners: ['strategies-content'], consumersWriting: ['identity.user_account'], timeoutMs: 1000 },
     ).then(
       () => undefined,
       (error: unknown) => error,
@@ -493,18 +492,18 @@ describe('awaitDrained', () => {
 
   it.each<[string, Partial<World>]>([
     ['holds no receipt', {}],
-    ['holds a receipt only in a fan-out tenant', { receipts: { timesheets: { [EVENT_A]: [TENANT_A] } } }],
-    ['has no inbox', { withoutInbox: ['timesheets'] }],
-  ])('keeps a published archive pending while timesheets %s, then throws DrainTimeoutError naming it', async (_label, parts) => {
-    const state = world({ ...parts, outbox: { people: { unpublished: 0, held: 0 } }, published: { people: [event(EVENT_A, ARCHIVED, UMBRELLA, 'process')] } });
-    const { pubsub, peeked, peekOptions } = fakePubSub(TIMESHEETS_DECLARED, state);
+    ['holds a receipt only in a fan-out tenant', { receipts: { identity: { [EVENT_A]: [TENANT_A] } } }],
+    ['has no inbox', { withoutInbox: ['identity'] }],
+  ])('keeps a published change pending while identity %s, then throws DrainTimeoutError naming it', async (_label, parts) => {
+    const state = world({ ...parts, outbox: { people: { unpublished: 0, held: 0 } }, published: { people: [event(EVENT_A, PERSON_CHANGED, UMBRELLA, 'process')] } });
+    const { pubsub, peeked, peekOptions } = fakePubSub(IDENTITY_DECLARED, state);
     const { owners, calls } = fakeOwners(state);
     const clock = steppingClock();
     const sleep = steppingSleep(clock);
 
     const failure = await awaitDrained(context(owners, fakeClient().client, clock), {
       owners: ['people'],
-      consumersWriting: ['timesheets.day'],
+      consumersWriting: ['identity.user_account'],
       timeoutMs: 1000,
       pollIntervalMs: 400,
       sleep,
@@ -516,72 +515,72 @@ describe('awaitDrained', () => {
 
     expect(failure).toBeInstanceOf(DrainTimeoutError);
     expect(failure).toMatchObject({
-      message: 'drain timed out after 1000 ms: timesheets(pendingReceipts=1)',
-      owners: [counts('timesheets', 0, 0, 1)],
+      message: 'drain timed out after 1000 ms: identity(pendingReceipts=1)',
+      owners: [counts('identity', 0, 0, 1)],
     });
     // The last pause ends at the deadline, so no round starts past it.
     expect(sleep.mock.calls).toStrictEqual([[400], [400], [200]]);
-    expect(calls.filter((call) => call.params?.eventIds !== undefined)).toEqual(Array.from({ length: 3 }, () => consumerCall('timesheets', [EVENT_A])));
-    expect(peeked).toStrictEqual(Array.from({ length: 3 }, () => dlqReplaySubscriptionName(TIMESHEETS_ARCHIVED)));
+    expect(calls.filter((call) => call.params?.eventIds !== undefined)).toEqual(Array.from({ length: 3 }, () => consumerCall('identity', [EVENT_A])));
+    expect(peeked).toStrictEqual(Array.from({ length: 3 }, () => dlqReplaySubscriptionName(IDENTITY_PERSON)));
     // Each peek seeks only the unreceived event, within what is left of the budget.
     expect(peekOptions).toStrictEqual([1000, 600, 200].map((timeoutMs) => ({ eventIds: [EVENT_A], timeoutMs })));
   });
 
   it('completes a partially applied pooled fan-out only once its envelope tenant holds the receipt, matching ids and tenants in any case', async () => {
     const state = world({
-      published: { people: [event(EVENT_A.toUpperCase(), ARCHIVED, UMBRELLA)] },
-      receipts: { timesheets: { [EVENT_A]: [TENANT_A] } },
+      published: { people: [event(EVENT_A.toUpperCase(), PERSON_CHANGED, UMBRELLA)] },
+      receipts: { identity: { [EVENT_A]: [TENANT_A] } },
     });
-    const { pubsub } = fakePubSub(TIMESHEETS_DECLARED, state);
+    const { pubsub } = fakePubSub(IDENTITY_DECLARED, state);
     const { owners, calls } = fakeOwners(state);
     const clock = steppingClock();
     const sleep = steppingSleep(clock, (pauses) => {
-      if (pauses === 2) state.receipts.timesheets = { [EVENT_A]: [TENANT_A, UMBRELLA.toUpperCase()] };
+      if (pauses === 2) state.receipts.identity = { [EVENT_A]: [TENANT_A, UMBRELLA.toUpperCase()] };
     });
 
     const result = await awaitDrained(context(owners, fakeClient().client, clock), {
       owners: ['people'],
-      consumersWriting: ['timesheets.day'],
+      consumersWriting: ['identity.user_account'],
       timeoutMs: 10_000,
       pollIntervalMs: 100,
       sleep,
       pubsub,
     });
 
-    expect(result).toStrictEqual<DrainResult>({ owners: [counts('people'), counts('timesheets')], polls: 3, elapsedMs: 200 });
-    expect(calls.filter((call) => call.params?.eventIds !== undefined)).toEqual(Array.from({ length: 3 }, () => consumerCall('timesheets', [EVENT_A])));
+    expect(result).toStrictEqual<DrainResult>({ owners: [counts('people'), counts('identity')], polls: 3, elapsedMs: 200 });
+    expect(calls.filter((call) => call.params?.eventIds !== undefined)).toEqual(Array.from({ length: 3 }, () => consumerCall('identity', [EVENT_A])));
   });
 
   it('proves a dead-lettered state event by its dead letter and a received process event by its receipt in the round that lists them', async () => {
     const state = world({
-      published: { 'programs-sites': [event(EVENT_A, SITE_CHANGED, UMBRELLA)], people: [event(EVENT_B, ARCHIVED, TENANT_B, 'process')] },
-      receipts: { timesheets: { [EVENT_B]: [TENANT_B] } },
-      deadLetters: { [TIMESHEETS_SITE]: [EVENT_A.toUpperCase()] },
+      published: { 'programs-sites': [event(EVENT_A, SITE_CHANGED, UMBRELLA)], people: [event(EVENT_B, PERSON_CHANGED, TENANT_B, 'process')] },
+      receipts: { identity: { [EVENT_B]: [TENANT_B] } },
+      deadLetters: { [IDENTITY_SITE]: [EVENT_A.toUpperCase()] },
     });
-    const { pubsub, peeked, peekOptions } = fakePubSub(TIMESHEETS_DECLARED, state);
+    const { pubsub, peeked, peekOptions } = fakePubSub(IDENTITY_DECLARED, state);
     const { owners, timeouts } = fakeOwners(state);
 
-    const result = await awaitDrained(context(owners), { owners: ['people'], consumersWriting: ['timesheets.day'], timeoutMs: 1000, pubsub });
+    const result = await awaitDrained(context(owners), { owners: ['people'], consumersWriting: ['identity.user_account'], timeoutMs: 1000, pubsub });
 
     expect(result.polls).toBe(1);
-    expect(result.owners).toStrictEqual([counts('people'), counts('timesheets')]);
-    expect(peeked).toStrictEqual([dlqReplaySubscriptionName(TIMESHEETS_SITE)]);
+    expect(result.owners).toStrictEqual([counts('people'), counts('identity')]);
+    expect(peeked).toStrictEqual([dlqReplaySubscriptionName(IDENTITY_SITE)]);
     expect(peekOptions).toStrictEqual([{ eventIds: [EVENT_A], timeoutMs: 1000 }]);
     expect(new Set(timeouts)).toStrictEqual(new Set([1000]));
   });
 
   it('rejects with DeadLetteredProcessEventError naming a dead-lettered process event its consumer holds no receipt of, without waiting', async () => {
     const state = world({
-      published: { people: [event(EVENT_A.toUpperCase(), ARCHIVED, UMBRELLA.toUpperCase(), 'process'), event(EVENT_B, ARCHIVED, TENANT_B, 'process')] },
+      published: { people: [event(EVENT_A.toUpperCase(), PERSON_CHANGED, UMBRELLA.toUpperCase(), 'process'), event(EVENT_B, PERSON_CHANGED, TENANT_B, 'process')] },
       // EVENT_B was dead-lettered and then replayed, so its receipt proves it.
-      receipts: { timesheets: { [EVENT_B]: [TENANT_B] } },
-      deadLetters: { [TIMESHEETS_ARCHIVED]: [EVENT_A, EVENT_B] },
+      receipts: { identity: { [EVENT_B]: [TENANT_B] } },
+      deadLetters: { [IDENTITY_PERSON]: [EVENT_A, EVENT_B] },
     });
-    const { pubsub } = fakePubSub(TIMESHEETS_DECLARED, state);
+    const { pubsub } = fakePubSub(IDENTITY_DECLARED, state);
     const { owners } = fakeOwners(state);
     const sleep = vi.fn<(ms: number) => Promise<void>>(() => Promise.resolve());
 
-    const failure = await awaitDrained(context(owners), { owners: ['people'], consumersWriting: ['timesheets.day'], timeoutMs: 300_000, sleep, pubsub }).then(
+    const failure = await awaitDrained(context(owners), { owners: ['people'], consumersWriting: ['identity.user_account'], timeoutMs: 300_000, sleep, pubsub }).then(
       () => undefined,
       (error: unknown) => error,
     );
@@ -589,8 +588,8 @@ describe('awaitDrained', () => {
     expect(failure).toBeInstanceOf(DeadLetteredProcessEventError);
     expect(failure).toMatchObject({
       name: 'DeadLetteredProcessEventError',
-      message: `process events dead-lettered without a receipt: ${EVENT_A} (${ARCHIVED}) on ${TIMESHEETS_ARCHIVED}`,
-      deliveries: [{ eventId: EVENT_A, topic: ARCHIVED, tenantId: UMBRELLA, consumer: 'timesheets', subscription: TIMESHEETS_ARCHIVED }],
+      message: `process events dead-lettered without a receipt: ${EVENT_A} (${PERSON_CHANGED}) on ${IDENTITY_PERSON}`,
+      deliveries: [{ eventId: EVENT_A, topic: PERSON_CHANGED, tenantId: UMBRELLA, consumer: 'identity', subscription: IDENTITY_PERSON }],
     });
     expect(sleep).not.toHaveBeenCalled();
   });
@@ -598,28 +597,27 @@ describe('awaitDrained', () => {
   it('waits for an event the effect of a proven event published while the round ran', async () => {
     const state = world({
       published: { identity: [event(EVENT_A, GROUP_CHANGED, TENANT_A)] },
-      receipts: { people: { [EVENT_A]: [TENANT_A] }, timesheets: { [EVENT_B]: [TENANT_A] } },
+      receipts: { people: { [EVENT_A]: [TENANT_A] }, identity: { [EVENT_B]: [TENANT_A] } },
     });
-    const { pubsub } = fakePubSub([...PEOPLE_DECLARED, ...TIMESHEETS_DECLARED], state);
+    const { pubsub } = fakePubSub([...PEOPLE_DECLARED, ...IDENTITY_DECLARED], state);
     // People's effect of EVENT_A, committed with its receipt, publishes EVENT_B.
     const { owners, calls } = fakeOwners(state, (call) => {
       if (call.owner === 'people' && call.params?.eventIds?.includes(EVENT_A) === true) {
-        state.published.people = [event(EVENT_B, ARCHIVED, TENANT_A, 'process')];
+        state.published.people = [event(EVENT_B, PERSON_CHANGED, TENANT_A, 'process')];
       }
       return undefined;
     });
 
     const result = await awaitDrained(context(owners), {
       owners: ['identity', 'people'],
-      consumersWriting: ['people.person', 'timesheets.day'],
+      consumersWriting: ['people.person', 'identity.user_account'],
       timeoutMs: 1000,
       pubsub,
     });
 
     const listings = (identityAfter: string, peopleAfter: string): PositionCall[] => [
       listCall('identity', [GROUP_CHANGED], identityAfter),
-      listCall('people', [ARCHIVED], peopleAfter),
-      plainCall('timesheets'),
+      listCall('people', [PERSON_CHANGED], peopleAfter),
       listCall('programs-sites', [SITE_CHANGED]),
     ];
     expect(result.polls).toBe(1);
@@ -627,7 +625,7 @@ describe('awaitDrained', () => {
       ...listings('0', '0'),
       consumerCall('people', [EVENT_A]),
       ...listings('1', '0'),
-      consumerCall('timesheets', [EVENT_B]),
+      consumerCall('identity', [EVENT_B]),
       ...listings('1', '1'),
     ]);
   });
@@ -635,13 +633,13 @@ describe('awaitDrained', () => {
   it('asks a consumer for at most RECEIPT_QUERY_MAX_IDS (200) event ids per position call', async () => {
     const ids = Array.from({ length: RECEIPT_QUERY_MAX_IDS + 1 }, (_, i) => `c0000000-0000-4000-8000-${String(i).padStart(12, '0')}`);
     const state = world({
-      published: { people: ids.map((id) => event(id, ARCHIVED, UMBRELLA)) },
-      receipts: { timesheets: Object.fromEntries(ids.map((id) => [id, [UMBRELLA]])) },
+      published: { people: ids.map((id) => event(id, PERSON_CHANGED, UMBRELLA)) },
+      receipts: { identity: Object.fromEntries(ids.map((id) => [id, [UMBRELLA]])) },
     });
-    const { pubsub, peeked } = fakePubSub(TIMESHEETS_DECLARED, state);
+    const { pubsub, peeked } = fakePubSub(IDENTITY_DECLARED, state);
     const { owners, calls } = fakeOwners(state);
 
-    const result = await awaitDrained(context(owners), { owners: ['people'], consumersWriting: ['timesheets.day'], timeoutMs: 1000, pubsub });
+    const result = await awaitDrained(context(owners), { owners: ['people'], consumersWriting: ['identity.user_account'], timeoutMs: 1000, pubsub });
 
     expect(RECEIPT_QUERY_MAX_IDS).toBe(200);
     expect(result.polls).toBe(1);
@@ -653,20 +651,20 @@ describe('awaitDrained', () => {
     const total = MAX_PENDING_DELIVERIES + PUBLISHED_PAGE_LIMIT + 100;
     const ids = Array.from({ length: total }, (_, i) => `d0000000-0000-4000-8000-${String(i).padStart(12, '0')}`);
     const state = world({
-      published: { people: ids.map((id) => event(id, ARCHIVED, UMBRELLA)) },
-      receipts: { timesheets: Object.fromEntries(ids.map((id) => [id, [UMBRELLA]])) },
+      published: { people: ids.map((id) => event(id, PERSON_CHANGED, UMBRELLA)) },
+      receipts: { identity: Object.fromEntries(ids.map((id) => [id, [UMBRELLA]])) },
     });
     const { owners, calls } = fakeOwners(state);
 
     const result = await awaitDrained(context(owners), {
       owners: ['people'],
-      consumersWriting: ['timesheets.day'],
+      consumersWriting: ['identity.user_account'],
       timeoutMs: 1000,
-      pubsub: fakePubSub(TIMESHEETS_DECLARED, state).pubsub,
+      pubsub: fakePubSub(IDENTITY_DECLARED, state).pubsub,
     });
 
     expect([MAX_PENDING_DELIVERIES, PUBLISHED_PAGE_LIMIT]).toStrictEqual([5000, 500]);
-    expect(result).toMatchObject({ polls: 1, owners: [counts('people'), counts('timesheets')] });
+    expect(result).toMatchObject({ polls: 1, owners: [counts('people'), counts('identity')] });
     const people = calls.flatMap((call, index) => (call.owner === 'people' ? [{ index, after: call.params?.publishedAfter, through: call.params?.publishedThrough }] : []));
     const pageStarts = Array.from({ length: MAX_PENDING_DELIVERIES / PUBLISHED_PAGE_LIMIT }, (_, page) => String(page * PUBLISHED_PAGE_LIMIT));
     // The first page reports the frontier the pass pages through; a page without one follows the pass and each later proof.
@@ -687,18 +685,18 @@ describe('awaitDrained', () => {
     const ids = Array.from({ length: PUBLISHED_PAGE_LIMIT + 100 }, (_, i) => `e0000000-0000-4000-8000-${String(i).padStart(12, '0')}`);
     const late = Array.from({ length: PUBLISHED_PAGE_LIMIT + 100 }, (_, i) => `e1000000-0000-4000-8000-${String(i).padStart(12, '0')}`);
     const state = world({
-      published: { people: ids.map((id) => event(id, ARCHIVED, UMBRELLA)) },
-      receipts: { timesheets: Object.fromEntries([...ids, ...late].map((id) => [id, [UMBRELLA]])) },
+      published: { people: ids.map((id) => event(id, PERSON_CHANGED, UMBRELLA)) },
+      receipts: { identity: Object.fromEntries([...ids, ...late].map((id) => [id, [UMBRELLA]])) },
     });
-    /** People's pages as `page:<after>/<through>` and timesheets' receipt reads, in call order. */
+    /** People's pages as `page:<after>/<through>` and identity's receipt reads, in call order. */
     const log: string[] = [];
     // More than a page of rows is published while the pass's second page is read.
     const { owners } = fakeOwners(state, (call) => {
-      if (call.owner === 'timesheets' && call.params?.eventIds !== undefined) log.push('receipts');
+      if (call.owner === 'identity' && call.params?.eventIds !== undefined) log.push('receipts');
       if (call.owner !== 'people') return undefined;
       log.push(`page:${call.params?.publishedAfter ?? ''}/${call.params?.publishedThrough ?? ''}`);
       if (call.params?.publishedThrough !== undefined && (state.published.people?.length ?? 0) === ids.length) {
-        state.published.people = [...(state.published.people ?? []), ...late.map((id) => event(id, ARCHIVED, UMBRELLA))];
+        state.published.people = [...(state.published.people ?? []), ...late.map((id) => event(id, PERSON_CHANGED, UMBRELLA))];
       }
       return undefined;
     });
@@ -713,12 +711,12 @@ describe('awaitDrained', () => {
 
     const result = await awaitDrained(context(observed), {
       owners: ['people'],
-      consumersWriting: ['timesheets.day'],
+      consumersWriting: ['identity.user_account'],
       timeoutMs: 1000,
-      pubsub: fakePubSub(TIMESHEETS_DECLARED, state).pubsub,
+      pubsub: fakePubSub(IDENTITY_DECLARED, state).pubsub,
     });
 
-    expect(result).toMatchObject({ polls: 1, owners: [counts('people'), counts('timesheets')] });
+    expect(result).toMatchObject({ polls: 1, owners: [counts('people'), counts('identity')] });
     const pages = answers.map((answer) => ({
       listed: answer.published?.length,
       last: answer.published?.at(-1)?.seq,
@@ -745,24 +743,24 @@ describe('awaitDrained', () => {
     const ids = Array.from({ length: 2 * PUBLISHED_PAGE_LIMIT + 100 }, (_, i) => `f0000000-0000-4000-8000-${String(i).padStart(12, '0')}`);
     const behind = `f0000000-0000-4000-8000-${'e'.repeat(12)}`;
     const state = world({
-      published: { people: ids.map((id, i) => ({ ...event(id, ARCHIVED, UMBRELLA), seq: String(2 * (i + 1)) })) },
-      receipts: { timesheets: Object.fromEntries([...ids, behind].map((id) => [id, [UMBRELLA]])) },
+      published: { people: ids.map((id, i) => ({ ...event(id, PERSON_CHANGED, UMBRELLA), seq: String(2 * (i + 1)) })) },
+      receipts: { identity: Object.fromEntries([...ids, behind].map((id) => [id, [UMBRELLA]])) },
     });
     const { owners, calls } = fakeOwners(state, (call) => {
       if (call.owner === 'people' && call.params?.publishedAfter === '1000' && call.params.publishedThrough !== undefined) {
-        state.published.people = [...(state.published.people ?? []), { ...event(behind, ARCHIVED, UMBRELLA), seq: '501' }];
+        state.published.people = [...(state.published.people ?? []), { ...event(behind, PERSON_CHANGED, UMBRELLA), seq: '501' }];
       }
       return undefined;
     });
 
     const result = await awaitDrained(context(owners), {
       owners: ['people'],
-      consumersWriting: ['timesheets.day'],
+      consumersWriting: ['identity.user_account'],
       timeoutMs: 1000,
-      pubsub: fakePubSub(TIMESHEETS_DECLARED, state).pubsub,
+      pubsub: fakePubSub(IDENTITY_DECLARED, state).pubsub,
     });
 
-    expect(result).toMatchObject({ polls: 1, owners: [counts('people'), counts('timesheets')] });
+    expect(result).toMatchObject({ polls: 1, owners: [counts('people'), counts('identity')] });
     const people = calls.filter((call) => call.owner === 'people').map((call) => [call.params?.publishedAfter, call.params?.publishedThrough]);
     // The second page, incomplete, carries no count; the third completes the pass and finds the row behind the cursor.
     expect(people.slice(0, 4)).toStrictEqual([
@@ -776,42 +774,42 @@ describe('awaitDrained', () => {
 
   it('starts a publisher’s listing over when an event committed behind its cursor appears there', async () => {
     const state = world({
-      published: { people: [{ ...event(EVENT_A, ARCHIVED, UMBRELLA, 'process'), seq: '2' }] },
-      receipts: { timesheets: { [EVENT_A]: [UMBRELLA], [EVENT_B]: [UMBRELLA] } },
+      published: { people: [{ ...event(EVENT_A, PERSON_CHANGED, UMBRELLA, 'process'), seq: '2' }] },
+      receipts: { identity: { [EVENT_A]: [UMBRELLA], [EVENT_B]: [UMBRELLA] } },
     });
     // EVENT_B's seq was assigned before EVENT_A's, but it commits only after the cursor passed it.
     const { owners, calls } = fakeOwners(state, (call) => {
       const listed = state.published.people ?? [];
-      if (call.owner === 'timesheets' && !listed.some((entry) => entry.eventId === EVENT_B)) {
-        state.published.people = [{ ...event(EVENT_B, ARCHIVED, UMBRELLA, 'process'), seq: '1' }, ...listed];
+      if (call.owner === 'identity' && !listed.some((entry) => entry.eventId === EVENT_B)) {
+        state.published.people = [{ ...event(EVENT_B, PERSON_CHANGED, UMBRELLA, 'process'), seq: '1' }, ...listed];
       }
       return undefined;
     });
 
     const result = await awaitDrained(context(owners), {
       owners: ['people'],
-      consumersWriting: ['timesheets.day'],
+      consumersWriting: ['identity.user_account'],
       timeoutMs: 1000,
-      pubsub: fakePubSub(TIMESHEETS_DECLARED, state).pubsub,
+      pubsub: fakePubSub(IDENTITY_DECLARED, state).pubsub,
     });
 
-    expect(result).toMatchObject({ polls: 1, owners: [counts('people'), counts('timesheets')] });
+    expect(result).toMatchObject({ polls: 1, owners: [counts('people'), counts('identity')] });
     expect(calls.filter((call) => call.owner === 'people').map((call) => call.params?.publishedAfter)).toStrictEqual(['0', '2', '0', '2']);
-    expect(calls.filter((call) => call.params?.eventIds !== undefined)).toEqual([consumerCall('timesheets', [EVENT_A]), consumerCall('timesheets', [EVENT_B, EVENT_A])]);
+    expect(calls.filter((call) => call.params?.eventIds !== undefined)).toEqual([consumerCall('identity', [EVENT_A]), consumerCall('identity', [EVENT_B, EVENT_A])]);
   });
 
   it('waits while an unpublished row blocks a publisher’s listing, then throws DrainTimeoutError naming the consumer’s unlisted publisher', async () => {
-    const state = world({ published: { people: [event(EVENT_A, ARCHIVED, UMBRELLA, 'process')] }, blocked: { people: '1' } });
+    const state = world({ published: { people: [event(EVENT_A, PERSON_CHANGED, UMBRELLA, 'process')] }, blocked: { people: '1' } });
     const { owners, calls } = fakeOwners(state);
     const clock = steppingClock();
 
     const failure = await awaitDrained(context(owners, fakeClient().client, clock), {
-      owners: ['identity'],
-      consumersWriting: ['timesheets.day'],
+      owners: ['strategies-content'],
+      consumersWriting: ['identity.user_account'],
       timeoutMs: 1000,
       pollIntervalMs: 500,
       sleep: steppingSleep(clock),
-      pubsub: fakePubSub(TIMESHEETS_DECLARED, state).pubsub,
+      pubsub: fakePubSub(IDENTITY_DECLARED, state).pubsub,
     }).then(
       () => undefined,
       (error: unknown) => error,
@@ -819,12 +817,12 @@ describe('awaitDrained', () => {
 
     expect(failure).toBeInstanceOf(DrainTimeoutError);
     expect(failure).toMatchObject({
-      message: 'drain timed out after 1000 ms: timesheets(pendingReceipts=0, unlisted=people)',
-      owners: [counts('timesheets', 0, 0, 0, { unlisted: ['people'] })],
+      message: 'drain timed out after 1000 ms: identity(pendingReceipts=0, unlisted=people)',
+      owners: [counts('identity', 0, 0, 0, { unlisted: ['people'] })],
       unavailable: {},
     });
     // The second round continues the pass through the frontier the first page reported, which the blocked row's seq sets.
-    expect(calls.filter((call) => call.owner === 'people')).toEqual([listCall('people', [ARCHIVED]), listCall('people', [ARCHIVED], '0', '1')]);
+    expect(calls.filter((call) => call.owner === 'people')).toEqual([listCall('people', [PERSON_CHANGED]), listCall('people', [PERSON_CHANGED], '0', '1')]);
   });
 
   it('polls until every owner is drained, sleeping pollIntervalMs between rounds, and reports the rounds and elapsed time', async () => {
@@ -834,20 +832,20 @@ describe('awaitDrained', () => {
       state.outbox.people = { unpublished: 2 - pauses, held: 0 };
     });
     const { owners, calls, timeouts } = fakeOwners(state);
-    const { pubsub } = fakePubSub(TIMESHEETS_DECLARED, state);
+    const { pubsub } = fakePubSub(IDENTITY_DECLARED, state);
 
     const result = await awaitDrained(context(owners, fakeClient().client, clock), {
       owners: ['people'],
-      consumersWriting: ['timesheets.day'],
+      consumersWriting: ['identity.user_account'],
       timeoutMs: 10_000,
       pollIntervalMs: 250,
       sleep,
       pubsub,
     });
 
-    expect(result).toStrictEqual<DrainResult>({ owners: [counts('people'), counts('timesheets')], polls: 3, elapsedMs: 500 });
+    expect(result).toStrictEqual<DrainResult>({ owners: [counts('people'), counts('identity')], polls: 3, elapsedMs: 500 });
     expect(sleep.mock.calls).toStrictEqual([[250], [250]]);
-    expect(calls.map((call) => call.owner)).toStrictEqual(Array.from({ length: 3 }, () => ['people', 'timesheets', 'programs-sites']).flat());
+    expect(calls.map((call) => call.owner)).toStrictEqual(Array.from({ length: 3 }, () => ['people', 'identity', 'programs-sites']).flat());
     // Bounded by the service-call bound, then by what is left of the budget.
     expect(timeouts).toStrictEqual([10_000, 9750, 9500].flatMap((timeoutMs) => [timeoutMs, timeoutMs, timeoutMs]));
   });
@@ -859,27 +857,26 @@ describe('awaitDrained', () => {
         identity: { unpublished: 1, held: 0 },
         people: { unpublished: 0, held: 2 },
         'programs-sites': { unpublished: 0, held: 0 },
-        finance: { unpublished: 3, held: 0 },
-        timesheets: { unpublished: 5, held: 0 },
+        'strategies-content': { unpublished: 3, held: 0 },
       },
     });
     const { owners } = fakeOwners(state);
     const sleep = vi.fn<(ms: number) => Promise<void>>(() => {
-      for (const owner of ['identity', 'people', 'finance'] as const) state.outbox[owner] = { unpublished: 0, held: 0 };
+      for (const owner of ['identity', 'people', 'strategies-content'] as const) state.outbox[owner] = { unpublished: 0, held: 0 };
       return Promise.resolve();
     });
 
     const result = await awaitDrained(context(owners, client), {
-      owners: ['identity', 'people', 'programs-sites', 'finance'],
-      consumersWriting: ['timesheets.day'],
+      owners: ['identity', 'people', 'programs-sites', 'strategies-content'],
+      consumersWriting: ['identity.user_account'],
       timeoutMs: 1000,
       sleep,
-      pubsub: fakePubSub(TIMESHEETS_DECLARED).pubsub,
+      pubsub: fakePubSub(IDENTITY_DECLARED).pubsub,
     });
 
     expect(calls).toStrictEqual([ensureRequest('identity', 1000), ensureRequest('people', 1000)]);
     expect(result.polls).toBe(2);
-    expect(result.owners).toContainEqual(counts('timesheets', 5));
+    expect(result.owners).toContainEqual(counts('strategies-content'));
   });
 
   it('propagates a failed sweep ensure before sleeping or polling again', async () => {
@@ -936,85 +933,85 @@ describe('awaitDrained', () => {
 
   it.each<[string, (call: PositionCall) => boolean, Error]>([
     ['the listing', (call) => call.owner === 'people' && call.params?.eventIds === undefined, new Error('Service people answered with invalid JSON')],
-    ['the receipt check', (call) => call.params?.eventIds !== undefined, new OwnerCallError('timesheets', 'GET', '/internal/v1/migration/position', 500, {})],
+    ['the receipt check', (call) => call.params?.eventIds !== undefined, new OwnerCallError('identity', 'GET', '/internal/v1/migration/position', 500, {})],
   ])('propagates an owner failure other than unavailability in %s at once', async (_label, fails, failure) => {
-    const state = world({ published: { people: [event(EVENT_A, ARCHIVED, UMBRELLA)] } });
+    const state = world({ published: { people: [event(EVENT_A, PERSON_CHANGED, UMBRELLA)] } });
     const { owners } = fakeOwners(state, (call) => (fails(call) ? failure : undefined));
     const sleep = vi.fn<(ms: number) => Promise<void>>(() => Promise.resolve());
 
     await expect(
       awaitDrained(context(owners), {
         owners: ['people'],
-        consumersWriting: ['timesheets.day'],
+        consumersWriting: ['identity.user_account'],
         timeoutMs: 1000,
         sleep,
-        pubsub: fakePubSub(TIMESHEETS_DECLARED, state).pubsub,
+        pubsub: fakePubSub(IDENTITY_DECLARED, state).pubsub,
       }),
     ).rejects.toBe(failure);
     expect(sleep).not.toHaveBeenCalled();
   });
 
   it.each<[string, () => Error]>([
-    ['refuses the connection', () => refused('timesheets')],
-    ['answers HTTP 503', () => new OwnerCallError('timesheets', 'GET', '/internal/v1/migration/position', 503, { error: 'unavailable' })],
+    ['refuses the connection', () => refused('identity')],
+    ['answers HTTP 503', () => new OwnerCallError('identity', 'GET', '/internal/v1/migration/position', 503, { error: 'unavailable' })],
   ])('asks a consumer that %s again in the next rounds, and drains once it answers with the receipt', async (_label, failure) => {
     const state = world({
       outbox: { people: { unpublished: 0, held: 0 } },
-      published: { people: [event(EVENT_A, ARCHIVED, UMBRELLA, 'process')] },
-      receipts: { timesheets: { [EVENT_A]: [UMBRELLA] } },
+      published: { people: [event(EVENT_A, PERSON_CHANGED, UMBRELLA, 'process')] },
+      receipts: { identity: { [EVENT_A]: [UMBRELLA] } },
     });
     const clock = steppingClock();
     let down = true;
     const sleep = steppingSleep(clock, (pauses) => {
       if (pauses === 2) down = false;
     });
-    const { owners, calls } = fakeOwners(state, (call) => (down && call.owner === 'timesheets' ? failure() : undefined));
-    const { pubsub, peeked } = fakePubSub(TIMESHEETS_DECLARED, state);
+    const { owners, calls } = fakeOwners(state, (call) => (down && call.owner === 'identity' ? failure() : undefined));
+    const { pubsub, peeked } = fakePubSub(IDENTITY_DECLARED, state);
 
     const result = await awaitDrained(context(owners, fakeClient().client, clock), {
       owners: ['people'],
-      consumersWriting: ['timesheets.day'],
+      consumersWriting: ['identity.user_account'],
       timeoutMs: 300_000,
       pollIntervalMs: 1000,
       sleep,
       pubsub,
     });
 
-    expect(result).toStrictEqual<DrainResult>({ owners: [counts('people'), counts('timesheets')], polls: 3, elapsedMs: 2000 });
-    expect(calls.filter((call) => call.params?.eventIds !== undefined)).toEqual(Array.from({ length: 3 }, () => consumerCall('timesheets', [EVENT_A])));
+    expect(result).toStrictEqual<DrainResult>({ owners: [counts('people'), counts('identity')], polls: 3, elapsedMs: 2000 });
+    expect(calls.filter((call) => call.params?.eventIds !== undefined)).toEqual(Array.from({ length: 3 }, () => consumerCall('identity', [EVENT_A])));
     // No dead letter is sought for a delivery its consumer could not be asked about.
     expect(peeked).toStrictEqual([]);
   });
 
   it('throws DrainTimeoutError naming every owner still unavailable at the deadline, a producer with unknown counts included', async () => {
-    const state = world({ outbox: { people: { unpublished: 0, held: 0 } }, published: { people: [event(EVENT_A, ARCHIVED, UMBRELLA, 'process')] } });
+    const state = world({ outbox: { people: { unpublished: 0, held: 0 } }, published: { people: [event(EVENT_A, PERSON_CHANGED, UMBRELLA, 'process')] } });
     const { owners } = fakeOwners(state, (call) => {
-      if (call.owner === 'timesheets') return refused('timesheets');
-      return call.owner === 'identity' ? refused('identity') : undefined;
+      if (call.owner === 'identity') return refused('identity');
+      return call.owner === 'strategies-content' ? refused('strategies-content') : undefined;
     });
     const clock = steppingClock();
 
     const failure = await awaitDrained(context(owners, fakeClient().client, clock), {
-      owners: ['people', 'identity'],
-      consumersWriting: ['timesheets.day'],
+      owners: ['people', 'strategies-content'],
+      consumersWriting: ['identity.user_account'],
       timeoutMs: 1000,
       pollIntervalMs: 1000,
       sleep: steppingSleep(clock),
-      pubsub: fakePubSub(TIMESHEETS_DECLARED, state).pubsub,
+      pubsub: fakePubSub(IDENTITY_DECLARED, state).pubsub,
     }).then(
       () => undefined,
       (error: unknown) => error,
     );
 
+    const contentDown = 'Service strategies-content unavailable (ECONNREFUSED)';
     const identityDown = 'Service identity unavailable (ECONNREFUSED)';
-    const timesheetsDown = 'Service timesheets unavailable (ECONNREFUSED)';
     expect(failure).toBeInstanceOf(DrainTimeoutError);
     expect(failure).toMatchObject({
       message:
-        'drain timed out after 1000 ms: identity(unpublished=0, held=0), timesheets(pendingReceipts=1); ' +
-        `unavailable: identity (${identityDown}), timesheets (${timesheetsDown})`,
-      owners: [counts('identity', 0, 0, 0, { unavailable: identityDown }), counts('timesheets', 0, 0, 1, { unavailable: timesheetsDown })],
-      unavailable: { identity: identityDown, timesheets: timesheetsDown },
+        'drain timed out after 1000 ms: strategies-content(unpublished=0, held=0), identity(pendingReceipts=1); ' +
+        `unavailable: identity (${identityDown}), strategies-content (${contentDown})`,
+      owners: [counts('strategies-content', 0, 0, 0, { unavailable: contentDown }), counts('identity', 0, 0, 1, { unavailable: identityDown })],
+      unavailable: { identity: identityDown, 'strategies-content': contentDown },
     });
   });
 
@@ -1025,22 +1022,22 @@ describe('awaitDrained', () => {
     await expect(
       awaitDrained(context(unlisted), {
         owners: ['people'],
-        consumersWriting: ['timesheets.day'],
+        consumersWriting: ['identity.user_account'],
         timeoutMs: 1000,
-        pubsub: fakePubSub(TIMESHEETS_DECLARED).pubsub,
+        pubsub: fakePubSub(IDENTITY_DECLARED).pubsub,
       }),
     ).rejects.toThrow('Owner people answered position without the asked published events');
   });
 
   it('creates its Pub/Sub client from ctx.env and closes it when the drain ends, drained or failed', async () => {
-    const state = world({ outbox: { finance: { unpublished: 1, held: 0 } } });
+    const state = world({ outbox: { 'programs-sites': { unpublished: 1, held: 0 } } });
     const { owners } = fakeOwners(state);
-    const created = [fakePubSub(FINANCE_DECLARED).pubsub, fakePubSub(FINANCE_DECLARED).pubsub] as const;
+    const created = [fakePubSub(PROGRAMS_SITES_DECLARED).pubsub, fakePubSub(PROGRAMS_SITES_DECLARED).pubsub] as const;
     vi.mocked(createPubSub).mockReturnValueOnce(created[0]).mockReturnValueOnce(created[1]);
 
-    await expect(awaitDrained(context(owners), { owners: ['finance'], timeoutMs: 0 })).rejects.toThrow(DrainTimeoutError);
-    state.outbox.finance = { unpublished: 0, held: 0 };
-    await expect(awaitDrained(context(owners), { owners: ['finance'], timeoutMs: 1000 })).resolves.toMatchObject({ polls: 1 });
+    await expect(awaitDrained(context(owners), { owners: ['programs-sites'], timeoutMs: 0 })).rejects.toThrow(DrainTimeoutError);
+    state.outbox['programs-sites'] = { unpublished: 0, held: 0 };
+    await expect(awaitDrained(context(owners), { owners: ['programs-sites'], timeoutMs: 1000 })).resolves.toMatchObject({ polls: 1 });
 
     expect(vi.mocked(createPubSub).mock.calls).toStrictEqual([[ENV], [ENV]]);
     for (const pubsub of created) expect(pubsub.close).toHaveBeenCalledTimes(1);
@@ -1061,21 +1058,20 @@ describe('awaitDrained', () => {
       outbox: {
         people: { unpublished: 2, held: 1 },
         identity: { unpublished: 1, held: 0 },
-        communications: { unpublished: 0, held: 0 },
-        timesheets: { unpublished: 4, held: 0 },
+        'strategies-content': { unpublished: 0, held: 0 },
       },
-      published: { identity: [event(EVENT_A, GROUP_CHANGED, TENANT_A)], people: [event(EVENT_B, ARCHIVED, UMBRELLA)] },
+      published: { identity: [event(EVENT_A, GROUP_CHANGED, TENANT_A)], people: [event(EVENT_B, PERSON_CHANGED, UMBRELLA)] },
     });
     const { owners, calls } = fakeOwners(state);
     const clock = steppingClock();
     const sleep = steppingSleep(clock);
     const options: AwaitDrainedOptions = {
-      owners: ['people', 'identity', 'communications'],
-      consumersWriting: ['people.person', 'timesheets.day'],
+      owners: ['people', 'identity', 'strategies-content'],
+      consumersWriting: ['people.person', 'identity.user_account'],
       timeoutMs: 1000,
       pollIntervalMs: 400,
       sleep,
-      pubsub: fakePubSub([...PEOPLE_DECLARED, ...TIMESHEETS_DECLARED], state).pubsub,
+      pubsub: fakePubSub([...PEOPLE_DECLARED, ...IDENTITY_DECLARED], state).pubsub,
     };
 
     const failure = await awaitDrained(context(owners, fakeClient().client, clock), options).then(
@@ -1088,23 +1084,22 @@ describe('awaitDrained', () => {
     expect(failure).toMatchObject({
       name: 'DrainTimeoutError',
       message:
-        'drain timed out after 1000 ms: people(unpublished=2, held=1, pendingReceipts=1), identity(unpublished=1, held=0), ' +
-        'timesheets(pendingReceipts=1)',
+        'drain timed out after 1000 ms: people(unpublished=2, held=1, pendingReceipts=1), identity(unpublished=1, held=0, pendingReceipts=1)',
       timeoutMs: 1000,
-      owners: [counts('people', 2, 1, 1), counts('identity', 1), counts('timesheets', 4, 0, 1)],
+      owners: [counts('people', 2, 1, 1), counts('identity', 1, 0, 1)],
     });
     expect(sleep.mock.calls).toStrictEqual([[400], [400], [200]]);
     // The first round lists, proves what it listed and lists again; each later round proves then lists, and none starts past the deadline.
-    expect(calls).toHaveLength(5 + 2 + 5 + 2 * (2 + 5));
+    expect(calls).toHaveLength(4 + 2 + 4 + 2 * (2 + 4));
   });
 
   it('throws DrainTimeoutError before subscription discovery or any position call when timeoutMs is zero', async () => {
-    const { owners, calls } = fakeOwners(world({ outbox: { finance: { unpublished: 1, held: 0 } } }));
+    const { owners, calls } = fakeOwners(world({ outbox: { 'programs-sites': { unpublished: 1, held: 0 } } }));
     const sleep = vi.fn<(ms: number) => Promise<void>>(() => Promise.resolve());
-    const { pubsub } = fakePubSub(FINANCE_DECLARED);
+    const { pubsub } = fakePubSub(PROGRAMS_SITES_DECLARED);
     const listed = vi.spyOn(pubsub, 'getSubscriptions');
 
-    await expect(awaitDrained(context(owners), { owners: ['finance'], timeoutMs: 0, sleep, pubsub })).rejects.toThrow(
+    await expect(awaitDrained(context(owners), { owners: ['programs-sites'], timeoutMs: 0, sleep, pubsub })).rejects.toThrow(
       new DrainTimeoutError(0, [], { pubsub: 'drain budget spent before subscription discovery' }),
     );
     expect(listed).not.toHaveBeenCalled();
@@ -1121,18 +1116,18 @@ describe('awaitDrained', () => {
     [
       'a subscription’s metadata read outlasts',
       (listed, pubsub) => {
-        const live = pubsub.subscription(FINANCE_DECLARED[0] ?? '');
+        const live = pubsub.subscription(PROGRAMS_SITES_DECLARED[0] ?? '');
         vi.spyOn(live, 'getMetadata').mockImplementation(() => wait(30).then((): SubscriptionMetadata => [{}]));
         listed.mockResolvedValue([[live]]);
       },
     ],
   ])('throws DrainTimeoutError before any position call when %s the remaining budget', async (_label, slow) => {
     const { owners, calls } = fakeOwners(world());
-    const pubsub: PubSubLike = fakePubSub(FINANCE_DECLARED).pubsub;
+    const pubsub: PubSubLike = fakePubSub(PROGRAMS_SITES_DECLARED).pubsub;
     const listed = vi.spyOn(pubsub, 'getSubscriptions');
     slow(listed, pubsub);
 
-    const failure = await awaitDrained(context(owners), { owners: ['finance'], timeoutMs: 10, pubsub }).then(
+    const failure = await awaitDrained(context(owners), { owners: ['programs-sites'], timeoutMs: 10, pubsub }).then(
       () => undefined,
       (error: unknown) => error,
     );
@@ -1152,10 +1147,10 @@ describe('awaitDrained', () => {
   it('makes no call once the budget is spent and bounds every call by what is left of it, peeks and the sweep ensure included', async () => {
     const clock = steppingClock();
     const started = clock.now().getTime();
-    const state = world({ outbox: { people: { unpublished: 1, held: 0 } }, published: { people: [event(EVENT_A, ARCHIVED, UMBRELLA, 'process')] } });
+    const state = world({ outbox: { people: { unpublished: 1, held: 0 } }, published: { people: [event(EVENT_A, PERSON_CHANGED, UMBRELLA, 'process')] } });
     /** Every call made: when, relative to the start, and its bound. */
     const made: { kind: string; atMs: number; boundMs: number | undefined }[] = [];
-    const cutShort = timedOut('timesheets');
+    const cutShort = timedOut('identity');
     // A position call takes 500 ms, or fails at its bound when that is shorter.
     const { owners, timeouts } = fakeOwners(state, (call) => {
       const bound = timeouts.at(-1) ?? 0;
@@ -1163,7 +1158,7 @@ describe('awaitDrained', () => {
       clock.advance(Math.min(500, bound));
       return bound < 500 ? cutShort : undefined;
     });
-    const fake = fakePubSub(TIMESHEETS_DECLARED, state);
+    const fake = fakePubSub(IDENTITY_DECLARED, state);
     const pubsub: PubSubLike = {
       ...fake.pubsub,
       peekEventIds: (fullName, options) => {
@@ -1182,7 +1177,7 @@ describe('awaitDrained', () => {
 
     const failure = await awaitDrained(context(owners, client, clock), {
       owners: ['people'],
-      consumersWriting: ['timesheets.day'],
+      consumersWriting: ['identity.user_account'],
       timeoutMs: 3000,
       sleep: steppingSleep(clock),
       pubsub,
@@ -1193,30 +1188,30 @@ describe('awaitDrained', () => {
 
     expect(made).toStrictEqual([
       { kind: 'position:people', atMs: 0, boundMs: 3000 },
-      { kind: 'position:timesheets', atMs: 500, boundMs: 2500 },
+      { kind: 'position:identity', atMs: 500, boundMs: 2500 },
       { kind: 'position:programs-sites', atMs: 1000, boundMs: 2000 },
-      { kind: 'position:timesheets', atMs: 1500, boundMs: 1500 },
+      { kind: 'position:identity', atMs: 1500, boundMs: 1500 },
       { kind: 'peek', atMs: 2000, boundMs: 1000 },
       { kind: 'position:people', atMs: 2300, boundMs: 700 },
-      { kind: 'position:timesheets', atMs: 2800, boundMs: 200 },
+      { kind: 'position:identity', atMs: 2800, boundMs: 200 },
     ]);
     expect(failure).toBeInstanceOf(DrainTimeoutError);
-    const timesheetsCutShort = `${cutShort.message}; drain budget spent during the call`;
+    const identityCutShort = `${cutShort.message}; drain budget spent during the call`;
     expect(failure).toMatchObject({
-      owners: [counts('people', 1), counts('timesheets', 0, 0, 1, { unlisted: ['programs-sites'], unavailable: timesheetsCutShort })],
-      unavailable: { 'programs-sites': 'drain budget spent before the call', people: 'drain budget spent before the call', timesheets: timesheetsCutShort },
+      owners: [counts('people', 1), counts('identity', 0, 0, 1, { unlisted: ['programs-sites'], unavailable: identityCutShort })],
+      unavailable: { 'programs-sites': 'drain budget spent before the call', people: 'drain budget spent before the call', identity: identityCutShort },
     });
   });
 
   it('sleeps DEFAULT_DRAIN_POLL_MS (1000 ms) on node timers when neither pollIntervalMs nor sleep is given', async () => {
-    const state = world({ outbox: { finance: { unpublished: 1, held: 0 } } });
+    const state = world({ outbox: { 'programs-sites': { unpublished: 1, held: 0 } } });
     // The second round finds the row published.
     const { owners, calls, timeouts } = fakeOwners(state, (call) => {
-      if (call.owner === 'finance' && calls.filter((made) => made.owner === 'finance').length === 2) state.outbox.finance = { unpublished: 0, held: 0 };
+      if (call.owner === 'programs-sites' && calls.filter((made) => made.owner === 'programs-sites').length === 2) state.outbox['programs-sites'] = { unpublished: 0, held: 0 };
       return undefined;
     });
 
-    const result = await awaitDrained(context(owners), { owners: ['finance'], timeoutMs: 60_000, pubsub: fakePubSub(FINANCE_DECLARED).pubsub });
+    const result = await awaitDrained(context(owners), { owners: ['programs-sites'], timeoutMs: 60_000, pubsub: fakePubSub(PROGRAMS_SITES_DECLARED).pubsub });
 
     expect(DEFAULT_DRAIN_POLL_MS).toBe(1000);
     expect(delay).toHaveBeenCalledExactlyOnceWith(DEFAULT_DRAIN_POLL_MS);

@@ -16,7 +16,7 @@ import {
   type FastifyReply,
   type FastifyRequest,
 } from '@opt2/platform/service-kit';
-import type { TenantDb } from '@opt2/platform/tenancy';
+import { poolTenantFor, type TenantDb } from '@opt2/platform/tenancy';
 import {
   formatNoteCursor,
   newNote,
@@ -30,7 +30,8 @@ import { writeNoteCreated } from '../events/note-created.js';
 import type { components } from '../generated/openapi.js';
 import type { StubRepository } from '../repo/repository.js';
 
-interface NoteParams {
+/** Path parameters of the routes under `/opt2/stub/notes/:noteId`. */
+export interface NoteParams {
   noteId: components['parameters']['NoteId'];
 }
 
@@ -47,14 +48,14 @@ const CREATE_ROLES = [Roles.systemUser] as const;
 const DELETE_ROLES = [Roles.s2] as const;
 
 /** The verified token's tenant; user roles guarantee it, so its absence is an authorization failure. */
-function tenantOf(request: FastifyRequest): string {
+export function tenantOf(request: FastifyRequest): string {
   const { tenantId } = request.opt2;
   if (tenantId === undefined) throw new LegacyApiError('authorization');
   return tenantId;
 }
 
 /** Sends `data` in the legacy envelope of `method`, or the legacy 404 error envelope when `data` is null. */
-function sendResult(request: FastifyRequest, reply: FastifyReply, method: string, data: unknown): FastifyReply {
+export function sendResult(request: FastifyRequest, reply: FastifyReply, method: string, data: unknown): FastifyReply {
   const params = { ...legacyParamsOf(request), ...(request.params as Record<string, string>) };
   // The 404 service-kit answers for an unknown route, so another tenant's note is indistinguishable from a missing one.
   const response =
@@ -73,9 +74,12 @@ export async function registerNoteRoutes(app: FastifyInstance, deps: NoteRouteDe
       const tenantId = tenantOf(request);
       const input = noteCreateSchema.safeParse(legacyParamsOf(request));
       if (!input.success) throw new LegacyApiError('invalidParameters', { method: 'save' });
+      // A pooled note's tenant comes from the verified token's registry entry, never from the request.
+      const noteTenant = input.data.pool === undefined ? tenantId : await poolTenantFor(deps.db, tenantId, 'publicUser');
+      if (noteTenant === null) throw new LegacyApiError('invalidParameters', { method: 'save' });
       // Built before the transaction, so a gate-race re-run inserts the same note.
       const note = newNote(input.data, deps.clock);
-      await withGatedTenant(deps.db, tenantId, async (tx) => {
+      await withGatedTenant(deps.db, noteTenant, async (tx) => {
         await deps.repository.insert(tx, 'note', noteToRow(note));
         await writeNoteCreated(tx, note);
       });

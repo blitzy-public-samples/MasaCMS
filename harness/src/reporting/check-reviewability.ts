@@ -11,32 +11,11 @@ import { pinnedSha, readPin, type Pin } from '../lib/pin.js';
 import { readJson, writeJsonReport, writeMarkdown } from '../lib/report.js';
 import { extractSha } from './check-pin.js';
 
-/** The ten OPT-2 services, in plan order; the stub is not one of them. */
-export const TEN_SERVICES = [
-  'identity',
-  'people',
-  'programs-sites',
-  'strategies-content',
-  'communications',
-  'reporting',
-  'surveys',
-  'timesheets',
-  'finance',
-  'e-signature',
-] as const;
+/** The OPT-2 services, in plan order; the stub is not one of them. */
+export const SERVICES = ['identity', 'people', 'programs-sites', 'strategies-content'] as const;
 
-/** One of {@link TEN_SERVICES}. */
-export type ServiceName = (typeof TEN_SERVICES)[number];
-
-/** The six synthetic services, whose legacy oracle is `legacy-fixtures/`. */
-export const SYNTHETIC_SERVICES = [
-  'communications',
-  'reporting',
-  'surveys',
-  'timesheets',
-  'finance',
-  'e-signature',
-] as const satisfies readonly ServiceName[];
+/** One of {@link SERVICES}. */
+export type ServiceName = (typeof SERVICES)[number];
 
 /** Recorded as the report's `generatedBy`. */
 export const GENERATED_BY = 'harness/src/reporting/check-reviewability.ts';
@@ -371,7 +350,7 @@ export interface ReviewItem {
   units?: string[];
 }
 
-const FIXTURE_SCHEMA = /^(?:program_(?:\d+|n)|synthetic)\./i;
+const FIXTURE_SCHEMA = /^synthetic\./i;
 /** Dispositions whose items keep running on legacy, so their rows need no target code path. */
 const CODE_EXEMPT: ReadonlySet<string> = new Set(['legacy-served', 'decision', 'retired']);
 /**
@@ -1555,7 +1534,7 @@ that registration's own .each/.for rows or loop, or a "parent › child" path of
 
 Options:
   --root <dir>       checkout to check, resolved against the working directory (default: the repository root)
-  --service <name>   check only this service; repeatable (default: ${TEN_SERVICES.join(', ')})
+  --service <name>   check only this service; repeatable (default: ${SERVICES.join(', ')})
   --no-write         print the summary only; write no report
   --help             print this help and exit 0
 
@@ -1569,16 +1548,16 @@ Examples (from harness/):
   npm run check:reviewability -- --service identity --no-write`;
 
 function isServiceName(name: string): name is ServiceName {
-  return (TEN_SERVICES as readonly string[]).includes(name);
+  return (SERVICES as readonly string[]).includes(name);
 }
 
 function selectServices(names: string[] | undefined): ServiceName[] {
-  if (names === undefined || names.length === 0) return [...TEN_SERVICES];
+  if (names === undefined || names.length === 0) return [...SERVICES];
   const unknown = names.filter((name) => !isServiceName(name));
   if (unknown.length > 0) {
-    throw new UsageError(`--service ${unknown.join(', ')}: not one of ${TEN_SERVICES.join(', ')}`, USAGE);
+    throw new UsageError(`--service ${unknown.join(', ')}: not one of ${SERVICES.join(', ')}`, USAGE);
   }
-  return TEN_SERVICES.filter((service) => names.includes(service));
+  return SERVICES.filter((service) => names.includes(service));
 }
 
 /** Injectable process inputs of {@link main}. */

@@ -67,7 +67,7 @@ describe('peopleEnvSchema', () => {
     ['MURA_EXPIREPASSWORDS', '{{expirePasswords}}', 0],
     ['OPT2_FAULT', undefined, undefined],
     ['OPT2_FAULT', 'roster:after-prepare', 'after-prepare'],
-    ['OPT2_FAULT', 'timesheets:after-start', undefined],
+    ['OPT2_FAULT', 'identity:after-start', undefined],
   ])('parses %s %j as %j without rejecting it', (key, value, parsed) => {
     expect(loadEnv(peopleEnvSchema, localSource({ [key]: value }))[key as 'MURA_EXPIREPASSWORDS' | 'OPT2_FAULT']).toBe(parsed);
   });

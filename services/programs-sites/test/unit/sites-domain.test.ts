@@ -1,5 +1,4 @@
 /** Site operations of csettings list, editSite and the order form over recording fakes of the tenant database, repository and site.changed writer. */
-import { readFileSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { parse } from 'yaml';
@@ -18,7 +17,7 @@ import {
   type TenantTx,
   type TransactionCallOptions,
 } from '@opt2/platform/tenancy';
-import { assertResponseMatchesOpenApi } from '@opt2/platform/testing';
+import { assertResponseMatchesOpenApi, loadOpenApiDocument } from '@opt2/platform/testing';
 import { siteChangedPayload } from '../../src/domain/pools.js';
 import { createSitesDomain, type SitesDomainDeps } from '../../src/domain/sites.js';
 import { siteChangedValidator } from '../../src/events/consumers.js';
@@ -60,7 +59,7 @@ const OTHER_SET = 'E0000000-0000-0000-0000000000000004';
 const SIZE_ID = 'A0000000-0000-0000-0000000000000001';
 const LAST_DEPLOYMENT = new Date(2026, 0, 2, 3, 4, 5, 6);
 const LAUNCH = new Date(2026, 2, 4, 5, 6, 7, 0);
-const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
+const OPENAPI = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as object;
 /** The read fence `awaitReadable` takes on the site unit of an open gate: savepoint, share lock, release. */
 const SITE_UNIT_FENCE = [
   ['SAVEPOINT opt2_read_fence', undefined],

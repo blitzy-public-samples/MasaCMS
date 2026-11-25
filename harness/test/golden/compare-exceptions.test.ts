@@ -32,13 +32,13 @@ const STATUS_SELECTOR: DifferenceSelector = { step: 'findone', path: 'status', k
 const DECISIONS = { actionVariants: [], tables: [] };
 
 let rules: NormaliseRules;
-/** `GS-CO-05`, comparing stored rows as well. */
+/** `GS-CO-75`, comparing stored rows as well. */
 let scenario: Scenario;
 
 beforeAll(async () => {
   const catalogue = await loadCatalogue(CATALOGUE_FIXTURE);
   rules = loadRules(undefined, { PORT: '8500' });
-  const co05 = scenarioById(catalogue, 'GS-CO-05');
+  const co05 = scenarioById(catalogue, 'GS-CO-75');
   scenario = { ...co05, compare: [...co05.compare, 'rows'] };
 });
 
@@ -76,7 +76,7 @@ function classify(change: Change, exceptions: ExceptionEntry[]): ScenarioVerdict
         normalised: { name: 'findone', index: 0, routeKey: ROUTE_KEY, status: 200, body: goldenBody, maskedPaths: {} },
       },
     ],
-    sideEffects: { mail: [], rows: {}, tasks: [], files: [] },
+    sideEffects: { mail: [], rows: {}, files: [] },
   };
   const steps = structuredClone(golden.steps);
   for (const step of steps) {
@@ -103,14 +103,14 @@ function classify(change: Change, exceptions: ExceptionEntry[]): ScenarioVerdict
 function entry(matches: DifferenceSelector[] | undefined, over: Partial<ExceptionEntry> = {}): ExceptionEntry {
   return {
     id: 'EX-CO-05',
-    scenario: 'GS-CO-05',
+    scenario: 'GS-CO-75',
     routeKey: ROUTE_KEY,
     difference: 'status',
     ...(matches === undefined ? {} : { matches }),
     decision: 'preserve',
     reason: 'legacy answers 200',
     status: 'open',
-    evidence: { golden: 'harness/golden/sets/GS-CO-05.json', replay: 'opt2/reports/parity.json#GS-CO-05' },
+    evidence: { golden: 'harness/golden/sets/GS-CO-75.json', replay: 'opt2/reports/parity.json#GS-CO-75' },
     sourceSha: SHA,
     ...over,
   };
@@ -292,7 +292,7 @@ describe("GS-PUB-04's rate-ajax step on legacy's debug page, under the committed
 
   /** Classifies a replay answering `replayed` against a golden set answering `captured`, under the committed list. */
   function classifyPub04(captured: [string, number], replayed: [string, number]): ScenarioVerdict {
-    const sideEffects = { mail: [], rows: {}, tasks: [], files: [] };
+    const sideEffects = { mail: [], rows: {}, files: [] };
     const golden: GoldenSet = {
       sourceSha: SHA,
       scenarioId: pub04.id,

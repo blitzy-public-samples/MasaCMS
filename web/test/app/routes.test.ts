@@ -1,23 +1,20 @@
 // The admin route modules over the real handlers and screen registry, with the in-memory gateway beneath the production
 // platform client as the only data source: each response mode's legacy answer, refusals and the fail-closed 503.
 // Segment config and handler delegation are covered with a mocked handler in ./route-adapters.test.ts.
-import * as cheerio from 'cheerio';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  ADMIN_NOACCESS_ACTION,
   CSRF_FIELD_EXPIRES,
   CSRF_FIELD_TOKEN,
   LEGACY_ERROR_PAGE_HTML,
   adminUnavailableResponse,
   type CsrfTokens,
 } from '@opt2/platform/legacy-compat';
-import { BUSINESS_DATE, TENANT_A } from '@opt2/platform/testing';
+import { TENANT_A } from '@opt2/platform/testing';
 import { LEGACY_VERSION_MENU_PATH, setServiceClientForTests } from '@/lib/gateway-client';
 import type { UserUpdateResult } from '@/screens/cusers/update';
 import * as adminPage from '../../app/admin/[circuit]/[action]/route';
 import * as adminActions from '../../app/admin-actions/[circuit]/[action]/route';
 import * as adminRaw from '../../app/admin-raw/[circuit]/[action]/route';
-import * as opt2Actions from '../../app/opt2/admin-actions/[module]/[action]/route';
 import { LEGACY_VERSION_MENU } from '../fixtures/gateway/version-menu';
 import { CSRF_BY_CONTEXT } from '../fixtures/identity/csrf';
 import {
@@ -27,7 +24,6 @@ import {
   loginSuccessRedirect,
   logoutAnswer,
 } from '../fixtures/identity/session-login';
-import { TIMESHEET_IDS, TIMESHEETS_AS_OF, timesheetsAnswersByRole } from '../fixtures/opt2/timesheets';
 import { PERSON_IDS } from '../fixtures/people/user-list';
 import { duplicateUsernameResult, routeToListUsersResult } from '../fixtures/people/validation-errors';
 import { TENANT_A_USERS_CSV_BODY, USERS_CSV_HEADERS, tenantAUsersCsv } from '../fixtures/people/users-csv';
@@ -51,7 +47,7 @@ import {
   type RecordedRequest,
 } from '../helpers/fake-gateway';
 import { adminRequest, formWithCsrf, routeParams, type AdminRequestOptions, type BrowserPart } from '../helpers/requests';
-import { SUBJECTS, serviceInvocation, syntheticSubject, type WebTestSubject } from '../helpers/tokens';
+import { SUBJECTS, serviceInvocation, type WebTestSubject } from '../helpers/tokens';
 
 // Request log lines are recorded instead of written to stdout.
 vi.mock('@/lib/telemetry', async (importOriginal) => ({
@@ -82,8 +78,6 @@ const CHANGESET_ROLLBACK = routeKey(
   'strategies-content',
   `/v1/sites/${TENANT_A.siteId}/changesets/${CHANGESET_IDS.published}/rollback`,
 );
-const dayActionRoute = (dayId: string, action: string): string =>
-  routeKey('POST', 'timesheets', `/v1/timesheets/days/${dayId}/${action}`);
 
 const SITE = TENANT_A.siteId;
 const SERVICE_PREFIX = '/opt2/svc/';
@@ -119,16 +113,6 @@ const partsOf = (fields: Record<string, string>, ...extra: BrowserPart[]): Brows
   ...Object.entries(fields).map(([name, value]) => ({ name, value })),
   ...extra,
 ];
-
-const primaryApprover = syntheticSubject('timesheets.primary-approver');
-const employee = syntheticSubject('timesheets.employee');
-
-/** A timesheets day-action post of `dayaction` on `dayid` of the returned sheet. */
-const dayAction = (dayid: string, dayaction: string): Record<string, string> =>
-  formWithCsrf(
-    { siteid: SITE, asOf: BUSINESS_DATE, timesheetid: TIMESHEET_IDS.sheetReturned, dayid, dayaction },
-    POSTED_CSRF,
-  );
 
 const UNAVAILABLE = adminUnavailableResponse();
 
@@ -226,25 +210,9 @@ function install(routes: FakeRouteTable): void {
   for (const [key, route] of Object.entries(routes)) gateway.setRoute(key, route);
 }
 
-/** The opt2/admin-actions exports that take the request alone, by method. */
-const OPT2_ACTION_EXPORTS = new Map<string, (request: Request) => Response>([
-  ['GET', opt2Actions.GET],
-  ['HEAD', opt2Actions.HEAD],
-  ['PUT', opt2Actions.PUT],
-  ['PATCH', opt2Actions.PATCH],
-  ['DELETE', opt2Actions.DELETE],
-  ['OPTIONS', opt2Actions.OPTIONS],
-]);
-
 /** `request` answered by the route module its web path names, through the export of its method. */
 async function serve(request: Request): Promise<Response> {
-  const [tree = '', first = '', second = '', third = ''] = new URL(request.url).pathname.split('/').slice(1);
-  if (tree === 'opt2' && first === 'admin-actions') {
-    if (request.method === 'POST') return opt2Actions.POST(request, routeParams({ module: second, action: third }));
-    const handler = OPT2_ACTION_EXPORTS.get(request.method);
-    if (handler === undefined) throw new TypeError(`opt2/admin-actions exports no ${request.method}`);
-    return handler(request);
-  }
+  const [tree = '', first = '', second = ''] = new URL(request.url).pathname.split('/').slice(1);
   const route = tree === 'admin' ? adminPage : tree === 'admin-actions' ? adminActions : tree === 'admin-raw' ? adminRaw : undefined;
   if (route === undefined) throw new TypeError(`No route module serves ${request.url}`);
   const params = routeParams({ circuit: first, action: second });
@@ -585,63 +553,10 @@ describe('admin-raw response modes', () => {
   });
 });
 
-describe('opt2 synthetic actions', () => {
-  it('POST day-action applies the action with the posted CSRF pair and redirects to the sheet', async () => {
-    install({ ...sessionRoutes(primaryApprover, tenantASiteAdminSession), ...timesheetsAnswersByRole.primaryApprover });
-
-    const { response } = await send('/opt2/admin-actions/timesheets/day-action', {
-      user: primaryApprover,
-      form: dayAction(TIMESHEET_IDS.daySubmitted, 'primary-approve'),
-    });
-
-    expectLegacyHeaders(response);
-    expect(response.status).toBe(302);
-    expect(response.headers.get('location')).toBe(
-      `/opt2/admin/timesheets/sheet?siteid=${SITE}&asOf=${TIMESHEETS_AS_OF}&timesheetid=${TIMESHEET_IDS.sheetReturned}`,
-    );
-    const route = dayActionRoute(TIMESHEET_IDS.daySubmitted, 'primary-approve');
-    const write = gateway.requests.find((recorded) => `${recorded.method} ${recorded.path}` === route);
-    expect(write?.headers['x-csrf_token']).toBe(POSTED_CSRF.token);
-  });
-
-  it('POST day-action on a blackout day re-renders the sheet with the 409 message in an alert', async () => {
-    install({ ...sessionRoutes(employee, tenantASiteAdminSession), ...timesheetsAnswersByRole.employee });
-
-    const { response } = await send('/opt2/admin-actions/timesheets/day-action', {
-      user: employee,
-      form: dayAction(TIMESHEET_IDS.dayBlackout, 'submit'),
-    });
-
-    expectLegacyHeaders(response);
-    expect(response.status).toBe(200);
-    expect(response.headers.get('content-type')).toMatch(/^text\/html/);
-    const $ = cheerio.load(await response.text());
-    expect($('.alert').text()).toContain('blackout');
-  });
-
-  it('POST day-action without a timesheets role redirects to cMessage.noaccess', async () => {
-    install({ ...sessionRoutes(SUBJECTS.systemUser, tenantASiteAdminSession), ...timesheetsAnswersByRole.employee });
-
-    const { response } = await send('/opt2/admin-actions/timesheets/day-action', {
-      user: SUBJECTS.systemUser,
-      form: dayAction(TIMESHEET_IDS.daySubmitted, 'primary-approve'),
-    });
-
-    expectLegacyHeaders(response);
-    expect(response.status).toBe(302);
-    expect(response.headers.get('location')?.endsWith(`?muraAction=${ADMIN_NOACCESS_ACTION}`)).toBe(true);
-    expect(relayed(toService('timesheets'))).toEqual([]);
-  });
-});
-
 /** One request per route module. */
 const ROUTE_TARGETS: ReadonlyArray<{ readonly path: string; readonly opts: AdminRequestOptions }> = [
   { path: '/admin-actions/clogin/logout', opts: {} },
   { path: '/admin-raw/cusers/download', opts: { query: { siteid: SITE, ispublic: '0' } } },
-  {
-    path: '/opt2/admin-actions/timesheets/day-action',
-    opts: { form: dayAction(TIMESHEET_IDS.daySubmitted, 'primary-approve') },
-  },
 ];
 
 const REFUSALS: ReadonlyArray<{
@@ -702,16 +617,6 @@ describe('fail closed', () => {
       opts: { user: SUBJECTS.siteAdmin, query: { siteid: SITE, ispublic: '0' } },
       arrange: () =>
         install({ ...sessionRoutes(SUBJECTS.siteAdmin, tenantASiteAdminSession), [USERS_CSV]: { status: 503 } }),
-    },
-    {
-      label: 'opt2/admin-actions when timesheets answers 503',
-      path: '/opt2/admin-actions/timesheets/day-action',
-      opts: { user: primaryApprover, form: dayAction(TIMESHEET_IDS.daySubmitted, 'primary-approve') },
-      arrange: () =>
-        install({
-          ...sessionRoutes(primaryApprover, tenantASiteAdminSession),
-          [dayActionRoute(TIMESHEET_IDS.daySubmitted, 'primary-approve')]: { status: 503 },
-        }),
     },
   ])('answers the legacy admin 503 from $label', async ({ path, opts, arrange }) => {
     await arrange();

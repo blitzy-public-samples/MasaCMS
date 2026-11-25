@@ -28,7 +28,7 @@ const EXPORT = {
       status: 'Running',
       password: TASK_PASSWORD,
     },
-    'default:opt2-survey-1-launch': { task: 'opt2-survey-1-launch', url: 'http://localhost:8100/x', status: 'Paused' },
+    'default:opt2-sample-1-launch': { task: 'opt2-sample-1-launch', url: 'http://localhost:8100/x', status: 'Paused' },
   },
   otherKey: 1,
 };
@@ -50,7 +50,7 @@ const NATIVE = {
       paused: false,
     },
     {
-      task: 'opt2-survey-1-launch',
+      task: 'opt2-sample-1-launch',
       group: 'default',
       url: 'http://localhost:8100/x',
       port: '',

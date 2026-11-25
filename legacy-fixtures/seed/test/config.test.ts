@@ -4,22 +4,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { SYNTHETIC_ROLES } from '@opt2/platform/auth';
 import { z } from '@opt2/platform/service-kit';
-import {
-  MASA_DEFAULT_PAGE_LIMIT,
-  SITE_ORDER,
-  loadConfig,
-  parseConfig,
-  programIdForSite,
-  roleGroupName,
-  seedConfigSchema,
-  siteForProgram,
-  type SeedConfig,
-} from '../src/config.js';
+import { MASA_DEFAULT_PAGE_LIMIT, SITE_ORDER, loadConfig, parseConfig, seedConfigSchema, type SeedConfig, type SiteKey } from '../src/config.js';
 
 const CONFIG_PATH = fileURLToPath(new URL('../seed.config.json', import.meta.url));
-const ROLE_MAP_PATH = fileURLToPath(new URL('../../../services/identity/config/role-map.json', import.meta.url));
 
 type JsonObject = Record<string, unknown>;
 
@@ -54,6 +42,11 @@ function mutated(edit: (value: unknown) => void): unknown {
   return copy;
 }
 
+/** Count keys of `site` in the committed file that the parsed configuration does not carry. */
+function retiredCounts(site: SiteKey): string[] {
+  return Object.keys(objectAt(raw, 'sites', site, 'counts')).filter((key) => !Object.hasOwn(config.sites[site].counts, key));
+}
+
 function issuesOf(value: unknown): string[] {
   try {
     parseConfig(value);
@@ -76,12 +69,12 @@ describe('loadConfig on the committed seed.config.json', () => {
     expect(config).not.toHaveProperty('$comment');
   });
 
-  it('returns the three sites in generation order with their program ids and pools', () => {
+  it('returns the three sites in generation order with their pools', () => {
     expect(Object.keys(config.sites)).toEqual([...SITE_ORDER]);
-    expect(SITE_ORDER.map((site) => [config.sites[site].siteID, config.sites[site].site, config.sites[site].programId])).toEqual([
-      ['umbrella', 'Umbrella', null],
-      ['tenant-a', 'Tenant A', 1],
-      ['tenant-b', 'Tenant B', 2],
+    expect(SITE_ORDER.map((site) => [config.sites[site].siteID, config.sites[site].site])).toEqual([
+      ['umbrella', 'Umbrella'],
+      ['tenant-a', 'Tenant A'],
+      ['tenant-b', 'Tenant B'],
     ]);
     expect(config.sites['tenant-a'].pools).toEqual({
       publicUserPoolID: 'umbrella',
@@ -102,33 +95,24 @@ describe('loadConfig on the committed seed.config.json', () => {
 
   it('resolves every count from the file, then the site default, then 0', () => {
     expect(config.sites.umbrella.counts).toEqual({
-      members: 1000, systemUsers: 0, groups: 0, categories: 100, files: 20, contentNodes: 10, maxVersionsPerNode: 3,
-      timesheetDays: 0, daysPerTimesheet: 0, timesheetEmployees: 0, financeRecords: 0, financeAttachments: 0,
-      surveys: 0, surveyResponses: 0, multiSiteResponses: 0, exportDefinitions: 0, exportJobs: 0,
-      messageTemplates: 0, messages: 0, signatureRequests: 0, oauthClients: 0,
+      members: 1000, systemUsers: 0, groups: 0, categories: 100, files: 20, contentNodes: 10, maxVersionsPerNode: 3, oauthClients: 0,
     });
     expect(config.sites['tenant-a'].counts).toEqual({
-      members: 0, systemUsers: 2000, groups: 50, categories: 0, files: 0, contentNodes: 5000, maxVersionsPerNode: 3,
-      timesheetDays: 20000, daysPerTimesheet: 20, timesheetEmployees: 100, financeRecords: 3000, financeAttachments: 300,
-      surveys: 20, surveyResponses: 500, multiSiteResponses: 50, exportDefinitions: 5, exportJobs: 200,
-      messageTemplates: 10, messages: 200, signatureRequests: 50, oauthClients: 1,
+      members: 0, systemUsers: 2000, groups: 50, categories: 0, files: 0, contentNodes: 5000, maxVersionsPerNode: 3, oauthClients: 1,
     });
     expect(config.sites['tenant-b'].counts).toEqual({
-      members: 20, systemUsers: 180, groups: 10, categories: 10, files: 0, contentNodes: 300, maxVersionsPerNode: 3,
-      timesheetDays: 2000, daysPerTimesheet: 20, timesheetEmployees: 20, financeRecords: 300, financeAttachments: 30,
-      surveys: 2, surveyResponses: 20, multiSiteResponses: 0, exportDefinitions: 2, exportJobs: 10,
-      messageTemplates: 3, messages: 20, signatureRequests: 5, oauthClients: 0,
+      members: 20, systemUsers: 180, groups: 10, categories: 10, files: 0, contentNodes: 300, maxVersionsPerNode: 3, oauthClients: 0,
     });
   });
 
   it('applies the site defaults where the file omits a count', () => {
     const parsed = parseConfig(mutated((value) => {
       objectAt(value, 'sites', 'tenant-a').counts = {};
-      objectAt(value, 'sites', 'tenant-b').counts = { surveys: 7 };
+      objectAt(value, 'sites', 'tenant-b').counts = { contentNodes: 7 };
       objectAt(value, 'sites', 'umbrella').counts = {};
     }));
-    expect(parsed.sites['tenant-a'].counts).toMatchObject({ systemUsers: 2000, surveys: 40, signatureRequests: 100, oauthClients: 0 });
-    expect(parsed.sites['tenant-b'].counts).toMatchObject({ systemUsers: 180, surveys: 7, surveyResponses: 0, signatureRequests: 10 });
+    expect(parsed.sites['tenant-a'].counts).toMatchObject({ systemUsers: 2000, groups: 50, contentNodes: 5000, oauthClients: 0 });
+    expect(parsed.sites['tenant-b'].counts).toMatchObject({ systemUsers: 180, contentNodes: 7, members: 20, groups: 10 });
     expect(parsed.sites.umbrella.counts).toMatchObject({ members: 1000, categories: 100, files: 20 });
   });
 
@@ -140,23 +124,28 @@ describe('loadConfig on the committed seed.config.json', () => {
     expect(rehearsal.usernames).toEqual(Array.from({ length: 10 }, (_, i) => `rh-create-${String(i + 1).padStart(2, '0')}`));
   });
 
-  it('maps each synthetic role to the group role-map.json grants it', async () => {
-    const roleMap = JSON.parse(await readFile(ROLE_MAP_PATH, 'utf8')) as { groups: { groupName: string; role: string }[] };
-    const expected = Object.fromEntries(
-      roleMap.groups.filter((group) => SYNTHETIC_ROLES.includes(group.role)).map((group) => [group.role, group.groupName]),
-    );
-    expect(config.roleGroups).toEqual(expected);
-    expect(Object.keys(config.roleGroups)).toEqual([...SYNTHETIC_ROLES]);
-    for (const role of SYNTHETIC_ROLES) expect(roleGroupName(config, role)).toBe(expected[role]);
-  });
-
   it('is the output of seedConfigSchema', () => {
     expect(seedConfigSchema.parse(raw)).toEqual(config);
   });
 
+  it.each<[string, (holder: JsonObject, key: string) => void]>([
+    ['dropped', (holder, key) => { delete holder[key]; }],
+    ['given other values', (holder, key) => { holder[key] = { retired: true }; }],
+  ])('parses alike with the retired role groups, program ids and module counts %s', (_label, edit) => {
+    expect([Array.isArray(objectAt(raw).roleGroups), objectAt(raw, 'sites', 'tenant-a').programId, SITE_ORDER.flatMap(retiredCounts).length > 0]).toEqual([true, 1, true]);
+    const value = mutated((v) => {
+      edit(objectAt(v), 'roleGroups');
+      for (const site of SITE_ORDER) {
+        edit(objectAt(v, 'sites', site), 'programId');
+        for (const key of retiredCounts(site)) edit(objectAt(v, 'sites', site, 'counts'), key);
+      }
+    });
+    expect(parseConfig(value)).toEqual(config);
+  });
+
   it('returns the scenario password names, and none when the file omits them', () => {
-    expect(config.scenarioPasswords.length).toBeGreaterThan(0);
-    expect(config.scenarioPasswords).toEqual(arrayAt(raw, 'scenarioPasswords'));
+    expect(config.scenarioPasswords).toEqual(['gs-id-09', 'gs-pe-01', 'gs-pe-rh-01']);
+    expect(config.scenarioPasswords.every((name) => arrayAt(raw, 'scenarioPasswords').includes(name))).toBe(true);
     expect(parseConfig(mutated((v) => { delete objectAt(v).scenarioPasswords; })).scenarioPasswords).toEqual([]);
   });
 });
@@ -172,17 +161,11 @@ describe('parseConfig rejections', () => {
     ['the installed admin username', (v) => { arrayAt(v, 'reserved', 'rehearsal', 'usernames')[2] = 'admin'; }, 'reserved.rehearsal.usernames.2'],
     ['the installed qa_editor username', (v) => { arrayAt(v, 'reserved', 'rehearsal', 'usernames')[3] = 'qa_editor'; }, 'reserved.rehearsal.usernames.3'],
     ['a duplicated reserved username', (v) => { arrayAt(v, 'reserved', 'rehearsal', 'usernames')[1] = 'rh-create-01'; }, 'reserved.rehearsal.usernames'],
-    ['an unknown role group', (v) => { arrayAt(v, 'roleGroups')[3] = 'timesheets.bogus'; }, 'roleGroups.3'],
-    ['a missing role group', (v) => { arrayAt(v, 'roleGroups').pop(); }, 'roleGroups'],
-    ['a duplicated role group', (v) => { arrayAt(v, 'roleGroups').push('finance.approver'); }, 'roleGroups'],
-    ['programId 3 for tenant-a', (v) => { objectAt(v, 'sites', 'tenant-a').programId = 3; }, 'sites.tenant-a.programId'],
-    ['programId 1 for tenant-b', (v) => { objectAt(v, 'sites', 'tenant-b').programId = 1; }, 'sites.tenant-b.programId'],
-    ['a programId for umbrella', (v) => { objectAt(v, 'sites', 'umbrella').programId = 1; }, 'sites.umbrella.programId'],
     ['a missing site', (v) => { delete objectAt(v, 'sites')['tenant-b']; }, 'sites.tenant-b'],
     ['an unknown site', (v) => { const sites = objectAt(v, 'sites'); sites.default = sites['tenant-b']; }, 'sites'],
     ['an empty site name', (v) => { objectAt(v, 'sites', 'umbrella').site = ''; }, 'sites.umbrella.site'],
-    ['an unknown count', (v) => { objectAt(v, 'sites', 'tenant-a', 'counts').timesheetDay = 1; }, 'sites.tenant-a.counts'],
-    ['a negative count', (v) => { objectAt(v, 'sites', 'tenant-b', 'counts').messages = -1; }, 'sites.tenant-b.counts.messages'],
+    ['an unknown count', (v) => { objectAt(v, 'sites', 'tenant-a', 'counts').contentNode = 1; }, 'sites.tenant-a.counts'],
+    ['a negative count', (v) => { objectAt(v, 'sites', 'tenant-b', 'counts').members = -1; }, 'sites.tenant-b.counts.members'],
     ['a fractional count', (v) => { objectAt(v, 'sites', 'umbrella', 'counts').members = 10.5; }, 'sites.umbrella.counts.members'],
     ['a pool naming an unknown site', (v) => { objectAt(v, 'sites', 'tenant-a', 'pools').filePoolID = 'default'; }, 'sites.tenant-a.pools.filePoolID'],
     ['an unknown pool', (v) => { objectAt(v, 'sites', 'tenant-a', 'pools').userPoolID = 'umbrella'; }, 'sites.tenant-a.pools'],
@@ -201,7 +184,7 @@ describe('parseConfig rejections', () => {
     ['an empty scenario password name', (v) => { arrayAt(v, 'scenarioPasswords')[1] = ''; }, 'scenarioPasswords.1'],
     ['a scenario password name that is not a string', (v) => { arrayAt(v, 'scenarioPasswords')[0] = 1; }, 'scenarioPasswords.0'],
     ['a duplicated scenario password name', (v) => { const names = arrayAt(v, 'scenarioPasswords'); names.push(names[0]); }, 'scenarioPasswords'],
-    ['scenarioPasswords that is not a list', (v) => { objectAt(v).scenarioPasswords = 'gs-id-05'; }, 'scenarioPasswords'],
+    ['scenarioPasswords that is not a list', (v) => { objectAt(v).scenarioPasswords = 'gs-id-09'; }, 'scenarioPasswords'],
   ])('rejects %s, naming the key', (_name, edit, path) => {
     const issues = issuesOf(mutated(edit));
     expect(issues.some((issue) => issue.startsWith(`${path}: `))).toBe(true);
@@ -210,15 +193,13 @@ describe('parseConfig rejections', () => {
   it('names the offending value in the message', () => {
     const value = mutated((v) => {
       arrayAt(v, 'reserved', 'rehearsal', 'persons')[0] = 'not-a-uuid';
-      arrayAt(v, 'roleGroups')[0] = 'timesheets.bogus';
-      objectAt(v, 'sites', 'tenant-a').programId = 3;
+      arrayAt(v, 'reserved', 'rehearsal', 'usernames')[2] = 'admin';
     });
-    expect(() => parseConfig(value)).toThrow(/programId/);
+    expect(() => parseConfig(value)).toThrow(/not-a-uuid/);
     expect(issuesOf(value)).toEqual(
       expect.arrayContaining([
-        'roleGroups.0: unknown synthetic role group "timesheets.bogus"',
         'reserved.rehearsal.persons.0: not a CF UUID: "not-a-uuid"',
-        expect.stringMatching(/^sites\.tenant-a\.programId: /),
+        'reserved.rehearsal.usernames.2: "admin" is an installed Masa account',
       ]),
     );
   });
@@ -258,24 +239,5 @@ describe('loadConfig failures', () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
-  });
-});
-
-describe('program and role lookups', () => {
-  it.each([[1, 'tenant-a'], [2, 'tenant-b']] as const)('siteForProgram(%d) is %s and back', (programId, site) => {
-    expect(siteForProgram(config, programId)).toBe(site);
-    expect(programIdForSite(config, site)).toBe(programId);
-  });
-
-  it('throws for a program no site has', () => {
-    expect(() => siteForProgram(config, 3)).toThrow(new RangeError('No seeded site has programId 3'));
-  });
-
-  it('throws for the umbrella site, which has no program', () => {
-    expect(() => programIdForSite(config, 'umbrella')).toThrow(new RangeError('Site umbrella has no programId'));
-  });
-
-  it.each(['s2', 'member', 'constructor', 'toString'])('throws for the non-synthetic role %s', (role) => {
-    expect(() => roleGroupName(config, role)).toThrow(new RangeError(`Not a synthetic role: ${role}`));
   });
 });

@@ -1,9 +1,8 @@
 /** commentsProxy.cfc `get`, `flag` and `getContentStats` through the service app over the recording pool; `renderCommentsPage` stays legacy-served. */
-import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import { LEGACY_ERROR_PAGE_HTML, LEGACY_HTML_CONTENT_TYPE } from '@opt2/platform/legacy-compat';
-import { BUSINESS_DATE, TENANT_A, TENANT_B, assertResponseMatchesOpenApi, type InjectResponse } from '@opt2/platform/testing';
+import { BUSINESS_DATE, TENANT_A, TENANT_B, assertResponseMatchesOpenApi, loadOpenApiDocument, type InjectResponse } from '@opt2/platform/testing';
 import { getCommentValues, getContentStatsValues, type CommentGetValues } from '../../src/domain/comments.js';
 import { CONTENT_CONFIG_DEFAULTS, type DomainDeps } from '../../src/domain/context.js';
 import { STATS_DEFAULTS, statsValues } from '../../src/domain/stats.js';
@@ -25,7 +24,7 @@ import { contentHeaders } from '../helpers/tokens.js';
 type Row = Record<string, unknown>;
 type HttpMethod = 'GET' | 'POST';
 
-const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
+const OPENAPI = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as object;
 const SITE = TENANT_A.siteId;
 const COMMENT = IDS.comments.approved;
 const WITH_STATS = IDS.content.pageTwo;

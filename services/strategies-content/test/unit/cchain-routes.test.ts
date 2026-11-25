@@ -1,10 +1,9 @@
 /** The cchain admin routes through `app.inject`: contract declarations, the before() gate, screen models, saves and deletes. */
-import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { parse } from 'yaml';
 import { Roles, collectRouteMatrix, moduleRole, type Role } from '@opt2/platform/auth';
 import { CSRF_CONSUME_PATH, type CsrfConsumeRequest } from '@opt2/platform/service-kit';
-import { TENANT_A, TENANT_B, assertResponseMatchesOpenApi, type InjectResponse } from '@opt2/platform/testing';
+import { TENANT_A, TENANT_B, assertResponseMatchesOpenApi, loadOpenApiDocument, type InjectResponse } from '@opt2/platform/testing';
 import { CONTENT_CONFIG_DEFAULTS, actorFromClaims } from '../../src/domain/context.js';
 import { createContentRepository } from '../../src/repo/repository.js';
 import type { ContentRouteContext } from '../../src/routes/index.js';
@@ -14,7 +13,7 @@ import { TEST_CLOCK, buildContentApp, serviceHeaders, userHeaders, type ContentT
 type Json = Record<string, unknown>;
 type Method = 'GET' | 'POST';
 
-const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as {
+const OPENAPI = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as {
   paths: Record<string, Record<string, Json>>;
 };
 const OPERATIONS = ['listApprovalChains', 'saveApprovalChain', 'getApprovalChain', 'deleteApprovalChain', 'listPendingApprovals'];

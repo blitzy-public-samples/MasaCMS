@@ -398,28 +398,16 @@ describe('pinned tools and scanned files', () => {
     expect(existsSync(path.join(REPO_ROOT, GITLEAKS_BASELINE))).toBe(true);
   });
 
-  it('lists 17 distinct OPT-2 lockfiles that exist, never the legacy root or CTA lockfile', () => {
-    expect(OPT2_LOCKFILES).toHaveLength(17);
+  it('lists 11 distinct OPT-2 lockfiles that exist, never the legacy root or CTA lockfile', () => {
+    expect(OPT2_LOCKFILES).toHaveLength(11);
     expect(new Set(OPT2_LOCKFILES).size).toBe(OPT2_LOCKFILES.length);
     for (const lockfile of OPT2_LOCKFILES) expect(existsSync(path.join(REPO_ROOT, lockfile)), lockfile).toBe(true);
     expect(OPT2_LOCKFILES).not.toContain('package-lock.json');
     expect(OPT2_LOCKFILES).not.toContain('core/modules/v1/cta/package-lock.json');
   });
 
-  it('lists exactly the platform, gateway, web, migration, harness, seed and eleven service lockfiles', () => {
-    const services = [
-      'identity',
-      'people',
-      'programs-sites',
-      'strategies-content',
-      'communications',
-      'reporting',
-      'surveys',
-      'timesheets',
-      'finance',
-      'e-signature',
-      'stub',
-    ].map((name) => `services/${name}`);
+  it('lists exactly the platform, gateway, web, migration, harness, seed and five service lockfiles', () => {
+    const services = ['identity', 'people', 'programs-sites', 'strategies-content', 'stub'].map((name) => `services/${name}`);
     const packages = ['platform', 'gateway', 'web', 'migration', 'harness', 'legacy-fixtures/seed', ...services];
     expect(new Set(OPT2_LOCKFILES)).toEqual(new Set(packages.map((dir) => `${dir}/package-lock.json`)));
     for (const lockfile of OPT2_LOCKFILES) expect(lockfile).not.toMatch(/^(core\/|admin\/|node_modules)/);

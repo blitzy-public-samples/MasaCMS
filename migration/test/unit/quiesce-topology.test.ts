@@ -16,35 +16,35 @@ vi.mock('node:fs/promises', async (importOriginal) => {
 });
 
 const CONFIG = loadConfig();
-const TIMESHEETS_CONTRACT = repoPath('services/timesheets/contracts/openapi.yaml');
+const IDENTITY_CONTRACT = repoPath('services/identity/contracts/openapi.yaml');
 
 afterEach(() => {
   vi.mocked(readFile).mockReset();
 });
 
 describe('declaredSubscriptions', () => {
-  it('reads the push subscriptions the timesheets contract declares', async () => {
-    await expect(declaredSubscriptions(CONFIG, 'timesheets')).resolves.toStrictEqual<DeclaredSubscription[]>([
-      { name: 'timesheets.people.person.archived.v1', topic: 'people.person.archived.v1' },
-      { name: 'timesheets.programs-sites.site.changed.v1', topic: 'programs-sites.site.changed.v1' },
+  it('reads the push subscriptions the identity contract declares', async () => {
+    await expect(declaredSubscriptions(CONFIG, 'identity')).resolves.toStrictEqual<DeclaredSubscription[]>([
+      { name: 'identity.people.person.changed.v1', topic: 'people.person.changed.v1' },
+      { name: 'identity.programs-sites.site.changed.v1', topic: 'programs-sites.site.changed.v1' },
     ]);
-    expect(vi.mocked(readFile)).toHaveBeenCalledExactlyOnceWith(TIMESHEETS_CONTRACT, 'utf8');
+    expect(vi.mocked(readFile)).toHaveBeenCalledExactlyOnceWith(IDENTITY_CONTRACT, 'utf8');
   });
 
   it('keeps only push paths, sorted by subscription name', async () => {
     vi.mocked(readFile).mockResolvedValueOnce(
       [
         'paths:',
-        '  /internal/v1/events/timesheets.programs-sites.site.changed.v1: {}',
+        '  /internal/v1/events/identity.programs-sites.site.changed.v1: {}',
         '  /internal/v1/migration/position: {}',
-        '  /internal/v1/events/timesheets.people.person.archived.v1: {}',
-        '  /api/v1/timesheets: {}',
+        '  /internal/v1/events/identity.people.person.changed.v1: {}',
+        '  /api/v1/users: {}',
       ].join('\n'),
     );
 
-    await expect(declaredSubscriptions(CONFIG, 'timesheets')).resolves.toStrictEqual<DeclaredSubscription[]>([
-      { name: 'timesheets.people.person.archived.v1', topic: 'people.person.archived.v1' },
-      { name: 'timesheets.programs-sites.site.changed.v1', topic: 'programs-sites.site.changed.v1' },
+    await expect(declaredSubscriptions(CONFIG, 'identity')).resolves.toStrictEqual<DeclaredSubscription[]>([
+      { name: 'identity.people.person.changed.v1', topic: 'people.person.changed.v1' },
+      { name: 'identity.programs-sites.site.changed.v1', topic: 'programs-sites.site.changed.v1' },
     ]);
   });
 
@@ -53,17 +53,17 @@ describe('declaredSubscriptions', () => {
       'a push path of another consumer',
       'paths:\n  /internal/v1/events/people.identity.group.changed.v1: {}\n',
       ContractTopologyError,
-      `${TIMESHEETS_CONTRACT}: push path /internal/v1/events/people.identity.group.changed.v1 belongs to consumer people, not timesheets`,
+      `${IDENTITY_CONTRACT}: push path /internal/v1/events/people.identity.group.changed.v1 belongs to consumer people, not identity`,
     ],
-    ['a push path that names no subscription', 'paths:\n  /internal/v1/events/timesheets: {}\n', InvalidEventNameError, 'Invalid event name "timesheets"'],
-    ['no paths object', 'openapi: 3.1.0\n', ContractTopologyError, `${TIMESHEETS_CONTRACT}: declares no paths object`],
-    ['a paths list', 'paths:\n  - /internal/v1/events/timesheets.people.person.archived.v1\n', ContractTopologyError, `${TIMESHEETS_CONTRACT}: declares no paths object`],
-    ['an empty document', '', ContractTopologyError, `${TIMESHEETS_CONTRACT}: declares no paths object`],
+    ['a push path that names no subscription', 'paths:\n  /internal/v1/events/identity: {}\n', InvalidEventNameError, 'Invalid event name "identity"'],
+    ['no paths object', 'openapi: 3.1.0\n', ContractTopologyError, `${IDENTITY_CONTRACT}: declares no paths object`],
+    ['a paths list', 'paths:\n  - /internal/v1/events/identity.people.person.changed.v1\n', ContractTopologyError, `${IDENTITY_CONTRACT}: declares no paths object`],
+    ['an empty document', '', ContractTopologyError, `${IDENTITY_CONTRACT}: declares no paths object`],
     ['text that is no YAML', 'paths: [unclosed\n', YAMLParseError, /Flow sequence/],
   ])('rejects a contract with %s', async (_label, text, errorType, message) => {
     vi.mocked(readFile).mockResolvedValueOnce(text);
 
-    const failure = await declaredSubscriptions(CONFIG, 'timesheets').then(
+    const failure = await declaredSubscriptions(CONFIG, 'identity').then(
       () => undefined,
       (error: unknown) => error,
     );
@@ -73,9 +73,9 @@ describe('declaredSubscriptions', () => {
   });
 
   it('rejects with the read error when the owner’s package has no contract', async () => {
-    const config = { owners: { ...CONFIG.owners, timesheets: { ...CONFIG.owners.timesheets, package: 'services/absent-consumer' } } };
+    const config = { owners: { ...CONFIG.owners, identity: { ...CONFIG.owners.identity, package: 'services/absent-consumer' } } };
 
-    await expect(declaredSubscriptions(config, 'timesheets')).rejects.toMatchObject({
+    await expect(declaredSubscriptions(config, 'identity')).rejects.toMatchObject({
       code: 'ENOENT',
       path: repoPath('services/absent-consumer/contracts/openapi.yaml'),
     });

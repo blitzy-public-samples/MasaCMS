@@ -21,11 +21,12 @@ import { pinnedSha } from '../../../src/lib/pin.js';
 
 const PIN = '696383140578f8dea3ece26f80cd7bfb370ddf0f';
 const ENV: EnvLike = { PORT: '8500' };
-// The committed file and its strict schema carry the scenario-override operations as a 20th section.
+// The committed file and its strict schema carry the scenario-override operations as a 21st section.
 const SECTIONS = [
   'sourceSha',
   'version',
   'origins',
+  'hostPaths',
   'ids',
   'timestamps',
   'tokens',
@@ -38,9 +39,7 @@ const SECTIONS = [
   'transitions',
   'mail',
   'rows',
-  'tasks',
   'files',
-  'chainHashes',
   'knownIssues',
   'overrides',
 ];
@@ -194,30 +193,20 @@ describe('loadRules', () => {
       'tokens.valuelessParamsNamedBy.0: reload is not in queryParams',
     ],
     [
-      'a keyed id key named by two keyed ids',
+      'an RFC 4122 id sharing the CF UUID placeholder',
       (doc) => {
-        const ids = doc.ids as { keyed: Record<string, unknown>[] };
-        ids.keyed.push({ ...ids.keyed[0], id: 'mailpit-copy', placeholder: '<mailpit-copy:{n}>' });
+        (doc.ids as { rfc4122: { placeholder: string } }).rfc4122.placeholder = '<id:{n}>';
       },
-      'ids/keyed',
-      'ids.keyed: names keyed id key mailpit_id more than once',
+      'ids/rfc4122/placeholder',
+      'ids.rfc4122.placeholder: uses placeholder <id:{n}> for more than one id kind',
     ],
     [
-      'a keyed id sharing the CF UUID placeholder',
+      'an envelope applying an undeclared rule id',
       (doc) => {
-        const ids = doc.ids as { keyed: Record<string, unknown>[] };
-        ids.keyed[0] = { ...ids.keyed[0], placeholder: '<id:{n}>' };
-      },
-      'ids/keyed',
-      'ids.keyed: uses placeholder <id:{n}> for more than one id kind',
-    ],
-    [
-      'an envelope applying an undeclared keyed id',
-      (doc) => {
-        (doc.ids as { keyed: unknown[] }).keyed = [];
+        (doc.envelope as { apply: string[] }).apply.splice(5, 0, 'no-such-rule');
       },
       'envelope/apply/5',
-      'envelope.apply.5: names unknown rule id mailpit-id',
+      'envelope.apply.5: names unknown rule id no-such-rule',
     ],
     [
       'a current-url path that is not absolute',
@@ -294,11 +283,11 @@ describe('applyOverrides', () => {
   });
 
   it('records the owning scenario and refuses a second scenario on the same rules', () => {
-    const result = applyOverrides(rules, { dropHeaders: ['X-Extra'] }, 'GS-CO-15');
-    expect(result.overrides.applied.scenario).toBe('GS-CO-15');
+    const result = applyOverrides(rules, { dropHeaders: ['X-Extra'] }, 'GS-CO-85');
+    expect(result.overrides.applied.scenario).toBe('GS-CO-85');
     expect(result.headers.drop).toContain('X-Extra');
-    expect(() => applyOverrides(result, { dropHeaders: ['X-Other'] }, 'GS-CO-05')).toThrow(
-      'rules already carry the overrides of scenario GS-CO-15',
+    expect(() => applyOverrides(result, { dropHeaders: ['X-Other'] }, 'GS-CO-75')).toThrow(
+      'rules already carry the overrides of scenario GS-CO-85',
     );
   });
 

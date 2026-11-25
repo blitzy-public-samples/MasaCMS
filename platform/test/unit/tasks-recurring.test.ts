@@ -59,8 +59,6 @@ const SERVICE_URLS: Readonly<Record<string, string>> = {
   identity: 'http://127.0.0.1:8111',
   people: 'http://127.0.0.1:8112/',
   'programs-sites': 'http://127.0.0.1:8113',
-  communications: 'http://127.0.0.1:8115',
-  surveys: 'http://127.0.0.1:8117',
   stub: 'http://127.0.0.1:8199',
 };
 
@@ -316,7 +314,7 @@ describe('recurringSpec', () => {
     expect(recurringSpec(queue, SERVICE_URLS)).toStrictEqual(expected);
   });
 
-  it.each(['surveys-launch', 'communications-reminders', 'content-scheduled-publish', 'reporting-export-run'])(
+  it.each(['content-scheduled-publish'])(
     'rejects the one-off queue %s with a TypeError',
     (queue) => {
       expect(() => recurringSpec(queue, SERVICE_URLS)).toThrow(new TypeError(`Queue ${queue} is not a recurring queue`));
@@ -324,7 +322,7 @@ describe('recurringSpec', () => {
   );
 
   it.each([
-    { label: 'a queue outside the registry', queue: 'finance-outbox-sweep', urls: SERVICE_URLS, error: UnknownQueueError },
+    { label: 'a queue outside the registry', queue: 'strategies-content-outbox-sweep', urls: SERVICE_URLS, error: UnknownQueueError },
     { label: 'a chain whose target has no URL', queue: SWEEP, urls: { identity: 'http://127.0.0.1:8111' }, error: UnknownTaskTargetError },
   ])('rejects $label', ({ queue, urls, error }) => {
     expect(() => recurringSpec(queue, urls)).toThrow(error);
@@ -813,7 +811,7 @@ describe('ensureOwnRecurring', () => {
     { service: 'programs-sites', withSiteMonitor: false, queues: ['programs-sites-outbox-sweep'] },
     { service: 'programs-sites', withSiteMonitor: true, queues: [MONITOR, 'programs-sites-outbox-sweep'] },
     { service: 'stub', withSiteMonitor: undefined, queues: ['stub-outbox-sweep'] },
-    { service: 'reporting', withSiteMonitor: true, queues: [] },
+    { service: 'strategies-content', withSiteMonitor: true, queues: [] },
     { service: 'strategies-content', withSiteMonitor: undefined, queues: [] },
   ])('ensures exactly the chains $service creates (site monitor: $withSiteMonitor)', async ({ service, withSiteMonitor, queues }) => {
     const port = new MemoryTaskPort();

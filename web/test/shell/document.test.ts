@@ -13,7 +13,6 @@ import { isSafeHtml, raw, toString } from '@/lib/html';
 import { mergeFw1Context, type AdminRequest } from '@/lib/request-context';
 import { rbFor } from '@/lib/resource-bundles/rb';
 import {
-  OPT2_NAV_MODULES,
   loadShellData,
   renderAdminDocument,
   selectLayout,
@@ -25,7 +24,6 @@ import {
 } from '@/shell/document';
 import { renderDialog } from '@/shell/dialog';
 import { renderHtmlFoot } from '@/shell/html-foot';
-import { OPT2_NAV_MODULES as NAV_MODULES } from '@/shell/nav';
 import { LEGACY_VERSION_MENU } from '../fixtures/gateway/version-menu';
 import { CSRF_UPDATECORE } from '../fixtures/identity/csrf';
 import { PROMPT_TALLY_NONZERO, promptCountsNonZero, promptCountsZero } from '../fixtures/strategies-content/prompts';
@@ -205,10 +203,6 @@ describe('selectLayout', () => {
   ])('chooses $layout for compactDisplay "$compactDisplay"', ({ compactDisplay, layout }) => {
     const url: Record<string, string> = compactDisplay === undefined ? {} : { compactDisplay };
     expect(selectLayout(mergeFw1Context([], url, {}))).toBe(layout);
-  });
-
-  it('re-exports the OPT-2 nav modules of the nav', () => {
-    expect(OPT2_NAV_MODULES).toBe(NAV_MODULES);
   });
 });
 

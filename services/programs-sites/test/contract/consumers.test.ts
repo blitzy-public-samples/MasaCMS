@@ -1,5 +1,4 @@
 /** Consumer contracts of programs-sites: the strategies-content task routes and the migration operations the site-monitor dispatcher calls. */
-import { readFileSync } from 'node:fs';
 import { parse } from 'yaml';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { TASKS_INVOKER_ROLE, serviceRole } from '@opt2/platform/auth';
@@ -9,6 +8,7 @@ import {
   ContractAssertionError,
   assertResponseMatchesOpenApi,
   findOperation,
+  loadOpenApiDocument,
   type OperationMatch,
 } from '@opt2/platform/testing';
 import {
@@ -60,7 +60,7 @@ const noSleep = async (): Promise<void> => undefined;
 
 /** Parses another package's OpenAPI contract. */
 function loadContract(url: URL): OpenApiDoc {
-  return parse(readFileSync(url, 'utf8')) as OpenApiDoc;
+  return loadOpenApiDocument(url, parse) as unknown as OpenApiDoc;
 }
 
 const contentDoc = loadContract(new URL('../../../strategies-content/contracts/openapi.yaml', import.meta.url));

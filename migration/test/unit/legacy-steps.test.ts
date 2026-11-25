@@ -96,7 +96,7 @@ describe('runLegacyStepWith with a target unit', () => {
   it.each<[string, BridgeJobName, string | undefined, LegacyStepInput['units'], string[], OpenRequest['scope']]>([
     ['scoped to its site', 'feedAutoImport', 'tenant-a', undefined, [UNITS.content], { keys: { siteid: 'tenant-a' } }],
     ['scoped to the table without a site', 'publishScheduledChangesets', undefined, undefined, [UNITS.content], { table: true }],
-    ['leasing every unit when only one is target', 'emailSend', undefined, [UNITS.content, UNITS.mailingList], [UNITS.mailingList, UNITS.content], { table: true }],
+    ['leasing every unit when only one is target', 'emailSend', undefined, [UNITS.content, UNITS.mailingList], [UNITS.content, UNITS.mailingList], { table: true }],
   ])('opens a window, runs jobs.cfm, then completes it forwarded, %s', async (_case, step, siteId, units, leased, scope) => {
     const { t, bridge, lifecycle } = await contextWith('v0002');
     const site = siteId === undefined ? {} : { siteId };

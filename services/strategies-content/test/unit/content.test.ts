@@ -1,4 +1,4 @@
-/** Content version writes over the seeded tenant-a tree (GS-CO-01…04, GS-CO-08): saves, drafts, approvals, version deletes, deleteAll, uploads, quick edit and the JSON API delete. */
+/** Content version writes over the seeded tenant-a tree (GS-CO-04): saves, drafts, approvals, version deletes, deleteAll, uploads, quick edit and the JSON API delete. */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { isCfUuid } from '@opt2/platform/legacy-compat';
 import { withGatedTenant } from '@opt2/platform/migration-kit';

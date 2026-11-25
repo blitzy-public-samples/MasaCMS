@@ -27,14 +27,26 @@ import {
   TENANT_A,
   assertRequestMatchesOpenApi,
   assertResponseMatchesOpenApi,
+  contractOperations,
+  contractRouteKey,
+  declarationMismatches,
+  diffRoutes,
+  injectedBody,
+  injectedResponse,
+  loadOpenApiDocument,
   mintServiceToken,
   mintTasksInvokerToken,
   mintUserToken,
+  operationAuthProblems,
+  operationIdProblems,
   pushTo,
   registryPayloads,
   testEnvelope,
+  toContractPath,
+  withoutHeadTwins,
   withoutTenant,
   type CapturingPublisher,
+  type ContractOperation,
   type InjectResponse,
   type TenantlessEnvelope,
 } from '@opt2/platform/testing';
@@ -64,20 +76,12 @@ import {
 
 type HttpMethod = 'GET' | 'HEAD' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'OPTIONS';
 type App = TestApp['app'];
-type Operation = Record<string, unknown> & { operationId?: string };
 type Headers = Record<string, string>;
 
 interface OpenApiDoc {
   openapi: string;
   info: { version: string; 'x-source-sha'?: string };
   paths: Record<string, Record<string, unknown>>;
-}
-
-interface ContractOperation {
-  method: HttpMethod;
-  path: string;
-  operationId: string;
-  op: Operation;
 }
 
 /** An app under test with its recording database and, on the composed routes, its memory repository or, on the composition root, its capturing publisher. */
@@ -119,12 +123,10 @@ interface ErrorCase extends Case {
   withinMs?: number;
 }
 
-const DOC = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as OpenApiDoc;
+const DOC = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as unknown as OpenApiDoc;
 const PIN = JSON.parse(readFileSync(new URL('../../../../opt2/source-pin.json', import.meta.url), 'utf8')) as { sha: string };
 
 const METHODS = ['get', 'head', 'post', 'put', 'patch', 'delete', 'options'] as const;
-const TRANSPORTS: readonly string[] = ['service', 'pubsub-push', 'cloud-tasks'];
-const JSON_MEDIA_TYPE = /^application\/(?:[\w.+-]+\+)?json\b/i;
 const FORM = { 'content-type': 'application/x-www-form-urlencoded' } as const;
 const QUIET_ENV = { LOG_LEVEL: 'error' } as const;
 const REGISTRY_SQL = /FROM identity\.tenant_registry\b/;
@@ -249,68 +251,11 @@ function record(body: unknown): Record<string, unknown> {
   return body as Record<string, unknown>;
 }
 
-/** One entry per operation of `doc`. */
-function contractOperations(doc: OpenApiDoc): ContractOperation[] {
-  return Object.entries(doc.paths).flatMap(([path, item]) =>
-    METHODS.flatMap((method) => {
-      const op = item[method] as Operation | undefined;
-      return op === undefined ? [] : [{ method: method.toUpperCase() as HttpMethod, path, operationId: op.operationId ?? '', op }];
-    }),
-  );
-}
-
-const OPERATIONS = contractOperations(DOC);
-
-/** A Fastify route pattern in contract path form: `::` is a literal colon, `:name` and its `(regex)` become `{name}`, and a trailing wildcard stays, as `x-opt2-fastify-path` names wildcard routes. */
-function toOpenApiPath(fastifyUrl: string): string {
-  const literalColon = '\u0000';
-  return fastifyUrl
-    .replaceAll('::', literalColon)
-    .replace(/:([A-Za-z_]\w*)(?:\([^)]*\))?/g, '{$1}')
-    .replaceAll(literalColon, ':');
-}
-
-/** `METHOD path` keys an operation is served under: its `x-opt2-fastify-path` patterns, one or a list, in contract form, else its template. */
-function operationRouteKeys({ method, path, op }: ContractOperation): string[] {
-  const fastifyPath = op['x-opt2-fastify-path'] as string | string[] | undefined;
-  const paths = fastifyPath === undefined ? [path] : [fastifyPath].flat().map(toOpenApiPath);
-  return paths.map((served) => `${method} ${served}`);
-}
-
-/** `METHOD path` key of a registered route, in contract form. */
-function routeKey(route: Pick<RouteMatrixEntry, 'method' | 'url'>): string {
-  return `${route.method} ${toOpenApiPath(route.url)}`;
-}
+const OPERATIONS = contractOperations(DOC, { methods: METHODS });
 
 /** Registered routes the contract describes: Fastify's automatic HEAD twins of GET routes drop unless the contract declares a `head` operation. */
 function servedRoutes(app: App): RouteMatrixEntry[] {
-  const declaresHead = OPERATIONS.some(({ method }) => method === 'HEAD');
-  return collectRouteMatrix(app).routes.filter((route) => route.method !== 'HEAD' || declaresHead);
-}
-
-/** Registered routes the contract does not declare, and operations with a route nothing registers, each sorted. */
-function diffRouteSets(routes: readonly RouteMatrixEntry[], operations: readonly ContractOperation[]): { undeclared: string[]; unregistered: string[] } {
-  const registered = new Set(routes.map(routeKey));
-  const declaredKeys = new Set(operations.flatMap(operationRouteKeys));
-  return {
-    undeclared: [...registered].filter((key) => !declaredKeys.has(key)).sort(),
-    unregistered: operations
-      .flatMap((operation) => operationRouteKeys(operation).filter((key) => !registered.has(key)).map((key) => `${operation.operationId} (${key})`))
-      .sort(),
-  };
-}
-
-/** A declaration in comparable form. */
-function declared(entry: { transport: unknown; requires?: unknown; public?: unknown }): Record<string, unknown> {
-  return {
-    transport: entry.transport,
-    ...(Array.isArray(entry.requires) ? { requires: [...(entry.requires as string[])].sort() } : {}),
-    ...(entry.public === true ? { public: true } : {}),
-  };
-}
-
-function contractDeclaration(operation: ContractOperation): Record<string, unknown> {
-  return declared({ transport: operation.op['x-opt2-transport'], requires: operation.op['x-opt2-requires'], public: operation.op['x-opt2-public'] });
+  return withoutHeadTwins(collectRouteMatrix(app).routes, () => OPERATIONS.some(({ method }) => method === 'HEAD'));
 }
 
 /** JSON API request shapes, one per path form, each naming a method identity serves. */
@@ -834,7 +779,6 @@ const CASES: Record<string, Case[]> = {
     },
     { name: 'refuses a body without a site', method: 'POST', url: '/internal/v1/tokens', as: 'service:gateway', payload: { sessionId: 'S-s2' }, status: 400 },
     { name: 'refuses a caller other than the gateway', method: 'POST', url: '/internal/v1/tokens', as: 'service:people', payload: { sessionId: 'S-s2', siteId: SITE_A }, status: 403 },
-    { name: 'refuses reporting, whose export runs act as System', method: 'POST', url: '/internal/v1/tokens', as: 'service:reporting', payload: { sessionId: 'S-s2', siteId: SITE_A }, status: 403 },
     { name: 'refuses a call without an invocation credential', method: 'POST', url: '/internal/v1/tokens', payload: { sessionId: 'S-s2', siteId: SITE_A }, status: 401 },
   ],
   authenticateRequest: [
@@ -1152,9 +1096,9 @@ const CASES: Record<string, Case[]> = {
       method: 'POST',
       url: '/internal/v1/accounts:username-candidates',
       headers: relay('people', 'editor'),
-      payload: { publicPool: false, pattern: 'synthetic%', limit: 1 },
+      payload: { publicPool: false, pattern: '%a%', limit: 1 },
       status: 200,
-      verify: (body) => expect(record(body)).toMatchObject({ items: [{ username: expect.stringMatching(/^synthetic_/) as unknown }], complete: false }),
+      verify: (body) => expect(record(body)).toMatchObject({ items: [{ username: expect.stringMatching(/a/) as unknown }], complete: false }),
     },
     {
       name: 'refuses a limit below one',
@@ -1524,7 +1468,7 @@ const ROOT_CASES: Record<string, Case[]> = {
       status: 200,
       verify: (body) => expect(record(body)).toMatchObject({ queue: SWEEP_QUEUE, ensured: { created: false, reason: 'live' } }),
     },
-    { name: 'rejects a queue identity runs no chain on', method: 'POST', url: queueUrl('surveys-launch', 'ensure'), as: 'service:operator', status: 400 },
+    { name: 'rejects a queue identity runs no chain on', method: 'POST', url: queueUrl('people-outbox-sweep', 'ensure'), as: 'service:operator', status: 400 },
   ],
 };
 
@@ -1575,7 +1519,7 @@ function isUnservedAnswer(res: InjectResponse): boolean {
 /** JSON API operations: those under `/_api/`. */
 const WIRE_OPERATIONS = OPERATIONS.filter(({ path }) => path.startsWith('/_api/'));
 
-const routeKeysOf = ({ op }: ContractOperation): string[] => (op['x-opt2-route-keys'] as string[] | undefined) ?? [];
+const routeKeysOf = ({ operation }: ContractOperation): string[] => (operation['x-opt2-route-keys'] as string[] | undefined) ?? [];
 
 /** Each declared route key with the base path of every family whose operations declare it. */
 const SERVED_KEY_ROWS = [
@@ -1711,11 +1655,9 @@ async function sendCase(harness: Harness, c: Case): Promise<void> {
     c.push === undefined
       ? await harness.app.inject({ method: c.method, url: c.url, headers, ...(c.payload === undefined ? {} : { payload: c.payload }) })
       : await pushTo(harness.app, c.push.subscription, c.push.envelope());
-  const contentType = res.headers['content-type'];
-  const json = typeof contentType === 'string' && JSON_MEDIA_TYPE.test(contentType) && res.body !== '';
-  const body: unknown = json ? JSON.parse(res.body) : res.body === '' ? undefined : res.body;
+  const body = injectedBody(res);
   expect(res.statusCode, res.body.slice(0, 400)).toBe(c.status);
-  assertResponseMatchesOpenApi(DOC, { method: c.method, path: c.url.split('?')[0] ?? c.url, status: res.statusCode, contentType, body });
+  assertResponseMatchesOpenApi(DOC, injectedResponse(c, res, { body }));
   await c.verify?.(body, res, harness);
 }
 
@@ -1725,23 +1667,11 @@ describe('contract document', () => {
   });
 
   it('gives every operation a unique operationId', () => {
-    const ids = OPERATIONS.map(({ operationId }) => operationId);
-    expect(ids.filter((id) => id === '')).toEqual([]);
-    expect(ids.filter((id, index) => ids.indexOf(id) !== index)).toEqual([]);
+    expect(operationIdProblems(OPERATIONS)).toEqual({ missing: [], duplicated: [] });
   });
 
   it('declares on every operation the transport its path takes and exactly one of x-opt2-requires and x-opt2-public', () => {
-    const problems = OPERATIONS.flatMap(({ method, path, op }) => {
-      const requires = op['x-opt2-requires'];
-      const isPublic = op['x-opt2-public'] === true;
-      const found: string[] = [];
-      if (!TRANSPORTS.includes(String(op['x-opt2-transport']))) found.push(`${method} ${path}: unknown transport ${String(op['x-opt2-transport'])}`);
-      if (op['x-opt2-transport'] !== transportForPath(path)) found.push(`${method} ${path}: transport ${String(op['x-opt2-transport'])}`);
-      if ((requires === undefined) === !isPublic) found.push(`${method} ${path}: requires and public`);
-      if (requires !== undefined && !(Array.isArray(requires) && requires.length > 0)) found.push(`${method} ${path}: empty requires`);
-      return found;
-    });
-    expect(problems).toEqual([]);
+    expect(operationAuthProblems(OPERATIONS, { transportForPath })).toEqual([]);
   });
 });
 
@@ -1757,7 +1687,7 @@ describe('toOpenApiPath', () => {
     ['/v1/groups/:groupId/members/:userId', '/v1/groups/{groupId}/members/{userId}'],
     ['/_api/json/v1*', '/_api/json/v1*'],
   ])('maps %s to %s', (fastifyUrl, openApiPath) => {
-    expect(toOpenApiPath(fastifyUrl)).toBe(openApiPath);
+    expect(toContractPath(fastifyUrl)).toBe(openApiPath);
   });
 });
 
@@ -1773,21 +1703,16 @@ describe('registered routes of the composition root', () => {
   });
 
   it('are exactly the contract operations', () => {
-    expect(diffRouteSets(servedRoutes(root.app), OPERATIONS)).toEqual({ undeclared: [], unregistered: [] });
+    expect(diffRoutes(servedRoutes(root.app), OPERATIONS)).toEqual({ undeclared: [], unregistered: [] });
   });
 
   it('each declare the transport, roles and public flag of every operation they serve', () => {
-    const mismatches = servedRoutes(root.app).flatMap((route) =>
-      OPERATIONS.filter((operation) => operationRouteKeys(operation).includes(routeKey(route)))
-        .filter((operation) => JSON.stringify(contractDeclaration(operation)) !== JSON.stringify(declared(route)))
-        .map((operation) => `${operation.operationId} ${routeKey(route)}: ${JSON.stringify(declared(route))}`),
-    );
-    expect(mismatches).toEqual([]);
+    expect(declarationMismatches(servedRoutes(root.app), OPERATIONS, { withDeclaration: true })).toEqual([]);
   });
 
   it('take the transport their path implies, push routes for the Pub/Sub invoker and the sweep for the tasks invoker', () => {
     const routes = servedRoutes(root.app);
-    expect(routes.filter((route) => route.transport !== transportForPath(route.url)).map(routeKey)).toEqual([]);
+    expect(routes.filter((route) => route.transport !== transportForPath(route.url)).map((route) => contractRouteKey(route))).toEqual([]);
     const managed = routes.filter(({ url }) => url.startsWith('/internal/v1/events/') || url === '/internal/v1/outbox/sweep');
     expect(managed.map(({ url, transport, requires }) => ({ url, transport, requires }))).toEqual(
       managed.map(({ url }) =>
@@ -1805,13 +1730,13 @@ describe('registered routes of the composition root', () => {
     const routes = servedRoutes(root.app);
     const trimmed = structuredClone(DOC);
     delete trimmed.paths['/healthz']?.get;
-    expect(diffRouteSets(routes, contractOperations(trimmed))).toEqual({ undeclared: ['GET /healthz'], unregistered: [] });
+    expect(diffRoutes(routes, contractOperations(trimmed, { methods: METHODS }))).toEqual({ undeclared: ['GET /healthz'], unregistered: [] });
 
     const withoutHealth = routes.filter(({ url }) => url !== '/healthz');
-    expect(diffRouteSets(withoutHealth, OPERATIONS)).toEqual({ undeclared: [], unregistered: ['healthz (GET /healthz)'] });
+    expect(diffRoutes(withoutHealth, OPERATIONS)).toEqual({ undeclared: [], unregistered: ['healthz (GET /healthz)'] });
 
     const extra: RouteMatrixEntry = { method: 'GET', url: '/v1/groups/:groupId/extra', transport: 'service', requires: [Roles.s2], siteCheck: true };
-    expect(diffRouteSets([...routes, extra], OPERATIONS)).toEqual({ undeclared: ['GET /v1/groups/{groupId}/extra'], unregistered: [] });
+    expect(diffRoutes([...routes, extra], OPERATIONS)).toEqual({ undeclared: ['GET /v1/groups/{groupId}/extra'], unregistered: [] });
   });
 });
 
@@ -1828,7 +1753,7 @@ describe('JSON API route keys', () => {
 
   it('are declared on every /_api/ operation and on no other', () => {
     expect(WIRE_OPERATIONS.filter((operation) => routeKeysOf(operation).length === 0).map(({ operationId }) => operationId)).toEqual([]);
-    expect(OPERATIONS.filter((operation) => !WIRE_OPERATIONS.includes(operation) && operation.op['x-opt2-route-keys'] !== undefined).map(({ operationId }) => operationId)).toEqual(
+    expect(OPERATIONS.filter((operation) => !WIRE_OPERATIONS.includes(operation) && operation.operation['x-opt2-route-keys'] !== undefined).map(({ operationId }) => operationId)).toEqual(
       [],
     );
   });

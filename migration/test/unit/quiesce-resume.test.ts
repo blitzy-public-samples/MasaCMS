@@ -20,7 +20,7 @@ import {
   type SavedPushConfig,
   type SubscriptionLike,
 } from '../../src/quiesce/subscriptions.js';
-import { drainAndSuspend, type QueueTarget } from '../../src/quiesce/suspend.js';
+import { drainAndSuspend, type DrainAndSuspendContext, type QueueTarget } from '../../src/quiesce/suspend.js';
 import { declaredSubscriptions } from '../../src/quiesce/topology.js';
 import type { PauseResult, RestoreResult, SiteMonitorRecord } from '../../src/scheduler/index.js';
 
@@ -38,53 +38,43 @@ const CONFIG = loadConfig();
 const PROJECT = 'opt2-unit';
 const NOW = businessClock().now().toISOString();
 const PEOPLE_GROUP = subscriptionName('people', 'identity.group.changed.v1');
-const TIMESHEETS_ARCHIVED = subscriptionName('timesheets', 'people.person.archived.v1');
+const IDENTITY_PERSON = subscriptionName('identity', 'people.person.changed.v1');
 /** Declared subscriptions in push mode before the suspend; the other declared ones are in pull mode. */
-const PUSHED = [TIMESHEETS_ARCHIVED, PEOPLE_GROUP];
-const PAUSED: PauseResult = { siteMonitor: [], surveys: ['opt2-survey-41-launch'] };
-const RESTORED: RestoreResult = { siteMonitor: [], surveys: ['opt2-survey-41-launch'] };
+const PUSHED = [IDENTITY_PERSON, PEOPLE_GROUP];
+const MONITOR_TASK = '/var/www/index.cfm/_api/sitemonitor/';
+const PAUSED: PauseResult = { siteMonitor: [MONITOR_TASK] };
+const RESTORED: RestoreResult = { siteMonitor: [MONITOR_TASK] };
 
 const ALL_SERVICES: Record<string, string> = {
-  timesheets: 'http://127.0.0.1:20118',
   'programs-sites': 'http://127.0.0.1:20113',
   stub: 'http://127.0.0.1:20199',
   identity: 'http://127.0.0.1:20111',
-  surveys: 'http://127.0.0.1:20117',
   'strategies-content': 'http://127.0.0.1:20114',
   people: 'http://127.0.0.1:20112',
-  reporting: 'http://127.0.0.1:20116',
-  communications: 'http://127.0.0.1:20115',
 };
 
 const target = (service: string, queue: string): QueueTarget => ({ service, queue });
 /** Every creator of every registry queue, sorted by service, then queue, as drain-and-suspend pauses them. */
 const ALL_TARGETS = [
-  target('communications', 'communications-outbox-sweep'),
-  target('communications', 'communications-reminders'),
-  target('communications', 'surveys-launch'),
   target('identity', 'identity-outbox-sweep'),
   target('people', 'people-outbox-sweep'),
   target('programs-sites', 'content-feed-import'),
   target('programs-sites', 'content-scheduled-publish'),
   target('programs-sites', 'programs-sites-outbox-sweep'),
   target('programs-sites', SITEMONITOR_QUEUE),
-  target('reporting', 'reporting-export-run'),
   target('strategies-content', 'content-scheduled-publish'),
   target('stub', 'stub-outbox-sweep'),
-  target('surveys', 'surveys-outbox-sweep'),
 ];
 /** Chains `opt2-tasks reconcile` ensures in registry order without the site monitor; the stub's only with local-only queues. */
 const SWEEPS = [
   target('identity', 'identity-outbox-sweep'),
   target('people', 'people-outbox-sweep'),
   target('programs-sites', 'programs-sites-outbox-sweep'),
-  target('surveys', 'surveys-outbox-sweep'),
-  target('communications', 'communications-outbox-sweep'),
 ];
 const STUB_SWEEP = target('stub', 'stub-outbox-sweep');
 const MONITOR_CHAIN = target('programs-sites', SITEMONITOR_QUEUE);
 
-const endpoint = (name: string): string => `http://127.0.0.1:20118/internal/v1/events/${name}?key=unit-push-key`;
+const endpoint = (name: string): string => `http://127.0.0.1:20111/internal/v1/events/${name}?key=unit-push-key`;
 /** Push config as Pub/Sub reports it, with null oneof members. */
 const livePush = (name: string) => ({
   pushEndpoint: endpoint(name),
@@ -107,9 +97,9 @@ const SUSPENDED: BackgroundRecord = {
   suspended: true,
   since: NOW,
   reason: 'drain-and-suspend',
-  pushConfigs: { [PEOPLE_GROUP]: savedPush(PEOPLE_GROUP), [TIMESHEETS_ARCHIVED]: savedPush(TIMESHEETS_ARCHIVED) },
+  pushConfigs: { [PEOPLE_GROUP]: savedPush(PEOPLE_GROUP), [IDENTITY_PERSON]: savedPush(IDENTITY_PERSON) },
   pausedQueues: ALL_TARGETS,
-  pausedTasks: PAUSED.surveys,
+  pausedTasks: PAUSED.siteMonitor,
 };
 const CLEARED: BackgroundRecord = { ...defaultBackgroundRecord(), resumedAt: NOW };
 
@@ -134,9 +124,12 @@ const monitorRecord = (patch: Partial<SiteMonitorRecord>): SiteMonitorRecord => 
   ...patch,
 });
 
+/** The resume context plus the catalog {@link drainAndSuspend} reads. */
+type HarnessContext = ResumeContext & Pick<DrainAndSuspendContext, 'catalog'>;
+
 /** Port that fails the test when any member is read. */
-function untouched<K extends keyof ResumeContext>(port: K): ResumeContext[K] {
-  return new Proxy({} as ResumeContext[K], {
+function untouched<K extends keyof HarnessContext>(port: K): HarnessContext[K] {
+  return new Proxy({} as HarnessContext[K], {
     get(_target, member) {
       throw new Error(`${port}.${String(member)} was read`);
     },
@@ -258,7 +251,7 @@ async function world(monitor: SiteMonitorRecord | null = null) {
     }),
   };
 
-  const context = (db: TenantDb = schedulerDb(monitor, log)): ResumeContext & { config: typeof CONFIG } => ({
+  const context = (db: TenantDb = schedulerDb(monitor, log)): HarnessContext & { config: typeof CONFIG } => ({
     env: { GOOGLE_CLOUD_PROJECT: PROJECT, OPT2_SERVICE_URLS: ALL_SERVICES } as MigrationEnv,
     config: CONFIG,
     clock,
@@ -413,10 +406,10 @@ describe('resume', () => {
     [
       'failed queue resume',
       (w) => {
-        w.settings.status = (request) => (request.path === controlPath('surveys-launch', 'resume') ? 500 : 200);
+        w.settings.status = (request) => (request.path === controlPath('content-feed-import', 'resume') ? 500 : 200);
       },
       3,
-      'Queue control resume of surveys-launch on communications answered HTTP 500',
+      'Queue control resume of content-feed-import on programs-sites answered HTTP 500',
     ],
     [
       'chain not ensured',

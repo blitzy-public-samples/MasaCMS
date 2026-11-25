@@ -2,7 +2,7 @@
 import { LEGACY_ADMIN_SENTINEL_ID, cfUuid } from '@opt2/platform/legacy-compat';
 import { tenantIdForSite } from '@opt2/platform/tenancy';
 import { TENANT_A, TENANT_B, TENANT_UMBRELLA, businessClock, type TenantFixture } from '@opt2/platform/testing';
-import { buildLoginSnapshot, loadRoleMap, type LoginRows, type MembershipGroup, type RoleMapEntry } from '../../src/domain/roles.js';
+import { buildLoginSnapshot, type LoginRows, type MembershipGroup } from '../../src/domain/roles.js';
 import { cfmxCompatHash } from '../../src/legacy/hash.js';
 import type {
   CredentialRow,
@@ -40,7 +40,6 @@ export const TEST_PASSWORDS = Object.freeze({
   siteAdmin: 'opt2-test-site-admin',
   pooledMember: 'opt2-test-pooled-member',
   memberB: 'opt2-test-member-b',
-  synthetic: 'opt2-test-synthetic',
 });
 
 /** `tpermissions.Type` values: node verdicts and module grants. */
@@ -386,36 +385,8 @@ export const MEMBER_B: TestActor = defineActor({
   ispublic: 1,
 });
 
-/** A tenant-a private-pool user in the group of one role-map entry. */
-function syntheticMember({ groupName, role }: RoleMapEntry): TestActor {
-  const username = `synthetic_${role.replace(/[^A-Za-z0-9]/g, '_')}`;
-  return defineActor({
-    key: `synthetic:${role}`,
-    tenant: TENANT_A,
-    username,
-    fname: 'Synthetic',
-    lname: role,
-    email: `${username}@${TENANT_A.siteId}.opt2.test`,
-    plainPassword: TEST_PASSWORDS.synthetic,
-    ispublic: 0,
-    groupNames: [groupName],
-  });
-}
-
-/** One tenant-a private-pool user per role-map group, keyed by the synthetic role it grants. */
-export const SYNTHETIC_MEMBERS: Readonly<Record<string, TestActor>> = Object.freeze(
-  Object.fromEntries((await loadRoleMap()).groups.map((entry) => [entry.role, syntheticMember(entry)])),
-);
-
-/** Every canonical actor, synthetic members last. */
-export const ALL_ACTORS: readonly TestActor[] = Object.freeze([
-  ADMIN_S2,
-  EDITOR,
-  SITE_ADMIN_A,
-  POOLED_MEMBER,
-  MEMBER_B,
-  ...Object.values(SYNTHETIC_MEMBERS),
-]);
+/** Every canonical actor. */
+export const ALL_ACTORS: readonly TestActor[] = Object.freeze([ADMIN_S2, EDITOR, SITE_ADMIN_A, POOLED_MEMBER, MEMBER_B]);
 
 /** The memory-repo seed of `actors`' rows; a group shared by several actors is seeded once. */
 export function actorSeed(...actors: readonly TestActor[]): IdentitySeed {

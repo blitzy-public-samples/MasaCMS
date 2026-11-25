@@ -8,14 +8,7 @@ import { load, type CheerioAPI } from 'cheerio';
 import { CSRF_FIELD_EXPIRES, CSRF_FIELD_TOKEN, matchRouteKey, type RouteKeyResult } from '@opt2/platform/legacy-compat';
 import { z } from '@opt2/platform/service-kit';
 
-import {
-  FIXTURES_UNAVAILABLE,
-  loadCatalogue,
-  readFixtureStatus,
-  scenarioById,
-  type Scenario,
-  type Step,
-} from '../golden/catalogue.js';
+import type { Scenario, Step } from '../golden/catalogue.js';
 import { coverageRouteResults, type StepRequest } from '../golden/coverage.js';
 import { GoldenConfigError } from '../golden/errors.js';
 import { activeTableVersion } from '../golden/replay.js';
@@ -30,7 +23,6 @@ import {
   loginSessions,
   originBaseUrl,
   resolvePlaceholders,
-  SEED_CONFIG_PATH,
   session,
   type FormTokens,
   type LoginCredentials,
@@ -68,9 +60,6 @@ export const WINDOW_THRESHOLD_MS = 5000;
 /** Home node id, which legacy findOne accepts for every site (jsonApiUtility.cfc:1265). */
 export const HOME_CONTENT_ID = '00000000000000000000000000000000001';
 
-/** Catalogue scenario whose own requests lead the latency rows. */
-export const CATALOGUE_SCENARIO = 'GS-CO-05';
-
 /** Name of the Local collection the run creates for the feed read set and deletes after it. */
 export const PERFORMANCE_FEED_NAME = 'OPT2 performance read set';
 
@@ -92,9 +81,6 @@ export const STOP_KILL_AFTER_MS = 15_000;
 /** Site every read set and probe addresses. */
 export const SEED_SITE = 'tenant-a';
 
-/** Seeded role whose user reads the timesheet sheet list. */
-export const TIMESHEETS_ROLE = 'timesheets.primary-approver';
-
 const NOT_RESTARTED = new Set<PackageName>(['gateway', 'web', 'migration', 'stub']);
 
 /** A target service whose local process is stopped and restarted. */
@@ -104,7 +90,7 @@ function isRestartService(name: string): name is RestartService {
   return (PACKAGE_NAMES as readonly string[]).includes(name) && !NOT_RESTARTED.has(name as PackageName);
 }
 
-/** The ten domain services, in `PACKAGE_NAMES` order. */
+/** The domain services, in `PACKAGE_NAMES` order. */
 export const RESTART_SERVICES: readonly RestartService[] = Object.freeze(PACKAGE_NAMES.filter(isRestartService));
 
 /** Planned Cloud Run `min_instance_count` per deployed service: migration alone stays warm. */
@@ -115,20 +101,18 @@ export const EXPECTED_MIN_INSTANCES: Readonly<Record<string, number>> = Object.f
   migration: 1,
 });
 
-/** Where a latency row comes from: the catalogue scenario's own requests, or the fixed read set. */
+/** Where a latency row comes from: the content reads, written as catalogue steps, or the fixed read set. */
 export type ReadSource = 'catalogue' | 'read-set';
 
-/** One fixed latency read; `path` may hold `{ids}`, `{feedId}` and `{asOf}`, filled before measurement. */
+/** One fixed latency read; `path` may hold `{ids}` and `{feedId}`, filled before measurement. */
 export interface ReadSetEntry {
   set: string;
-  session: 'anonymous' | 'admin' | 'timesheets';
+  session: 'anonymous' | 'admin';
   path: string;
   /** Measured against a Local collection the run creates just before the set and deletes just after it. */
   needs?: 'feedId';
-  fixtures?: true;
 }
 
-const FIXTURE_API = '/legacy-fixtures/cfml/api.cfm';
 const CONTENT_API = `/_api/json/v1/${SEED_SITE}`;
 const CUSERS_LISTUSERS_PATH = `/admin/?muraAction=cUsers.listUsers&siteid=${SEED_SITE}&ispublic=0`;
 const CSETTINGS_LIST_PATH = '/admin/?muraAction=cSettings.list';
@@ -136,18 +120,102 @@ const CONTENT_FIND_ONE_PATH = `${CONTENT_API}/content/${HOME_CONTENT_ID}`;
 const SITE_MANAGER_MODULE_ID = '00000000000000000000000000000000000';
 // The Site Manager tree under the home node, in the form carch/list.cfm redirects to.
 const SITE_MANAGER_TREE_PATH = `/admin/?muraAction=cArch.list&siteid=${SEED_SITE}&moduleid=${SITE_MANAGER_MODULE_ID}&topid=${HOME_CONTENT_ID}`;
-const TIMESHEET_SHEETS_PATH = `${FIXTURE_API}/timesheets/sheets?siteid=${SEED_SITE}&asOf={asOf}`;
-// GS-CO-13's rss step requests the feed API in this form.
+// The feed API's RSS read of one collection.
 const FEED_READ_PATH = `/_api/feed/v1/?feedid={feedId}&siteid=${SEED_SITE}`;
 const FIND_MANY_ID_COUNT = 5;
 
-/** The fixed reads measured after the catalogue's: findMany over seeded pages, the RSS read, and the named sets. */
+/** The sessions, seed rows and steps of a set of reads written as catalogue steps. */
+type ReadScenario = Pick<Scenario, 'id' | 'sessions' | 'seedRefs' | 'steps'>;
+
+/** Label of the JSON API content reads; it prefixes their set names. */
+export const CONTENT_READS_LABEL = 'content-reads';
+
+/**
+ * The JSON API content, navigation and property reads that lead the latency rows, as catalogue steps: each path in an
+ * anonymous and an admin session, then two anonymous edge reads.
+ */
+export const CONTENT_READS: Readonly<ReadScenario> = Object.freeze<ReadScenario>({
+  id: CONTENT_READS_LABEL,
+  sessions: { anon: { login: 'none', via: 'public' }, admin: { login: 'admin', via: 'admin' } },
+  seedRefs: [
+    { as: 'page', source: 'dataset', path: 'masa.content', where: { siteID: SEED_SITE, type: 'Page' }, index: 0 },
+    { as: 'image', source: 'dataset', path: 'masa.files', where: { siteID: 'umbrella', fileExt: 'png' }, index: 0 },
+    { as: 'feed', source: 'dataset', path: 'masa.content', where: { siteID: SEED_SITE, type: 'Folder' }, index: 0 },
+  ],
+  steps: [
+    {
+      name: 'reads',
+      method: 'GET',
+      route: '${matrix.path}',
+      as: '${matrix.session}',
+      csrf: 'none',
+      matrix: {
+        session: ['anon', 'admin'],
+        path: [
+          `${CONTENT_API}/content/\${seed.page.contentID}`,
+          `${CONTENT_API}/content`,
+          `${CONTENT_API}/content/?title=GS`,
+          `${CONTENT_API}/content/?method=findQuery&entityname=content&type=Page`,
+          `${CONTENT_API}/content/new`,
+          `${CONTENT_API}/content/properties`,
+          `${CONTENT_API}/content/\${seed.page.contentID}/permissions`,
+          `${CONTENT_API}/contentnav/\${seed.page.contentID}`,
+          `${CONTENT_API}/content/\${seed.page.contentID}/crumbs`,
+          `${CONTENT_API}/content/\${seed.page.contentID}/relatedcontent`,
+          `${CONTENT_API}/content/\${seed.page.contentID}/history`,
+          `${CONTENT_API}/findCrumbArray?contentid=\${seed.page.contentID}`,
+          `${CONTENT_API}/findRelatedContent?contentid=\${seed.page.contentID}`,
+          `${CONTENT_API}/findVersionHistory?contentid=\${seed.page.contentID}`,
+          `${CONTENT_API}/findCalendarItems?calendarid=\${seed.page.contentID}&start=2026-06-01&end=2026-06-30`,
+          `${CONTENT_API}/getURLForImage?fileid=\${seed.image.fileID}&size=small`,
+        ],
+      },
+    },
+    {
+      name: 'edge-reads',
+      method: 'GET',
+      route: '${matrix.path}',
+      as: '${matrix.session}',
+      csrf: 'none',
+      matrix: {
+        session: ['anon', 'admin'],
+        path: [
+          `${CONTENT_API}/content/?pageIndex=-3`,
+          `${CONTENT_API}/content/?pageIndex=0`,
+          `${CONTENT_API}/content/?pageIndex=-1`,
+          `${CONTENT_API}/content/?itemsPerPage=-1`,
+          `${CONTENT_API}/content/?fields=title`,
+          `${CONTENT_API}/content/?fields=title,summary,url`,
+          `${CONTENT_API}/contentnav/?fields=title`,
+          `${CONTENT_API}/contentnav/?parentid=\${seed.feed.contentID}&fields=title`,
+          `${CONTENT_API}/contentnav/properties`,
+          `${CONTENT_API}/comment/properties`,
+          `${CONTENT_API}/category/properties`,
+          `${CONTENT_API}/contentCategoryAssign/properties`,
+          `${CONTENT_API}/fileMetaData/properties`,
+          `${CONTENT_API}/feed/properties`,
+          `${CONTENT_API}/stats/properties`,
+          `${CONTENT_API}/?method=findProperties&entityname=file`,
+        ],
+      },
+    },
+    { name: 'unordered-sort', method: 'GET', route: `${CONTENT_API}/content/?sortBy=nosuchcol`, as: 'anon', csrf: 'none' },
+    {
+      name: 'blank-row-limit',
+      method: 'GET',
+      route: `${CONTENT_API}/content/?itemsPerPage=1001&pageIndex=0&fields=title`,
+      as: 'anon',
+      csrf: 'none',
+    },
+  ],
+});
+
+/** The fixed reads measured after the content reads: findMany over seeded pages, the RSS read, and the named sets. */
 export const READ_SET: readonly ReadSetEntry[] = Object.freeze([
-  { set: 'gs-co-05.content.findMany', session: 'anonymous', path: `${CONTENT_API}/content/{ids}` },
-  { set: 'gs-co-05.feed', session: 'anonymous', path: FEED_READ_PATH, needs: 'feedId' },
+  { set: `${CONTENT_READS_LABEL}.content.findMany`, session: 'anonymous', path: `${CONTENT_API}/content/{ids}` },
+  { set: `${CONTENT_READS_LABEL}.feed`, session: 'anonymous', path: FEED_READ_PATH, needs: 'feedId' },
   { set: 'cusers.listusers', session: 'admin', path: CUSERS_LISTUSERS_PATH },
   { set: 'csettings.list', session: 'admin', path: CSETTINGS_LIST_PATH },
-  { set: 'timesheets.sheets', session: 'timesheets', path: TIMESHEET_SHEETS_PATH, fixtures: true },
 ]);
 
 /** One request of a catalogue step: `route` has its `${matrix.*}` values substituted and keeps `${seed.*}`. */
@@ -194,16 +262,13 @@ export function expandCatalogueReads(scenario: Pick<Scenario, 'id' | 'sessions' 
   });
 }
 
-/**
- * The read through the gateway that stands for one service: a fresh admin login, or a GET of `path` (which may
- * hold `{asOf}`) in the `admin`, `anonymous` or seeded `tenant-a` role session.
- */
-export type ProbeSpec = { login: true } | { session: string; path: string; fixtures?: true };
+/** The read through the gateway that stands for one service: a fresh admin login, or a GET of `path` in a session. */
+export type ProbeSpec = { login: true } | { session: 'admin' | 'anonymous'; path: string };
 
 /** A service's gateway probes in preference order. */
 export type ProbeCandidates = readonly [ProbeSpec, ...ProbeSpec[]];
 
-/** Gateway probes per restarted service; `fixtures` probes need the synthetic legacy oracle. */
+/** Gateway probes per restarted service. */
 export const GATEWAY_PROBES: Readonly<Record<RestartService, ProbeCandidates>> = Object.freeze({
   identity: [{ login: true }],
   people: [{ session: 'admin', path: CUSERS_LISTUSERS_PATH }],
@@ -211,24 +276,6 @@ export const GATEWAY_PROBES: Readonly<Record<RestartService, ProbeCandidates>> =
   'strategies-content': [
     { session: 'anonymous', path: CONTENT_FIND_ONE_PATH },
     { session: 'admin', path: SITE_MANAGER_TREE_PATH },
-  ],
-  communications: [
-    {
-      session: 'communications.sender',
-      path: `${FIXTURE_API}/communications/templates?siteid=${SEED_SITE}`,
-      fixtures: true,
-    },
-  ],
-  reporting: [{ session: 'reporting.exporter', path: `${FIXTURE_API}/reporting/exports?siteid=${SEED_SITE}`, fixtures: true }],
-  surveys: [{ session: 'surveys.manager', path: `${FIXTURE_API}/surveys/surveys?siteid=${SEED_SITE}`, fixtures: true }],
-  timesheets: [{ session: TIMESHEETS_ROLE, path: TIMESHEET_SHEETS_PATH, fixtures: true }],
-  finance: [{ session: 'finance.preparer', path: `${FIXTURE_API}/finance/records?siteid=${SEED_SITE}`, fixtures: true }],
-  'e-signature': [
-    {
-      session: 'esignature.signer',
-      path: `${FIXTURE_API}/esignature/requests?siteid=${SEED_SITE}`,
-      fixtures: true,
-    },
   ],
 });
 
@@ -242,7 +289,6 @@ export type SessionProbeSpec = Extract<ProbeSpec, { path: string }>;
 export type ProbeChoice =
   | { kind: 'own'; spec: ProbeSpec; routeKey: string }
   | { kind: 'fresh-session'; via: RestartService; spec: SessionProbeSpec; routeKey: string }
-  | { kind: 'skipped'; reason: string }
   | { kind: 'not-target'; routeKeys: string[] };
 
 // The admin login post, whose route key (admin:clogin.login) stands for identity's own login probe.
@@ -252,20 +298,11 @@ function probeServing(table: CutoverTable, spec: ProbeSpec): Pick<ReadLabels, 'r
   return servingSide(table, 'login' in spec ? LOGIN_REQUEST : { method: 'GET', route: spec.path });
 }
 
-function probeUsable(spec: ProbeSpec, fixturesAvailable: boolean): boolean {
-  return fixturesAvailable || !('path' in spec && spec.fixtures === true);
-}
-
-/**
- * The probe {@link restartAndMeasure} uses for `service` under `table`: its first usable target-served candidate,
- * skipped when every target-served one needs the unavailable fixtures.
- */
-export function chooseProbe(service: RestartService, table: CutoverTable, fixturesAvailable: boolean): ProbeChoice {
+/** The probe {@link restartAndMeasure} uses for `service` under `table`: its first target-served candidate. */
+export function chooseProbe(service: RestartService, table: CutoverTable): ProbeChoice {
   const candidates = GATEWAY_PROBES[service].map((spec) => ({ spec, ...probeServing(table, spec) }));
-  const routed = candidates.filter((candidate) => candidate.servedBy === 'target');
-  const own = routed.find((candidate) => probeUsable(candidate.spec, fixturesAvailable));
+  const own = candidates.find((candidate) => candidate.servedBy === 'target');
   if (own !== undefined) return { kind: 'own', spec: own.spec, routeKey: own.routeKey };
-  if (routed.length > 0) return { kind: 'skipped', reason: FIXTURES_UNAVAILABLE };
   if (service === 'identity') {
     const borrowed = RESTART_SERVICES.filter((via) => via !== service).flatMap((via) =>
       GATEWAY_PROBES[via]
@@ -275,9 +312,8 @@ export function chooseProbe(service: RestartService, table: CutoverTable, fixtur
           return side.servedBy === 'target' ? [{ kind: 'fresh-session', via, spec, routeKey: side.routeKey }] : [];
         }),
     );
-    const usable = borrowed.find((choice) => probeUsable(choice.spec, fixturesAvailable));
+    const [usable] = borrowed;
     if (usable !== undefined) return usable;
-    if (borrowed.length > 0) return { kind: 'skipped', reason: FIXTURES_UNAVAILABLE };
   }
   return { kind: 'not-target', routeKeys: candidates.map((candidate) => candidate.routeKey) };
 }
@@ -320,7 +356,7 @@ export interface SideStatuses {
   target: number[];
 }
 
-/** One latency row; a skipped set has null sides, no statuses and its reason as `finding`. */
+/** One latency row. */
 export type LatencyRow = ReadLabels & {
   requests: number;
   target: LatencySummary | null;
@@ -427,17 +463,15 @@ export function legacyServedFindings(labels: ReadLabels, version: string): Findi
 
 /** Values the read-set placeholders take; `feedId` is the collection the run created for the feed set. */
 export interface ReadSetValues {
-  asOf: string;
   ids: readonly string[];
   feedId?: string | undefined;
 }
 
-/** `entry.path` with `{ids}` (comma-joined), `{feedId}` and `{asOf}` filled, each URL-encoded. */
+/** `entry.path` with `{ids}` (comma-joined) and `{feedId}` filled, each URL-encoded. */
 export function resolveReadPath(entry: Pick<ReadSetEntry, 'path'>, values: ReadSetValues): string {
   return entry.path
     .replace('{ids}', values.ids.map(encodeURIComponent).join(','))
-    .replace('{feedId}', encodeURIComponent(values.feedId ?? ''))
-    .replace('{asOf}', encodeURIComponent(values.asOf));
+    .replace('{feedId}', encodeURIComponent(values.feedId ?? ''));
 }
 
 const contentRowSchema = z.looseObject({ contentID: z.string().min(1) });
@@ -521,22 +555,6 @@ export async function measureLatencySet(
   return {
     row: { ...labelsOf(entry), requests: opts.requests, target, legacy, statuses, ratioP95, finding },
     findings,
-  };
-}
-
-/** Row of a set that is not measured (0 requests), its reason both the row's finding and a `set-skipped` finding. */
-export function skippedLatency(labels: ReadLabels, reason: string): LatencyMeasurement {
-  return {
-    row: {
-      ...labelsOf(labels),
-      requests: 0,
-      target: null,
-      legacy: null,
-      statuses: { legacy: [], target: [] },
-      ratioP95: null,
-      finding: reason,
-    },
-    findings: [{ kind: 'set-skipped', subject: labels.set, detail: reason }],
   };
 }
 
@@ -672,8 +690,8 @@ export interface GatewayProbe {
   attempt(timeoutMs: number): Promise<boolean>;
 }
 
-/** The probe of a service, why its scale-to-zero measurement is skipped, or why no gateway read reaches it. */
-export type ProbePlan = GatewayProbe | { skipped: string } | { notTarget: string };
+/** The probe of a service, or why no gateway read reaches it. */
+export type ProbePlan = GatewayProbe | { notTarget: string };
 
 /** Rows, findings and health of one restart cycle. */
 export interface RestartOutcome {
@@ -716,8 +734,8 @@ function healthCheck(fetchFn: FetchLike, url: string): (timeoutMs: number) => Pr
 
 /**
  * One restart cycle of `name`: stop, confirm through `probe` that the gateway no longer serves it, start, time the
- * first `/healthz` 200 (cold start) and the first successful gateway probe (scale to zero and back); a skipped or
- * not-target plan times the cold start only. Throws for a name outside {@link RESTART_SERVICES}.
+ * first `/healthz` 200 (cold start) and the first successful gateway probe (scale to zero and back); a not-target
+ * plan times the cold start only. Throws for a name outside {@link RESTART_SERVICES}.
  */
 export async function restartAndMeasure(name: string, deps: ProcessDeps, probe: ProbePlan): Promise<RestartOutcome> {
   if (!isRestartService(name)) throw new Error(`${name} is not a restartable target service`);
@@ -761,10 +779,6 @@ export async function restartAndMeasure(name: string, deps: ProcessDeps, probe: 
     return outcome(null, null, true);
   }
 
-  if ('skipped' in probe) {
-    findings.push({ kind: 'scale-probe-skipped', subject: name, detail: probe.skipped });
-    return outcome(healthyAt - t0, null);
-  }
   if ('notTarget' in probe) {
     findings.push({ kind: 'probe-not-target', subject: name, detail: probe.notTarget });
     return outcome(healthyAt - t0, null);
@@ -796,7 +810,7 @@ const FEED_NEW_PATH = `/admin/?muraAction=cFeed.edit&siteid=${SEED_SITE}&feedID=
 
 /** The anonymous RSS read of collection `feedId`. */
 export function feedReadPath(feedId: string): string {
-  return resolveReadPath({ path: FEED_READ_PATH }, { asOf: '', ids: [], feedId });
+  return resolveReadPath({ path: FEED_READ_PATH }, { ids: [], feedId });
 }
 
 /** Local collections a `cFeed.list` page links to for editing, with the text of each link. */
@@ -883,7 +897,7 @@ function submittedForm(page: HttpResult, form: FormTokens, fields: Record<string
   return data;
 }
 
-/** Creates the run's Local collection over `contentId` as GS-CO-13's save-local does; returns its id once both sides serve it. */
+/** Creates the run's Local collection over `contentId` through the cFeed form; returns its id once both sides serve it. */
 export async function createFeedCollection(deps: FeedDeps, contentId: string): Promise<string> {
   const before = new Set(localFeedLinks(await deps.admin.get(FEED_LIST_PATH)).map((link) => link.feedId));
   const page = await deps.admin.get(FEED_NEW_PATH);
@@ -923,7 +937,7 @@ export async function createFeedCollection(deps: FeedDeps, contentId: string): P
   throw new Error(unconfirmed);
 }
 
-/** Deletes collection `feedId` as GS-CO-13's delete-local does; throws unless legacy stops answering its RSS read 200. */
+/** Deletes collection `feedId` through its cFeed form; throws unless legacy stops answering its RSS read 200. */
 export async function deleteFeedCollection(deps: FeedDeps, feedId: string): Promise<void> {
   // cFeed.list links each Local collection's edit form with type=Local, which edit.cfm:78 reads.
   const editPath = `/admin/?muraAction=cFeed.edit&siteid=${SEED_SITE}&feedID=${encodeURIComponent(feedId)}&type=Local`;
@@ -1143,12 +1157,12 @@ export function renderPerformanceMarkdown(report: PerformanceReport): string[] {
     `- ${REQUESTS_PER_SET} sequential requests per read set and side, interleaved: one legacy request, then one target request.`,
     '- p50 and p95 by nearest rank, in ms rounded to 0.1.',
     '- Target is the gateway with the active cut-over version; legacy is the ColdFusion origin, requested directly.',
-    `- Source \`catalogue\` rows are the ${CATALOGUE_SCENARIO} scenario's own requests, one per session and path of its matrix, named \`<scenario>:<session> <route>\` with seed placeholders kept; source \`read-set\` rows are the fixed findMany, feed, \`cusers.listusers\`, \`csettings.list\` and timesheet sheet reads. The feed row reads a Local collection the run creates through the gateway just before the set and deletes just after it.`,
+    `- Source \`catalogue\` rows are the fixed JSON API content reads, written as catalogue steps: one per session and path of their matrix, named \`${CONTENT_READS_LABEL}:<session> <route>\` with seed placeholders kept; source \`read-set\` rows are the fixed findMany, feed, \`cusers.listusers\` and \`csettings.list\` reads. The feed row reads a Local collection the run creates through the gateway just before the set and deletes just after it.`,
     '- Served by is the side the active cut-over version routes the row\'s route key to. On a `legacy` row the target columns measure the gateway proxying to legacy, and a `legacy-served` finding says so.',
     `- The request sets no latency threshold: a target p95 above ${RATIO_FINDING_THRESHOLD}x legacy and a write window over ${WINDOW_THRESHOLD_MS / 1000} s are flags, not failures.`,
-    "- The legacy-direct admin and timesheet sessions log in on legacy itself, which updates that user's `tusers.LastLogin` on the legacy side.",
+    "- The legacy-direct admin session logs in on legacy itself, which updates that user's `tusers.LastLogin` on the legacy side.",
     `- Cold start is measured locally (process start to the first \`/healthz\` 200); scale to zero and back is derived (stopped service, restart, first successful request through the gateway), and \`unavailable\` where no such request was timed. Each poll is bounded at ${POLL_LIMIT_MS} ms.`,
-    "- Each service is probed only by identity's admin login or by a request that leaves the compared state unchanged: a read, or a view whose writes are idempotent. A service none of whose probe candidates the active version routes to target has an `unavailable` row and a `probe-not-target` finding naming the candidates' route keys; one whose target-routed candidates all need the absent fixtures has an `unavailable` row and a `scale-probe-skipped` finding.",
+    "- Each service is probed only by identity's admin login or by a request that leaves the compared state unchanged: a read, or a view whose writes are idempotent. A service none of whose probe candidates the active version routes to target has an `unavailable` row and a `probe-not-target` finding naming the candidates' route keys.",
     `- Cloud measurement: ${report.cloudMeasurement}.`,
     '',
     '## Latency',
@@ -1237,7 +1251,7 @@ export interface MainDeps {
 const USAGE = 'usage: tsx src/performance/run.ts';
 const HELP = `${USAGE}
 
-Measures legacy and gateway latency over the ${CATALOGUE_SCENARIO} catalogue reads and the fixed read set
+Measures legacy and gateway latency over the JSON API content reads and the fixed read set
 (${String(REQUESTS_PER_SET)} requests per set and side), labelling each set with the side the gateway's active cut-over version
 serves it from. The feed set reads a Local collection the run creates through the gateway and deletes again.
 Then restarts each target service recorded in up.json once to time its cold start and scale-to-zero recovery,
@@ -1247,8 +1261,8 @@ Options:
   --help  print this help and exit 0
 
 Environment:
-  OPT2_STATE_DIR       state directory (default: $HOME/.opt2/state) holding up.json, fixtures.json,
-                       seed/dataset.json, secrets/seed-credentials.json and the operator signing keys
+  OPT2_STATE_DIR       state directory (default: $HOME/.opt2/state) holding up.json,
+                       seed/dataset.json and the operator signing keys
   LEGACY_ORIGIN        legacy ColdFusion origin (default: http://127.0.0.1:\${PORT})
   PORT                 legacy ColdFusion port, used when LEGACY_ORIGIN is unset
   OPT2_GATEWAY_URL     gateway base URL (default: http://127.0.0.1:${String(GATEWAY_PORT)})
@@ -1264,10 +1278,8 @@ failure (no active cut-over version, the feed collection not served on both side
 
 Example (from harness/): npm run performance`;
 
-/** GS-CO-05's folder seed row, the content the feed collection lists. */
+/** The content reads' folder seed row, the content the feed collection lists. */
 const FEED_CONTENT_ID = '${seed.feed.contentID}';
-
-const seedConfigSchema = z.object({ businessDate: z.iso.date() }).loose();
 
 /** `file` parsed by `schema`, or undefined when it does not exist. */
 async function readOptional<T>(file: string, schema: z.ZodType<T>): Promise<T | undefined> {
@@ -1284,11 +1296,6 @@ function adminCredentials(env: EnvLike, secrets: SecretStore): LoginCredentials 
   return { username, password: secrets.secret('admin') };
 }
 
-function roleCredentials(secrets: SecretStore, role: string): LoginCredentials {
-  const username = secrets.username(SEED_SITE, role);
-  return { username, password: secrets.secret(`seed:${username}`) };
-}
-
 async function loggedIn(baseUrl: string, fetchFn: FetchLike, credentials: LoginCredentials, label: string): Promise<HttpSession> {
   const s = createHttpSession({ baseUrl, fetch: fetchFn });
   const { ok, result } = await adminLogin(s, credentials);
@@ -1299,20 +1306,15 @@ async function loggedIn(baseUrl: string, fetchFn: FetchLike, credentials: LoginC
   return s;
 }
 
-/** An anonymous and an admin session on `baseUrl`, plus one per seeded role, each logged in once. */
+/** An anonymous and an admin session on `baseUrl`, the admin one logged in once. */
 async function openSessions(
   label: string,
   baseUrl: string,
   fetchFn: FetchLike,
   admin: LoginCredentials,
-  roles: readonly string[],
-  secrets: SecretStore,
 ): Promise<Map<string, HttpSession>> {
   const sessions = new Map<string, HttpSession>([['anonymous', createHttpSession({ baseUrl, fetch: fetchFn })]]);
   sessions.set('admin', await loggedIn(baseUrl, fetchFn, admin, `${label} admin`));
-  for (const role of roles) {
-    sessions.set(role, await loggedIn(baseUrl, fetchFn, roleCredentials(secrets, role), `${label} ${role}`));
-  }
   return sessions;
 }
 
@@ -1322,53 +1324,36 @@ function sessionOf(sessions: ReadonlyMap<string, HttpSession>, key: string): Htt
   return found;
 }
 
-function readSetSessionKey(session: ReadSetEntry['session']): string {
-  return session === 'timesheets' ? TIMESHEETS_ROLE : session;
-}
-
 interface ProbeContext {
   gatewayUrl: string;
   sessions: ReadonlyMap<string, HttpSession>;
   fetch: FetchLike;
   admin: LoginCredentials;
-  secrets: SecretStore;
-  asOf: string;
   version: string;
 }
 
 function probePlan(service: RestartService, choice: ProbeChoice, ctx: ProbeContext): ProbePlan {
-  if (choice.kind === 'skipped') return { skipped: choice.reason };
   if (choice.kind === 'not-target') return { notTarget: notTargetDetail(service, choice.routeKeys, ctx.version) };
   const { spec } = choice;
   const fresh = (timeoutMs: number): HttpSession => createHttpSession({ baseUrl: ctx.gatewayUrl, fetch: ctx.fetch, timeoutMs });
   if ('login' in spec) {
     return { describe: 'admin login', attempt: async (timeoutMs) => (await adminLogin(fresh(timeoutMs), ctx.admin)).ok };
   }
-  const probePath = spec.path.replace('{asOf}', encodeURIComponent(ctx.asOf));
   if (choice.kind === 'own') {
     const s = sessionOf(ctx.sessions, spec.session);
     return {
-      describe: `GET ${probePath} as ${spec.session}`,
-      attempt: async (timeoutMs) => (await s.get(probePath, { timeoutMs })).status === 200,
+      describe: `GET ${spec.path} as ${spec.session}`,
+      attempt: async (timeoutMs) => (await s.get(spec.path, { timeoutMs })).status === 200,
     };
   }
   return {
-    describe: `GET ${probePath} (${choice.via}) as ${spec.session} in a fresh gateway session, resolved through ${service}`,
+    describe: `GET ${spec.path} (${choice.via}) as ${spec.session} in a fresh gateway session, resolved through ${service}`,
     attempt: async (timeoutMs) => {
       const s = fresh(timeoutMs);
-      if (spec.session !== 'anonymous') {
-        const credentials = spec.session === 'admin' ? ctx.admin : roleCredentials(ctx.secrets, spec.session);
-        if (!(await adminLogin(s, credentials)).ok) return false;
-      }
-      return (await s.get(probePath)).status === 200;
+      if (spec.session === 'admin' && !(await adminLogin(s, ctx.admin)).ok) return false;
+      return (await s.get(spec.path)).status === 200;
     },
   };
-}
-
-/** Seeded roles the long-lived gateway sessions of the chosen own probes log in as. */
-function probeRoles(choices: readonly ProbeChoice[]): string[] {
-  const roles = choices.flatMap((choice) => (choice.kind === 'own' && 'session' in choice.spec ? [choice.spec.session] : []));
-  return [...new Set(roles)].filter((role) => role !== 'admin' && role !== 'anonymous');
 }
 
 /**
@@ -1395,8 +1380,6 @@ export async function main(argv: string[], deps: MainDeps = {}): Promise<CliOutc
     writeUpState: (patch) => writeUp(patch, upOptions),
   };
 
-  const fixturesAvailable = readFixtureStatus(env).available;
-  const { businessDate } = await readJson(SEED_CONFIG_PATH, seedConfigSchema);
   const secrets = loadSecretStore(env);
   const seed = loadSeedStore(env);
   const admin = adminCredentials(env, secrets);
@@ -1404,25 +1387,16 @@ export async function main(argv: string[], deps: MainDeps = {}): Promise<CliOutc
   const version = await activeTableVersion({ env, fetch: fetchFn, invoker: deps.invoker });
   if (version === null) throw new Error('the gateway has no active cut-over version');
   const table = await loadCutoverTable(version, env);
-  const scenario = scenarioById(await loadCatalogue(), CATALOGUE_SCENARIO);
-  const catalogueReads = expandCatalogueReads(scenario);
-  const probes = RESTART_SERVICES.map((service) => ({ service, choice: chooseProbe(service, table, fixturesAvailable) }));
-  const readSetRoles = fixturesAvailable ? [TIMESHEETS_ROLE] : [];
-  const legacySessions = await openSessions('legacy', originBaseUrl('legacy', env), fetchFn, admin, readSetRoles, secrets);
-  const gatewaySessions = await openSessions(
-    'gateway',
-    gatewayUrl,
-    fetchFn,
-    admin,
-    [...new Set([...readSetRoles, ...probeRoles(probes.map((probe) => probe.choice))])],
-    secrets,
-  );
+  const contentReads = expandCatalogueReads(CONTENT_READS);
+  const probes = RESTART_SERVICES.map((service) => ({ service, choice: chooseProbe(service, table) }));
+  const legacySessions = await openSessions('legacy', originBaseUrl('legacy', env), fetchFn, admin);
+  const gatewaySessions = await openSessions('gateway', gatewayUrl, fetchFn, admin);
   const contexts = {
-    legacy: createScenarioContext(scenario, { origin: 'legacy', env, fetch: fetchFn, secrets, seed }),
-    target: createScenarioContext(scenario, { origin: 'gateway', env, fetch: fetchFn, secrets, seed }),
+    legacy: createScenarioContext(CONTENT_READS, { origin: 'legacy', env, fetch: fetchFn, secrets, seed }),
+    target: createScenarioContext(CONTENT_READS, { origin: 'gateway', env, fetch: fetchFn, secrets, seed }),
   };
-  await loginSessions(contexts.legacy, scenario);
-  await loginSessions(contexts.target, scenario);
+  await loginSessions(contexts.legacy, CONTENT_READS);
+  await loginSessions(contexts.target, CONTENT_READS);
 
   const findings: Finding[] = [];
   const latency: LatencyRow[] = [];
@@ -1437,7 +1411,7 @@ export async function main(argv: string[], deps: MainDeps = {}): Promise<CliOutc
     path: readPath,
     ...servingSide(table, { method: 'GET', route: readPath }),
   });
-  for (const read of catalogueReads) {
+  for (const read of contentReads) {
     // Both contexts share one seed store and one secret store, so the legacy resolution is the gateway's too.
     const readPath = resolvePlaceholders(read.route, contexts.legacy);
     const pair = { legacy: session(contexts.legacy, read.session), target: session(contexts.target, read.session) };
@@ -1445,7 +1419,7 @@ export async function main(argv: string[], deps: MainDeps = {}): Promise<CliOutc
     record(await measureLatencySet(labels, pair, timing));
   }
 
-  const values: ReadSetValues = { asOf: businessDate, ids: seededPageIds(seed) };
+  const values: ReadSetValues = { ids: seededPageIds(seed) };
   const feedDeps: FeedDeps = {
     admin: sessionOf(gatewaySessions, 'admin'),
     readers: { legacy: sessionOf(legacySessions, 'anonymous'), target: sessionOf(gatewaySessions, 'anonymous') },
@@ -1453,13 +1427,8 @@ export async function main(argv: string[], deps: MainDeps = {}): Promise<CliOutc
     sleep: processDeps.sleep,
   };
   for (const entry of READ_SET) {
-    const key = readSetSessionKey(entry.session);
-    const read = { set: entry.set, source: 'read-set' as const, session: key };
-    if (entry.fixtures === true && !fixturesAvailable) {
-      record(skippedLatency(labelled(read, resolveReadPath(entry, values)), FIXTURES_UNAVAILABLE));
-      continue;
-    }
-    const pair = { legacy: sessionOf(legacySessions, key), target: sessionOf(gatewaySessions, key) };
+    const read = { set: entry.set, source: 'read-set' as const, session: entry.session };
+    const pair = { legacy: sessionOf(legacySessions, entry.session), target: sessionOf(gatewaySessions, entry.session) };
     if (entry.needs !== 'feedId') {
       record(await measureLatencySet(labelled(read, resolveReadPath(entry, values)), pair, timing));
       continue;
@@ -1482,8 +1451,6 @@ export async function main(argv: string[], deps: MainDeps = {}): Promise<CliOutc
     sessions: gatewaySessions,
     fetch: fetchFn,
     admin,
-    secrets,
-    asOf: businessDate,
     version,
   };
   const coldStart: ColdStartRow[] = [];

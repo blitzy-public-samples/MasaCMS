@@ -1,11 +1,11 @@
 // Internal cut-over routes: registration as the contract declares it, operator and migration access, JSON-only bodies, findings, both status versions, orphan clearing and the rollback evidence activation reads.
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { INVOCATION_HEADER, Roles, recordedRoutes, rolesForService } from '@opt2/platform/auth';
 import { createLogger } from '@opt2/platform/logging';
 import { createService, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
-import { assertResponseMatchesOpenApi, mintServiceToken, mintUserToken, testVerifier } from '@opt2/platform/testing';
+import { assertResponseMatchesOpenApi, loadOpenApiDocument, mintServiceToken, mintUserToken, testVerifier } from '@opt2/platform/testing';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import type { InflightClearInput, InflightStore } from '../../src/cutover/inflight.js';
@@ -52,7 +52,7 @@ const apps: FastifyInstance[] = [];
 let contract: object;
 
 beforeAll(async () => {
-  contract = parse(await readFile(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
+  contract = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as object;
 });
 
 afterEach(async () => {

@@ -1,5 +1,4 @@
 /** Variation targeting: the `variations` gate of the domain, the resource route and the JSON API entity; the bean read, saves, delete and script model. */
-import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
@@ -11,6 +10,7 @@ import {
   assertResponseMatchesOpenApi,
   createThrowawaySchema,
   fixedClock,
+  loadOpenApiDocument,
   pgAvailable,
   type InjectResponse,
   type ThrowawaySchema,
@@ -216,7 +216,7 @@ describe('domain/variations over the recording database', () => {
   });
 });
 
-const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
+const OPENAPI = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as object;
 
 type Setting = 'off' | 'on';
 

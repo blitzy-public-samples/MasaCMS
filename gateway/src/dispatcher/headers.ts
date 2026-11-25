@@ -14,9 +14,6 @@ export const HOP_BY_HOP_HEADERS: ReadonlySet<string> = new Set([
   'upgrade',
 ]);
 
-/** Gateway-authored header carrying a target-bound fixture request's inbound `Authorization` verbatim. */
-export const FIXTURE_AUTHORIZATION_HEADER = 'X-Opt2-Fixture-Authorization';
-
 /** Names of the forwarded-request headers the gateway adds to every forward. */
 export type ForwardedHeaderName = 'x-forwarded-for' | 'x-forwarded-proto' | 'x-forwarded-host';
 
@@ -59,7 +56,7 @@ export interface WebResponseFacts {
   statusCode: number;
 }
 
-const WEB_PAGE_PATH = /^\/(?:opt2\/)?admin\/[^/?#]+\/[^/?#]+(?:[?#]|$)/;
+const WEB_PAGE_PATH = /^\/admin\/[^/?#]+\/[^/?#]+(?:[?#]|$)/;
 const WEB_RUNTIME_ASSET_PATH = /^\/_next\//;
 const NEXT_HEADER_PREFIX = 'x-nextjs-';
 const NEXT_ROUTER_VARY_MEMBERS: ReadonlySet<string> = new Set([
@@ -71,7 +68,7 @@ const NEXT_ROUTER_VARY_MEMBERS: ReadonlySet<string> = new Set([
 const NEXT_REDIRECT_STATUS = 307;
 const NEXT_CACHE_CONTROL = 'private, no-cache, no-store, max-age=0, must-revalidate';
 
-/** True for web's page-mode paths: `/admin/<circuit>/<action>` and `/opt2/admin/<module>/<screen>`. */
+/** True for web's page-mode paths: `/admin/<circuit>/<action>`. */
 export function isWebPagePath(path: string): boolean {
   return WEB_PAGE_PATH.test(path);
 }

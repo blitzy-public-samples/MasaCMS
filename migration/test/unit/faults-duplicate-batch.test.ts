@@ -53,7 +53,7 @@ const text = (...names: string[]): CanonicalColumn[] => names.map((name) => ({ n
 const USER_COLUMNS = text('UserID', 'SiteID', 'Type', 'Fname');
 const ADDRESS_COLUMNS = text('addressID', 'UserID', 'SiteID');
 const TRASH_COLUMNS = text('objectID', 'objectClass', 'SiteID');
-const BLACKOUT_COLUMNS = [...text('blackout_id', 'reason'), { name: LEGACY_PROGRAM_ID_COLUMN, type: 'i' } as const];
+const ENROLMENT_COLUMNS = [...text('enrolment_id', 'status'), { name: LEGACY_PROGRAM_ID_COLUMN, type: 'i' } as const];
 
 const unit = (id: string, owner: DataOwner, legacyTables: string[]): Unit => ({ id, owner, schema: id.split('.')[0] ?? '', legacyTables });
 const target = (unitId: string, owner: DataOwner, keyColumns: string[], rowPredicate: string | null = null): LegacyTableTarget => ({
@@ -71,7 +71,7 @@ const migratable = (name: string, owners: DataOwner[], keyColumns: string[], pro
   physical:
     programIds.length === 0
       ? [{ ref: { schema: 'dbo', table: name, qualified: `dbo.${name}` } }]
-      : programIds.map((programId) => ({ ref: { schema: `Program_${String(programId)}`, table: 'blackout', qualified: `Program_${String(programId)}.blackout` }, programId })),
+      : programIds.map((programId) => ({ ref: { schema: `Program_${String(programId)}`, table: 'enrolment', qualified: `Program_${String(programId)}.enrolment` }, programId })),
   folded: programIds.length > 0,
   keyColumns,
 });
@@ -85,7 +85,7 @@ const UNITS: Unit[] = [
   unit('people.trash', 'people', ['ttrash']),
   unit('identity.group_account', 'identity', ['tusers']),
   unit('identity.user_account', 'identity', ['tusers']),
-  unit('timesheets.blackout', 'timesheets', ['Program_N.blackout']),
+  unit('programs_sites.enrolment', 'programs-sites', ['Program_N.enrolment']),
 ];
 
 /** Targets with the split predicates of the ownership file: a row column, a joined owner column and a class map. */
@@ -105,7 +105,7 @@ const TARGETS: Record<string, LegacyTableTarget[]> = {
   ],
   tusersinterests: [target('people.user_interest', 'people', [])],
   tuserstags: [target('people.user_tag', 'people', ['UserID', 'tag'])],
-  'program_n.blackout': [target('timesheets.blackout', 'timesheets', ['blackout_id'])],
+  'program_n.enrolment': [target('programs_sites.enrolment', 'programs-sites', ['enrolment_id'])],
   tcontent: [target('content.content', 'strategies-content', ['ContentID'])],
 };
 
@@ -116,7 +116,7 @@ const LIVE: MigratableTable[] = [
   migratable('ttrash', ['identity', 'people'], ['objectID']),
   migratable('tusersinterests', ['people'], []),
   migratable('tuserstags', ['people'], ['UserID', 'tag']),
-  migratable('Program_N.blackout', ['timesheets'], ['blackout_id'], [1, 2]),
+  migratable('Program_N.enrolment', ['programs-sites'], ['enrolment_id'], [1, 2]),
   migratable('tcontent', ['strategies-content'], ['ContentID']),
 ];
 
@@ -125,7 +125,7 @@ const LEGACY_COLUMNS: Record<string, CanonicalColumn[]> = {
   tuseraddresses: ADDRESS_COLUMNS,
   ttrash: TRASH_COLUMNS,
   tusersinterests: text('UserID', 'interestID'),
-  'Program_N.blackout': BLACKOUT_COLUMNS,
+  'Program_N.enrolment': ENROLMENT_COLUMNS,
 };
 
 /** Unit shapes per legacy table, as describeUnitTable reports them. */
@@ -134,7 +134,7 @@ const UNIT_SHAPES: Record<string, Pick<UnitTableShape, 'keyColumns' | 'columns' 
   tuserstags: { keyColumns: ['UserID', 'tag'], columns: text('UserID', 'tag'), folded: false },
   tuseraddresses: { keyColumns: ['addressID'], columns: ADDRESS_COLUMNS, folded: false },
   ttrash: { keyColumns: ['objectID'], columns: TRASH_COLUMNS, folded: false },
-  'Program_N.blackout': { keyColumns: ['blackout_id', LEGACY_PROGRAM_ID_COLUMN], columns: BLACKOUT_COLUMNS, folded: true },
+  'Program_N.enrolment': { keyColumns: ['enrolment_id', LEGACY_PROGRAM_ID_COLUMN], columns: ENROLMENT_COLUMNS, folded: true },
 };
 
 type Values = Readonly<Record<string, unknown>>;
@@ -196,14 +196,14 @@ function trashRow(objectID: string, objectClass: string, SiteID: string): Canoni
   return keyedRow('ttrash', TRASH_COLUMNS, { objectID, objectClass, SiteID });
 }
 
-function blackoutRow(id: string, programId: number): CanonicalRow {
-  const row = { blackout_id: id, reason: 'archived', [LEGACY_PROGRAM_ID_COLUMN]: String(programId) };
+function enrolmentRow(id: string, programId: number): CanonicalRow {
+  const row = { enrolment_id: id, status: 'enrolled', [LEGACY_PROGRAM_ID_COLUMN]: String(programId) };
   return {
-    table: 'Program_N.blackout',
+    table: 'Program_N.enrolment',
     legacyProgramId: programId,
-    key: encodeKey(BLACKOUT_COLUMNS, ['blackout_id', LEGACY_PROGRAM_ID_COLUMN], row),
+    key: encodeKey(ENROLMENT_COLUMNS, ['enrolment_id', LEGACY_PROGRAM_ID_COLUMN], row),
     keyValues: [id, String(programId)],
-    encoding: encodeRow(BLACKOUT_COLUMNS, row),
+    encoding: encodeRow(ENROLMENT_COLUMNS, row),
     row,
   };
 }
@@ -300,7 +300,7 @@ beforeEach(() => {
     ttrash: [trashRow('T1', 'userBean', 'tenant-b'), trashRow('T2', 'contentBean', 'tenant-b'), trashRow('T3', 'addressBean', 'tenant-b'), trashRow('T4', 'userBean', 'tenant-a')],
     tusersinterests: [userRow({ UserID: 'U1', SiteID: 'tenant-a' })],
     tuserstags: [],
-    'Program_N.blackout': [blackoutRow('B1', 2), blackoutRow('B2', 1), blackoutRow('B3', 2)],
+    'Program_N.enrolment': [enrolmentRow('B1', 2), enrolmentRow('B2', 1), enrolmentRow('B3', 2)],
   };
   streamed = {};
   unitReads = [];
@@ -505,10 +505,10 @@ describe('duplicate-batch fault script', () => {
 
   it('sends a folded table as its first program part, as the owner batcher partitions it', async () => {
     const owners = fakeOwners();
-    const output = await duplicateBatch.run(envWith(owners), params({ owner: 'timesheets', table: 'Program_2.blackout' }));
+    const output = await duplicateBatch.run(envWith(owners), params({ owner: 'programs-sites', table: 'Program_2.enrolment' }));
 
     const request = owners.apply.mock.calls[0]?.[1];
-    expect(request).toMatchObject({ legacyTable: 'Program_2.blackout', legacyProgramId: 2, tenantId: TENANT_B, units: ['timesheets.blackout'] });
+    expect(request).toMatchObject({ legacyTable: 'Program_2.enrolment', legacyProgramId: 2, tenantId: TENANT_B, units: ['programs_sites.enrolment'] });
     expect(request?.rows).toHaveLength(2);
     expect(output.assertions.every((assertion) => assertion.status === 'pass')).toBe(true);
   });

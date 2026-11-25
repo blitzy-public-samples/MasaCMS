@@ -764,7 +764,7 @@ describe('tracing propagation', () => {
 describe('trace continuity', () => {
   const TRACE_A = 'a'.repeat(32);
   const TRACE_B = 'b'.repeat(32);
-  const ARCHIVE_CHAIN: SpanSelector[] = [
+  const PERSON_CHAIN: SpanSelector[] = [
     { name: 'POST', service: 'gateway', kind: SpanKind.SERVER },
     { service: 'gateway', kind: SpanKind.CLIENT },
     { name: 'POST', service: 'people', kind: SpanKind.SERVER },
@@ -787,7 +787,7 @@ describe('trace continuity', () => {
     }
   }
 
-  async function archiveTrace(consumer: 'extracted' | 'dropped'): Promise<ReadableSpan[]> {
+  async function personTrace(consumer: 'extracted' | 'dropped'): Promise<ReadableSpan[]> {
     const gateway = await hop('gateway', () =>
       startSpan('POST', SpanKind.SERVER, () => startSpan('POST', SpanKind.CLIENT, () => injectHttpHeaders({}))),
     );
@@ -796,25 +796,25 @@ describe('trace continuity', () => {
         startSpan('POST', SpanKind.SERVER, () => startSpan('outbox.publish', SpanKind.PRODUCER, currentTraceparent)),
       ),
     );
-    const timesheets = await hop('timesheets', () => {
+    const identity = await hop('identity', () => {
       const consume = (): Promise<void> =>
-        startSpan('events.consume people.person.archived.v1', SpanKind.CONSUMER, () => undefined);
+        startSpan('events.consume people.person.changed.v1', SpanKind.CONSUMER, () => undefined);
       return consumer === 'extracted' ? withExtractedContext(people.result, consume) : context.with(ROOT_CONTEXT, consume);
     });
-    return [...gateway.spans, ...people.spans, ...timesheets.spans];
+    return [...gateway.spans, ...people.spans, ...identity.spans];
   }
 
   afterEach(async () => {
     await shutdownTracing();
   });
 
-  it('passes an archive chain propagated across gateway, people and timesheets', async () => {
-    const spans = await archiveTrace('extracted');
+  it('passes a person-change chain propagated across gateway, people and identity', async () => {
+    const spans = await personTrace('extracted');
     const root = spans.find((span) => span.kind === SpanKind.SERVER && span.resource.attributes[ATTR_SERVICE_NAME] === 'gateway');
 
-    const result = assertTraceContinuity(spans, { expectedSpanNames: ARCHIVE_CHAIN });
+    const result = assertTraceContinuity(spans, { expectedSpanNames: PERSON_CHAIN });
 
-    expect(result).toEqual(checkTraceContinuity(spans, { expectedSpanNames: ARCHIVE_CHAIN }));
+    expect(result).toEqual(checkTraceContinuity(spans, { expectedSpanNames: PERSON_CHAIN }));
     expect(result.ok).toBe(true);
     expect(result.problems).toEqual([]);
     expect(result.traceId).toBe(root?.spanContext().traceId);
@@ -823,7 +823,7 @@ describe('trace continuity', () => {
       ['POST', 'gateway', SpanKind.CLIENT],
       ['POST', 'people', SpanKind.SERVER],
       ['outbox.publish', 'people', SpanKind.PRODUCER],
-      ['events.consume people.person.archived.v1', 'timesheets', SpanKind.CONSUMER],
+      ['events.consume people.person.changed.v1', 'identity', SpanKind.CONSUMER],
     ]);
     expect(result.matched[0]).toEqual({
       name: 'POST',
@@ -835,11 +835,11 @@ describe('trace continuity', () => {
   });
 
   it('reports a broken chain and throws when the consumer drops the extracted context', async () => {
-    const spans = await archiveTrace('dropped');
+    const spans = await personTrace('dropped');
     const gatewayTrace = spans[0]?.spanContext().traceId;
     const consumerTrace = spans.find((span) => span.kind === SpanKind.CONSUMER)?.spanContext().traceId;
 
-    const result = checkTraceContinuity(spans, { expectedSpanNames: ARCHIVE_CHAIN });
+    const result = checkTraceContinuity(spans, { expectedSpanNames: PERSON_CHAIN });
 
     expect(consumerTrace).not.toBe(gatewayTrace);
     expect(result).toEqual({
@@ -854,7 +854,7 @@ describe('trace continuity', () => {
     });
     let thrown: unknown;
     try {
-      assertTraceContinuity(spans, { expectedSpanNames: ARCHIVE_CHAIN });
+      assertTraceContinuity(spans, { expectedSpanNames: PERSON_CHAIN });
     } catch (err) {
       thrown = err;
     }
@@ -1111,7 +1111,7 @@ describe('trace continuity', () => {
         { name: 'odd', traceId: TRACE_B, spanId: '0000000000000006' },
       ]);
       expect(
-        checkTraceContinuity(spans, { expectedSpanNames: [{ service: 'gateway', kind: SpanKind.SERVER }, ...ARCHIVE_CHAIN.slice(1, 4)] }),
+        checkTraceContinuity(spans, { expectedSpanNames: [{ service: 'gateway', kind: SpanKind.SERVER }, ...PERSON_CHAIN.slice(1, 4)] }),
       ).toMatchObject({ ok: true, traceId: TRACE_A });
     });
 

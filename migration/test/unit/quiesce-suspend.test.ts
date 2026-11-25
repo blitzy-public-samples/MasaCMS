@@ -45,32 +45,23 @@ const SUBSCRIPTION_PREFIX = `projects/${PROJECT}/subscriptions/`;
 const START = businessClock().now().getTime();
 const NOW = new Date(START).toISOString();
 const PEOPLE_GROUP = subscriptionName('people', 'identity.group.changed.v1');
-const TIMESHEETS_ARCHIVED = subscriptionName('timesheets', 'people.person.archived.v1');
-const FINANCE_SITE = subscriptionName('finance', 'programs-sites.site.changed.v1');
-const DLQ_REPLAY = dlqReplaySubscriptionName(TIMESHEETS_ARCHIVED);
+const IDENTITY_PERSON = subscriptionName('identity', 'people.person.changed.v1');
+const PROGRAMS_SITES_SITE = subscriptionName('programs-sites', 'programs-sites.site.changed.v1');
+const DLQ_REPLAY = dlqReplaySubscriptionName(IDENTITY_PERSON);
 const FOREIGN = 'legacy-mail-queue';
-/** Declared subscriptions in push mode; the other declared ones are in pull mode. */
-const PUSHED = [PEOPLE_GROUP, TIMESHEETS_ARCHIVED];
+/** Declared subscriptions in push mode, sorted; the other declared ones are in pull mode. */
+const PUSHED = [IDENTITY_PERSON, PEOPLE_GROUP];
 const MONITOR_TASK = '/var/www/index.cfm/_api/sitemonitor/';
-const PAUSED: PauseResult = {
-  siteMonitor: [MONITOR_TASK],
-  surveys: ['opt2-survey-42-reminder-1', 'opt2-survey-41-launch', 'opt2-survey-41-launch'],
-};
-const PAUSED_TASKS = [MONITOR_TASK, 'opt2-survey-41-launch', 'opt2-survey-42-reminder-1'];
+const PAUSED: PauseResult = { siteMonitor: [MONITOR_TASK] };
+const PAUSED_TASKS = [MONITOR_TASK];
 
 /** Callee URLs of every target service, in no particular order. */
 const ALL_SERVICES: Record<string, string> = {
-  timesheets: 'http://127.0.0.1:20118',
   'programs-sites': 'http://127.0.0.1:20113',
   stub: 'http://127.0.0.1:20199',
   identity: 'http://127.0.0.1:20111',
-  surveys: 'http://127.0.0.1:20117',
   'strategies-content': 'http://127.0.0.1:20114',
   people: 'http://127.0.0.1:20112',
-  finance: 'http://127.0.0.1:20119',
-  reporting: 'http://127.0.0.1:20116',
-  communications: 'http://127.0.0.1:20115',
-  'e-signature': 'http://127.0.0.1:20120',
 };
 
 const target = (service: string, queue: string): QueueTarget => ({ service, queue });
@@ -82,17 +73,14 @@ const PROGRAMS_SITES_TARGETS = [
 ];
 /** Every creator of every registry queue, sorted by service, then queue. */
 const ALL_TARGETS = [
-  target('communications', 'communications-outbox-sweep'),
-  target('communications', 'communications-reminders'),
-  target('communications', 'surveys-launch'),
   target('identity', 'identity-outbox-sweep'),
   target('people', 'people-outbox-sweep'),
   ...PROGRAMS_SITES_TARGETS,
-  target('reporting', 'reporting-export-run'),
   target('strategies-content', 'content-scheduled-publish'),
   target('stub', 'stub-outbox-sweep'),
-  target('surveys', 'surveys-outbox-sweep'),
 ];
+/** The registry queue one service runs alone, for the running-task cases. */
+const MONITOR_QUEUE = target('programs-sites', 'programs-sites-sitemonitor');
 const isSweepTarget = ({ queue }: QueueTarget): boolean => queue.endsWith('-outbox-sweep');
 /** Queues paused first, while the sweeps keep publishing. */
 const PRODUCER_TARGETS = ALL_TARGETS.filter((entry) => !isSweepTarget(entry));
@@ -131,7 +119,7 @@ const cutoverStatus = (inflight: InflightRow[]): CutoverStatusV2 => ({
   sessionMode: 'legacy-primary',
 });
 
-const endpoint = (name: string): string => `http://127.0.0.1:20118/internal/v1/events/${name}`;
+const endpoint = (name: string): string => `http://127.0.0.1:20111/internal/v1/events/${name}`;
 /** Push config as Pub/Sub reports it: the local endpoint with its push key, and null oneof members. */
 const livePush = (name: string, key = 'unit-push-key') => ({
   pushEndpoint: `${endpoint(name)}?key=${key}`,
@@ -154,7 +142,7 @@ const PLANNED: BackgroundRecord = {
   suspended: true,
   since: NOW,
   reason: 'drain-and-suspend',
-  pushConfigs: { [PEOPLE_GROUP]: savedPush(PEOPLE_GROUP), [TIMESHEETS_ARCHIVED]: savedPush(TIMESHEETS_ARCHIVED) },
+  pushConfigs: { [IDENTITY_PERSON]: savedPush(IDENTITY_PERSON), [PEOPLE_GROUP]: savedPush(PEOPLE_GROUP) },
   pausedQueues: ALL_TARGETS,
   pausedTasks: [],
 };
@@ -464,10 +452,10 @@ describe('queueControlTargets', () => {
     ['every creator', ALL_SERVICES, ALL_TARGETS],
     [
       'present creators only',
-      { timesheets: 'http://t', reporting: 'http://r', 'programs-sites': 'http://p' },
-      [...PROGRAMS_SITES_TARGETS, target('reporting', 'reporting-export-run')],
+      { gateway: 'http://g', 'strategies-content': 'http://s', 'programs-sites': 'http://p' },
+      [...PROGRAMS_SITES_TARGETS, target('strategies-content', 'content-scheduled-publish')],
     ],
-    ['no creator', { timesheets: 'http://t', finance: 'http://f' }, []],
+    ['no creator', { gateway: 'http://g', migration: 'http://m' }, []],
   ])('targets %s', (_label, serviceUrls, expected) => {
     expect(queueControlTargets(serviceUrls)).toStrictEqual(expected);
   });
@@ -494,8 +482,8 @@ describe('drainAndSuspend', () => {
       'suspend',
       'pauseAll',
       ...quietBarrierLog(PRODUCER_TARGETS, SWEEP_TARGETS),
+      `modifyPushConfig ${IDENTITY_PERSON} {}`,
       `modifyPushConfig ${PEOPLE_GROUP} {}`,
-      `modifyPushConfig ${TIMESHEETS_ARCHIVED} {}`,
       'suspend',
     ]);
     expect(w.background.writes).toStrictEqual([PLANNED, { ...PLANNED, pausedTasks: PAUSED_TASKS }]);
@@ -510,13 +498,13 @@ describe('drainAndSuspend', () => {
       finalDrained: DRAINED,
       pausedTasks: PAUSED_TASKS,
       pausedQueues: ALL_TARGETS,
-      switchedToPull: [PEOPLE_GROUP, TIMESHEETS_ARCHIVED],
+      switchedToPull: [IDENTITY_PERSON, PEOPLE_GROUP],
       record: {
         ...PLANNED,
         pausedTasks: PAUSED_TASKS,
         pushConfigs: {
+          [IDENTITY_PERSON]: { ...savedPush(IDENTITY_PERSON), pushEndpoint: endpoint(IDENTITY_PERSON) },
           [PEOPLE_GROUP]: { ...savedPush(PEOPLE_GROUP), pushEndpoint: endpoint(PEOPLE_GROUP) },
-          [TIMESHEETS_ARCHIVED]: { ...savedPush(TIMESHEETS_ARCHIVED), pushEndpoint: endpoint(TIMESHEETS_ARCHIVED) },
         },
       },
     });
@@ -529,13 +517,13 @@ describe('drainAndSuspend', () => {
     await drainAndSuspend(w.context(), w.ports({ reason: 'golden capture' }));
     const first = copy(w.background.stored);
     w.clock.advance(60_000);
-    w.subscription(TIMESHEETS_ARCHIVED).state.pushConfig = livePush(TIMESHEETS_ARCHIVED, 'rotated-key');
-    w.subscription(FINANCE_SITE).state.pushConfig = livePush(FINANCE_SITE);
-    w.settings.paused = { siteMonitor: [], surveys: ['opt2-survey-43-launch'] };
+    w.subscription(IDENTITY_PERSON).state.pushConfig = livePush(IDENTITY_PERSON, 'rotated-key');
+    w.subscription(PROGRAMS_SITES_SITE).state.pushConfig = livePush(PROGRAMS_SITES_SITE);
+    w.settings.paused = { siteMonitor: ['siteMonitor'] };
     w.log.length = 0;
     const requestsBefore = w.requests.length;
 
-    const result = await drainAndSuspend(w.context({ 'programs-sites': 'http://p', timesheets: 'http://t' }), w.ports());
+    const result = await drainAndSuspend(w.context({ 'programs-sites': 'http://p', gateway: 'http://g' }), w.ports());
 
     const drainLog = CONFIG.dataOwners.map((owner) => `position ${owner}`);
     expect(w.log).toStrictEqual([
@@ -551,9 +539,9 @@ describe('drainAndSuspend', () => {
         PROGRAMS_SITES_TARGETS.filter(isSweepTarget),
         drainLog,
       ),
-      `modifyPushConfig ${FINANCE_SITE} {}`,
+      `modifyPushConfig ${IDENTITY_PERSON} {}`,
       `modifyPushConfig ${PEOPLE_GROUP} {}`,
-      `modifyPushConfig ${TIMESHEETS_ARCHIVED} {}`,
+      `modifyPushConfig ${PROGRAMS_SITES_SITE} {}`,
       'suspend',
     ]);
     expect(w.requests.slice(requestsBefore).filter((request) => request.path.endsWith('/resume'))).toHaveLength(SWEEP_TARGETS.length);
@@ -561,23 +549,23 @@ describe('drainAndSuspend', () => {
     const planned: BackgroundRecord = {
       ...PLANNED,
       reason: 'golden capture',
-      pushConfigs: { ...PLANNED.pushConfigs, [FINANCE_SITE]: savedPush(FINANCE_SITE) },
+      pushConfigs: { ...PLANNED.pushConfigs, [PROGRAMS_SITES_SITE]: savedPush(PROGRAMS_SITES_SITE) },
       pausedTasks: PAUSED_TASKS,
     };
-    expect(w.background.writes.slice(2)).toStrictEqual([planned, { ...planned, pausedTasks: [...PAUSED_TASKS, 'opt2-survey-43-launch'] }]);
+    expect(w.background.writes.slice(2)).toStrictEqual([planned, { ...planned, pausedTasks: [...PAUSED_TASKS, 'siteMonitor'] }]);
     for (const write of w.background.writes.slice(2)) {
-      for (const name of [PEOPLE_GROUP, TIMESHEETS_ARCHIVED]) {
+      for (const name of [IDENTITY_PERSON, PEOPLE_GROUP]) {
         expect(JSON.stringify(write.pushConfigs[name])).toBe(JSON.stringify(first.pushConfigs[name]));
       }
     }
     expect(result).toMatchObject({
       alreadySuspended: true,
-      pausedTasks: ['opt2-survey-43-launch'],
+      pausedTasks: ['siteMonitor'],
       pausedQueues: PROGRAMS_SITES_TARGETS,
-      switchedToPull: [FINANCE_SITE, PEOPLE_GROUP, TIMESHEETS_ARCHIVED],
+      switchedToPull: [IDENTITY_PERSON, PEOPLE_GROUP, PROGRAMS_SITES_SITE],
     });
     expect(w.subscription(PEOPLE_GROUP).modifyPushConfig.mock.calls).toStrictEqual([[{}], [savedPush(PEOPLE_GROUP)], [{}]]);
-    expect(w.subscription(TIMESHEETS_ARCHIVED).modifyPushConfig).toHaveBeenLastCalledWith({});
+    expect(w.subscription(IDENTITY_PERSON).modifyPushConfig).toHaveBeenLastCalledWith({});
   });
 
   it('changes nothing when the first drain of a first run times out', async () => {
@@ -597,15 +585,14 @@ describe('drainAndSuspend', () => {
 
   it('re-pauses a queue still running tasks until it reports none, then drains again', async () => {
     const w = await world();
-    const reporting = target('reporting', 'reporting-export-run');
-    w.settings.running = ({ queue }, calls) => (queue === reporting.queue && calls === 1 ? 2 : 0);
+    w.settings.running = ({ queue }, calls) => (queue === MONITOR_QUEUE.queue && calls === 1 ? 2 : 0);
 
     const result = await drainAndSuspend(w.context(), w.ports({ sleep: w.shortSleep }));
 
     const pausedAll = w.log.indexOf('pauseAll');
     expect(w.log.slice(pausedAll + 1, w.log.indexOf('gateway status', pausedAll))).toStrictEqual([
       ...PRODUCER_TARGETS.map(pauseEntry),
-      pauseEntry(reporting),
+      pauseEntry(MONITOR_QUEUE),
     ]);
     expect(w.shortSleep.mock.calls).toStrictEqual([[DEFAULT_DRAIN_POLL_MS]]);
     expect(result.finalDrained).toStrictEqual(DRAINED);
@@ -699,25 +686,25 @@ describe('drainAndSuspend', () => {
     [
       'failed queue pause',
       (w) => {
-        w.settings.status = (request) => (request.path === pausePath('surveys-launch') ? 500 : 200);
+        w.settings.status = (request) => (request.path === pausePath('content-scheduled-publish') ? 500 : 200);
       },
       PRODUCER_TARGETS.slice(0, 2),
-      'Queue control pause of surveys-launch on communications answered HTTP 500',
+      'Queue control pause of content-scheduled-publish on programs-sites answered HTTP 500',
     ],
     [
       'pause answer without a running count',
       (w) => {
         w.settings.running = ({ queue }) => (queue === 'content-feed-import' ? undefined : 0);
       },
-      PRODUCER_TARGETS.slice(0, 3),
+      PRODUCER_TARGETS.slice(0, 1),
       'Queue control pause of content-feed-import on programs-sites answered without its running tasks',
     ],
     [
       'queue running tasks past the barrier budget',
       (w) => {
-        w.settings.running = ({ queue }) => (queue === 'reporting-export-run' ? 1 : 0);
+        w.settings.running = ({ queue }) => (queue === MONITOR_QUEUE.queue ? 1 : 0);
       },
-      [...PRODUCER_TARGETS, target('reporting', 'reporting-export-run')],
+      [...PRODUCER_TARGETS, MONITOR_QUEUE],
       InvocationsRunningError,
     ],
     [
@@ -769,7 +756,7 @@ describe('drainAndSuspend', () => {
     [
       'failed push switch',
       (w) => {
-        w.subscription(PEOPLE_GROUP).modifyPushConfig.mockRejectedValueOnce(new Error('5 NOT_FOUND: Subscription does not exist'));
+        w.subscription(IDENTITY_PERSON).modifyPushConfig.mockRejectedValueOnce(new Error('5 NOT_FOUND: Subscription does not exist'));
       },
       [...PRODUCER_TARGETS, ...PRODUCER_TARGETS, ...SWEEP_TARGETS],
       '5 NOT_FOUND: Subscription does not exist',
@@ -782,24 +769,24 @@ describe('drainAndSuspend', () => {
 
     expect(w.background.writes).toStrictEqual([PLANNED]);
     expect(w.requests).toStrictEqual(pauses.map(pauseRequest));
-    expect(w.subscription(TIMESHEETS_ARCHIVED).modifyPushConfig).not.toHaveBeenCalled();
+    expect(w.subscription(PEOPLE_GROUP).modifyPushConfig).not.toHaveBeenCalled();
     expect(w.pubsub.close).not.toHaveBeenCalled();
   });
 
   it('names each queue still running tasks and the budget in InvocationsRunningError', async () => {
     const w = await world();
-    w.settings.running = ({ queue }) => (queue === 'reporting-export-run' || queue === 'surveys-launch' ? 3 : 0);
+    w.settings.running = ({ queue }) => (queue === MONITOR_QUEUE.queue || queue === 'content-feed-import' ? 3 : 0);
 
     const failure = await drainAndSuspend(w.context(), w.ports()).catch((error: unknown) => error);
 
     expect(failure).toBeInstanceOf(InvocationsRunningError);
     expect(failure).toMatchObject({
       name: 'InvocationsRunningError',
-      message: `tasks still running after ${String(CONFIG.transition.drainTimeoutMs)} ms: surveys-launch on communications (3), reporting-export-run on reporting (3)`,
+      message: `tasks still running after ${String(CONFIG.transition.drainTimeoutMs)} ms: content-feed-import on programs-sites (3), programs-sites-sitemonitor on programs-sites (3)`,
       timeoutMs: CONFIG.transition.drainTimeoutMs,
       queues: [
-        { service: 'communications', queue: 'surveys-launch', running: 3 },
-        { service: 'reporting', queue: 'reporting-export-run', running: 3 },
+        { service: 'programs-sites', queue: 'content-feed-import', running: 3 },
+        { service: 'programs-sites', queue: 'programs-sites-sitemonitor', running: 3 },
       ],
     });
     expect(w.sleep).toHaveBeenCalledExactlyOnceWith(DEFAULT_DRAIN_POLL_MS);

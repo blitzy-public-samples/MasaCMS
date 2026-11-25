@@ -310,6 +310,25 @@ export function createScenarioContext(scenario: ScenarioInput, opts: ScenarioCon
   return ctx;
 }
 
+/** Dataset list of the seeded accounts; {@link SEED_CREDENTIALS_FILE} holds each one's password. */
+const USERS_PATH = 'masa.users';
+
+/**
+ * Resolves through `ctx.secrets`, as `seed:<username>`, the password of each account a `masa.users` seedRef selected,
+ * so its stored bcrypt value verifies under that name on capture and replay alike; none when no rows are compared.
+ */
+export function resolveSeedAccountSecrets(ctx: ScenarioContext, scenario: Pick<Scenario, 'seedRefs' | 'compare'>): void {
+  if (!scenario.compare.includes('rows')) return;
+  for (const ref of scenario.seedRefs) {
+    if (ref.source !== 'dataset' || ref.path !== USERS_PATH) continue;
+    const { value: username } = fieldOf(ctx.seedRows.get(ref.as), 'username');
+    if (typeof username !== 'string' || username === '') {
+      throw scenarioError(ctx, `seedRef ${ref.as} selected a ${USERS_PATH} row without a username`);
+    }
+    inScenario(ctx, () => ctx.secrets.secret(`seed:${username}`));
+  }
+}
+
 /** Session `name`; unnamed, the scenario's only session, else `default`. Throws GoldenConfigError when absent. */
 export function session(ctx: ScenarioContext, name?: string): HttpSession {
   const key = name ?? (ctx.sessions.size === 1 ? [...ctx.sessions.keys()][0] : DEFAULT_SESSION);

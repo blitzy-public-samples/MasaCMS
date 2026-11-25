@@ -1,9 +1,10 @@
 // Runs one scripted migration fault end to end (fault, resume, reconcile) and re-exports the faults folder's public API.
+import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
 import { serializeError } from '@opt2/platform/logging';
 
-import type { MigrationConfig } from '../config.js';
+import { resolveReportsDir, type MigrationConfig } from '../config.js';
 import type { MigrationContext } from '../context.js';
 import { currentAuthority } from '../cutover/index.js';
 import {
@@ -78,6 +79,9 @@ export type FaultName = (typeof FAULT_NAMES)[number];
 const DEFAULT_SCRIPTS = FAULT_SCRIPTS satisfies Readonly<Record<FaultName, FaultScript>>;
 
 const POINT_PREFIX = 'after-fault-';
+
+/** Repository-relative reports directory, which a written fault block names instead of a host path. */
+const REPORTS_REF = 'opt2/reports';
 
 /** Unknown fault name or parameters its script's schema rejects; the CLI exits 2 on it. */
 export class FaultUsageError extends Error {
@@ -159,6 +163,28 @@ interface PartialPoint {
 
 function isFaultName(name: string): name is FaultName {
   return (FAULT_NAMES as readonly string[]).includes(name);
+}
+
+/** Absolute `file` under `reportsDir` as its POSIX `opt2/reports/…` path, another absolute one as its file name. */
+function reportRef(file: string, reportsDir: string): string {
+  if (!path.isAbsolute(file)) return file;
+  const relative = path.relative(reportsDir, file);
+  if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return path.basename(file);
+  return path.posix.join(REPORTS_REF, ...relative.split(path.sep));
+}
+
+/** `value` with each `reportPath` string in its arrays and plain objects at any depth replaced by {@link reportRef}. */
+function withReportRefs<T>(value: T, reportsDir: string): T {
+  if (Array.isArray(value)) return value.map((item: unknown) => withReportRefs(item, reportsDir)) as T;
+  if (typeof value !== 'object' || value === null) return value;
+  // A Date or another class instance is serialised by its own toJSON, so it is kept as it is.
+  const prototype: unknown = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return value;
+  const entries = Object.entries(value).map(([key, item]: [string, unknown]) => [
+    key,
+    key === 'reportPath' && typeof item === 'string' ? reportRef(item, reportsDir) : withReportRefs(item, reportsDir),
+  ]);
+  return Object.fromEntries(entries) as T;
 }
 
 /** `phase`'s failure, also logged with its stack, which the record does not keep. */
@@ -307,6 +333,8 @@ async function runReconciling(
     ...(runOutput?.details === undefined ? {} : { run: runOutput.details }),
     ...(resumeOutput?.details === undefined ? {} : { resume: resumeOutput.details }),
   };
+  // The block is committed evidence, so the report paths it names are repository-relative; the result keeps them as written.
+  const reportsDir = path.resolve(resolveReportsDir(ctx.config, ctx.env));
   const block: FaultReportBlock = {
     name: fault,
     params,
@@ -314,9 +342,9 @@ async function runReconciling(
     startedAt,
     finishedAt: ctx.clock.now().toISOString(),
     tableVersion,
-    assertions,
+    assertions: withReportRefs(assertions, reportsDir),
     steps: resumeOutput?.steps ?? [],
-    ...(Object.keys(details).length === 0 ? {} : { details }),
+    ...(Object.keys(details).length === 0 ? {} : { details: withReportRefs(details, reportsDir) }),
     ...(runError === undefined ? {} : { error: runError }),
     ...(resumeError === undefined ? {} : { resumeError }),
   };

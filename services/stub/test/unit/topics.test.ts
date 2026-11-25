@@ -12,7 +12,12 @@ import {
 } from '@opt2/platform/events';
 import { SITE_CHANGED_TOPIC as PLATFORM_SITE_CHANGED_TOPIC, tenantIdForSite } from '@opt2/platform/tenancy';
 import type { StubNoteCreatedV1Payload } from '../../src/generated/events/stub.note.created.v1.js';
+import type { NoteCommentedPayload } from '../../src/domain/comment.js';
 import {
+  NOTE_COMMENTED_DLQ,
+  NOTE_COMMENTED_SCHEMA_URL,
+  NOTE_COMMENTED_SUBSCRIPTION,
+  NOTE_COMMENTED_TOPIC,
   NOTE_CREATED_DLQ,
   NOTE_CREATED_SCHEMA_URL,
   NOTE_CREATED_SUBSCRIPTION,
@@ -20,12 +25,15 @@ import {
   SITE_CHANGED_SCHEMA_URL,
   SITE_CHANGED_SUBSCRIPTION,
   SITE_CHANGED_TOPIC,
+  noteCommentedSchema,
+  noteCommentedValidator,
   noteCreatedSchema,
   noteCreatedValidator,
   siteChangedSchema,
 } from '../../src/events/topics.js';
 
 const NOTE_CONTRACT_URL = new URL('../../contracts/events/stub.note.created.v1.json', import.meta.url);
+const COMMENT_CONTRACT_URL = new URL('../../contracts/events/stub.note.commented.v1.json', import.meta.url);
 const SITE_CONTRACT_URL = new URL(
   '../../../programs-sites/contracts/events/programs-sites.site.changed.v1.json',
   import.meta.url,
@@ -67,6 +75,24 @@ describe('stub topic names', () => {
       literal: 'stub.stub.note.created.v1.dlq',
     },
     {
+      name: 'NOTE_COMMENTED_TOPIC',
+      actual: NOTE_COMMENTED_TOPIC,
+      built: topicName('stub', 'note', 'commented', 1),
+      literal: 'stub.note.commented.v1',
+    },
+    {
+      name: 'NOTE_COMMENTED_SUBSCRIPTION',
+      actual: NOTE_COMMENTED_SUBSCRIPTION,
+      built: subscriptionName('stub', 'stub.note.commented.v1'),
+      literal: 'stub.stub.note.commented.v1',
+    },
+    {
+      name: 'NOTE_COMMENTED_DLQ',
+      actual: NOTE_COMMENTED_DLQ,
+      built: dlqTopicName('stub.stub.note.commented.v1'),
+      literal: 'stub.stub.note.commented.v1.dlq',
+    },
+    {
       name: 'SITE_CHANGED_TOPIC',
       actual: SITE_CHANGED_TOPIC,
       built: topicName('programs-sites', 'site', 'changed', 1),
@@ -91,6 +117,13 @@ describe('stub topic names', () => {
 describe('stub topic schemas', () => {
   it.each([
     { name: 'noteCreatedSchema', topic: NOTE_CREATED_TOPIC, url: NOTE_CREATED_SCHEMA_URL, schema: noteCreatedSchema, contract: NOTE_CONTRACT_URL },
+    {
+      name: 'noteCommentedSchema',
+      topic: NOTE_COMMENTED_TOPIC,
+      url: NOTE_COMMENTED_SCHEMA_URL,
+      schema: noteCommentedSchema,
+      contract: COMMENT_CONTRACT_URL,
+    },
     { name: 'siteChangedSchema', topic: SITE_CHANGED_TOPIC, url: SITE_CHANGED_SCHEMA_URL, schema: siteChangedSchema, contract: SITE_CONTRACT_URL },
   ])('$name is the parsed producer contract of $topic', ({ topic, url, schema, contract }) => {
     expect(url.href).toBe(contract.href);
@@ -102,7 +135,7 @@ describe('stub topic schemas', () => {
 
 describe('noteCreatedValidator', () => {
   it('declares the state kind and the contract $id', () => {
-    expect(noteCreatedValidator.meta).toEqual({ kind: 'state' });
+    expect(noteCreatedValidator.meta).toEqual({ kind: 'state', fanout: 'userPool' });
     expect(noteCreatedValidator.schemaId).toBe('urn:opt2:stub:event:stub.note.created.v1');
   });
 
@@ -143,5 +176,43 @@ describe('noteCreatedValidator', () => {
     expect(envelope).toMatchObject({ eventType: 'stub.note.created', schemaVersion: '1.0.0', producer: 'stub' });
     expect(validateEnvelope(envelope).ok).toBe(true);
     expect(noteCreatedValidator.validatePayload(envelope.payload).ok).toBe(true);
+  });
+});
+
+function commentPayload(): NoteCommentedPayload {
+  return { noteId: notePayload().noteId, commentId: 'B2C3D4E5-F607-1829-3A4B5C6D7E8F9012', body: 'A comment', created: '2026-11-10 08:58:01.003' };
+}
+
+function commentErrors(payload: unknown): string[] {
+  const result = noteCommentedValidator.validatePayload(payload);
+  return result.ok ? [] : result.errors;
+}
+
+describe('noteCommentedValidator', () => {
+  it('declares the process kind and the contract $id', () => {
+    expect(noteCommentedValidator.meta).toEqual({ kind: 'process' });
+    expect(noteCommentedValidator.schemaId).toBe('urn:opt2:stub:event:stub.note.commented.v1');
+  });
+
+  it('accepts a payload that follows the contract', () => {
+    const payload = commentPayload();
+    expect(noteCommentedValidator.validatePayload(payload)).toEqual({ ok: true, value: payload });
+  });
+
+  it.each(['noteId', 'commentId', 'body', 'created'] as const)('rejects a comment payload without %s', (field) => {
+    const payload: Record<string, unknown> = { ...commentPayload() };
+    delete payload[field];
+    expect(commentErrors(payload)).toEqual([`/ must have required property '${field}'`]);
+  });
+
+  it.each([
+    { label: 'a lowercase commentId', field: 'commentId', value: 'b2c3d4e5-f607-1829-3a4b5c6d7e8f9012', error: '/commentId must match pattern' },
+    { label: 'an ISO 8601 created', field: 'created', value: '2026-11-10T08:58:01.003Z', error: '/created must match pattern' },
+    { label: 'an empty body', field: 'body', value: '', error: '/body must NOT have fewer than 1 characters' },
+    { label: 'an unknown property', field: 'extra', value: true, error: '/ must NOT have additional properties (extra)' },
+  ])('rejects a comment payload with $label', ({ field, value, error }) => {
+    const errors = commentErrors({ ...commentPayload(), [field]: value });
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain(error);
   });
 });

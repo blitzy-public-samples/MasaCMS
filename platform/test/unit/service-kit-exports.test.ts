@@ -112,14 +112,14 @@ const reexported = Object.entries(VALUE_EXPORTS).flatMap(([from, [module, names]
 );
 
 const localEnv = {
-  PORT: '8115',
-  OPT2_SERVICE_NAME: 'communications',
+  PORT: '8100',
+  OPT2_SERVICE_NAME: 'gateway',
   OPT2_ENV: 'local',
   OPT2_JWKS_URL: 'http://127.0.0.1:8111/internal/v1/jwks',
   OPT2_TOKEN_ISSUER: 'opt2-local-identity',
   OPT2_TOKEN_AUDIENCE: 'opt2-local',
   TZ: 'UTC',
-  SMTP_HOST: '127.0.0.1',
+  LEGACY_ORIGIN: 'http://127.0.0.1:8080',
 };
 
 describe('@opt2/platform/service-kit barrel', () => {
@@ -135,13 +135,13 @@ describe('@opt2/platform/service-kit barrel', () => {
   });
 
   it('lets a consumer extend the base schema and load it with the extension typed', () => {
-    const schema = baseEnvSchema.extend({ SMTP_HOST: z.string() });
+    const schema = baseEnvSchema.extend({ LEGACY_ORIGIN: z.string() });
     const loaded = loadEnv(schema, localEnv);
-    expectTypeOf(loaded.SMTP_HOST).toEqualTypeOf<string>();
+    expectTypeOf(loaded.LEGACY_ORIGIN).toEqualTypeOf<string>();
     expectTypeOf(loaded).toEqualTypeOf<Readonly<LoadedEnv<typeof schema>>>();
     expectTypeOf(createService<typeof loaded>).returns.toEqualTypeOf<Promise<FastifyInstance>>();
     expectTypeOf<CreateServiceOptions<typeof loaded>['env']>().toEqualTypeOf<typeof loaded>();
-    expect(loaded.SMTP_HOST).toBe('127.0.0.1');
+    expect(loaded.LEGACY_ORIGIN).toBe('http://127.0.0.1:8080');
     expect(loaded.OPT2_TASKS_ADAPTER).toBe('local');
   });
 

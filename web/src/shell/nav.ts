@@ -28,43 +28,6 @@ export const MODULE_IDS = Object.freeze({
   m099: '00000000000000000000000000000000099',
 });
 
-/** One entry of the OPT-2 nav group: a synthetic module's landing screen and the roles that see it. */
-export interface Opt2NavModule {
-  readonly module: string;
-  readonly screen: string;
-  readonly label: string;
-  readonly icon: string;
-  readonly roles: readonly string[];
-}
-
-/** Synthetic-module screens of the OPT-2 nav group, in nav order. */
-export const OPT2_NAV_MODULES: readonly Opt2NavModule[] = Object.freeze([
-  {
-    module: 'timesheets',
-    screen: 'sheets',
-    label: 'Timesheets',
-    icon: 'mi-clock-o',
-    roles: ['timesheets.employee', 'timesheets.primary-approver', 'timesheets.secondary-approver'],
-  },
-  { module: 'finance', screen: 'records', label: 'Finance', icon: 'mi-money', roles: ['finance.preparer', 'finance.approver'] },
-  {
-    module: 'e-signature',
-    screen: 'requests',
-    label: 'E-Signature',
-    icon: 'mi-pencil',
-    roles: ['esignature.signer', 'esignature.auditor'],
-  },
-  { module: 'reporting', screen: 'exports', label: 'Reporting', icon: 'mi-bar-chart', roles: ['reporting.exporter'] },
-  { module: 'surveys', screen: 'surveys', label: 'Surveys', icon: 'mi-check-square-o', roles: ['surveys.manager'] },
-  {
-    module: 'communications',
-    screen: 'templates',
-    label: 'Communications',
-    icon: 'mi-envelope',
-    roles: ['communications.sender'],
-  },
-]);
-
 const MSSQL_UPDATE_WARNING =
   '\\n\\nIf you are using MSSQL you must uncheck Maintain Connections in your CF administrator datasource settings ' +
   'before proceeding. You may turn it back on after the update is complete.';
@@ -503,26 +466,6 @@ function globalSettings(n: NavState): SafeHtml | null {
                         </li>`;
 }
 
-/** OPT-2 group linking the synthetic-module screens the user's roles reach; absent when none does. */
-function opt2Group(n: NavState): SafeHtml | null {
-  const visible = OPT2_NAV_MODULES.filter((entry) => entry.roles.some((role) => n.ctx.roles.includes(role)));
-  if (visible.length === 0) return null;
-  const current = n.sc.view.opt2Module;
-  const inOpt2 = current !== undefined && current !== '';
-  const items = visible.map(
-    (entry) => html`
-                            <li>
-                                <a${when(current === entry.module, ACTIVE)} href="${raw(`/opt2/admin/${entry.module}/${entry.screen}?siteid=${n.sidUrl}`)}"><i class="${entry.icon}"></i><span class="sidebar-mini-hide">${entry.label}</span></a>
-                            </li>`,
-  );
-  return html`
-                    <li id="admin-nav-opt2"${when(inOpt2, OPEN)}>
-                        <a class="nav-submenu${when(inOpt2, ACTIVE_CLASS)}" data-toggle="nav-submenu" href="#"><i class="mi-cubes"></i><span class="sidebar-mini-hide">OPT-2</span></a>
-                        <ul>${items}
-                        </ul>
-                    </li>`;
-}
-
 /** Help menu of documentation and support links (`nav.cfm` 344-364). */
 function help(n: NavState): SafeHtml {
   return html`
@@ -622,7 +565,6 @@ function mainMenu(n: NavState): SafeHtml {
     plugins(n),
     siteSettings(n),
     globalSettings(n),
-    opt2Group(n),
     help(n),
     version(n),
   ];

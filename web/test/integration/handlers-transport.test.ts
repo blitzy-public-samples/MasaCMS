@@ -29,8 +29,6 @@ vi.mock('@/screens/registry', async () => {
   return {
     findScreen: (circuit: string, action: string) =>
       screens.find((screen) => screen.circuit === circuit && screen.action === action),
-    findOpt2Screen: () => undefined,
-    findOpt2Action: () => undefined,
     shellHooks: { secondaryMenus: {}, contentNav: () => raw('') },
   };
 });

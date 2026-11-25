@@ -423,9 +423,8 @@ describe('opt2-outbox serviceSchema', () => {
   it.each([
     ['programs-sites', 'programs_sites'],
     ['strategies-content', 'content'],
-    ['e-signature', 'esignature'],
     ['people', 'people'],
-    ['surveys', 'surveys'],
+    ['stub', 'stub'],
   ])('maps service %s to schema %s', (service, schema) => {
     expect(serviceSchema(service)).toBe(schema);
   });
@@ -983,7 +982,7 @@ const TASKS_USAGE =
   'usage: opt2-tasks reconcile [--queue <name>]... [--with-sitemonitor] [--include-local-only] [--as operator|migration]';
 const SITEMONITOR = 'programs-sites-sitemonitor';
 const SLOT = 1782820800;
-const PRODUCERS = ['identity', 'people', 'programs-sites', 'surveys', 'communications'] as const;
+const PRODUCERS = ['identity', 'people', 'programs-sites'] as const;
 const SERVICE_URLS: Record<string, string> = Object.fromEntries(
   [...PRODUCERS, 'stub'].map((service) => [service, `http://${service}.invalid`]),
 );
@@ -1120,7 +1119,7 @@ describe('opt2-tasks reconcile', () => {
   );
 
   it.each([
-    { queues: ['surveys-launch'], rejected: ['surveys-launch', 'Not a recurring'] },
+    { queues: ['content-feed-import'], rejected: ['content-feed-import', 'Not a recurring'] },
     { queues: ['people-outbox-sweep', SECRET], rejected: [SECRET, 'people-outbox-sweep'] },
     { queues: [SITEMONITOR], rejected: ['withSiteMonitor'] },
   ])('exits 2 with the fixed queue usage line and closes the client without a call when --queue names $queues', async ({ queues, rejected }) => {
@@ -1171,15 +1170,15 @@ describe('opt2-tasks reconcile', () => {
   });
 
   it('exits 1 with a not-deployed line for a named queue whose creator OPT2_SERVICE_URLS lacks', async () => {
-    stubTasksEnv({ urls: Object.fromEntries(Object.entries(SERVICE_URLS).filter(([service]) => service !== 'surveys')) });
+    stubTasksEnv({ urls: Object.fromEntries(Object.entries(SERVICE_URLS).filter(([service]) => service !== 'programs-sites')) });
     const { sent } = fakeServiceClient();
 
-    expect(await tasksMain(['reconcile', '--queue', 'surveys-outbox-sweep', '--queue', 'identity-outbox-sweep'])).toBe(1);
+    expect(await tasksMain(['reconcile', '--queue', 'programs-sites-outbox-sweep', '--queue', 'identity-outbox-sweep'])).toBe(1);
 
     expect(sent()).toEqual([ensureRequest(sweep('identity'))]);
     expect(stdoutLines()).toEqual([
       ensuredLine(sweep('identity')),
-      { queue: 'surveys-outbox-sweep', service: 'surveys', ok: false, error: 'not deployed' },
+      { queue: 'programs-sites-outbox-sweep', service: 'programs-sites', ok: false, error: 'not deployed' },
     ]);
     expect(stderr).toBe('');
   });

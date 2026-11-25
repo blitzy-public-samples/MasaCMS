@@ -8,6 +8,7 @@ import { fixedClock } from '@opt2/platform/service-kit';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { loadConfig } from '../../src/config.js';
+import { ARCHIVE_DIR, readArchive, reconstructPoint } from '../../src/reconcile/archive.js';
 import type { Difference, ObjectComparison, RowComparison } from '../../src/reconcile/compare.js';
 import {
   GENERATED_BY,
@@ -111,11 +112,16 @@ describe('resolvePoint', () => {
   });
 
   it('matches the committed report of every point it accepts, placeholder or generated', async () => {
+    // Runtime reports at the top level; the archived points reconstructed from archive/.
+    const archive = await readArchive(path.join(COMMITTED_DIR, ARCHIVE_DIR));
     const files = (await readdir(COMMITTED_DIR)).filter((name) => name.endsWith('.json'));
-    expect(files).toEqual(expect.arrayContaining(COMMITTED_POINTS.map((name) => `${name}.json`)));
-    for (const file of files) {
-      const report = JSON.parse(await readFile(path.join(COMMITTED_DIR, file), 'utf8')) as Record<string, unknown>;
-      const point = resolvePoint(config, path.basename(file, '.json'));
+    const points = [...new Set([...files.map((file) => path.basename(file, '.json')), ...archive.keys()])];
+    expect(points).toEqual(expect.arrayContaining(COMMITTED_POINTS));
+    for (const name of points) {
+      const report: Record<string, unknown> = files.includes(`${name}.json`)
+        ? (JSON.parse(await readFile(path.join(COMMITTED_DIR, `${name}.json`), 'utf8')) as Record<string, unknown>)
+        : reconstructPoint(archive, name);
+      const point = resolvePoint(config, name);
       const pending = report.status === 'pending-run';
       // A feed or fault run expects the version active when it began.
       const expectsActive = !pending && (point.kind === 'after-feed' || point.kind === 'after-fault');
@@ -258,10 +264,10 @@ describe('buildReport', () => {
   it('lists skipped unit tables sorted by unit and table, counts their units and leaves the result to the compared entries', () => {
     const reason = 'fixtures unavailable: Mailpit unavailable';
     const skippedUnits = [
-      { unit: 'timesheets.blackout', legacyTable: 'Program_N.blackout', reason },
+      { unit: 'programs_sites.enrolment', legacyTable: 'Program_N.enrolment', reason },
       { unit: 'people.person_archive', legacyTable: 'synthetic.person_archive', reason },
-      { unit: 'finance.split', legacyTable: 'synthetic.b', reason },
-      { unit: 'finance.split', legacyTable: 'synthetic.a', reason },
+      { unit: 'identity.split', legacyTable: 'synthetic.b', reason },
+      { unit: 'identity.split', legacyTable: 'synthetic.a', reason },
     ];
     const build = (units: readonly UnitReport[]) =>
       buildReport({ point: resolvePoint(config, 'rollback-before'), startedAt: STARTED_AT, tableVersion: 'v0002', snapshotSeq: null, legacyDatabase: 'muradb', units, skippedUnits, fileStore: NOT_APPLICABLE });
@@ -269,10 +275,10 @@ describe('buildReport', () => {
     const report = build([entry('people.person', TENANT_A)]);
 
     expect(report.skippedUnits.map((skipped) => `${skipped.unit}|${skipped.legacyTable}`)).toEqual([
-      'finance.split|synthetic.a',
-      'finance.split|synthetic.b',
+      'identity.split|synthetic.a',
+      'identity.split|synthetic.b',
       'people.person_archive|synthetic.person_archive',
-      'timesheets.blackout|Program_N.blackout',
+      'programs_sites.enrolment|Program_N.enrolment',
     ]);
     expect(report.skippedUnits[0]).not.toBe(skippedUnits[3]);
     expect(report.summary).toEqual({ units: 1, tenants: 1, unitsWithDifferences: 0, differences: 0, orphans: 0, haltedUnits: 0, skippedUnits: 3, emptyUnits: 0 });
@@ -283,10 +289,10 @@ describe('buildReport', () => {
 
   it('lists unit tables compared empty, sorted by unit and table, counts them among the units and leaves the result to the entries', () => {
     const emptyUnits = [
-      { unit: 'timesheets.blackout', legacyTable: 'Program_N.blackout' },
+      { unit: 'programs_sites.enrolment', legacyTable: 'Program_N.enrolment' },
       { unit: 'content.file_object', legacyTable: null },
-      { unit: 'finance.split', legacyTable: 'synthetic.b' },
-      { unit: 'finance.split', legacyTable: 'synthetic.a' },
+      { unit: 'identity.split', legacyTable: 'synthetic.b' },
+      { unit: 'identity.split', legacyTable: 'synthetic.a' },
     ];
     const build = (units: readonly UnitReport[]) =>
       buildReport({ point: resolvePoint(config, 'rollback-before'), startedAt: STARTED_AT, tableVersion: 'v0002', snapshotSeq: null, legacyDatabase: 'muradb', units, emptyUnits, fileStore: NOT_APPLICABLE });
@@ -295,15 +301,15 @@ describe('buildReport', () => {
 
     expect(report.emptyUnits).toEqual([
       { unit: 'content.file_object', legacyTable: null },
-      { unit: 'finance.split', legacyTable: 'synthetic.a' },
-      { unit: 'finance.split', legacyTable: 'synthetic.b' },
-      { unit: 'timesheets.blackout', legacyTable: 'Program_N.blackout' },
+      { unit: 'identity.split', legacyTable: 'synthetic.a' },
+      { unit: 'identity.split', legacyTable: 'synthetic.b' },
+      { unit: 'programs_sites.enrolment', legacyTable: 'Program_N.enrolment' },
     ]);
     expect(report.emptyUnits[0]).not.toBe(emptyUnits[1]);
     expect(report.summary).toEqual({ units: 4, tenants: 1, unitsWithDifferences: 0, differences: 0, orphans: 0, haltedUnits: 0, skippedUnits: 0, emptyUnits: 3 });
     expect(report.result).toBe('zero-difference');
     expect(build([entry('people.person_archive', TENANT_A, { targetCount: 1 })]).result).toBe('difference');
-    expect(build([entry('finance.split', TENANT_A)]).summary.units).toBe(3);
+    expect(build([entry('identity.split', TENANT_A)]).summary.units).toBe(3);
     expect(reportFor('post-cutover', [])).toMatchObject({ emptyUnits: [], summary: { units: 0, emptyUnits: 0 } });
   });
 });

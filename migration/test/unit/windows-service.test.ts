@@ -55,8 +55,8 @@ const MIGRATIONS_DIR = fileURLToPath(new URL('../../db/migrations', import.meta.
 const GATE_PATH = `${MIGRATION_PATH_PREFIX}/gate`;
 // v0002 makes both units target-authoritative, at two owners.
 const TABLE_VERSION = 'v0002';
-const FINANCE = 'finance.record';
-const SURVEYS = 'surveys.survey';
+const REDIRECT = 'identity.redirect';
+const ARCHIVE = 'people.person_archive';
 // The only unit `tcontent` feeds, the start-up guard's table.
 const CONTENT = 'content.content';
 const CONTENT_ID = cfUuid();
@@ -362,7 +362,7 @@ describe.skipIf(!pg)('window service against PostgreSQL', () => {
   const applyBatch = (windowId: string, batchId: string): ApplyRequest => ({
     batchId,
     origin: 'legacy-window',
-    legacyTable: 'tfinance',
+    legacyTable: 'tredirects',
     columns: [{ name: 'id', type: 's' }],
     holderId: windowId,
     rows: [{ op: 'upsert', row: batchId }],
@@ -408,7 +408,7 @@ describe.skipIf(!pg)('window service against PostgreSQL', () => {
           ROUTE_KEY,
           units,
           JSON.stringify({ table: true }),
-          JSON.stringify({ finance: units }),
+          JSON.stringify({ identity: units }),
           JSON.stringify([{ phase: 'opened', at: at.toISOString() }]),
           at,
           new Date(at.getTime() + claimExpiresInMs),
@@ -432,8 +432,8 @@ describe.skipIf(!pg)('window service against PostgreSQL', () => {
   }
 
   it.each([
-    ['its only owner', [FINANCE], 'finance' as DataOwner],
-    ['its second owner', [FINANCE, SURVEYS], 'surveys' as DataOwner],
+    ['its only owner', [REDIRECT], 'identity' as DataOwner],
+    ['its second owner', [REDIRECT, ARCHIVE], 'people' as DataOwner],
   ])('keeps a close whose answer was lost at %s, with the leases, until the owner reopens it', async (_label, units, lost) => {
     const owners = ownersDouble();
     owners.fault(lost, 'close', { kind: 'lost-reply' });
@@ -464,14 +464,14 @@ describe.skipIf(!pg)('window service against PostgreSQL', () => {
     ['its close never arrived', false, 'resumeWindows' as const],
   ])('gives back an opening a dead instance left after persisting its close intent when %s', async (_label, committed, entry) => {
     const owners = ownersDouble();
-    const windowId = await seedOpening([FINANCE], -1000);
-    if (committed) owners.closeAs(windowId, [FINANCE]);
+    const windowId = await seedOpening([REDIRECT], -1000);
+    if (committed) owners.closeAs(windowId, [REDIRECT]);
     const { service } = instance(owners, gatewayDouble());
 
     await service[entry]();
 
-    expect(owners.opens(windowId).map((call) => call.req.units)).toEqual([[FINANCE]]);
-    expect(owners.gate(FINANCE)).toMatchObject({ state: 'open', holderId: null });
+    expect(owners.opens(windowId).map((call) => call.req.units)).toEqual([[REDIRECT]]);
+    expect(owners.gate(REDIRECT)).toMatchObject({ state: 'open', holderId: null });
     expect(await rowOf(windowId)).toMatchObject({ state: 'failed', closing_gates: {}, claimed_by: null });
     expect(await heldUnits(windowId)).toEqual([]);
   });
@@ -483,7 +483,7 @@ describe.skipIf(!pg)('window service against PostgreSQL', () => {
     // The budget also aborts each database step in real time, so it stays well above one step's latency.
     const budgetMs = 1000;
     const owners = ownersDouble();
-    if (slow === 'phase') owners.fault('finance', 'phase', { kind: 'slow', ms: 5000 });
+    if (slow === 'phase') owners.fault('identity', 'phase', { kind: 'slow', ms: 5000 });
     const projectionBudgets: number[] = [];
     let slowStageAt = Number.NaN;
     const projector: Pick<Projector, 'awaitProjection'> = {
@@ -498,7 +498,7 @@ describe.skipIf(!pg)('window service against PostgreSQL', () => {
     // A frozen clock leaves the whole budget to the slow step, however long the stages before it take.
     const { service } = instance(owners, gatewayDouble(), { windows: { openBudgetMs: budgetMs }, projector, clock: manualClock() });
 
-    const refusal = await refusalOf(service.open(openRequest([FINANCE, SURVEYS])));
+    const refusal = await refusalOf(service.open(openRequest([REDIRECT, ARCHIVE])));
 
     // From the projection wait on; uncapped, either slow step takes 5000 ms.
     expect(Date.now() - slowStageAt).toBeLessThan(2500);
@@ -510,7 +510,7 @@ describe.skipIf(!pg)('window service against PostgreSQL', () => {
       if (call.req.op === 'close') expect(call.req.timeoutMs).toBeLessThan(call.options?.timeoutMs ?? 0);
     }
     for (const timeoutMs of projectionBudgets) expect(timeoutMs).toBeLessThanOrEqual(budgetMs);
-    for (const unit of [FINANCE, SURVEYS]) expect(owners.gate(unit)).toMatchObject({ state: 'open', holderId: null });
+    for (const unit of [REDIRECT, ARCHIVE]) expect(owners.gate(unit)).toMatchObject({ state: 'open', holderId: null });
     expect(await heldUnits(refusal.windowId)).toEqual([]);
     expect(await rowOf(refusal.windowId)).toMatchObject({ state: 'failed', closing_gates: {}, closed_gates: {} });
   });
@@ -535,7 +535,7 @@ describe.skipIf(!pg)('window service against PostgreSQL', () => {
     const { service } = instance(ownersDouble(), gatewayDouble(), { windows: { openBudgetMs: budgetMs }, db: slowRelease, clock: manualClock() });
 
     const startedAt = Date.now();
-    const opened = await service.open(openRequest([FINANCE]));
+    const opened = await service.open(openRequest([REDIRECT]));
     const answeredAt = Date.now();
 
     expect(opened).toMatchObject({ state: 'open', phase: 'executing' });
@@ -562,14 +562,14 @@ describe.skipIf(!pg)('window service against PostgreSQL', () => {
     });
     const b = instance(owners, gateway);
 
-    const opening = a.service.open(openRequest([FINANCE]));
+    const opening = a.service.open(openRequest([REDIRECT]));
     await awaited.promise;
     const windowId = owners.calls[0]?.req.holderId ?? '';
     await b.service.resumeWindows();
     await b.service.runRecoveryPass();
 
     expect(owners.opens(windowId)).toEqual([]);
-    expect(owners.gate(FINANCE)).toMatchObject({ state: 'closed', holderId: windowId });
+    expect(owners.gate(REDIRECT)).toMatchObject({ state: 'closed', holderId: windowId });
     expect((await rowOf(windowId)).state).toBe('opening');
     projected.resolve();
     await expect(opening).resolves.toEqual({ windowId, state: 'open', phase: 'executing' });
@@ -581,8 +581,8 @@ describe.skipIf(!pg)('window service against PostgreSQL', () => {
     const owners = ownersDouble();
     const clock = manualClock();
     const claimMs = 250;
-    const windowId = await seedOpening([FINANCE], claimMs, clock);
-    owners.closeAs(windowId, [FINANCE]);
+    const windowId = await seedOpening([REDIRECT], claimMs, clock);
+    owners.closeAs(windowId, [REDIRECT]);
     const { service } = instance(owners, gatewayDouble(), { clock });
 
     await service.runRecoveryPass();
@@ -592,7 +592,7 @@ describe.skipIf(!pg)('window service against PostgreSQL', () => {
     clock.advance(claimMs + 1);
     await service.runRecoveryPass();
     expect(await rowOf(windowId)).toMatchObject({ state: 'failed', claimed_by: null });
-    expect(owners.gate(FINANCE)).toMatchObject({ state: 'open', holderId: null });
+    expect(owners.gate(REDIRECT)).toMatchObject({ state: 'open', holderId: null });
     expect(await heldUnits(windowId)).toEqual([]);
   });
 
@@ -601,7 +601,7 @@ describe.skipIf(!pg)('window service against PostgreSQL', () => {
     const gateway = gatewayDouble();
     const a = instance(owners, gateway);
     const b = instance(owners, gateway);
-    const { windowId } = await a.service.open(openRequest([FINANCE, SURVEYS]));
+    const { windowId } = await a.service.open(openRequest([REDIRECT, ARCHIVE]));
     const importing = deferred();
     const imported = deferred();
     imports.importWindow.mockImplementationOnce(async () => {
@@ -619,7 +619,7 @@ describe.skipIf(!pg)('window service against PostgreSQL', () => {
     await expect(completing).resolves.toEqual({ state: 'closed' });
     await b.service.runRecoveryPass();
     expect(imports.importWindow).toHaveBeenCalledTimes(1);
-    expect(owners.opens(windowId).map((call) => call.owner).sort()).toEqual(['finance', 'surveys']);
+    expect(owners.opens(windowId).map((call) => call.owner).sort()).toEqual(['identity', 'people']);
     expect(await rowOf(windowId)).toMatchObject({ state: 'closed', claimed_by: null });
   });
 
@@ -646,7 +646,7 @@ describe.skipIf(!pg)('window service against PostgreSQL', () => {
         return { exitCode: 0, durationMs: 1 };
       },
     });
-    const { windowId } = await a.service.open(openRequest([FINANCE]));
+    const { windowId } = await a.service.open(openRequest([REDIRECT]));
     clock.advance(CONFIG.windows.gatewayLeaseMs + 1);
 
     const recovering = b.service.runRecoveryPass();
@@ -675,7 +675,7 @@ describe.skipIf(!pg)('window service against PostgreSQL', () => {
     const a = instance(owners, gateway);
     // The open budget bounds the action's claim wait.
     const b = instance(owners, gateway, { windows: { openBudgetMs: 300 } });
-    const { windowId } = await a.service.open(openRequest([FINANCE]));
+    const { windowId } = await a.service.open(openRequest([REDIRECT]));
     await setClaim(windowId, 'live-instance', 60_000);
 
     const error = await run(b.service, windowId).then(
@@ -758,7 +758,7 @@ describe.skipIf(!pg)('window service against PostgreSQL', () => {
             },
           },
         });
-        const opening = a.service.open(openRequest([FINANCE]));
+        const opening = a.service.open(openRequest([REDIRECT]));
         await awaited.promise;
         const windowId = owners.calls[0]?.req.holderId ?? '';
         await setClaim(windowId, 'usurper', 60_000);
@@ -772,7 +772,7 @@ describe.skipIf(!pg)('window service against PostgreSQL', () => {
       'open',
       async (owners: OwnersDouble): Promise<string> => {
         const a = instance(owners, gatewayDouble());
-        const { windowId } = await a.service.open(openRequest([FINANCE]));
+        const { windowId } = await a.service.open(openRequest([REDIRECT]));
         const importing = deferred();
         const imported = deferred();
         imports.importWindow.mockImplementationOnce(async () => {
@@ -794,13 +794,13 @@ describe.skipIf(!pg)('window service against PostgreSQL', () => {
     const windowId = await provoke(owners);
 
     expect(owners.opens(windowId)).toEqual([]);
-    expect(owners.gate(FINANCE)).toMatchObject({ state: 'closed', holderId: windowId });
-    expect(await heldUnits(windowId)).toEqual([FINANCE]);
+    expect(owners.gate(REDIRECT)).toMatchObject({ state: 'closed', holderId: windowId });
+    expect(await heldUnits(windowId)).toEqual([REDIRECT]);
     expect(await rowOf(windowId)).toMatchObject({ state, claimed_by: 'usurper' });
   });
 
   /**
-   * Instance `a` completes a window on `FINANCE` whose import applies only after `proceed`, and every renewal of its claim
+   * Instance `a` completes a window on `REDIRECT` whose import applies only after `proceed`, and every renewal of its claim
    * fails meanwhile; `b` shares its owners, gateway and clock. Resolves once a renewal failed.
    */
   async function lapsedImport() {
@@ -820,7 +820,7 @@ describe.skipIf(!pg)('window service against PostgreSQL', () => {
     });
     const a = instance(owners, gateway, { clock, db: aDb, windows: { openBudgetMs: budgetMs } });
     const b = instance(owners, gateway, { clock });
-    const { windowId } = await a.service.open(openRequest([FINANCE]));
+    const { windowId } = await a.service.open(openRequest([REDIRECT]));
     const importing = deferred();
     const proceed = deferred();
     // What `a`'s apply came to: 'applied', or the error refusing it.
@@ -828,7 +828,7 @@ describe.skipIf(!pg)('window service against PostgreSQL', () => {
     imports.importWindow.mockImplementationOnce(async (ctx: MigrationContext) => {
       importing.resolve();
       await proceed.promise;
-      const outcome = await ctx.owners.apply('finance', applyBatch(windowId, 'a')).then(
+      const outcome = await ctx.owners.apply('identity', applyBatch(windowId, 'a')).then(
         () => 'applied',
         (error: unknown) => error,
       );
@@ -848,7 +848,7 @@ describe.skipIf(!pg)('window service against PostgreSQL', () => {
   it('refuses every effect of a holder whose claim lapsed once another instance took its window over at expiry', async () => {
     const { owners, clock, statements, b, windowId, completing, proceed, applyOutcome, budgetMs } = await lapsedImport();
     imports.importWindow.mockImplementationOnce(async (ctx: MigrationContext) => {
-      await ctx.owners.apply('finance', applyBatch(windowId, 'b'));
+      await ctx.owners.apply('identity', applyBatch(windowId, 'b'));
       return NO_IMPORT;
     });
 
@@ -858,7 +858,7 @@ describe.skipIf(!pg)('window service against PostgreSQL', () => {
     await b.service.runRecoveryPass();
 
     expect(await rowOf(windowId)).toMatchObject({ state: 'closed', claimed_by: null });
-    expect(owners.gate(FINANCE)).toMatchObject({ state: 'open', holderId: null });
+    expect(owners.gate(REDIRECT)).toMatchObject({ state: 'open', holderId: null });
     const callsAtTakeover = owners.calls.length;
     const statementsAtTakeover = statements.length;
     proceed.resolve();
@@ -891,8 +891,8 @@ describe.skipIf(!pg)('window service against PostgreSQL', () => {
     expect(owners.applied).toEqual([]);
     expect(owners.calls.slice(callsAtLapse)).toEqual([]);
     expect(leaseStatements(statements.slice(statementsAtLapse))).toEqual([]);
-    expect(owners.gate(FINANCE)).toMatchObject({ state: 'closed', holderId: windowId });
-    expect(await heldUnits(windowId)).toEqual([FINANCE]);
+    expect(owners.gate(REDIRECT)).toMatchObject({ state: 'closed', holderId: windowId });
+    expect(await heldUnits(windowId)).toEqual([REDIRECT]);
     expect(await rowOf(windowId)).toMatchObject({ state: 'import-pending', claimed_by: null });
   });
 
@@ -912,7 +912,7 @@ describe.skipIf(!pg)('window service against PostgreSQL', () => {
         return { exitCode: 0, durationMs: 1 };
       },
     });
-    const { windowId } = await a.service.open(openRequest([FINANCE]));
+    const { windowId } = await a.service.open(openRequest([REDIRECT]));
     await a.service.stop();
     clock.advance(CONFIG.windows.gatewayLeaseMs + 1);
     const restartFrom = clock.now().getTime();
@@ -929,31 +929,31 @@ describe.skipIf(!pg)('window service against PostgreSQL', () => {
     [
       'an owner answer body during an open',
       async (owners: OwnersDouble, service: WindowService): Promise<Error[]> => {
-        const closeError = new OwnerCallError('finance', 'POST', GATE_PATH, 503, sentinelBody);
-        const openError = new OwnerCallError('finance', 'POST', GATE_PATH, 503, sentinelBody, `Owner refused ${SENTINEL_EMAIL}`);
-        owners.fault('finance', 'close', { kind: 'fail', error: closeError });
-        owners.fault('finance', 'open', { kind: 'fail', error: openError });
-        await refusalOf(service.open(openRequest([FINANCE])));
+        const closeError = new OwnerCallError('identity', 'POST', GATE_PATH, 503, sentinelBody);
+        const openError = new OwnerCallError('identity', 'POST', GATE_PATH, 503, sentinelBody, `Owner refused ${SENTINEL_EMAIL}`);
+        owners.fault('identity', 'close', { kind: 'fail', error: closeError });
+        owners.fault('identity', 'open', { kind: 'fail', error: openError });
+        await refusalOf(service.open(openRequest([REDIRECT])));
         return [closeError, openError];
       },
     ],
     [
       'a gate conflict body during a give-back',
       async (owners: OwnersDouble, service: WindowService): Promise<Error[]> => {
-        const closeError = new OwnerCallError('finance', 'POST', GATE_PATH, 503, sentinelBody);
-        owners.fault('finance', 'close', { kind: 'fail', error: closeError });
-        owners.fault('finance', 'open', { kind: 'fail', error: new GateConflict('finance', { error: 'gate-conflict', units: [FINANCE, SENTINEL_EMAIL] }) });
-        await refusalOf(service.open(openRequest([FINANCE])));
+        const closeError = new OwnerCallError('identity', 'POST', GATE_PATH, 503, sentinelBody);
+        owners.fault('identity', 'close', { kind: 'fail', error: closeError });
+        owners.fault('identity', 'open', { kind: 'fail', error: new GateConflict('identity', { error: 'gate-conflict', units: [REDIRECT, SENTINEL_EMAIL] }) });
+        await refusalOf(service.open(openRequest([REDIRECT])));
         return [closeError];
       },
     ],
     [
       'an import failure cause during a complete',
       async (_owners: OwnersDouble, service: WindowService): Promise<Error[]> => {
-        const { windowId } = await service.open(openRequest([FINANCE]));
+        const { windowId } = await service.open(openRequest([REDIRECT]));
         const importError = new WindowImportError(windowId, `Apply of ${SENTINEL_EMAIL} for ${SENTINEL_AMOUNT} failed`, {
-          owner: 'finance',
-          table: 'tfinance',
+          owner: 'identity',
+          table: 'tredirects',
           cause: new Error(`password=${SENTINEL_PASSWORD} amount=${SENTINEL_AMOUNT}`),
         });
         imports.importWindow.mockRejectedValueOnce(importError);
@@ -1013,8 +1013,8 @@ describe.skipIf(!pg)('window service against PostgreSQL', () => {
       expect(new Set(statements.map((ids) => ids?.traceId)).size).toBe(statements.length);
 
       statements.length = 0;
-      const windowId = await seedOpening([FINANCE], -1000);
-      owners.closeAs(windowId, [FINANCE]);
+      const windowId = await seedOpening([REDIRECT], -1000);
+      owners.closeAs(windowId, [REDIRECT]);
       const working = service.startImportRetryLoop();
       await vi.waitFor(async () => expect((await rowOf(windowId)).state).toBe('failed'), { timeout: 30_000, interval: 50 });
       await working.stop();
@@ -1068,9 +1068,9 @@ describe.skipIf(!pg)('window service against PostgreSQL', () => {
       const owners = ownersDouble();
       const { reads, projector, readFingerprints } = recorded(owners);
       const { service } = instance(owners, gatewayDouble(), { projector, readFingerprints });
-      const { windowId } = await service.open(openRequest([FINANCE, SURVEYS]));
+      const { windowId } = await service.open(openRequest([REDIRECT, ARCHIVE]));
 
-      expect(reads).toEqual([{ tables: fingerprintTables(CATALOG, [FINANCE, SURVEYS]), scope: 'table', state: expect.any(Object), gateCalls: ['close:quiet', 'close:quiet'], projected: true }]);
+      expect(reads).toEqual([{ tables: fingerprintTables(CATALOG, [REDIRECT, ARCHIVE]), scope: 'table', state: expect.any(Object), gateCalls: ['close:quiet', 'close:quiet'], projected: true }]);
       expect(gateCallsOf(owners)).toEqual(['close:quiet', 'close:quiet', 'phase:executing', 'phase:executing']);
 
       imports.importWindow.mockRejectedValueOnce(new WindowImportError(windowId, 'owner unavailable'));
@@ -1078,7 +1078,7 @@ describe.skipIf(!pg)('window service against PostgreSQL', () => {
       await service.runRecoveryPass();
 
       expect((await rowOf(windowId)).state).toBe('closed');
-      expect(importInputs()).toEqual([1, 2].map((attempt) => expect.objectContaining({ attempt, units: [FINANCE, SURVEYS], scope: { table: true } })));
+      expect(importInputs()).toEqual([1, 2].map((attempt) => expect.objectContaining({ attempt, units: [REDIRECT, ARCHIVE], scope: { table: true } })));
       for (const input of importInputs()) {
         expect(input.fingerprints).toBe(reads[0]?.state);
         expect(input.readFingerprints).toBe(readFingerprints);
@@ -1089,15 +1089,15 @@ describe.skipIf(!pg)('window service against PostgreSQL', () => {
       const owners = ownersDouble();
       const { reads, readFingerprints } = recorded(owners);
       const { service } = instance(owners, gatewayDouble(), { readFingerprints });
-      const held = await service.open(openRequest([FINANCE]));
+      const held = await service.open(openRequest([REDIRECT]));
       // Held without a drop on close, these would push the open window's fingerprints past the bound.
       for (let index = 0; index < MAX_HELD_FINGERPRINTS; index += 1) {
-        const { windowId } = await service.open(openRequest([SURVEYS]));
+        const { windowId } = await service.open(openRequest([ARCHIVE]));
         await expect(service.complete(windowId, { forwarded: true, legacyStatus: 200 })).resolves.toEqual({ state: 'closed' });
       }
       await expect(service.complete(held.windowId, { forwarded: true, legacyStatus: 200 })).resolves.toEqual({ state: 'closed' });
 
-      expect(importInputs().at(-1)).toMatchObject({ windowId: held.windowId, units: [FINANCE] });
+      expect(importInputs().at(-1)).toMatchObject({ windowId: held.windowId, units: [REDIRECT] });
       expect(importInputs().at(-1)?.fingerprints).toBe(reads[0]?.state);
     });
 
@@ -1106,7 +1106,7 @@ describe.skipIf(!pg)('window service against PostgreSQL', () => {
       ['the live legacy database is unavailable', undefined],
     ] as [string, FingerprintReader | undefined][])('opens without fingerprints when %s, importing that window in full', async (_label, readFingerprints) => {
       const { service, logger } = instance(ownersDouble(), gatewayDouble(), readFingerprints === undefined ? {} : { readFingerprints });
-      const opened = await service.open(openRequest([FINANCE]));
+      const opened = await service.open(openRequest([REDIRECT]));
 
       expect(opened).toMatchObject({ state: 'open', phase: 'executing' });
       expect(logger.calls).toContainEqual({
@@ -1132,7 +1132,7 @@ describe.skipIf(!pg)('window service against PostgreSQL', () => {
       // A frozen clock leaves the whole budget to the read, however long the stages before it take.
       const { service } = instance(ownersDouble(), gatewayDouble(), { windows: { openBudgetMs: budgetMs }, clock: manualClock(), readFingerprints });
 
-      await expect(service.open(openRequest([FINANCE]))).resolves.toMatchObject({ state: 'open', phase: 'executing' });
+      await expect(service.open(openRequest([REDIRECT]))).resolves.toMatchObject({ state: 'open', phase: 'executing' });
       expect(abortedAfterMs).toBeGreaterThanOrEqual(budgetMs / 2 - 50);
       expect(abortedAfterMs).toBeLessThan(budgetMs);
     });
@@ -1163,7 +1163,7 @@ describe.skipIf(!pg)('window service against PostgreSQL', () => {
         const { service, logger } = instance(ownersDouble(), gatewayDouble(), { windows: { openBudgetMs: budgetMs }, clock: manualClock(), legacy });
         const startedAt = Date.now();
 
-        const opened = await service.open(openRequest([SURVEYS]));
+        const opened = await service.open(openRequest([ARCHIVE]));
 
         expect(Date.now() - startedAt).toBeLessThan(budgetMs);
         expect(opened).toMatchObject({ state: 'open', phase: 'executing' });
@@ -1192,7 +1192,7 @@ describe.skipIf(!pg)('window service against PostgreSQL', () => {
       const restart: WindowServiceOptions['restart'] = () => Promise.resolve({ exitCode: 0, durationMs: 1 });
       const a = instance(owners, gateway, { clock, restart, readFingerprints });
       const b = instance(owners, gateway, { clock, restart, readFingerprints });
-      const { windowId } = await a.service.open(openRequest([FINANCE]));
+      const { windowId } = await a.service.open(openRequest([REDIRECT]));
       await a.service.stop();
       clock.advance(CONFIG.windows.gatewayLeaseMs + 1);
 
@@ -1200,11 +1200,11 @@ describe.skipIf(!pg)('window service against PostgreSQL', () => {
 
       expect((await rowOf(windowId)).state).toBe('closed');
       const [scoped, ...whole] = importInputs();
-      expect(scoped).toMatchObject({ units: [FINANCE], scope: { table: true } });
+      expect(scoped).toMatchObject({ units: [REDIRECT], scope: { table: true } });
       expect(scoped?.fingerprints).toBe(sameInstance ? reads[0]?.state : undefined);
       expect(whole.length).toBeGreaterThan(0);
       for (const input of whole) {
-        expect(input.units).not.toContain(FINANCE);
+        expect(input.units).not.toContain(REDIRECT);
         expect(input).not.toHaveProperty('fingerprints');
       }
     });
@@ -1224,7 +1224,7 @@ describe.skipIf(!pg)('window service against PostgreSQL', () => {
       });
       imports.importWindow.mockResolvedValueOnce({ ...NO_IMPORT, touchedContent: true });
       const { service } = instance(owners, gatewayDouble(), { legacy: live.legacy, readFingerprints });
-      const { windowId } = await service.open(openRequest([FINANCE]));
+      const { windowId } = await service.open(openRequest([REDIRECT]));
 
       await expect(service.complete(windowId, { forwarded: true, legacyStatus: 200 })).resolves.toEqual({ state: 'closed' });
 
@@ -1259,7 +1259,7 @@ describe.skipIf(!pg)('window service against PostgreSQL', () => {
       });
       imports.importWindow.mockResolvedValueOnce({ ...NO_IMPORT, touchedContent: true });
       const { service, logger } = instance(ownersDouble(), gatewayDouble(), { windows: { openBudgetMs: budgetMs }, legacy: live.legacy, readFingerprints });
-      const { windowId } = await service.open(openRequest([FINANCE]));
+      const { windowId } = await service.open(openRequest([REDIRECT]));
       const startedAt = Date.now();
 
       await expect(service.complete(windowId, { forwarded: true, legacyStatus: 200 })).resolves.toEqual({ state: 'closed' });
@@ -1295,10 +1295,10 @@ describe.skipIf(!pg)('window service against PostgreSQL', () => {
         return Promise.resolve({ status: 200 });
       });
       const kept = new Map(startTables.map((table) => [fingerprintKey(table), printOf(table)] as const));
-      const after: WindowFingerprints = { scope, tables: new Map([...(holds ? kept : []), ['program_n.finance_record', printOf('Program_N.finance_record')]]), elapsedMs: 5 };
+      const after: WindowFingerprints = { scope, tables: new Map([...(holds ? kept : []), ['tredirects', printOf('tredirects')]]), elapsedMs: 5 };
       imports.importWindow.mockResolvedValue({ ...NO_IMPORT, touchedContent: true, fingerprints: after });
       const { service } = instance(ownersDouble(), gatewayDouble(), { legacy: live.legacy, readFingerprints });
-      const { windowId } = await service.open(openRequest([FINANCE]));
+      const { windowId } = await service.open(openRequest([REDIRECT]));
 
       await expect(service.complete(windowId, { forwarded: true, legacyStatus: 200 })).resolves.toEqual({ state: 'import-pending' });
       await service.runRecoveryPass();
@@ -1306,7 +1306,7 @@ describe.skipIf(!pg)('window service against PostgreSQL', () => {
       // The guards' reload imports carry only the start-up table's units; the recovery pass also widens the content units.
       const [reload, recovery] = importInputs().filter((input) => input.units.length === 1 && input.units[0] === CONTENT);
       expect(startTables).toContain('tcontent');
-      expect(reads).toEqual([fingerprintTables(CATALOG, [FINANCE]), ...(reused ? [] : [startTables]), startTables]);
+      expect(reads).toEqual([fingerprintTables(CATALOG, [REDIRECT]), ...(reused ? [] : [startTables]), startTables]);
       expect(reload).toMatchObject({ windowId, units: [CONTENT], scope: { table: true } });
       expect([...(reload?.fingerprints?.tables.keys() ?? [])].sort()).toEqual(startTables.map(fingerprintKey).sort());
       for (const [key, print] of kept) expect(reload?.fingerprints?.tables.get(key) === print).toBe(reused);
@@ -1318,12 +1318,12 @@ describe.skipIf(!pg)('window service against PostgreSQL', () => {
   describe('published-event cursors', () => {
     const SITE = 'programs_sites.site';
     const importInputs = (): ImportInput[] => imports.importWindow.mock.calls.map(([, input]) => input as ImportInput);
-    // Surveys publishes one topic a consumer of the site topic declares: communications' survey schedule.
-    const CAPTURE: PositionParams = { publishedTopics: ['surveys.survey.scheduled.v1'], publishedAfter: '0', publishedLimit: 1 };
+    // People publishes one topic a consumer of the site topic declares: identity's person changes.
+    const CAPTURE: PositionParams = { publishedTopics: ['people.person.changed.v1'], publishedAfter: '0', publishedLimit: 1 };
 
     it.each([
-      ['holds the site unit, taking its producers\' cursors at open', [SITE, SURVEYS], [{ owner: 'surveys', params: CAPTURE }], new Map([['surveys', FRONTIER]])],
-      ['lacks the site unit, asking no position', [FINANCE, SURVEYS], [], undefined],
+      ['holds the site unit, taking its producers\' cursors at open', [ARCHIVE, SITE], [{ owner: 'people', params: CAPTURE }], new Map([['people', FRONTIER]])],
+      ['lacks the site unit, asking no position', [REDIRECT, ARCHIVE], [], undefined],
     ] as [string, string[], unknown[], Map<string, string> | undefined][])('hands every attempt of the scoped import the cursors a window took when it %s', async (_label, units, asked, cursors) => {
       const owners = ownersDouble();
       const { service } = instance(owners, gatewayDouble());
@@ -1343,7 +1343,7 @@ describe.skipIf(!pg)('window service against PostgreSQL', () => {
     });
 
     it.each([
-      ['its owner fails the read', () => Promise.reject(new OwnerCallError('surveys', 'GET', `${MIGRATION_PATH_PREFIX}/position`, 503, { error: 'unavailable' })), 'OwnerCallError'],
+      ['its owner fails the read', () => Promise.reject(new OwnerCallError('people', 'GET', `${MIGRATION_PATH_PREFIX}/position`, 503, { error: 'unavailable' })), 'OwnerCallError'],
       ['its read outlasts half the open budget left', () => new Promise<never>(() => undefined), 'TimeoutError'],
     ] as [string, () => Promise<never>, string][])('opens without cursors when %s, leaving them to the import', async (_label, answer, type) => {
       const budgetMs = 1000;
@@ -1352,7 +1352,7 @@ describe.skipIf(!pg)('window service against PostgreSQL', () => {
       // A frozen clock leaves the whole budget to the read, so only its own bound can end it.
       const { service, logger } = instance(owners, gatewayDouble(), { windows: { openBudgetMs: budgetMs }, clock: manualClock() });
       const startedAt = Date.now();
-      const opened = await service.open(openRequest([SITE, SURVEYS]));
+      const opened = await service.open(openRequest([ARCHIVE, SITE]));
 
       expect(Date.now() - startedAt).toBeLessThan(budgetMs);
       expect(opened).toMatchObject({ state: 'open', phase: 'executing' });
@@ -1400,7 +1400,7 @@ describe.skipIf(!pg)('window service against PostgreSQL', () => {
           [
             window.windowId,
             ROUTE_KEY,
-            [FINANCE, SURVEYS],
+            [REDIRECT, ARCHIVE],
             JSON.stringify(window.scope ?? { table: true }),
             window.kind ?? 'request',
             window.state,
@@ -1421,7 +1421,7 @@ describe.skipIf(!pg)('window service against PostgreSQL', () => {
            SELECT 'W' || lpad(i::text, 5, '0'), $1::text, ARRAY[$2::text], '{"table":true}'::jsonb, 'request', 'failed', '[]'::jsonb,
                   $3::timestamp + ((1201 - i) / 3) * interval '1 millisecond', $3::timestamp
              FROM generate_series(1, 1201) AS i`,
-          [ROUTE_KEY, FINANCE, OPENED_AT],
+          [ROUTE_KEY, REDIRECT, OPENED_AT],
         ),
       );
       const { rows } = await db.withMetadata((tx) =>
@@ -1453,8 +1453,8 @@ describe.skipIf(!pg)('window service against PostgreSQL', () => {
         { phase: 'executing', at: at(20) },
         { phase: 'completed', at: at(900), detail: { forwarded: true, legacyStatus: 200 } },
         { phase: 'importing', at: at(1000) },
-        { phase: 'imported', at: at(1200), detail: { rowsImported: { finance: 2 }, objectsTransferred: 1, objectsRemoved: 1 } },
-        { phase: 'imported', at: at(1300), detail: { rowsImported: { finance: 1, surveys: 3 }, objectsTransferred: 2 } },
+        { phase: 'imported', at: at(1200), detail: { rowsImported: { identity: 2 }, objectsTransferred: 1, objectsRemoved: 1 } },
+        { phase: 'imported', at: at(1300), detail: { rowsImported: { identity: 1, people: 3 }, objectsTransferred: 2 } },
         { phase: 'closed', at: at(1500) },
       ];
       await seedWindow({ windowId, kind: 'legacy-step', state: 'closed', scope: { keys: { siteid: 'tenant-a' } }, phases: events, closedAt: new Date(OPENED_AT.getTime() + 1500) });
@@ -1469,12 +1469,12 @@ describe.skipIf(!pg)('window service against PostgreSQL', () => {
         holderId: windowId,
         kind: 'sitemonitor-step',
         routeKey: ROUTE_KEY,
-        units: [FINANCE, SURVEYS],
+        units: [REDIRECT, ARCHIVE],
         scope: { siteid: 'tenant-a' },
         phases: ['quiet', 'executing', 'importing', 'closed'].map((phase) => ({ phase, at: events.find((event) => event.phase === phase)?.at })),
         events,
         durationMs: 1500,
-        rowsImported: { finance: 3, surveys: 3 },
+        rowsImported: { identity: 3, people: 3 },
         objectsTransferred: 3,
         objectsRemoved: 1,
         outcome: 'closed',
@@ -1492,7 +1492,7 @@ describe.skipIf(!pg)('window service against PostgreSQL', () => {
         holderId: windowId,
         kind: 'request',
         routeKey: ROUTE_KEY,
-        units: [FINANCE],
+        units: [REDIRECT],
         scope: { table: true },
         phases: [],
         durationMs,

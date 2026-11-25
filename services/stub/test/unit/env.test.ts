@@ -56,9 +56,9 @@ describe('stubEnvSchema', () => {
     ['parses a map naming its own URL', {}, [], undefined],
     [
       'refuses another service name',
-      { OPT2_SERVICE_NAME: 'reporting' },
+      { OPT2_SERVICE_NAME: 'people' },
       ['OPT2_SERVICE_NAME: must be stub'],
-      'reporting: invalid environment (OPT2_SERVICE_NAME: must be stub)',
+      'people: invalid environment (OPT2_SERVICE_NAME: must be stub)',
     ],
     ['names its own URL when OPT2_SERVICE_URLS is unset', { OPT2_SERVICE_URLS: undefined }, [OWN_URL], `stub: invalid environment (${OWN_URL})`],
     ['names its own URL when OPT2_SERVICE_URLS is {}', { OPT2_SERVICE_URLS: '{}' }, [OWN_URL], `stub: invalid environment (${OWN_URL})`],

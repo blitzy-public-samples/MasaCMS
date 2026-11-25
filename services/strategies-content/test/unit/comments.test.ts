@@ -1,4 +1,4 @@
-/** ccomments moderation (GS-CO-11): listing filters and paging, flag writes, bulk and single edits, purge, JSON API save and the admin routes. */
+/** ccomments moderation: listing filters and paging, flag writes, bulk and single edits, purge, JSON API save and the admin routes. */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { LegacyApiError, cfDateAdd, cfLsDateFormat, isCfUuid } from '@opt2/platform/legacy-compat';
 import { BUSINESS_DATE, TENANT_A, TENANT_B } from '@opt2/platform/testing';

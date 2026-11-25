@@ -41,7 +41,7 @@ const CATALOG = loadUnitCatalog(CONFIG.paths.tableOwnership);
 const MIGRATIONS_DIR = fileURLToPath(new URL('../../db/migrations', import.meta.url));
 // v0002 makes the unit target-authoritative.
 const TABLE_VERSION = 'v0002';
-const FINANCE = 'finance.record';
+const REDIRECT = 'identity.redirect';
 const ROUTE_KEY = 'admin:cusers.update';
 const NO_IMPORT: ImportResult = { rowsImported: 0, perOwner: {}, objectsTransferred: 0, objectsRemoved: [], touchedContent: false, writePositions: new Map() };
 /** Claim wait of the services under test; each database step it bounds stays well above one step's latency under load. */
@@ -82,7 +82,6 @@ const PLAN: TransitionPlan = {
   siteMonitorEntryMoves: false,
   siteMonitorUnits: [],
   contentToTarget: false,
-  exportJobsWriteT: false,
   returnsToLegacy: false,
 };
 
@@ -183,7 +182,7 @@ describe.skipIf(!pgUp)('window claim deadlines against PostgreSQL', () => {
   beforeEach(async () => {
     m.importWindow.mockReset();
     m.importWindow.mockResolvedValue(NO_IMPORT);
-    owners = createOwnerDoubles(CATALOG, { owners: ['finance'], gates: { [FINANCE]: { state: 'open' } } });
+    owners = createOwnerDoubles(CATALOG, { owners: ['identity'], gates: { [REDIRECT]: { state: 'open' } } });
     gateway = createGatewayDouble({ active: TABLE_VERSION });
     services = [];
     unlocks = [];
@@ -317,7 +316,7 @@ describe.skipIf(!pgUp)('window claim deadlines against PostgreSQL', () => {
     return { pool, db: tenantDbFromPool(pool, { schema: schema.schema }) };
   };
 
-  const openRequest = () => ({ routeKey: ROUTE_KEY, units: [FINANCE], scope: { table: true as const }, requestId: cfUuid() });
+  const openRequest = () => ({ routeKey: ROUTE_KEY, units: [REDIRECT], scope: { table: true as const }, requestId: cfUuid() });
 
   /** An open window whose claim its opener has released; a frozen clock keeps host load from spending the open's budget. */
   async function openWindow(): Promise<string> {
@@ -428,7 +427,7 @@ describe.skipIf(!pgUp)('window claim deadlines against PostgreSQL', () => {
       tx.query(
         `INSERT INTO ${tx.schema}.write_window (window_id, route_key, units, scope, kind, state, phases, opened_at, updated_at, claimed_by, claim_expires_at)
          VALUES ($1, $2, $3::text[], $4::jsonb, 'request', 'opening', $5::jsonb, $6, $6, 'dead-instance', $7)`,
-        [windowId, ROUTE_KEY, [FINANCE], JSON.stringify({ table: true }), JSON.stringify([{ phase: 'opened', at: at.toISOString() }]), at, new Date(at.getTime() - 1000)],
+        [windowId, ROUTE_KEY, [REDIRECT], JSON.stringify({ table: true }), JSON.stringify([{ phase: 'opened', at: at.toISOString() }]), at, new Date(at.getTime() - 1000)],
       ),
     );
     return windowId;

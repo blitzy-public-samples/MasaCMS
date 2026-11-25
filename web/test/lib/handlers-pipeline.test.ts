@@ -176,40 +176,16 @@ vi.mock('@/screens/registry', async () => {
       [mode === 'fragment' ? 'render' : mode]: () => ({ contentType: 'text/plain', body: `${mode} body` }),
     })),
   ];
-  const opt2Screen = {
-    module: 'timesheets',
-    screen: 'sheets',
-    roles: [],
-    service: 'timesheets',
-    gate: secured,
-    load: async () => 'sheets',
-    render: (_ctx: ScreenContext, text: string) => ({
-      body: markup`<p id="opt2">${text}</p>`,
-      opt2Module: 'timesheets',
-    }),
-  };
-  const opt2Action = {
-    module: 'timesheets',
-    action: 'day-action',
-    roles: [],
-    service: 'timesheets',
-    submit: submitted,
-  };
   return {
     findScreen: (circuit: string, action: string, _rc: unknown, uploads?: readonly UploadPart[]) => {
       probe.uploads = uploads;
       return screens.find((screen) => screen.circuit === circuit && screen.action === action);
     },
-    findOpt2Screen: (module: string, screen: string) =>
-      module === opt2Screen.module && screen === opt2Screen.screen ? opt2Screen : undefined,
-    findOpt2Action: (module: string, action: string) =>
-      module === opt2Action.module && action === opt2Action.action ? opt2Action : undefined,
     shellHooks: { secondaryMenus: {}, contentNav: () => raw('') },
   };
 });
 
-const { handleAdminAction, handleAdminPage, handleAdminRaw, handleOpt2Action, handleOpt2Page } =
-  await import('@/lib/handlers');
+const { handleAdminAction, handleAdminPage, handleAdminRaw } = await import('@/lib/handlers');
 
 const admin = SUBJECTS.admin;
 const CURRENT_SESSION = routeKey('GET', 'identity', '/v1/sessions/current');
@@ -529,13 +505,6 @@ describe('page mode', () => {
           LIST,
         ),
       REFERER,
-    ],
-    [
-      "cMessage.noaccess for a synthetic screen's 403",
-      403,
-      async () =>
-        handleOpt2Page(await getRequest('/opt2/admin/timesheets/sheets'), { module: 'timesheets', screen: 'sheets' }),
-      '/admin/?muraAction=cMessage.noaccess',
     ],
   ])('answers a service denial with the access gate redirect: %s', async (_case, status, send, location) => {
     fake.setRoute(CURRENT_SESSION, { status, body: {} });
@@ -875,8 +844,6 @@ describe('raw mode', () => {
 
 describe("the layout's session-site alert entry", () => {
   const LAYOUT_ALERTS = { alerts: { default: {} } };
-  const SHEETS = { module: 'timesheets', screen: 'sheets' } as const;
-  const DAY_ACTION = { module: 'timesheets', action: 'day-action' } as const;
   const SITES = { circuit: 'csettings', action: 'list' } as const;
   const LOADDIFF = { circuit: 'carch', action: 'loaddiff' } as const;
 
@@ -924,22 +891,6 @@ describe("the layout's session-site alert entry", () => {
       'a raw fragment',
       async () => handleAdminRaw(await getRequest('/admin-raw/carch/loaddiff'), LOADDIFF),
       200,
-      undefined,
-    ],
-    [
-      'a synthetic screen',
-      async () => handleOpt2Page(await getRequest('/opt2/admin/timesheets/sheets'), SHEETS),
-      200,
-      LAYOUT_ALERTS,
-    ],
-    [
-      "a synthetic post action's redirect",
-      async () => {
-        probe.submit = { kind: 'location', location: '/opt2/admin/timesheets/sheets' };
-        const request = await postRequest('/opt2/admin-actions/timesheets/day-action', 'id=1', FORM);
-        return handleOpt2Action(request, DAY_ACTION);
-      },
-      302,
       undefined,
     ],
   ])('is saved as session.mura alerts only by an answer in the full layout: %s', async (_case, send, status, mura) => {
@@ -1144,71 +1095,6 @@ describe('streamed download', () => {
       }
       expect(JSON.stringify(lines)).not.toMatch(/upstream reset|jane@example\.com/);
     });
-  });
-});
-
-describe('synthetic modules', () => {
-  const SHEETS = { module: 'timesheets', screen: 'sheets' } as const;
-
-  it('renders a screen inside the layout with its cookies and gates an anonymous user', async () => {
-    const response = await handleOpt2Page(await getRequest('/opt2/admin/timesheets/sheets'), SHEETS);
-
-    expect(response.status).toBe(200);
-    expect(response.headers.getSetCookie().length).toBeGreaterThan(0);
-    expect(await response.text()).toMatch(/^<!DOCTYPE[\s\S]*<p id="opt2">sheets<\/p>/);
-    const anonymous = await handleOpt2Page(await getRequest('/opt2/admin/timesheets/sheets', 'anonymous'), SHEETS);
-    expect(anonymous.status).toBe(302);
-    expect(loggedLines().map(({ route, statusCode }) => [route, statusCode])).toEqual([
-      ['opt2:timesheets.sheets', 200],
-      ['opt2:timesheets.sheets', 302],
-    ]);
-  });
-
-  it.each([
-    ['an unknown screen', { module: 'timesheets', screen: 'unknown' }],
-    ['an unknown module', { module: 'nope', screen: 'sheets' }],
-  ])('answers 404 for %s', async (_case, params) => {
-    const response = await handleOpt2Page(await getRequest(`/opt2/admin/${params.module}/${params.screen}`), params);
-
-    expect(response.status).toBe(404);
-  });
-
-  it.each<[string, () => Promise<Response>, number, string | null]>([
-    [
-      'serves a synthetic screen',
-      async () => handleOpt2Page(await getRequest('/opt2/admin/timesheets/sheets'), SHEETS),
-      200,
-      null,
-    ],
-    [
-      'keeps the legacy no-access redirect of an admin page',
-      async () => handleAdminPage(await getRequest('/admin/cusers/list?muraAction=cusers.list'), LIST),
-      302,
-      '/admin/?muraAction=cMessage.noaccess',
-    ],
-  ])('%s for a private user who administers no site', async (_case, send, status, location) => {
-    fake.setRoute(routeKey('GET', 'identity', '/v1/sessions/current/sites'), { status: 200, body: { sites: [] } });
-
-    const response = await send();
-
-    expect(response.status).toBe(status);
-    expect(response.headers.get('location')).toBe(location);
-  });
-
-  it('answers a post action like an FW/1 post action', async () => {
-    probe.submit = { kind: 'location', location: '/opt2/admin/timesheets/sheets' };
-
-    const response = await handleOpt2Action(
-      await postRequest('/opt2/admin-actions/timesheets/day-action', 'id=1', FORM),
-      { module: 'timesheets', action: 'day-action' },
-    );
-
-    expect(response.status).toBe(302);
-    expect(response.headers.get('location')).toBe('/opt2/admin/timesheets/sheets');
-    expect(probe.body?.form.get('id')).toBe('1');
-    expect(loggedLines()).toEqual([
-      expect.objectContaining({ route: 'opt2:timesheets.day-action', httpMethod: 'POST' }),
-    ]);
   });
 });
 

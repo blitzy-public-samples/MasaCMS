@@ -218,7 +218,6 @@ Caller: the migration service, `migration/src/scheduler/`, and `opt2-ops` (AAP 0
 
 - ColdFusion always runs with `MURA_PING=false`, so Masa never registers `siteMonitor` itself (`core/appcfc/onApplicationStart_include.cfm:561`). The bridge alone maintains the native task, from the definition captured on first run.
 - Tasks are created through Masa's `utility.scheduleTask` (`<cfschedule attributeCollection>`, `core/mura/utility.cfc:1697-1699`), in the same default mode and group as Masa's own call.
-- Every save of a fixture survey task (`opt2-survey-<id>-<kind>`) also sets ACF's HTTP Basic `username` `opt2-task` and `password` the survey's task credential, re-derived by `legacy-fixtures/cfml/lib/auth.cfc` `surveyTaskCredential`; `describe` never returns either.
 - A task in the wire shape is `{task, group, url, port, interval, startDate, startTime, requestTimeOut, operation, paused, expired}`. Every field is a string (`""` when ACF reports none), except `paused` and `expired`, booleans.
   - `startDate` is `mm/dd/yyyy`, the form Masa passes (`:570`), and `startTime` is 24-hour `HH:mm:ss`. `cfschedule` accepts both back.
   - On ACF 2023, `cfschedule action="list"` returns a query whose `GROUP` is `DEFAULT` for Masa's tasks and which has no operation column, so `operation` is `""`; `restore` then omits it, which ACF accepts. `paused` is `STATUS` equal to `Paused`, and `expired` is `STATUS` equal to `Expired`.
@@ -243,7 +242,7 @@ Caller: the migration service, `migration/src/scheduler/`, and `opt2-ops` (AAP 0
   - the task name (default `siteMonitorTask`), operation `HTTPRequest`, `startTime` 00:15, `interval` 900, `requestTimeOut` 600, `publish` No;
   - `startDate` from the captured definition, else today;
   - the URL `OPT2_GATEWAY_ORIGIN` + `/index.cfm/_api/sitemonitor/`, with host and port split as Masa splits them (`:549-553`, `:563`): the URL carries no port, `port` carries it, and a missing port is 443 for `https` and 80 for `http`.
-- **`pause`, `resume`, `delete`** select tasks whose name equals an entry of `tasks`, or starts with `prefix` (case-sensitive; for example `opt2-survey-`). At least one of the two is required. An empty selection answers `tasks: []`.
+- **`pause`, `resume`, `delete`** select tasks whose name equals an entry of `tasks`, or starts with `prefix` (case-sensitive). At least one of the two is required. An empty selection answers `tasks: []`.
   - `pause` lists in `tasks` every selected task it paused or found paused, which it leaves untouched. An `Expired` task is not acted on and is listed in `expired`.
   - `resume` lists in `tasks` every selected task it resumed. A `Paused` `ONCE` task whose start has passed is moved to now. A task ACF lists `Expired`, or reports expired although it was not paused, has had its run or never runs: it is not acted on and is listed in `expired`.
 - **`restore`** recreates each task exactly as given. With `repoint: true` only the scheme, host and port move to `OPT2_GATEWAY_ORIGIN`, a missing port defaulting as in `repoint`; path and query are kept. With `paused: true` each task is paused after creation. The input shape is the `describe` task shape, so migration can round-trip `${OPT2_PRISTINE_DIR}/native-tasks.json` after converting it.

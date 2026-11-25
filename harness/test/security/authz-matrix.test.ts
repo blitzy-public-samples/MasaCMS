@@ -6,7 +6,6 @@ import { fileURLToPath } from 'node:url';
 import {
   PUBSUB_INVOKER_ROLE,
   Roles,
-  SYNTHETIC_ROLES,
   TASKS_INVOKER_ROLE,
   UndeclaredRouteError,
   hasAnyRole,
@@ -51,19 +50,7 @@ const SITE_ARCHIVE_URL = '/v1/sites/:siteid/persons/:userId/archive';
 const USERS_URL = '/v1/users';
 const USERS_MODULE_ROLE = 'm:008';
 
-const SERVICE_PACKAGE_NAMES = [
-  'identity',
-  'people',
-  'programs-sites',
-  'strategies-content',
-  'communications',
-  'reporting',
-  'surveys',
-  'timesheets',
-  'finance',
-  'e-signature',
-  'stub',
-];
+const SERVICE_PACKAGE_NAMES = ['identity', 'people', 'programs-sites', 'strategies-content', 'stub'];
 
 const REASONS = {
   public: true,
@@ -203,9 +190,9 @@ afterEach(async () => {
 });
 
 describe('ROUTED_PACKAGES', () => {
-  it('lists the gateway, migration and the eleven services exactly once', () => {
+  it('lists the gateway, migration, the four services and the stub exactly once', () => {
     const dirs = ROUTED_PACKAGES.map((pkg) => pkg.dir);
-    expect(ROUTED_PACKAGES).toHaveLength(13);
+    expect(ROUTED_PACKAGES).toHaveLength(7);
     expect(new Set(dirs).size).toBe(dirs.length);
     expect(new Set(dirs)).toEqual(
       new Set(['gateway', 'migration', ...SERVICE_PACKAGE_NAMES.map((name) => `services/${name}`)]),
@@ -465,7 +452,7 @@ describe('expectationsFor', () => {
     expect(keys.size).toBe(expectations.length);
   });
 
-  it('covers anonymous, the user roles, other-tenant, each synthetic role and each service role', () => {
+  it('covers anonymous, the user roles, other-tenant and each service role, and no other subject', () => {
     const names = ROLE_SET.map((subject) => subject.name);
     const required = [
       'anonymous',
@@ -475,11 +462,9 @@ describe('expectationsFor', () => {
       Roles.siteAdmin,
       Roles.s2,
       'other-tenant',
-      ...SYNTHETIC_ROLES,
       ...SERVICE_CALLERS.map(serviceRole),
     ];
-    expect(SYNTHETIC_ROLES).toHaveLength(10);
-    expect(names).toEqual(expect.arrayContaining(required));
+    expect([...names].sort()).toEqual([...required].sort());
     expect(new Set(expectationsFor(peopleMatrix()).map((e) => e.subject))).toEqual(new Set(names));
   });
 

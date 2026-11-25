@@ -1,11 +1,11 @@
 /** Composition root of strategies-content: start-up, contract-equal routes, consumer-only events, write positions, environment and shutdown. */
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { parse } from 'yaml';
 import { SAFE_ERROR_TEXT, serializeError, type Logger } from '@opt2/platform/logging';
 import { WRITE_POSITION_HEADER, hasWritePositionHeader } from '@opt2/platform/migration-kit';
 import { createService, loadEnv } from '@opt2/platform/service-kit';
-import { TENANT_A, createCapturingPublisher, testVerifier } from '@opt2/platform/testing';
+import { TENANT_A, createCapturingPublisher, loadOpenApiDocument, testVerifier } from '@opt2/platform/testing';
 import { buildApp, contentEnvSchema, type BuildAppOptions, type ContentEnv } from '../../src/app.js';
 import * as consumers from '../../src/events/consumers.js';
 import { FEED_AUTO_IMPORT_PATH, PUBLISH_SCHEDULED_CHANGESETS_PATH, registerJobRoutes } from '../../src/jobs/index.js';
@@ -58,7 +58,7 @@ interface ContractRoute {
   url: string;
 }
 
-const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as OpenApiDoc;
+const OPENAPI = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as unknown as OpenApiDoc;
 
 // The common-prefix tree, because the flattened one drops the static prefix before a trailing wildcard.
 /** A `printRoutes()` line: tree indent, branch, radix-node fragment of the path, and the methods of a route ending there. */

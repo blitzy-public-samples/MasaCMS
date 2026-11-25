@@ -143,7 +143,7 @@ const INSERT_GRANT =
   'INSERT INTO people.tenant_grant (grantor_tenant, grantee_tenant, kind, resource_id) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING';
 const SELECT_GRANT =
   'SELECT 1 FROM people.tenant_grant WHERE grantor_tenant = $1 AND grantee_tenant = $2 AND kind = $3 AND resource_id = $4';
-const GRANT = { grantee: TENANT_B, kind: 'survey-response', resourceId: 'S1' };
+const GRANT = { grantee: TENANT_B, kind: 'shared-note', resourceId: 'S1' };
 const GRANT_KEY = { grantor: TENANT_A, ...GRANT };
 
 const PASSWORD_ENV: DbEnv = {
@@ -709,7 +709,7 @@ describe('writeGrant', () => {
     expect(pool.client.calls).toEqual([
       ['BEGIN', undefined],
       [SET_TENANT, [TENANT_A]],
-      [INSERT_GRANT, [TENANT_A, TENANT_B, 'survey-response', 'S1']],
+      [INSERT_GRANT, [TENANT_A, TENANT_B, 'shared-note', 'S1']],
       ['COMMIT', undefined],
     ]);
   });
@@ -748,7 +748,7 @@ describe('hasGrant', () => {
     expect(pool.client.calls).toEqual([
       ['BEGIN', undefined],
       [SET_TENANT, ['']],
-      [SELECT_GRANT, [TENANT_A, TENANT_B, 'survey-response', 'S1']],
+      [SELECT_GRANT, [TENANT_A, TENANT_B, 'shared-note', 'S1']],
       ['COMMIT', undefined],
     ]);
   });

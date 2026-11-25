@@ -1,13 +1,12 @@
 // SYNTHETIC: seed - no Masa equivalent; legacy oracle in legacy-fixtures/
 import { fileURLToPath } from 'node:url';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { SYNTHETIC_ROLES } from '@opt2/platform/auth';
 import { loadConfig, type SeedConfig, type SiteKey } from '../src/config.js';
 import { createRandom } from '../src/random.js';
 import { createCalendar } from '../src/time.js';
 import { sha256Hex } from '../src/bytes.js';
 import { MASA_HOME_CONTENT_ID, MASA_DEFAULT_MODULE_ID, MASA_FORMS_MODULE_ID } from '../src/ids.js';
-import { buildMasa, indexMasa, type ContentRow, type MasaData, type MasaIndex } from '../src/masa.js';
+import { buildMasa, indexMasa, type ContentRow, type MasaData, type MasaIndex, type SeedRole } from '../src/masa.js';
 
 const CONFIG_PATH = fileURLToPath(new URL('../seed.config.json', import.meta.url));
 const CF_UUID = /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16}$/;
@@ -27,8 +26,8 @@ beforeAll(async () => {
 describe('masa counts', () => {
   it.each([
     ['umbrella', 0, 1000, 0, 100, 10, 1],
-    ['tenant-a', 2000, 0, 50, 0, 5000, 1],
-    ['tenant-b', 180, 20, 10, 10, 300, 1],
+    ['tenant-a', 1990, 0, 40, 0, 5000, 1],
+    ['tenant-b', 170, 20, 0, 10, 300, 1],
   ] as const)('%s: system %i members %i groups %i categories %i content %i forms %i', (site, sys, mem, groups, cats, content, forms) => {
     expect(index.systemUsers(site as SiteKey)).toHaveLength(sys);
     expect(index.members(site as SiteKey)).toHaveLength(mem);
@@ -41,13 +40,13 @@ describe('masa counts', () => {
     expect(Object.keys(masa)).toEqual([
       'sites', 'groups', 'users', 'memberships', 'categories', 'content', 'files', 'oauthClients', 'formResponses', 'commenters', 'comments',
     ]);
-    expect(masa.users).toHaveLength(3200);
+    expect(masa.users).toHaveLength(3180);
     expect(masa.files).toHaveLength(20);
     expect(masa.oauthClients).toHaveLength(1);
-    expect(masa.sites.map((s) => [s.siteID, s.orderNo, s.domain, s.domainAlias, s.programId, s.pageLimit])).toEqual([
-      ['umbrella', 2, 'umbrella.localhost', 'localhost', null, null],
-      ['tenant-a', 3, 'tenant-a.localhost', 'localhost', 1, 10000],
-      ['tenant-b', 4, 'tenant-b.localhost', 'localhost', 2, null],
+    expect(masa.sites.map((s) => [s.siteID, s.orderNo, s.domain, s.domainAlias, s.pageLimit])).toEqual([
+      ['umbrella', 2, 'umbrella.localhost', 'localhost', null],
+      ['tenant-a', 3, 'tenant-a.localhost', 'localhost', 10000],
+      ['tenant-b', 4, 'tenant-b.localhost', 'localhost', null],
     ]);
     const a = index.site('tenant-a');
     expect([a.publicUserPoolID, a.categoryPoolID, a.filePoolID, a.displayPoolID, a.privateUserPoolID, a.contentPoolID]).toEqual([
@@ -87,54 +86,37 @@ describe('masa users', () => {
     const reserved = config.reserved.rehearsal.persons;
     expect(ids.filter((id) => reserved.includes(id)).sort()).toEqual([...reserved].sort());
   });
-  it('reserved persons are tenant-a system users in the employee group only', () => {
+  it('reserved persons are tenant-a system users in no group', () => {
     for (const id of config.reserved.rehearsal.persons) {
       const u = index.user(id);
       expect([u.siteID, u.isPublic]).toEqual(['tenant-a', 0]);
-      expect(masa.memberships.filter((m) => m.userID === id).map((m) => m.groupname)).toEqual(['timesheets.employee']);
+      expect(masa.memberships.filter((m) => m.userID === id)).toEqual([]);
       expect(index.isReserved(id)).toBe(true);
     }
     const sys = index.systemUsers('tenant-a').map((u) => u.userID);
-    expect(sys.slice(13, 23)).toEqual(config.reserved.rehearsal.persons);
-    expect(index.actors('tenant-a', 'timesheets.employee')).toHaveLength(100);
-    expect(index.actors('tenant-a', 'timesheets.employee').filter((id) => index.isReserved(id))).toHaveLength(10);
-    for (const role of SYNTHETIC_ROLES.filter((r) => r !== 'timesheets.employee')) {
-      expect(index.actors('tenant-a', role).some((id) => index.isReserved(id))).toBe(false);
-    }
+    expect(sys.slice(3, 13)).toEqual(config.reserved.rehearsal.persons);
   });
 });
 
 describe('masa groups and memberships', () => {
-  it.each([
-    ['tenant-a', 100, 5],
-    ['tenant-b', 20, 3],
-  ] as const)('%s role groups and role users', (site, employees, others) => {
+  it.each(['tenant-a', 'tenant-b'] as const)('%s generic groups, site admin and plain user', (site) => {
     const groups = index.groups(site).map((g) => g.groupname);
-    expect(groups.slice(0, 10)).toEqual([...SYNTHETIC_ROLES]);
+    expect(groups.every((name) => / Team(?: \d+)?$/.test(name))).toBe(true);
     expect(groups).not.toContain('Admin');
     expect(new Set(groups).size).toBe(groups.length);
-    for (const role of SYNTHETIC_ROLES) {
-      const members = index.membersOf(site, role);
-      expect(members).toHaveLength(role === 'timesheets.employee' ? employees : others);
-      const u = index.roleUser(site, role);
-      expect(members).toContain(u.userID);
-      expect(masa.memberships.filter((m) => m.userID === u.userID).map((m) => m.groupname)).toEqual([role]);
-    }
-    const nonEmployee = SYNTHETIC_ROLES.filter((r) => r !== 'timesheets.employee').flatMap((r) => index.membersOf(site, r));
-    expect(new Set(nonEmployee).size).toBe(nonEmployee.length);
     const admin = index.roleUser(site, 'site-admin');
     expect(masa.memberships.filter((m) => m.userID === admin.userID)).toEqual([
       { userID: admin.userID, groupID: null, groupname: 'Admin', groupSiteID: site },
     ]);
     const plain = index.roleUser(site, 'system-user');
     expect(masa.memberships.some((m) => m.userID === plain.userID)).toBe(false);
-    expect(index.systemUsers(site).map((u) => u.userID).indexOf(plain.userID)).toBe(11);
+    expect(index.systemUsers(site).map((u) => u.userID).indexOf(plain.userID)).toBe(1);
     for (const m of masa.memberships.filter((x) => x.groupSiteID === site && x.groupID !== null)) {
       expect(index.groups(site).find((g) => g.groupID === m.groupID)?.groupname).toBe(m.groupname);
     }
   });
   it('ordinary tenant-a users join at most two generic groups', () => {
-    const generic = new Set(index.groups('tenant-a').slice(10).map((g) => g.groupname));
+    const generic = new Set(index.groups('tenant-a').map((g) => g.groupname));
     const counts = new Map<string, number>();
     for (const m of masa.memberships) if (generic.has(m.groupname)) counts.set(m.userID, (counts.get(m.userID) ?? 0) + 1);
     expect(Math.max(...counts.values())).toBeLessThanOrEqual(2);
@@ -146,7 +128,7 @@ describe('masa groups and memberships', () => {
     expect(index.memberUser('tenant-b').isPublic).toBe(1);
     expect(() => index.memberUser('tenant-a')).toThrow(RangeError);
     expect(() => index.roleUser('umbrella', 'site-admin')).toThrow(RangeError);
-    expect(() => index.roleUser('tenant-a', 'member')).toThrow(RangeError);
+    expect(() => index.roleUser('tenant-a', 'member' as SeedRole)).toThrow(RangeError);
     expect(() => index.site('default' as SiteKey)).toThrow(RangeError);
     expect(() => index.user('nope')).toThrow(RangeError);
     expect(() => index.oauthAccount('tenant-b')).toThrow(RangeError);
@@ -156,7 +138,7 @@ describe('masa groups and memberships', () => {
     expect(account.userID).toBe(client.userID);
     expect([account.siteID, account.isPublic]).toEqual(['tenant-a', 0]);
     expect(masa.memberships.some((m) => m.userID === account.userID)).toBe(false);
-    expect(index.systemUsers('tenant-a').indexOf(account)).toBe(12);
+    expect(index.systemUsers('tenant-a').indexOf(account)).toBe(2);
     expect(index.roleUser('tenant-a', 'system-user').userID).not.toBe(account.userID);
     expect(index.groups('umbrella')).toEqual([]);
     expect(index.membersOf('umbrella', 'x')).toEqual([]);
@@ -374,7 +356,7 @@ describe('masa determinism', () => {
     expect(JSON.stringify(again)).toBe(JSON.stringify(masa));
     const reloaded = indexMasa(JSON.parse(JSON.stringify(masa)) as MasaData, config);
     for (const site of ['tenant-a', 'tenant-b'] as const) {
-      for (const role of [...SYNTHETIC_ROLES, 'site-admin', 'system-user']) {
+      for (const role of ['site-admin', 'system-user'] as const) {
         expect(reloaded.roleUser(site, role).userID).toBe(index.roleUser(site, role).userID);
       }
     }

@@ -54,7 +54,7 @@ import {
   FIXTURE_CATALOG,
   TABLES,
   TABLE_NAMES,
-  blackoutRow,
+  enrolmentRow,
   defineFixtureTables,
   fixtureId,
   imageSizeRow,
@@ -66,7 +66,7 @@ import {
 } from '../helpers/fixtures.js';
 
 const LIVE_DATABASE = 'masa_test';
-const BLACKOUT = 'Program_N.blackout';
+const ENROLMENT = 'Program_N.enrolment';
 
 let db: FakeLegacyDb;
 let scratchDirs: string[];
@@ -389,24 +389,24 @@ describe('canonical value forms', () => {
 });
 
 
-const SHARED_DAY = fixtureId('timesheet_day:shared');
+const SHARED_COHORT = fixtureId('cohort:shared');
 
-/** Seeds both programs' blackouts in descending key order, with one row identical in both programs. */
-function seedBlackouts(): { 1: Row[]; 2: Row[] } {
+/** Seeds both programs' enrolments in descending key order, with one row identical in both programs. */
+function seedEnrolments(): { 1: Row[]; 2: Row[] } {
   const rows = {
     1: reverseKeyOrder(
-      [blackoutRow({ day_id: fixtureId('timesheet_day:p1/a') }), blackoutRow({ day_id: fixtureId('timesheet_day:p1/b') }), blackoutRow({ day_id: SHARED_DAY })],
-      'blackout_id',
+      [enrolmentRow({ cohort_id: fixtureId('cohort:p1/a') }), enrolmentRow({ cohort_id: fixtureId('cohort:p1/b') }), enrolmentRow({ cohort_id: SHARED_COHORT })],
+      'enrolment_id',
     ),
-    2: reverseKeyOrder([blackoutRow({ day_id: fixtureId('timesheet_day:p2/a') }), blackoutRow({ day_id: SHARED_DAY })], 'blackout_id'),
+    2: reverseKeyOrder([enrolmentRow({ cohort_id: fixtureId('cohort:p2/a') }), enrolmentRow({ cohort_id: SHARED_COHORT })], 'enrolment_id'),
   };
-  db.seed('Program_1.blackout', rows[1]);
-  db.seed('Program_2.blackout', rows[2]);
+  db.seed('Program_1.enrolment', rows[1]);
+  db.seed('Program_2.enrolment', rows[2]);
   return rows;
 }
 
-async function blackoutTable(): Promise<MigratableTable> {
-  const table = migratableTables(FIXTURE_CATALOG, await listLegacyTables(await db.live())).find((entry) => entry.name === BLACKOUT);
+async function enrolmentTable(): Promise<MigratableTable> {
+  const table = migratableTables(FIXTURE_CATALOG, await listLegacyTables(await db.live())).find((entry) => entry.name === ENROLMENT);
   expect(table).toBeDefined();
   return table as MigratableTable;
 }
@@ -415,7 +415,7 @@ type FoldSource = (table: MigratableTable) => AsyncIterable<CanonicalRow>;
 
 const FOLD_SOURCES: readonly [string, FoldSource][] = [
   ['streamLegacyTable of the migratable table', (table) => streamLegacyTable(deps(), { table })],
-  ['streamLegacyTable of the logical name', () => streamLegacyTable(deps(), { table: BLACKOUT })],
+  ['streamLegacyTable of the logical name', () => streamLegacyTable(deps(), { table: ENROLMENT })],
   [
     'streamFoldedRows of the parts',
     (table) =>
@@ -429,17 +429,17 @@ const FOLD_SOURCES: readonly [string, FoldSource][] = [
 ];
 
 describe('Program_<id> fold', () => {
-  it('describes Program_N.blackout as one folded, keyed table over both program parts', async () => {
+  it('describes Program_N.enrolment as one folded, keyed table over both program parts', async () => {
     defineFixtureTables(db);
-    const shape = await describeLegacyTable(deps(), { table: await blackoutTable() });
+    const shape = await describeLegacyTable(deps(), { table: await enrolmentTable() });
 
-    expect(shape).toMatchObject({ table: BLACKOUT, folded: true, keyed: true, keyColumns: ['blackout_id', LEGACY_PROGRAM_ID_COLUMN] });
+    expect(shape).toMatchObject({ table: ENROLMENT, folded: true, keyed: true, keyColumns: ['enrolment_id', LEGACY_PROGRAM_ID_COLUMN] });
     expect(shape.parts.map((part) => [part.programId, part.ref.qualified])).toEqual([
-      [1, 'Program_1.blackout'],
-      [2, 'Program_2.blackout'],
+      [1, 'Program_1.enrolment'],
+      [2, 'Program_2.enrolment'],
     ]);
     expect(shape.columns.map((column) => column.name)).toEqual([
-      ...TABLES['Program_1.blackout'].columns.map((column) => column.name),
+      ...TABLES['Program_1.enrolment'].columns.map((column) => column.name),
       LEGACY_PROGRAM_ID_COLUMN,
     ]);
     expect(shape.columns.at(-1)).toEqual({ name: LEGACY_PROGRAM_ID_COLUMN, type: 'i' });
@@ -447,13 +447,13 @@ describe('Program_<id> fold', () => {
 
   it.each(FOLD_SOURCES)('merges both programs through %s with legacy_program_id appended to row, encoding and key', async (_label, source) => {
     defineFixtureTables(db);
-    const seeded = seedBlackouts();
-    const table = await blackoutTable();
+    const seeded = seedEnrolments();
+    const table = await enrolmentTable();
     const shape = await describeLegacyTable(deps(), { table });
     const plainRows = new Map<number, Map<string, CanonicalRow>>();
     for (const part of shape.parts) {
       const rows = await collect(streamCanonicalRows({ legacy: db, table: part.ref }));
-      plainRows.set(part.programId, new Map(rows.map((row) => [String(row.row.blackout_id), row])));
+      plainRows.set(part.programId, new Map(rows.map((row) => [String(row.row.enrolment_id), row])));
     }
     const rows = await collect(source(table));
 
@@ -461,37 +461,37 @@ describe('Program_<id> fold', () => {
     expectStreamOrder(rows, true);
     for (const row of rows) {
       const programId = row.legacyProgramId as number;
-      const plain = plainRows.get(programId)?.get(String(row.row.blackout_id));
+      const plain = plainRows.get(programId)?.get(String(row.row.enrolment_id));
       const suffix = encodeValue('i', programId);
       expect(plain).toBeDefined();
-      expect(row.table).toBe(BLACKOUT);
+      expect(row.table).toBe(ENROLMENT);
       expect(row.row[LEGACY_PROGRAM_ID_COLUMN]).toBe(String(programId));
-      expect(row.keyValues).toEqual([row.row.blackout_id, programId]);
+      expect(row.keyValues).toEqual([row.row.enrolment_id, programId]);
       expect(row.encoding).toBe(`${plain?.encoding ?? ''}${suffix}`);
       expect(row.key).toBe(`${plain?.key ?? ''}${suffix}`);
       expect(row.encoding).toBe(encodeRow(shape.columns, row.row));
       expect(row.key).toBe(encodeKey(shape.columns, shape.keyColumns, row.row));
     }
-    const shared = rows.filter((row) => row.row.day_id === SHARED_DAY);
+    const shared = rows.filter((row) => row.row.cohort_id === SHARED_COHORT);
     expect(shared.map((row) => row.legacyProgramId)).toEqual([1, 2]);
     expect(new Set(shared.map((row) => row.key)).size).toBe(2);
     expect(new Set(shared.map((row) => row.encoding)).size).toBe(2);
   });
 
   it.each<[string, (columns: readonly LegacyColumnDef[]) => LegacyColumnDef[]]>([
-    ['lacks a column', (columns) => columns.filter((column) => column.name !== 'reason')],
+    ['lacks a column', (columns) => columns.filter((column) => column.name !== 'status')],
     ['orders its columns differently', (columns) => [...columns].reverse()],
-  ])('raises FoldShapeError when Program_2.blackout %s', async (_label, reshape) => {
-    defineFixtureTables(db, ['Program_1.blackout']);
-    const fixture: FixtureTable = TABLES['Program_2.blackout'];
+  ])('raises FoldShapeError when Program_2.enrolment %s', async (_label, reshape) => {
+    defineFixtureTables(db, ['Program_1.enrolment']);
+    const fixture: FixtureTable = TABLES['Program_2.enrolment'];
     db.defineTable(fixture.qualified, reshape(fixture.columns), fixture.options);
-    const table = await blackoutTable();
+    const table = await enrolmentTable();
     const described = await describeLegacyTable(deps(), { table }).catch((caught: unknown) => caught);
     const streamed = await collect(streamLegacyTable(deps(), { table })).catch((caught: unknown) => caught);
 
     for (const error of [described, streamed]) {
       expect(error).toBeInstanceOf(FoldShapeError);
-      expect(error).toMatchObject({ table: BLACKOUT });
+      expect(error).toMatchObject({ table: ENROLMENT });
     }
   });
 });
@@ -604,7 +604,7 @@ describe('partitionLegacyTables', () => {
     const partition = await livePartition();
 
     expect(partition.migratable.map((table) => table.name)).toEqual([
-      BLACKOUT,
+      ENROLMENT,
       'synthetic.person_archive',
       'tcontent',
       'tfiles',
@@ -632,10 +632,10 @@ describe('partitionLegacyTables', () => {
   });
 
   it.each<[string, string, readonly string[], readonly string[], readonly [string, number | undefined][]]>([
-    [BLACKOUT, 'timesheets', ['timesheets'], ['blackout_id'], [['Program_1.blackout', 1], ['Program_2.blackout', 2]]],
+    [ENROLMENT, 'programs-sites', ['programs-sites'], ['enrolment_id'], [['Program_1.enrolment', 1], ['Program_2.enrolment', 2]]],
     ['synthetic.person_archive', 'people', ['people'], ['archive_id'], [['synthetic.person_archive', undefined]]],
     ['tcontent', 'strategies-content', ['strategies-content'], ['tcontent_ID'], [['tcontent', undefined]]],
-    ['tmailinglistmembers', 'communications', ['communications'], [], [['tmailinglistmembers', undefined]]],
+    ['tmailinglistmembers', 'programs-sites', ['programs-sites'], [], [['tmailinglistmembers', undefined]]],
     ['tusers', 'split', ['identity', 'people'], ['UserID'], [['tusers', undefined]]],
   ])('migrates %s owned by %s', async (name, owner, owners, keyColumns, physical) => {
     const { migratable } = await livePartition();

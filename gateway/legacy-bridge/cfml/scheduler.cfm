@@ -99,19 +99,13 @@ function repointUrl(required string taskUrl, required struct origin) {
 		& (isNull(uri.getRawQuery()) ? "" : "?" & uri.getRawQuery());
 }
 
-// Creates or updates a task through Masa's utility.scheduleTask with no mode, omitting empty attributes; a fixture
-// survey task also gets its Basic task credential, which an update without one would clear.
+// Creates or updates a task through Masa's utility.scheduleTask with no mode, omitting empty attributes.
 function saveTask(required struct attrs) {
 	var args = {action: "update", publish: "No"};
 	for (var name in arguments.attrs) {
 		if (len(arguments.attrs[name])) {
 			args[name] = arguments.attrs[name];
 		}
-	}
-	var credential = createObject("component", "muraWRM.legacy-fixtures.cfml.lib.auth").init().surveyTaskCredential(arguments.attrs.task);
-	if (len(credential)) {
-		args.username = "opt2-task";
-		args.password = credential;
 	}
 	application.serviceFactory.getBean("utility").scheduleTask(argumentCollection = args);
 }

@@ -33,12 +33,6 @@ const EXPECTED: Record<PackageName, number> = {
   people: 8112,
   'programs-sites': 8113,
   'strategies-content': 8114,
-  communications: 8115,
-  reporting: 8116,
-  surveys: 8117,
-  timesheets: 8118,
-  finance: 8119,
-  'e-signature': 8120,
   stub: 8199,
 };
 
@@ -50,12 +44,6 @@ const VARIABLES: Record<PackageName, string> = {
   people: 'OPT2_PORT_PEOPLE',
   'programs-sites': 'OPT2_PORT_PROGRAMS_SITES',
   'strategies-content': 'OPT2_PORT_STRATEGIES_CONTENT',
-  communications: 'OPT2_PORT_COMMUNICATIONS',
-  reporting: 'OPT2_PORT_REPORTING',
-  surveys: 'OPT2_PORT_SURVEYS',
-  timesheets: 'OPT2_PORT_TIMESHEETS',
-  finance: 'OPT2_PORT_FINANCE',
-  'e-signature': 'OPT2_PORT_E_SIGNATURE',
   stub: 'OPT2_PORT_STUB',
 };
 
@@ -198,24 +186,24 @@ describe('parsePortsEnv', () => {
     [
       'a line without =',
       portsText({}, ['OPT2_PORT_GATEWAY']),
-      'line 15 is not a KEY=value assignment with an [A-Z0-9_] key: OPT2_PORT_GATEWAY',
+      'line 9 is not a KEY=value assignment with an [A-Z0-9_] key: OPT2_PORT_GATEWAY',
     ],
     [
       'a lowercase key',
       portsText({}, ['opt2_port_gateway=8100']),
-      'line 15 is not a KEY=value assignment with an [A-Z0-9_] key: opt2_port_gateway=8100',
+      'line 9 is not a KEY=value assignment with an [A-Z0-9_] key: opt2_port_gateway=8100',
     ],
     [
       'spaces around =',
       portsText({}, ['OPT2_PORT_GATEWAY = 8100']),
-      'line 15 is not a KEY=value assignment with an [A-Z0-9_] key: OPT2_PORT_GATEWAY = 8100',
+      'line 9 is not a KEY=value assignment with an [A-Z0-9_] key: OPT2_PORT_GATEWAY = 8100',
     ],
     [
       'an unknown OPT2_PORT_ variable',
       portsText({}, ['OPT2_PORT_LEGACY=8080']),
       `OPT2_PORT_LEGACY names no known package; expected one of ${KNOWN_VARIABLES}`,
     ],
-    ['a missing variable', portsText({ OPT2_PORT_FINANCE: undefined }), 'OPT2_PORT_FINANCE is missing'],
+    ['a missing variable', portsText({ OPT2_PORT_PROGRAMS_SITES: undefined }), 'OPT2_PORT_PROGRAMS_SITES is missing'],
     ...['0', '65536', '', 'abc', '-1', '8101.5', '0x1f95', '"8101\''].map(
       (value): [string, string, string] => [
         `the out-of-range or non-integer value '${value}'`,

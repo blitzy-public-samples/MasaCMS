@@ -1,7 +1,5 @@
 // Test-only composition of the migration route registrars over the real context, each wired to the module its dependency
 // interface names; doubles stand only at the external boundaries: gateway and owner services, legacy SQL Server and bridge.
-import { readFileSync } from 'node:fs';
-
 import { rolesForService } from '@opt2/platform/auth';
 import { BRIDGE_ASSERTION_HEADER, MemoryNonceStore, verifyBridgeAssertion } from '@opt2/platform/legacy-compat';
 import { createLogger } from '@opt2/platform/logging';
@@ -20,6 +18,7 @@ import {
   ContractAssertionError,
   assertResponseMatchesOpenApi,
   findOperation,
+  loadOpenApiDocument,
   rewriteMigrationSql,
   testVerifier,
   type ContractViolation,
@@ -115,7 +114,7 @@ const CONTRACT_FILES: Readonly<Record<string, string>> = Object.freeze({
   migration: 'migration/contracts/openapi.yaml',
   gateway: 'gateway/contracts/openapi.yaml',
   ...Object.fromEntries(
-    ['identity', 'people', 'programs-sites', 'strategies-content', 'communications', 'reporting', 'surveys', 'timesheets', 'finance', 'e-signature'].map(
+    ['identity', 'people', 'programs-sites', 'strategies-content'].map(
       (service) => [service, `services/${service}/contracts/openapi.yaml`],
     ),
   ),
@@ -129,7 +128,7 @@ export function producerContract(service: string): OpenApiDoc {
   if (doc === undefined) {
     const file = CONTRACT_FILES[service];
     if (file === undefined) throw new TypeError(`No contract is known for callee ${service}`);
-    doc = parse(readFileSync(new URL(`../../../${file}`, import.meta.url), 'utf8')) as OpenApiDoc;
+    doc = loadOpenApiDocument(new URL(`../../../${file}`, import.meta.url), parse) as unknown as OpenApiDoc;
     contracts.set(service, doc);
   }
   return doc;

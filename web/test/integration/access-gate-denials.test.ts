@@ -1,7 +1,7 @@
-// A service's 401 or 403 as legacy answers it: a GatewayDenialError, then clogin.logout, secure() or noaccess.
+// A service's 401 or 403 as legacy answers it: a GatewayDenialError, then clogin.logout or secure().
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { INVOCATION_HEADER } from '@opt2/platform/auth';
-import { ADMIN_LOGIN_REDIRECT_ACTION, ADMIN_NOACCESS_ACTION } from '@opt2/platform/legacy-compat';
+import { ADMIN_LOGIN_REDIRECT_ACTION } from '@opt2/platform/legacy-compat';
 import { applicationGate, deniedGate, runGate, secure } from '@/lib/access-gate';
 import { authenticateRequest } from '@/lib/auth';
 import { resetLegacySettingsForTests } from '@/lib/env';
@@ -51,7 +51,6 @@ describe('deniedGate', () => {
 
   it.each<[AdminMode, Record<string, string>, string]>([
     ['page', {}, `/admin/?muraAction=${ADMIN_LOGIN_REDIRECT_ACTION}`],
-    ['opt2', {}, `/admin/?muraAction=${ADMIN_LOGIN_REDIRECT_ACTION}`],
     ['redirect', { MURA_CONTEXT: '/cms' }, '/cms/admin/?muraAction=clogin.logout'],
   ])('sends a 401 in %s mode under %j where the application gate sends a public user', (mode, settings, location) => {
     useSettings(settings);
@@ -73,16 +72,6 @@ describe('deniedGate', () => {
 
     expect(deniedGate(403, req)).toEqual({ kind: 'redirect', location });
     expect(deniedGate(403, req)).toEqual(secure(editorRequest(req)));
-  });
-
-  it.each<[Record<string, string>, string]>([
-    [{}, `/admin/?muraAction=${ADMIN_NOACCESS_ACTION}`],
-    [{ MURA_CONTEXT: '/cms', MURA_ADMINDIR: '/manage' }, '/cms/manage/?muraAction=cMessage.noaccess'],
-  ])('sends a 403 on a synthetic-module screen under %j to %s', (settings, location) => {
-    useSettings(settings);
-    const denied = deniedGate(403, { mode: 'opt2', headers: new Headers({ referer: REFERER }) });
-
-    expect(denied).toEqual({ kind: 'redirect', location });
   });
 });
 
@@ -137,7 +126,6 @@ describe('a service answer through the production gateway client', () => {
     return buildAdminRequest({
       params: { circuit: 'cusers', action: 'list' },
       searchParams: new URLSearchParams(target.split('?')[1]),
-      receivedTarget: `/admin/cusers/list?${target.split('?')[1]}`,
       headers: new Headers({ [ORIGINAL_URL_HEADER]: target }),
       auth,
       gateway: createGatewayClient({ userToken: auth.userToken, requestId: 'req-denial', inbound: {} }),
@@ -218,7 +206,6 @@ describe('a signed-in user whose token grants no role on the requested site', ()
     const request = await buildAdminRequest({
       params: { circuit: 'carch', action: 'list' },
       searchParams: new URLSearchParams(query),
-      receivedTarget: `/admin/carch/list?${query}`,
       headers: new Headers({ [ORIGINAL_URL_HEADER]: `/admin/?${query}`, ...(referer ? { referer } : {}) }),
       auth,
       gateway,

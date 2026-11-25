@@ -22,7 +22,7 @@ import { defaultSiteMonitorRecord, type SiteMonitorRecord } from '../../src/sche
 import { buildApp, startServer, type BuildAppOptions } from '../../src/server.js';
 import { createTransitionService } from '../../src/transition/index.js';
 import { createWindowService, type WindowServiceOptions } from '../../src/windows/index.js';
-import { createTestDirs, testEnv, type TestDirs } from '../helpers/env.js';
+import { createTestDirs, testEnv, testEnvSource, type TestDirs } from '../helpers/env.js';
 import { createGatewayDouble } from '../helpers/gateway-double.js';
 import { memoryMigrationDb } from '../helpers/route-app.js';
 
@@ -496,7 +496,29 @@ async function freePort(): Promise<number> {
   return address.port;
 }
 
+/** The service map of the kept stack, the gateway and the four migrated services, each at a closed loopback port. */
+const KEPT_SERVICE_URLS: Readonly<Record<string, string>> = Object.fromEntries(
+  ['gateway', 'identity', 'people', 'programs-sites', 'strategies-content'].map((name) => [name, 'http://127.0.0.1:1']),
+);
+
 describe('startServer', () => {
+  it('starts from an environment whose service map names only the gateway and the four migrated services', async () => {
+    const port = await freePort();
+    const source = { ...testEnvSource({ dirs, LOG_LEVEL: 'fatal', PORT: String(port) }), OPT2_SERVICE_URLS: JSON.stringify(KEPT_SERVICE_URLS) };
+    const kept = loadMigrationServerEnv(source);
+    vi.mocked(loadMigrationServerEnv).mockReturnValueOnce(kept);
+
+    const server = await startServer();
+    try {
+      expect(Object.keys(kept.OPT2_SERVICE_URLS).sort()).toEqual(Object.keys(KEPT_SERVICE_URLS).sort());
+      const response = await fetch(`http://127.0.0.1:${String(port)}/healthz`);
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ status: 'ok' });
+    } finally {
+      await server.opt2.shutdown();
+    }
+  });
+
   it('listens on PORT with background work started, serving the health check', async () => {
     const port = await freePort();
     vi.mocked(loadMigrationServerEnv).mockReturnValueOnce(testEnv({ dirs, LOG_LEVEL: 'fatal', PORT: String(port) }));

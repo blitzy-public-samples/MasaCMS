@@ -1,5 +1,5 @@
-// Content admin renderers against Masa 7.6.1 on ACF 2023.0.26 (GS-CO-08 Site Manager tree, GS-CO-04 version diff,
-// GS-CO-01/02 notify and lock check): each fixture in test/fixtures/legacy-admin-render holds the model read from a seeded
+// Content admin renderers against Masa 7.6.1 on ACF 2023.0.26 (Site Manager tree, GS-CO-04 version diff,
+// notify and lock check): each fixture in test/fixtures/legacy-admin-render holds the model read from a seeded
 // legacy instance in the session that then requested the action, and the body it served, CSRF values replaced by `<token>`.
 import { readFileSync, readdirSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';

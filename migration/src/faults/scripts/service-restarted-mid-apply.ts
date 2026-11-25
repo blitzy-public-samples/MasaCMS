@@ -23,10 +23,7 @@ const NOT_RESTORED_REASON = 'the owner was not restored, so the apply was not re
 
 // Owners of the OwnersClient endpoints that take no owner argument.
 const CONTENT: DataOwner = 'strategies-content';
-const FINANCE: DataOwner = 'finance';
-const REPORTING: DataOwner = 'reporting';
 const PROGRAMS_SITES: DataOwner = 'programs-sites';
-const COMMUNICATIONS: DataOwner = 'communications';
 
 const commandSchema = z.enum(['feed', 'backfill']);
 
@@ -161,13 +158,8 @@ function wrapOwners(
     putObject: (...args) => watched('putObject', CONTENT, () => owners.putObject(...args)),
     getObject: (...args) => watched('getObject', CONTENT, () => owners.getObject(...args)),
     deleteObject: (...args) => watched('deleteObject', CONTENT, () => owners.deleteObject(...args)),
-    getAttachmentObject: (...args) => watched('getAttachmentObject', FINANCE, () => owners.getAttachmentObject(...args)),
-    getExportObject: (...args) => watched('getExportObject', REPORTING, () => owners.getExportObject(...args)),
     siteMonitorState: () => watched('siteMonitorState', PROGRAMS_SITES, () => owners.siteMonitorState()),
     putSiteMonitorState: (...args) => watched('putSiteMonitorState', PROGRAMS_SITES, () => owners.putSiteMonitorState(...args)),
-    adoptScheduledTasks: (...args) => watched('adoptScheduledTasks', COMMUNICATIONS, () => owners.adoptScheduledTasks(...args)),
-    cancelAdoptedScheduledTasks: (...args) =>
-      watched('cancelAdoptedScheduledTasks', COMMUNICATIONS, () => owners.cancelAdoptedScheduledTasks(...args)),
     queueControl: (...args) => watched('queueControl', args[0], () => owners.queueControl(...args)),
   };
   return { client, stats };

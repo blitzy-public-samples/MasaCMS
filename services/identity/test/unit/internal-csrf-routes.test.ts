@@ -1,5 +1,4 @@
 /** The `consumeCsrfToken`, `claimCsrfToken` and `settleCsrfClaims` routes and `validateCsrfForRoute` over a throwaway `identity` schema: contract shape, transport and role denials, body validation and single use across the routes. */
-import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -14,6 +13,7 @@ import { SYSTEM_TENANT_ID, withTenant, type TenantDb } from '@opt2/platform/tena
 import {
   assertResponseMatchesOpenApi,
   createThrowawaySchema,
+  loadOpenApiDocument,
   mintServiceToken,
   mintUserToken,
   pgAvailable,
@@ -28,7 +28,7 @@ import { registerCsrfRoutes, validateCsrfForRoute } from '../../src/routes/inter
 
 type ContractOperation = Record<string, unknown>;
 
-const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as {
+const OPENAPI = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as {
   paths: Record<string, Record<string, ContractOperation>>;
 };
 const CONTRACT_PATHS = ['/internal/v1/csrf/consume', '/internal/v1/csrf/claims', '/internal/v1/csrf/claims:settle'];
@@ -42,19 +42,7 @@ const CLOCK = fixedClock(NOW);
 const SECRET = 'K0000000-0000-0000-0000000000000001';
 const CONTEXT = 'cusers.update';
 const JSON_BODY = { 'content-type': 'application/json' };
-const CONSUME_CALLERS = [
-  'people',
-  'programs-sites',
-  'strategies-content',
-  'identity',
-  'gateway',
-  'communications',
-  'e-signature',
-  'finance',
-  'reporting',
-  'surveys',
-  'timesheets',
-];
+const CONSUME_CALLERS = ['people', 'programs-sites', 'strategies-content', 'identity', 'gateway'];
 
 // Unit and auth cases run without PostgreSQL; the stub fails any SQL they would reach.
 const NO_DB: TenantDb = {

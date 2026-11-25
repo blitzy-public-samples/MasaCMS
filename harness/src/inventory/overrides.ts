@@ -26,13 +26,7 @@ export const WriterOp = z.enum(['insert', 'update', 'delete', 'save', 'schedule'
 export type WriterOp = z.infer<typeof WriterOp>;
 
 /** Mechanism that keeps a non-request writer from running outside a write window, by cut-over validator id. */
-export const PreventedBy = z.enum([
-  'scheduler-registration',
-  'native-sitemonitor-task',
-  'startup-url-conversion',
-  'fixture-survey-tasks',
-  'fixture-export-threads',
-]);
+export const PreventedBy = z.enum(['scheduler-registration', 'native-sitemonitor-task', 'startup-url-conversion']);
 export type PreventedBy = z.infer<typeof PreventedBy>;
 
 /** One role term of a legacy gate; `m:<nnn>` is a core module grant and `deny` refuses every caller. */

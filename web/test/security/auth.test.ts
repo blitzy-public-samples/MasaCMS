@@ -133,7 +133,7 @@ describe('authenticateRequest', () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it.each([SUBJECTS.admin, SUBJECTS[Roles.timesheetsEmployee]])(
+  it.each([SUBJECTS.admin, SUBJECTS.siteAdmin])(
     'accepts the gateway with the $key user token',
     async (subject) => {
       const token = await subjectToken(subject);

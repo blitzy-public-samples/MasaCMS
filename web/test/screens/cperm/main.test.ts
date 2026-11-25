@@ -1,4 +1,4 @@
-// cperm.main for the tenant-a site admin over the identity and strategies-content fixtures, as GS-ID-07 models it.
+// cperm.main for the tenant-a site admin over the identity and strategies-content fixtures.
 import * as cheerio from 'cheerio';
 import type { CheerioAPI } from 'cheerio';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -54,10 +54,10 @@ const CSRF_ROUTE = routeKey('POST', 'identity', '/v1/csrf/tokens');
 const GROUPS_ROUTE = routeKey('GET', 'identity', '/v1/groups');
 const NO_GROUPS = 'There are currently no groups available.';
 const ROOT_TITLE = 'Tenant A Home';
-const EXEMPT_IDS = [GROUP_IDS.defaultEditor.toLowerCase(), GROUP_IDS.financeApprover, GROUP_IDS.umbrellaMembers].join(',');
+const EXEMPT_IDS = [GROUP_IDS.defaultEditor.toLowerCase(), GROUP_IDS.libraryApprover, GROUP_IDS.umbrellaMembers].join(',');
 const FULL_HEADERS = ['Approval Chain Exempt', 'Editor', 'Author', 'Read Only', 'Deny', 'Group'];
 const CHILD_HEADERS = ['Approval Chain Exempt', 'Editor', 'Author', 'Inherit', 'Read Only', 'Deny', 'Group'];
-const PRIVATE_NAMES = ['communications.sender', 'Editor', 'finance.approver', 'reporting.exporter'];
+const PRIVATE_NAMES = ['archive.viewer', 'Editor', 'library.approver', 'records.clerk'];
 
 const nodeText = (title: string): string =>
   `To set permissions for <em>${title}</em>, select the radio button for each user group that should have authoring and/or editing permissions.`;
@@ -280,12 +280,12 @@ describe('cperm.main root node with approval chains', () => {
 
   it('checks each verdict, showing the no-grants group as Read Only on the module root', async () => {
     const { model } = await render(siteAdminMain(ROOT_RC));
-    expect(radioValues(model, GROUP_IDS.communicationsSender)).toEqual(['editor', 'author', 'read', 'deny']);
+    expect(radioValues(model, GROUP_IDS.archiveViewer)).toEqual(['editor', 'author', 'read', 'deny']);
     expect(checkedVerdicts(model)).toEqual([
-      [radioName(GROUP_IDS.communicationsSender), 'read'],
+      [radioName(GROUP_IDS.archiveViewer), 'read'],
       [radioName(GROUP_IDS.defaultEditor), 'editor'],
-      [radioName(GROUP_IDS.financeApprover), 'author'],
-      [radioName(GROUP_IDS.reportingExporter), 'deny'],
+      [radioName(GROUP_IDS.libraryApprover), 'author'],
+      [radioName(GROUP_IDS.recordsClerk), 'deny'],
       [radioName(GROUP_IDS.umbrellaMembers), 'editor'],
     ]);
   });
@@ -294,10 +294,10 @@ describe('cperm.main root node with approval chains', () => {
     const { $ } = await render(siteAdminMain(ROOT_RC));
     expect(exemptBoxes($).slice(0, 5)).toEqual([
       [GROUP_IDS.tenantAAdmin, true, true],
-      [GROUP_IDS.communicationsSender, false, true],
+      [GROUP_IDS.archiveViewer, false, true],
       [GROUP_IDS.defaultEditor, true, false],
-      [GROUP_IDS.financeApprover, false, true],
-      [GROUP_IDS.reportingExporter, false, true],
+      [GROUP_IDS.libraryApprover, false, true],
+      [GROUP_IDS.recordsClerk, false, true],
     ]);
   });
 
@@ -319,7 +319,7 @@ describe('cperm.main root node with approval chains', () => {
     expect(markup).toContain('<td nowrap class="var-width">R&amp;D &lt;Editors&gt;</td>');
     expect(markup).toContain('<td nowrap class="var-width">Members &amp; Friends</td>');
     expect(model.tables.map((grid) => grid.rows.map((row) => row.at(-1)))).toEqual([
-      ['Admin', 'communications.sender', 'R&D <Editors>', 'finance.approver', 'reporting.exporter'],
+      ['Admin', 'archive.viewer', 'R&D <Editors>', 'library.approver', 'records.clerk'],
       ['Members & Friends'],
     ]);
   });
@@ -391,20 +391,20 @@ describe('cperm.main child node', () => {
 
   it('checks each stored verdict, the no-grants group under Inherit', async () => {
     const { model, $ } = await childPage();
-    expect(radioValues(model, GROUP_IDS.communicationsSender)).toEqual(['editor', 'author', 'none', 'read', 'deny']);
+    expect(radioValues(model, GROUP_IDS.archiveViewer)).toEqual(['editor', 'author', 'none', 'read', 'deny']);
     expect(checkedVerdicts(model)).toEqual([
-      [radioName(GROUP_IDS.communicationsSender), 'none'],
+      [radioName(GROUP_IDS.archiveViewer), 'none'],
       [radioName(GROUP_IDS.defaultEditor), 'author'],
-      [radioName(GROUP_IDS.financeApprover), 'read'],
-      [radioName(GROUP_IDS.reportingExporter), 'editor'],
+      [radioName(GROUP_IDS.libraryApprover), 'read'],
+      [radioName(GROUP_IDS.recordsClerk), 'editor'],
       [radioName(GROUP_IDS.umbrellaMembers), 'read'],
     ]);
     expect(exemptBoxes($).map(([value, , disabled]) => [value, disabled])).toEqual([
       [GROUP_IDS.tenantAAdmin, true],
-      [GROUP_IDS.communicationsSender, true],
+      [GROUP_IDS.archiveViewer, true],
       [GROUP_IDS.defaultEditor, true],
-      [GROUP_IDS.financeApprover, true],
-      [GROUP_IDS.reportingExporter, false],
+      [GROUP_IDS.libraryApprover, true],
+      [GROUP_IDS.recordsClerk, false],
       [GROUP_IDS.umbrellaMembers, true],
     ]);
   });
@@ -454,12 +454,12 @@ describe('cperm.main outside Site Manager', () => {
     expect(model.tables[0]?.rows[0]).toEqual(nameRow('Admin', 4));
     expect($('ul.breadcrumb')).toHaveLength(0);
     expect(model.links).toEqual([{ href: '#', text: 'Back' }]);
-    expect(radioValues(model, GROUP_IDS.communicationsSender)).toEqual(['editor', 'author', 'deny']);
+    expect(radioValues(model, GROUP_IDS.archiveViewer)).toEqual(['editor', 'author', 'deny']);
     expect(checkedVerdicts(model)).toEqual([
-      [radioName(GROUP_IDS.communicationsSender), 'deny'],
+      [radioName(GROUP_IDS.archiveViewer), 'deny'],
       [radioName(GROUP_IDS.defaultEditor), 'editor'],
-      [radioName(GROUP_IDS.financeApprover), 'author'],
-      [radioName(GROUP_IDS.reportingExporter), 'deny'],
+      [radioName(GROUP_IDS.libraryApprover), 'author'],
+      [radioName(GROUP_IDS.recordsClerk), 'deny'],
       [radioName(GROUP_IDS.umbrellaMembers), 'editor'],
     ]);
     expect(hiddenFields(model).slice(4)).toEqual([

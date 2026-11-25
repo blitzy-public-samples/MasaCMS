@@ -9,7 +9,7 @@ import type { ConsumerIsolationRow, IsolationReport, ServiceIsolationRow } from 
 import { runCli } from '../../src/lib/cli.js';
 import { REPO_ROOT } from '../../src/lib/paths.js';
 import { readPin } from '../../src/lib/pin.js';
-import { TEN_SERVICES, type ServiceName } from '../../src/reporting/check-reviewability.js';
+import { SERVICES, type ServiceName } from '../../src/reporting/check-reviewability.js';
 import { vitestResultPath } from '../../src/reporting/speed.js';
 import {
   BASELINE_UNMET_ITEM,
@@ -74,7 +74,7 @@ function vitestFor(service: string, statuses: Partial<Record<(typeof CATEGORIES)
 
 function vitestSources(build: (service: ServiceName) => VitestInput | null): Record<ServiceName, Source<VitestInput>> {
   return Object.fromEntries(
-    TEN_SERVICES.map((service) => [service, { path: `vitest/${service}.json`, data: build(service) }]),
+    SERVICES.map((service) => [service, { path: `vitest/${service}.json`, data: build(service) }]),
   ) as Record<ServiceName, Source<VitestInput>>;
 }
 
@@ -86,7 +86,7 @@ function passingInputs(): TestAllInputs {
       path: 'opt2/reports/parity.json',
       data: {
         status: 'complete',
-        scenarios: TEN_SERVICES.map((service, i) => ({ id: `GS-${i}`, service, result: 'pass' as const })),
+        scenarios: SERVICES.map((service, i) => ({ id: `GS-${i}`, service, result: 'pass' as const })),
         unmetWithheld: [],
       },
     },
@@ -95,12 +95,12 @@ function passingInputs(): TestAllInputs {
       path: 'opt2/reports/isolation.json',
       data: {
         status: 'generated',
-        services: TEN_SERVICES.map((service) => ({ service, crossTenantReads: 0, crossTenantWrites: 0 })),
+        services: SERVICES.map((service) => ({ service, crossTenantReads: 0, crossTenantWrites: 0 })),
       },
     },
     events: {
       path: 'opt2/reports/events.json',
-      data: { status: 'generated', result: 'pass', topics: [{ producer: 'people', consumers: ['timesheets'] }] },
+      data: { status: 'generated', result: 'pass', topics: [{ producer: 'people', consumers: ['identity'] }] },
     },
     security: { path: '${OPT2_STATE_DIR}/security/summary.json', data: { verdict: 'clean', exitCode: 0 } },
     fixtures: { available: true, reason: null },
@@ -126,7 +126,7 @@ function row(matrix: ReturnType<typeof buildServiceMatrix>, service: ServiceName
 type WrittenIsolation = Pick<IsolationReport, 'status' | 'services' | 'consumers' | 'roles' | 'result'>;
 
 const IDENTITY_CONSUMER = 'identity.programs-sites.site.changed.v1';
-const COMMUNICATIONS_CONSUMER = 'communications.identity.login-mail.requested.v1';
+const PROGRAMS_SITES_CONSUMER = 'programs-sites.programs-sites.site.changed.v1';
 const ISOLATION_PASS = { state: 'pass', reason: '1 isolation files, 1 of 1 tests passed; iso.json: no cross-tenant reads or writes' };
 
 /** A clean isolation.json body in the shape harness/src/isolation/report.ts writes. */
@@ -143,7 +143,7 @@ function writtenIsolation(): WrittenIsolation {
       source: `\${OPT2_STATE_DIR}/test-all/vitest/services-${service}.json`,
     })),
     consumers: [
-      { subscription: COMMUNICATIONS_CONSUMER, tenantlessRejected: true, fanoutRegistryOnly: null, crossTenantEffects: 0 },
+      { subscription: PROGRAMS_SITES_CONSUMER, tenantlessRejected: true, fanoutRegistryOnly: null, crossTenantEffects: 0 },
       { subscription: IDENTITY_CONSUMER, tenantlessRejected: true, fanoutRegistryOnly: true, crossTenantEffects: 0 },
     ],
     roles: { rolbypassrls: [], rolsuper: [], membershipViolations: [] },
@@ -191,7 +191,7 @@ describe('buildTestAllReport and deriveExitCode', () => {
     expect(report).toMatchObject({ exitCode: 0, result: 'pass', status: 'generated', generatedBy: GENERATED_BY, unmet: [] });
     expect(report.fixtures).toEqual({ available: true, reason: null, source: '${OPT2_STATE_DIR}/fixtures.json' });
     expect(report.cloudPathsUntested).toBe(CLOUD_PATHS_UNTESTED_STATEMENT);
-    expect(report.serviceMatrix.map((entry) => entry.service)).toEqual([...TEN_SERVICES]);
+    expect(report.serviceMatrix.map((entry) => entry.service)).toEqual([...SERVICES]);
   });
 
   it('reports exit code 2 for withheld parity only, one item per scenario citing its decision-list entries', () => {
@@ -199,18 +199,18 @@ describe('buildTestAllReport and deriveExitCode', () => {
     const refs = ['opt2/decision-list.json#actionVariants/a', 'opt2/decision-list.json#actionVariants/b'];
     inputs.parity.data = {
       status: 'complete',
-      scenarios: TEN_SERVICES.map((service, i) =>
+      scenarios: SERVICES.map((service, i) =>
         i === 0
-          ? { id: 'GS-ID-05', service, result: 'withheld' as const, decisionListRef: refs }
+          ? { id: 'GS-ID-75', service, result: 'withheld' as const, decisionListRef: refs }
           : { id: `GS-${i}`, service, result: 'excepted' as const },
       ),
-      unmetWithheld: refs.map((ref) => ({ id: 'GS-ID-05', decisionListRef: ref, proposal: 'people owns the delete' })),
+      unmetWithheld: refs.map((ref) => ({ id: 'GS-ID-75', decisionListRef: ref, proposal: 'people owns the delete' })),
     };
     const report = buildTestAllReport(inputs);
     expect(report.exitCode).toBe(2);
     expect(report.result).toBe('unmet');
-    expect(report.serviceMatrix[0]?.parity).toEqual({ state: 'unmet', reason: `withheld: GS-ID-05 (${refs.join(', ')})` });
-    expect(report.unmet.map((item) => item.item)).toEqual(['Parity: GS-ID-05 withheld', 'Done: ten services: identity parity']);
+    expect(report.serviceMatrix[0]?.parity).toEqual({ state: 'unmet', reason: `withheld: GS-ID-75 (${refs.join(', ')})` });
+    expect(report.unmet.map((item) => item.item)).toEqual(['Parity: GS-ID-75 withheld', 'Done: services: identity parity']);
     expect(report.unmet[0]?.evidence).toEqual(['opt2/reports/parity.json', ...refs]);
     expect(report.unmet[0]?.reason).toContain('proposal: people owns the delete');
   });
@@ -299,22 +299,28 @@ describe('buildServiceMatrix', () => {
   });
 
   it('marks a category without suites unmet and an absent vitest result pending-run', () => {
-    const vitest = vitestSources((service) => (service === 'finance' ? null : { testResults: [] }));
+    const vitest = vitestSources((service) => (service === 'strategies-content' ? null : { testResults: [] }));
     const matrix = buildServiceMatrix(matrixInputs({ vitest }));
     expect(row(matrix, 'people').events).toEqual({ state: 'unmet', reason: 'no events suites' });
-    expect(row(matrix, 'finance').security).toEqual({ state: 'pending-run', reason: 'vitest JSON vitest/finance.json absent' });
+    expect(row(matrix, 'strategies-content').security).toEqual({
+      state: 'pending-run',
+      reason: 'vitest JSON vitest/strategies-content.json absent',
+    });
   });
 
   it('turns pending-run cells of a package whose npm test failed into fail, leaving other cells', () => {
-    const vitest = vitestSources((service) => (service === 'finance' ? null : vitestFor(service)));
+    const vitest = vitestSources((service) => (service === 'strategies-content' ? null : vitestFor(service)));
     const matrix = buildServiceMatrix(
-      matrixInputs({ vitest, packages: [{ package: './services/finance/', exitCode: 3 }, { package: 'services/people', exitCode: 0 }] }),
+      matrixInputs({
+        vitest,
+        packages: [{ package: './services/strategies-content/', exitCode: 3 }, { package: 'services/people', exitCode: 0 }],
+      }),
     );
-    expect(row(matrix, 'finance').contract).toEqual({
+    expect(row(matrix, 'strategies-content').contract).toEqual({
       state: 'fail',
-      reason: 'services/finance npm test exited 3; vitest JSON vitest/finance.json absent',
+      reason: 'services/strategies-content npm test exited 3; vitest JSON vitest/strategies-content.json absent',
     });
-    expect(row(matrix, 'finance').parity.state).toBe('pass');
+    expect(row(matrix, 'strategies-content').parity.state).toBe('pass');
     expect(row(matrix, 'people').contract.state).toBe('pass');
   });
 
@@ -336,7 +342,7 @@ describe('buildServiceMatrix', () => {
       reason: 'iso.json: 1 cross-tenant reads, 0 cross-tenant writes, result unset',
     });
     expect(row(matrix, 'people').isolation.state).toBe('fail');
-    expect(row(matrix, 'finance').isolation).toEqual({ state: 'pending-run', reason: 'no finance entry in iso.json' });
+    expect(row(matrix, 'programs-sites').isolation).toEqual({ state: 'pending-run', reason: 'no programs-sites entry in iso.json' });
   });
 
   it('passes the isolation cell of every service for a clean report in the shape report.ts writes', () => {
@@ -399,15 +405,15 @@ describe('buildServiceMatrix', () => {
       {},
       {
         roles: rolesWith({ rolsuper: ['content_owner'], rolbypassrls: ['people_app'] }),
-        consumers: consumersWith({ tenantlessRejected: false }, COMMUNICATIONS_CONSUMER),
+        consumers: consumersWith({ tenantlessRejected: false }, PROGRAMS_SITES_CONSUMER),
       },
     );
     const matrix = buildServiceMatrix(matrixInputs({ isolation }));
     expect(row(matrix, 'strategies-content').isolation).toEqual({ state: 'fail', reason: 'iso.json: role content_owner in roles.rolsuper' });
     expect(row(matrix, 'people').isolation).toEqual({ state: 'fail', reason: 'iso.json: role people_app in roles.rolbypassrls' });
-    expect(row(matrix, 'communications').isolation).toEqual({
+    expect(row(matrix, 'programs-sites').isolation).toEqual({
       state: 'fail',
-      reason: `iso.json: consumer ${COMMUNICATIONS_CONSUMER} tenantlessRejected false`,
+      reason: `iso.json: consumer ${PROGRAMS_SITES_CONSUMER} tenantlessRejected false`,
     });
     expect(row(matrix, 'identity').isolation).toEqual(ISOLATION_PASS);
   });
@@ -430,7 +436,7 @@ describe('buildServiceMatrix', () => {
     expect(isolationInputSchema.safeParse(committed).success).toBe(true);
     const placeholder = isolationInputSchema.parse({
       status: 'pending-run',
-      services: TEN_SERVICES.map((service) => ({
+      services: SERVICES.map((service) => ({
         service,
         schema: service,
         crossTenantReads: null,
@@ -466,31 +472,34 @@ describe('buildServiceMatrix', () => {
         scenarios: [
           { id: 'GS-PE-01', service: 'people', result: 'fail' },
           { id: 'GS-PE-02', service: 'people', result: 'withheld' },
-          { id: 'GS-FI-01', service: 'finance', result: FIXTURES_UNAVAILABLE },
+          { id: 'GS-PS-71', service: 'programs-sites', result: FIXTURES_UNAVAILABLE },
           { id: 'GS-ID-01', service: 'identity', result: 'pass' },
           { id: 'GS-ID-02', service: 'identity', result: 'known-issue' },
-          { id: 'GS-ID-03', service: 'identity', result: 'halted' },
+          { id: 'GS-ID-73', service: 'identity', result: 'halted' },
         ],
         unmetWithheld: [],
       },
     };
     const matrix = buildServiceMatrix(matrixInputs({ parity }));
     expect(row(matrix, 'people').parity).toEqual({ state: 'fail', reason: 'parity failed: GS-PE-01' });
-    expect(row(matrix, 'finance').parity).toEqual({ state: 'unmet', reason: `${FIXTURES_UNAVAILABLE}: GS-FI-01` });
+    expect(row(matrix, 'programs-sites').parity).toEqual({ state: 'unmet', reason: `${FIXTURES_UNAVAILABLE}: GS-PS-71` });
     expect(row(matrix, 'identity').parity).toEqual({ state: 'pass', reason: '3 scenarios: 1 pass, 1 halted, 1 known-issue' });
   });
 
   it('fails the events cell only of services named by a failed events report', () => {
     const events: MatrixInputs['events'] = {
       path: 'e.json',
-      data: { status: 'generated', result: 'fail', topics: [{ producer: 'people', consumers: ['timesheets'] }] },
+      data: { status: 'generated', result: 'fail', topics: [{ producer: 'people', consumers: ['identity'] }] },
     };
     const matrix = buildServiceMatrix(matrixInputs({ events }));
     expect(row(matrix, 'people').events.state).toBe('fail');
-    expect(row(matrix, 'timesheets').events.state).toBe('fail');
-    expect(row(matrix, 'finance').events).toEqual({ state: 'pass', reason: '1 events files, 1 of 1 tests passed; e.json result fail; finance produces and consumes no topic' });
+    expect(row(matrix, 'identity').events.state).toBe('fail');
+    expect(row(matrix, 'programs-sites').events).toEqual({
+      state: 'pass',
+      reason: '1 events files, 1 of 1 tests passed; e.json result fail; programs-sites produces and consumes no topic',
+    });
     const unset = buildServiceMatrix(matrixInputs({ events: { path: 'e.json', data: { status: 'generated', topics: [] } } }));
-    expect(row(unset, 'finance').events).toEqual({ state: 'pending-run', reason: 'e.json result unset' });
+    expect(row(unset, 'programs-sites').events).toEqual({ state: 'pending-run', reason: 'e.json result unset' });
   });
 
   it.each([
@@ -508,9 +517,9 @@ describe('buildServiceMatrix', () => {
     inputs.events = { path: 'opt2/reports/events.json', data: { status: 'pending-run', topics: [] } };
     const report = buildTestAllReport(inputs);
     expect(report.exitCode).toBe(2);
-    expect(report.unmet).toHaveLength(TEN_SERVICES.length);
+    expect(report.unmet).toHaveLength(SERVICES.length);
     expect(report.unmet[0]).toEqual({
-      item: 'Done: ten services: identity events',
+      item: 'Done: services: identity events',
       reason: 'pending-run: opt2/reports/events.json is the pending-run placeholder',
       evidence: ['vitest/identity.json', 'opt2/reports/events.json'],
     });
@@ -557,7 +566,7 @@ describe('helpers', () => {
     inputs.records = inputs.records.map((entry, n) => (n === 2 ? record(2, 'pass', { evidence: ['a|b'] }) : entry));
     const lines = renderTestAllMarkdown(buildTestAllReport(inputs));
     expect(lines).toContain('Fixtures: unknown: fixtures.json missing (from `${OPT2_STATE_DIR}/fixtures.json`)');
-    expect(lines.some((line) => line.startsWith('With fixtures unavailable, parity covers four of ten services'))).toBe(true);
+    expect(lines.some((line) => line.startsWith('With fixtures unavailable, parity skips the fixture-dependent scenarios'))).toBe(true);
     expect(lines).toContain(`| 2 | ${STAGE_NAMES[2]} | pass | 1.0 s | \`a\\|b\` |`);
     expect(lines.at(-1)).toBe(`${CLOUD_PATHS_UNTESTED_STATEMENT}.`);
     for (const pathName of CLOUD_PATHS_UNTESTED) expect(CLOUD_PATHS_UNTESTED_STATEMENT).toContain(pathName);

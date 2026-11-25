@@ -329,7 +329,7 @@ describe('committed override files', () => {
   });
 
   it.each<[Trigger, string[]]>([
-    ['scheduler', ['wov:native-sitemonitor-task', 'wov:fixture-survey-tasks']],
+    ['scheduler', ['wov:native-sitemonitor-task']],
     ['appstart', ['wov:scheduler-registration', 'wov:startup-url-conversion']],
   ])('declares writers whose trigger is %s', (trigger, expected) => {
     const ids = writers.writers.filter((w) => w.trigger === trigger).map((w) => w.id);

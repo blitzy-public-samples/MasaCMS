@@ -1,12 +1,8 @@
-// Export and download models of the golden normaliser: CSV cells, XLSX cells per sheet, PDF text per page, ZIP entry
-// digests and downloaded-file digests. Bytes of CSV, XLSX, PDF and ZIP bodies are never compared.
+// Export and download models of the golden normaliser: CSV cells, ZIP entry digests and downloaded-file digests. Bytes
+// of CSV and ZIP bodies are never compared.
 import { Buffer } from 'node:buffer';
-import { createRequire } from 'node:module';
-import { dirname, join } from 'node:path';
 import { parse } from 'csv-parse/sync';
-import ExcelJS from 'exceljs';
 import JSZip from 'jszip';
-import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { sha256Hex } from '@opt2/platform/migration-kit';
 import { GoldenConfigError } from '../errors.js';
 import { createIdOrdinals } from './ids.js';
@@ -16,31 +12,10 @@ import { normaliseValue } from './values.js';
 type IdOrdinals = Parameters<typeof normaliseValue>[1];
 type WhitespaceMode = NormaliseRules['exports']['csv']['whitespace'];
 
-/** One XLSX cell value after normalisation; empty cells are null. */
-export type XlsxCell = string | number | boolean | null;
-
 /** CSV body as its grid of cell values, header row included. */
 export interface CsvModel {
   kind: 'csv';
   rows: string[][];
-}
-
-/** One worksheet's rows of cell values, trailing empty cells and rows trimmed. */
-export interface XlsxSheet {
-  name: string;
-  rows: XlsxCell[][];
-}
-
-/** XLSX body as its worksheets in workbook order. */
-export interface XlsxModel {
-  kind: 'xlsx';
-  sheets: XlsxSheet[];
-}
-
-/** PDF body as the extracted text of each page. */
-export interface PdfModel {
-  kind: 'pdf';
-  pages: string[];
 }
 
 /** ZIP entry by normalised name and content; a directory `<name>/` or expanded nested archive `<name>!/` is empty. */
@@ -67,7 +42,7 @@ export interface FileModel {
 }
 
 /** Normalised model of an export or download body. */
-export type ExportModel = CsvModel | XlsxModel | PdfModel | ZipModel | FileModel;
+export type ExportModel = CsvModel | ZipModel | FileModel;
 
 /** Which model a body is compared by. */
 export type ExportKind = ExportModel['kind'];
@@ -89,8 +64,6 @@ export interface ExportResponse {
 
 const KIND_BY_MEDIA_TYPE: ReadonlyMap<string, ExportKind> = new Map([
   ['text/csv', 'csv'],
-  ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'xlsx'],
-  ['application/pdf', 'pdf'],
   ['application/zip', 'zip'],
   ['application/x-zip-compressed', 'zip'],
 ]);
@@ -98,50 +71,8 @@ const KIND_BY_MEDIA_TYPE: ReadonlyMap<string, ExportKind> = new Map([
 /** Levels of archives nested in a ZIP download that are read as archives; one nested deeper is a file by its digest. */
 export const ZIP_NESTING_LIMIT = 3;
 
-/** Merged cells an XLSX body may declare across its worksheets; exceljs creates each one on load. */
-export const XLSX_MERGED_CELL_LIMIT = 100_000;
-
-/** Merged ranges an XLSX body may declare across its worksheets; exceljs checks each against every earlier one. */
-export const XLSX_MERGED_RANGE_LIMIT = 2_000;
-
-// Excel's last row: exceljs bounds columns itself but not rows.
-const XLSX_LAST_ROW = 1_048_576;
-
-/** A range's bounds as exceljs decodes them, each at least 1. */
-interface ExcelRangeBounds {
-  top: number;
-  left: number;
-  bottom: number;
-  right: number;
-}
-
-/** The parts exceljs parsed from a workbook; each worksheet's `mergeCells` are the refs it merges next. */
-interface ParsedWorkbook {
-  worksheets: { mergeCells?: readonly (string | undefined)[] | null }[];
-}
-
-/** exceljs's XLSX reader: `load` parses every part, calls `reconcile`, then builds the workbook from the model. */
-interface XlsxReader {
-  load(data: ArrayBuffer): Promise<ExcelJS.Workbook>;
-  reconcile(model: ParsedWorkbook, options: unknown): void;
-}
-
-// exceljs's own range decoder and XLSX reader (it has no exports map), so merges are read as its load reads them.
-const ExcelRange = createRequire(import.meta.url)('exceljs/lib/doc/range.js') as new (
-  ref: string | undefined,
-) => ExcelRangeBounds;
-const ExcelXlsx = createRequire(import.meta.url)('exceljs/lib/xlsx/xlsx.js') as new (
-  workbook: ExcelJS.Workbook,
-) => XlsxReader;
-
 const ZIP_NAME = /\.zip$/i;
 const NESTED_ENTRY_SEPARATOR = '!/';
-
-// pdfjs loads the standard 14 fonts a PDF references without embedding (pdfkit's Helvetica) from this directory.
-const STANDARD_FONT_DATA_URL = join(
-  dirname(createRequire(import.meta.url).resolve('pdfjs-dist/package.json')),
-  'standard_fonts/',
-);
 
 const DISPOSITION_FILENAME = /(?:^|;)\s*filename\s*=\s*(?:"((?:[^"\\]|\\.)*)"|([^;]*))/i;
 
@@ -219,106 +150,6 @@ export function csvModel(text: string, state: IdOrdinals, rules: NormaliseRules,
   const keys = columnKeys(header, rules);
   const ordered = keyColumns.length === 0 ? rows : orderKeyTies(header, rows, keyColumns, keys, rules);
   return { kind: 'csv', rows: [csvRow(header, state, rules, []), ...ordered.map((row) => csvRow(row, state, rules, keys))] };
-}
-
-// exceljs decodes date serials into the UTC fields of a Date, so these are the wall-clock values the sheet holds.
-function cellValue(value: ExcelJS.CellValue): XlsxCell {
-  if (value === null || value === undefined) return null;
-  if (value instanceof Date) return value.toISOString().slice(0, 19);
-  if (typeof value !== 'object') return value;
-  if ('richText' in value) return value.richText.map((run) => run.text).join('');
-  if ('error' in value) return value.error;
-  if ('formula' in value || 'sharedFormula' in value) return cellValue(value.result);
-  // Hyperlink text read from a file may itself be a rich-text value, despite the declared string type.
-  return cellValue(value.text);
-}
-
-function sheetRows(sheet: ExcelJS.Worksheet): XlsxCell[][] {
-  const rows: XlsxCell[][] = [];
-  for (let r = 1; r <= sheet.rowCount; r += 1) {
-    const row = sheet.findRow(r);
-    const cells: XlsxCell[] = [];
-    for (let c = 1; c <= (row?.cellCount ?? 0); c += 1) {
-      const cell = cellValue(row?.getCell(c).value);
-      cells.push(cell === '' ? null : cell);
-    }
-    while (cells.length > 0 && cells.at(-1) === null) cells.pop();
-    rows.push(cells);
-  }
-  while (rows.length > 0 && rows.at(-1)?.length === 0) rows.pop();
-  return rows;
-}
-
-/** Cells exceljs creates to merge `ref`, Infinity past Excel's last row; throws as its load does for a bad ref. */
-function mergedCells(ref: string | undefined): number {
-  const range = new ExcelRange(ref);
-  if (range.bottom > XLSX_LAST_ROW) return Infinity;
-  return (range.bottom - range.top + 1) * (range.right - range.left + 1);
-}
-
-/** exceljs's XLSX reader, throwing RangeError before it merges more ranges or cells than the limits allow. */
-class MergeBoundedXlsx extends ExcelXlsx {
-  override reconcile(model: ParsedWorkbook, options: unknown): void {
-    super.reconcile(model, options);
-    let ranges = 0;
-    let cells = 0;
-    for (const ref of model.worksheets.flatMap((sheet) => sheet.mergeCells ?? [])) {
-      ranges += 1;
-      cells += mergedCells(ref);
-      // Negated, so a NaN count fails the bound too.
-      if (!(ranges <= XLSX_MERGED_RANGE_LIMIT && cells <= XLSX_MERGED_CELL_LIMIT)) {
-        throw new RangeError(
-          `XLSX merges more than ${XLSX_MERGED_RANGE_LIMIT} ranges or ${XLSX_MERGED_CELL_LIMIT} cells`,
-        );
-      }
-    }
-  }
-}
-
-/** XLSX `bytes` as cell values per worksheet; workbook metadata, styles and string storage are not part of it. */
-export async function xlsxModel(bytes: Buffer, state: IdOrdinals, rules: NormaliseRules): Promise<XlsxModel> {
-  const workbook = new ExcelJS.Workbook();
-  // exceljs declares its input as an ArrayBuffer; JSZip reads either form.
-  await new MergeBoundedXlsx(workbook).load(Uint8Array.from(bytes).buffer);
-  const compareNames = rules.exports.xlsx.sheetNames === 'compare';
-  return {
-    kind: 'xlsx',
-    sheets: workbook.worksheets.map((sheet) => {
-      const name = compareNames ? normaliseString(sheet.name, state, rules) : '';
-      const rows = sheetRows(sheet);
-      const keys = columnKeys(rows[0], rules);
-      return {
-        name,
-        rows: rows.map((row, r) =>
-          row.map((cell, c) => normaliseValue(cell, state, rules, r === 0 ? undefined : keys[c]) as XlsxCell),
-        ),
-      };
-    }),
-  };
-}
-
-/** PDF `bytes` as the text of each page: text items joined with spaces, whitespace per `exports.pdf.whitespace`. */
-export async function pdfModel(bytes: Buffer, state: IdOrdinals, rules: NormaliseRules): Promise<PdfModel> {
-  // A copy: pdfjs transfers the buffer it is given to its worker.
-  const task = getDocument({
-    data: new Uint8Array(bytes),
-    useSystemFonts: false,
-    disableFontFace: true,
-    standardFontDataUrl: STANDARD_FONT_DATA_URL,
-  });
-  try {
-    const doc = await task.promise;
-    const texts: string[] = [];
-    for (let n = 1; n <= doc.numPages; n += 1) {
-      const page = await doc.getPage(n);
-      const content = await page.getTextContent();
-      texts.push(content.items.flatMap((item) => ('str' in item ? [item.str] : [])).join(' '));
-    }
-    const mode = rules.exports.pdf.whitespace;
-    return { kind: 'pdf', pages: texts.map((text) => normaliseString(applyWhitespace(text, mode), state, rules)) };
-  } finally {
-    await task.destroy();
-  }
 }
 
 /** File model from the recorded `sha256`, else from the SHA-256 of `bytes`; `contentType` is kept verbatim. */
@@ -502,10 +333,6 @@ export async function exportModel(
   switch (exportKindFor(response.contentType)) {
     case 'csv':
       return csvModel(response.text ?? bodyBytes(response).toString('utf8'), state, rules, csvKeyColumns);
-    case 'xlsx':
-      return xlsxModel(bodyBytes(response), state, rules);
-    case 'pdf':
-      return pdfModel(bodyBytes(response), state, rules);
     case 'zip': {
       const model = await zipModel(bodyBytes(response), response.contentType, state, rules);
       return model === undefined

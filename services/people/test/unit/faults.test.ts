@@ -100,7 +100,7 @@ describe('killStepOf', () => {
     { name: 'the bare prefix', value: 'roster:' },
     { name: 'an unknown roster step', value: 'roster:after-nothing' },
     { name: 'an upper-case prefix', value: 'ROSTER:after-start' },
-    { name: "another package's fault", value: 'timesheets:after-start' },
+    { name: "another package's fault", value: 'identity:after-start' },
     { name: 'a step with trailing space', value: 'roster:after-start ' },
   ])('reads OPT2_FAULT $name as no kill step', ({ value }) => {
     expect(killStepOf(value)).toBeUndefined();

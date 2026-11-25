@@ -26,12 +26,6 @@ const SCHEMAS = [
   'people',
   'programs_sites',
   'content',
-  'communications',
-  'reporting',
-  'surveys',
-  'timesheets',
-  'finance',
-  'esignature',
   'stub',
   'gateway',
   'migration',
@@ -315,16 +309,14 @@ describe('process_env of a second stack', () => {
 
   it('derives every port and loopback address of a process from OPT2_PORTS_FILE', () => {
     const moved = (name: PackageName): number => portFor(name) + 10000;
-    expect(runEnv('process_env', 'communications', { OPT2_PORTS_FILE: movedPortsFile() })).toMatchObject({
-      PORT: String(moved('communications')),
+    expect(runEnv('process_env', 'stub', { OPT2_PORTS_FILE: movedPortsFile() })).toMatchObject({
+      PORT: String(moved('stub')),
       OPT2_JWKS_URL: `http://127.0.0.1:${moved('identity')}/.well-known/jwks.json`,
       OPT2_GATEWAY_URL: `http://127.0.0.1:${moved('gateway')}`,
       OPT2_MIGRATION_URL: `http://127.0.0.1:${moved('migration')}`,
       MURA_PORT: String(moved('gateway')),
       PUBSUB_EMULATOR_HOST: 'localhost:18085',
       OTEL_EXPORTER_OTLP_ENDPOINT: 'http://127.0.0.1:14319',
-      SMTP_PORT: '11025',
-      MAILPIT_API_URL: 'http://127.0.0.1:18025',
     });
   });
 });

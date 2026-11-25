@@ -3,13 +3,13 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { FIXTURES_UNAVAILABLE, loadCatalogue, scenarioById } from '../../src/golden/catalogue.js';
 import { createHttpSession, type FetchLike, type HttpSession } from '../../src/lib/http.js';
 import { reportsDir } from '../../src/lib/paths.js';
 import { pinnedSha } from '../../src/lib/pin.js';
 import { readJson } from '../../src/lib/report.js';
 import {
-  CATALOGUE_SCENARIO,
+  CONTENT_READS,
+  CONTENT_READS_LABEL,
   EXPECTED_MIN_INSTANCES,
   GENERATED_BY,
   RATIO_FINDING_THRESHOLD,
@@ -26,13 +26,11 @@ import {
   notTargetDetail,
   parseMinInstanceCounts,
   ratioFinding,
-  skippedLatency,
   terraformPlanReportSchema,
   windowsOverThreshold,
   windowsReportSchema,
   type CutoverTable,
   type Finding,
-  type LatencyRow,
   type LatencySummary,
   type PerformanceReport,
   type RestartService,
@@ -40,7 +38,6 @@ import {
 import { PACKAGE_NAMES } from '../../src/repro/ports.js';
 import type { UpProcessEntry, UpState } from '../../src/repro/up-state.js';
 import {
-  fixtureStatus,
   readStack,
   requireTableVersion,
   waitHealthy,
@@ -48,7 +45,7 @@ import {
   type ServiceName,
 } from '../helpers/stack.js';
 
-// 28,400 sequential requests (71 sets x 200 x 2 sides) at ~160 ms (~76 min), then 10 restarts of up to 4 x 60 s polls.
+// 28,000 sequential requests (70 sets x 200 x 2 sides) at ~160 ms (~75 min), then 4 restarts of up to 4 x 60 s polls.
 const HOOK_TIMEOUT_MS = 3 * 60 * 60_000;
 const HEALTH_TIMEOUT_MS = 60_000;
 
@@ -63,11 +60,6 @@ function isServiceName(name: string): name is ServiceName {
 /** Whether `name` is a service run.ts stops and restarts. */
 function isRestartService(name: string): name is RestartService {
   return (RESTART_SERVICES as readonly string[]).includes(name);
-}
-
-/** The latency row run.ts writes for `row`'s fixtures-backed set when the fixtures are unavailable. */
-function fixturesSkippedRow({ set, source, session, routeKey, servedBy }: LatencyRow): LatencyRow {
-  return skippedLatency({ set, source, session, routeKey, servedBy }, FIXTURES_UNAVAILABLE).row;
 }
 
 /** The findings of `kind` recorded for `subject`. */
@@ -113,7 +105,6 @@ function answeringSession(baseUrl: string, clock: { t: number }, ms: number, sta
 
 describe('performance report', () => {
   let stackBefore: UpState | undefined;
-  let fixturesAvailable = false;
   let outcome: Awaited<ReturnType<typeof main>>;
   let report: WrittenReport;
   let markdown: string[];
@@ -125,10 +116,8 @@ describe('performance report', () => {
     const stack = readStack();
     await requireTableVersion('v0002');
     stackBefore = stack;
-    fixturesAvailable = fixtureStatus().available;
     table = await loadCutoverTable('v0002');
-    const scenario = scenarioById(await loadCatalogue(), CATALOGUE_SCENARIO);
-    expectedSets = [...expandCatalogueReads(scenario).map((read) => read.set), ...READ_SET.map((entry) => entry.set)];
+    expectedSets = [...expandCatalogueReads(CONTENT_READS).map((read) => read.set), ...READ_SET.map((entry) => entry.set)];
     // Only the services run.ts stops are restored; gateway, web, migration and stub keep running throughout.
     const restartable = Object.keys(stack.processes).filter(isRestartService);
     outcome = await withRestoredServices(restartable, () => main([]));
@@ -165,17 +154,13 @@ describe('performance report', () => {
     expect(markdown[1]).toBe(`Source SHA: ${sha}`);
   });
 
-  it('records target and legacy p50 and p95 for 200 requests of every GS-CO-05 catalogue read and read-set entry', () => {
+  it('records target and legacy p50 and p95 for 200 requests of every content read and read-set entry', () => {
     expect(REQUESTS_PER_SET).toBe(200);
     expect(report.latency.map((row) => row.set)).toEqual(expectedSets);
     const catalogueRows = expectedSets.length - READ_SET.length;
     for (const [index, row] of report.latency.entries()) {
       const entry = READ_SET[index - catalogueRows];
       expect(row.source, row.set).toBe(entry === undefined ? 'catalogue' : 'read-set');
-      if (entry?.fixtures === true && !fixturesAvailable) {
-        expect(row, row.set).toEqual(fixturesSkippedRow(row));
-        continue;
-      }
       expect(row.requests, row.set).toBe(REQUESTS_PER_SET);
       expectSummary(row.target, `${row.set} target`);
       expectSummary(row.legacy, `${row.set} legacy`);
@@ -211,7 +196,7 @@ describe('performance report', () => {
   });
 
   it('deletes the feed collection it created for the feed read set', () => {
-    expect(report.latency.find((row) => row.set === 'gs-co-05.feed')?.requests).toBe(REQUESTS_PER_SET);
+    expect(report.latency.find((row) => row.set === `${CONTENT_READS_LABEL}.feed`)?.requests).toBe(REQUESTS_PER_SET);
     expect(report.findings.filter((finding) => finding.kind === 'feed-cleanup-failed')).toEqual([]);
   });
 
@@ -238,17 +223,8 @@ describe('performance report', () => {
     expect(report.scaleToZero.map((row) => row.service).sort()).toEqual([...RESTART_SERVICES].sort());
     for (const row of report.scaleToZero) {
       if (!isRestartService(row.service)) throw new Error(`${row.service} is not a restartable service`);
-      const choice = chooseProbe(row.service, table, fixturesAvailable);
+      const choice = chooseProbe(row.service, table);
       const unavailable = { service: row.service, stopToFirstSuccessMs: null, label: 'unavailable' };
-      if (choice.kind === 'skipped') {
-        expect(fixturesAvailable, `${row.service} probe skipped only without fixtures`).toBe(false);
-        expect(choice.reason, row.service).toBe(FIXTURES_UNAVAILABLE);
-        expect(row, row.service).toEqual(unavailable);
-        expect(findingsFor(report.findings, 'scale-probe-skipped', row.service)).toEqual([
-          { kind: 'scale-probe-skipped', subject: row.service, detail: FIXTURES_UNAVAILABLE },
-        ]);
-        continue;
-      }
       if (choice.kind === 'not-target') {
         expect(row, row.service).toEqual(unavailable);
         expect(findingsFor(report.findings, 'probe-not-target', row.service)).toEqual([
@@ -262,7 +238,7 @@ describe('performance report', () => {
     }
   });
 
-  it('confirms min_instance_count 0 for gateway, web and the ten services and 1 for migration', async () => {
+  it('confirms min_instance_count 0 for gateway, web and the services and 1 for migration', async () => {
     expect(EXPECTED_MIN_INSTANCES).toEqual({
       gateway: 0,
       web: 0,
@@ -270,12 +246,6 @@ describe('performance report', () => {
       people: 0,
       'programs-sites': 0,
       'strategies-content': 0,
-      communications: 0,
-      reporting: 0,
-      surveys: 0,
-      timesheets: 0,
-      finance: 0,
-      'e-signature': 0,
       migration: 1,
     });
     const plan = await readJson(path.join(reportsDir(), 'terraform-plan.json'), terraformPlanReportSchema);

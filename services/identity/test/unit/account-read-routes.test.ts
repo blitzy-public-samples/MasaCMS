@@ -1,5 +1,4 @@
 /** The account, membership, login-block and pool-group read routes over a throwaway `identity` schema: answers, contract shape, auth denials and the legacy 503s. */
-import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -15,6 +14,7 @@ import {
   assertResponseMatchesOpenApi,
   createThrowawaySchema,
   fixedClock,
+  loadOpenApiDocument,
   mintServiceToken,
   mintUserToken,
   pgAvailable,
@@ -30,7 +30,7 @@ import { GROUP_ACCOUNT, IDENTITY_UNITS, USER_STRIKE, type LoginSnapshot } from '
 type ContractOperation = Record<string, unknown>;
 type Method = 'GET' | 'POST';
 
-const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as {
+const OPENAPI = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as {
   paths: Record<string, Record<string, ContractOperation>>;
 };
 const CONTRACT_PATHS = [

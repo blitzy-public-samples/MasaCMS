@@ -10,7 +10,6 @@ import {
   INFO_PATH,
   NATIVE_TASKS_FILE,
   PENDING_RUN,
-  PROGRAM_SITES_SQL,
   REPORT_FILE,
   REPORT_TITLE,
   SITE_ID_TABLES_SQL,
@@ -65,7 +64,7 @@ const ZERO_OBJECTS: LiveCheck = {
   databaseTriggers: 0,
   functions: 0,
   total: 0,
-  excludedSchemas: ['synthetic', 'Program_*'],
+  excludedSchemas: ['synthetic'],
   takenBeforeFixtures: true,
   checkedAt: CHECKED_AT,
   objects: [],
@@ -102,9 +101,7 @@ const LIVE_TABLES: readonly CatalogRow[] = [
   { schemaName: 'dbo', tableName: 'tsettings' },
   { schemaName: 'dbo', tableName: 'tusers' },
   { schemaName: 'opt2_sync', tableName: 'projector_checkpoint' },
-  { schemaName: 'Program_1', tableName: 'timesheet' },
-  { schemaName: 'Program_2', tableName: 'timesheet' },
-  { schemaName: 'synthetic', tableName: 'program_site' },
+  { schemaName: 'synthetic', tableName: 'person_archive' },
 ];
 
 let miniJson: unknown;
@@ -143,10 +140,6 @@ function cleanLive(): LiveEvidence {
     checkedAt: CHECKED_AT,
     tables: LIVE_TABLES.map((t) => ({ schema: t.schemaName, name: t.tableName })),
     siteIdTableCount: 54,
-    programSites: [
-      { programId: 1, siteId: 'tenant-a' },
-      { programId: 2, siteId: 'tenant-b' },
-    ],
     sites: structuredClone([...SITES]),
     storedProcedures: structuredClone(ZERO_OBJECTS),
     legacy: { ping: false, siteMonitorTask: 'siteMonitor', siteMonitorTaskRegistered: false },
@@ -197,13 +190,6 @@ function catalogAnswers(
   return new Map<string, readonly unknown[]>([
     [CATALOG_TABLES_SQL, tables],
     [SITE_ID_TABLES_SQL, [{ tableCount: 54 }]],
-    [
-      PROGRAM_SITES_SQL,
-      [
-        { programId: 1, siteId: 'tenant-a' },
-        { programId: 2, siteId: 'tenant-b' },
-      ],
-    ],
     [SITE_POOLS_SQL, SITES],
     ...LIVE_CHECK_SQL.map((sql, i): [string, readonly unknown[]] => [sql, i === probe ? fixtureSchemas : []]),
   ]);
@@ -269,7 +255,6 @@ describe('evaluateAssumptions without live evidence', () => {
     );
     expect(evidence('A1')).toContain('differs from the planning figure 54 by -53');
     expect(evidence('A1')).toContain('no per-site table sets in Masa: every Masa table is in `dbo`');
-    expect(evidence('A1')).toContain('the inventory lists no fixture `synthetic.program_site`');
     expect(evidence('A2')).toBe(
       '`opt2/inventory/legacy-inventory.json` `controllers[]`: 3 circuits, 4 actions (0 view-only), 5 variants; ' +
         'every variant has a disposition and a rule step; ' +
@@ -366,13 +351,11 @@ describe('evaluateAssumptions without live evidence', () => {
       tableEntry({ table: 'tcontentfilemetadata', origin: 'orm', siteIdSource: base }),
       tableEntry({ table: 'fb_*', origin: 'dynamic' }),
       tableEntry({
-        table: 'synthetic.program_site',
+        table: 'person_archive',
         schema: 'synthetic',
         origin: 'fixture',
-        source: { path: 'legacy-fixtures/sql/010_program_site.sql', lines: [1, 8] },
+        source: { path: 'legacy-fixtures/sql/people/100_person_archive.sql', lines: [8, 18] },
       }),
-      tableEntry({ table: 'timesheet', schema: 'Program_1', origin: 'fixture' }),
-      tableEntry({ table: 'timesheet', schema: 'Program_2', origin: 'fixture' }),
     );
     const a1 = rowById(evaluateAssumptions(inv), 'A1');
     expect(a1.status).toBe(PENDING_RUN);
@@ -385,10 +368,6 @@ describe('evaluateAssumptions without live evidence', () => {
     expect(a1.staticEvidence).toContain(
       'the planning figure 54 omitted `tcontentfilemetadata`, whose `siteID` comes from its base ' +
         '`core/mura/bean/beanORMVersioned.cfc:80`',
-    );
-    expect(a1.staticEvidence).toContain(
-      'fixtures add 2 per-program tables, created in `Program_1` and `Program_2` and mapped to `tenant-a` and ' +
-        '`tenant-b` through `synthetic.program_site` (`legacy-fixtures/sql/010_program_site.sql:1-8`)',
     );
   });
 
@@ -414,7 +393,8 @@ describe('evaluateAssumptions without live evidence', () => {
     const inv = copy();
     inv.tables.push(...patterns.map((table) => tableEntry({ table, origin: 'dynamic' })));
     const a1 = rowById(evaluateAssumptions(inv), 'A1');
-    expect(a1.staticEvidence).toContain(`(\`default\`, \`umbrella\`, \`tenant-a\`, \`tenant-b\`), and ${text};`);
+    const sites = '(`default`, `umbrella`, `tenant-a`, `tenant-b`)';
+    expect(a1.staticEvidence.endsWith(`${sites}, and ${text}`)).toBe(true);
   });
 
   it('refutes the front-end scope assumption when an action has no variant or a variant has no disposition', () => {
@@ -446,7 +426,7 @@ describe('evaluateAssumptions without live evidence', () => {
       mutate: (inv) => {
         const ids = ['ctl:cusers.listusers', 'ctl:cusers.update{type=2,action=add}', 'ctl:clogin.login', 'ctl:cusers.update{type=2,action=delete}'];
         for (const id of ids) {
-          variantOf(inv, id).owningService = 'communications';
+          variantOf(inv, id).owningService = 'stub';
         }
       },
       text: 'no variants',
@@ -502,14 +482,13 @@ describe('evaluateAssumptions with live evidence', () => {
     expect(summarise(rows)).toEqual({ confirmed: 5, refuted: 0, pendingRun: 0 });
     const live = (id: AssumptionRow['id']): string => rowById(rows, id).liveEvidence;
     expect(live('A1')).toBe(
-      'no per-site table sets: no table outside `dbo`, `synthetic`, `Program_*` and `opt2_sync`, and no `dbo` table ' +
-        'name embeds a site id (`default`, `umbrella`, `tenant-a`, `tenant-b`); `siteID` on 54 `dbo` tables live ' +
-        '(static 1); `synthetic.program_site`: `Program_1` → `tenant-a`, `Program_2` → `tenant-b`',
+      'no per-site table sets: no table outside `dbo`, `synthetic` and `opt2_sync`, and no `dbo` table name embeds ' +
+        'a site id (`default`, `umbrella`, `tenant-a`, `tenant-b`); `siteID` on 54 `dbo` tables live (static 1)',
     );
     expect(live('A2')).toMatch(/^n\/a: decided from the inventory/);
     expect(live('A3')).toBe(
-      '0 procedures, 0 table triggers, 0 database triggers and 0 functions (`FN`/`IF`/`TF`) outside `synthetic` and ' +
-        '`Program_*`; taken before fixtures load: yes',
+      '0 procedures, 0 table triggers, 0 database triggers and 0 functions (`FN`/`IF`/`TF`) outside `synthetic`; ' +
+        'taken before fixtures load: yes',
     );
     expect(live('A4')).toBe(
       '4 sites in `tsettings`: `default`, `umbrella`, `tenant-a`, `tenant-b`; `tenant-a` pools into `umbrella` ' +
@@ -573,14 +552,9 @@ describe('evaluateAssumptions with live evidence', () => {
       text: '`dbo` tables naming a site: `tcontent_tenant-b` (`tenant-b`)',
     },
     {
-      label: 'a program mapped to an unknown site',
-      mutate: (live) => live.programSites?.push({ programId: 3, siteId: 'ghost' }),
-      text: '`Program_3` maps to `ghost`, which is not a site',
-    },
-    {
-      label: 'a program schema without a mapping row',
-      mutate: (live) => live.tables.push({ schema: 'Program_4', name: 'timesheet' }),
-      text: 'schema `Program_4` has no `synthetic.program_site` row',
+      label: 'a per-program schema',
+      mutate: (live) => live.tables.push({ schema: 'Tenant_1', name: 'tcontent' }),
+      text: 'per-site table set candidates: `Tenant_1.tcontent`',
     },
   ])('refutes the program-equals-site assumption on $label', ({ mutate, text }) => {
     const live = cleanLive();
@@ -590,16 +564,12 @@ describe('evaluateAssumptions with live evidence', () => {
     expect(a1.liveEvidence.endsWith(text)).toBe(true);
   });
 
-  it.each([
-    { programSites: null, text: '`synthetic.program_site` absent' },
-    { programSites: [], text: '`synthetic.program_site`: no rows' },
-  ])('confirms the program-equals-site assumption without fixtures: $text', ({ programSites, text }) => {
+  it('confirms the program-equals-site assumption without the fixture schema', () => {
     const live = cleanLive();
-    live.programSites = programSites;
     live.tables = live.tables.filter((t) => t.schema === 'dbo');
     const a1 = rowById(evaluateAssumptions(copy(), live), 'A1');
     expect(a1.status).toBe('confirmed');
-    expect(a1.liveEvidence).toContain(text);
+    expect(a1.liveEvidence).toContain('no per-site table sets');
   });
 
   it('ignores dbo tables that match a dynamic table pattern of the inventory', () => {
@@ -650,6 +620,25 @@ describe('evaluateAssumptions with live evidence', () => {
         `${PRISTINE_NOTE} (${CAPTURED_AT}): original \`ping\` = \`true\`, 1 task (\`siteMonitor\`), ` +
         'monitor task captured: yes',
     );
+  });
+
+  it.each([
+    { label: 'a POSIX web root', task: '/srv/masa/index.cfm/_api/sitemonitor/' },
+    { label: 'a Windows web root', task: 'C:\\ColdFusion\\wwwroot/index.cfm/_api/sitemonitor/' },
+  ])('names an ACF monitor task under $label relative to the web root', ({ task }) => {
+    const live = cleanLive();
+    live.legacy = { ping: true, siteMonitorTask: task, siteMonitorTaskRegistered: true };
+    live.nativeTasks = {
+      capturedAt: CAPTURED_AT,
+      originalPing: true,
+      siteMonitorTask: task,
+      tasks: [{ task, url: MONITOR_URL }],
+    };
+    const a5 = rowById(evaluateAssumptions(copy(), live), 'A5');
+    expect(a5.status).toBe('confirmed');
+    expect(a5.liveEvidence).toContain('monitor task `index.cfm/_api/sitemonitor/` registered: yes');
+    expect(a5.liveEvidence).toContain('1 task (`index.cfm/_api/sitemonitor/`), monitor task captured: yes');
+    expect(a5.liveEvidence).not.toContain(task.slice(0, task.indexOf('index.cfm')));
   });
 
   it.each<{ label: string; legacy: LegacyMonitorInfo; capture: NativeTasksCapture; text: string }>([
@@ -845,13 +834,7 @@ describe('main', () => {
     });
     expect(openDb).toHaveBeenCalledExactlyOnceWith(env);
     expect(closed()).toBe(true);
-    expect(sent).toEqual([
-      CATALOG_TABLES_SQL,
-      SITE_ID_TABLES_SQL,
-      PROGRAM_SITES_SQL,
-      SITE_POOLS_SQL,
-      ...LIVE_CHECK_SQL,
-    ]);
+    expect(sent).toEqual([CATALOG_TABLES_SQL, SITE_ID_TABLES_SQL, SITE_POOLS_SQL, ...LIVE_CHECK_SQL]);
     expect(probe.urls).toEqual([`${LEGACY}${INFO_PATH}?info=1`]);
     expect(probe.keys).toEqual([HARNESS_KEY]);
     const { lines } = await reportLines(file);
@@ -869,7 +852,7 @@ describe('main', () => {
     );
   });
 
-  it('falls back to PORT, skips program_site without its table and records a missing capture', async () => {
+  it('falls back to PORT and records a missing capture', async () => {
     const reports = await reportsCase();
     const answers = catalogAnswers(LIVE_TABLES.filter((t) => t.schemaName === 'dbo'));
     answers.set(SITE_ID_TABLES_SQL, []);
@@ -884,12 +867,12 @@ describe('main', () => {
     const outcome = await main(['--live'], env, { inventoryPath: MINI, openDb: async () => db, fetch: probe.fetch });
     expect(outcome.summary).toMatchObject({ confirmed: 5, refuted: 0, pendingRun: 0, live: true });
     expect(probe.urls).toEqual([`http://127.0.0.1:25980${INFO_PATH}?info=1`]);
-    expect(sent).not.toContain(PROGRAM_SITES_SQL);
+    expect(sent).toEqual([CATALOG_TABLES_SQL, SITE_ID_TABLES_SQL, SITE_POOLS_SQL, ...LIVE_CHECK_SQL]);
     expect(closed()).toBe(true);
     const { lines } = await reportLines(path.join(reports, REPORT_FILE));
     expect(lines[5]).toMatch(/^Generated at: \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
     expect(lines.find((l) => l.startsWith('| A1 |'))).toContain(
-      '`siteID` on 0 `dbo` tables live (static 1); `synthetic.program_site` absent',
+      '(`default`, `umbrella`, `tenant-a`, `tenant-b`); `siteID` on 0 `dbo` tables live (static 1) |',
     );
     expect(lines.find((l) => l.startsWith('| A5 |'))).toContain(
       `live \`ping\` = \`true\`; monitor task \`siteMonitor\` registered: yes; no native capture at ${PRISTINE_NOTE}`,

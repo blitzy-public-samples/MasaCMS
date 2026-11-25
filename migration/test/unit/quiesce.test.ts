@@ -37,15 +37,14 @@ import { SITE_MONITOR_TASK } from '../helpers/fixtures.js';
 const ENV = testEnv();
 const PROJECT = ENV.GOOGLE_CLOUD_PROJECT;
 const SUBSCRIPTION_PREFIX = `projects/${PROJECT}/subscriptions/`;
-const ARCHIVED = 'timesheets.people.person.archived.v1';
+const NOTE_CREATED = 'stub.stub.note.created.v1';
 const GROUP_CHANGED = 'people.identity.group.changed.v1';
-const SITE_CHANGED = 'finance.programs-sites.site.changed.v1';
-const DLQ_REPLAY = `${ARCHIVED}.dlq.replay`;
+const SITE_CHANGED = 'identity.programs-sites.site.changed.v1';
+const DLQ_REPLAY = `${NOTE_CREATED}.dlq.replay`;
 const FOREIGN = 'legacy-mail-queue';
 const TO = '2026-06-30T10:00:00.000Z';
 const TO_MS = Date.parse(TO);
 const MINUTE_MS = 60_000;
-const SURVEY_TASKS = ['opt2-survey-41-launch', 'opt2-survey-41-reminder-1'];
 
 const endpoint = (name: string): string => `http://127.0.0.1:8100/internal/v1/events/${name}?key=unit-push-key`;
 /** Push config as Pub/Sub reports it, with a null oneof member. */
@@ -131,7 +130,7 @@ describe('seekSubscriptions', () => {
     const after = TO_MS + MINUTE_MS;
     const fake = fakePubSub({
       [GROUP_CHANGED]: { push: livePush(GROUP_CHANGED), published: [before] },
-      [ARCHIVED]: { push: livePush(ARCHIVED), published: [before, before] },
+      [NOTE_CREATED]: { push: livePush(NOTE_CREATED), published: [before, before] },
       [SITE_CHANGED]: { push: PULL },
       [DLQ_REPLAY]: { push: PULL, published: [after] },
       [FOREIGN]: { push: PULL, published: [after] },
@@ -140,7 +139,7 @@ describe('seekSubscriptions', () => {
 
     const result = await seekSubscriptions(ctx, TO, { pubsub: fake.pubsub });
 
-    const names = [SITE_CHANGED, GROUP_CHANGED, ARCHIVED];
+    const names = [SITE_CHANGED, GROUP_CHANGED, NOTE_CREATED];
     expect(result).toStrictEqual({ to: TO, subscriptions: names.map((name) => ({ name, sought: true, backlog: 0 })) });
     const seeks = names.map((name) => fake.subscription(name).seek);
     for (const seek of seeks) expect(seek).toHaveBeenCalledExactlyOnceWith(new Date(TO));
@@ -161,7 +160,7 @@ describe('seekSubscriptions', () => {
     ['FAILED_PRECONDITION', 9],
   ])('records the ordered-seek-unsupported fallback when the emulator refuses an ordered subscription with %s', async (_label, code) => {
     const fake = fakePubSub({
-      [ARCHIVED]: { push: livePush(ARCHIVED), ordered: true, seekError: grpcError(code) },
+      [NOTE_CREATED]: { push: livePush(NOTE_CREATED), ordered: true, seekError: grpcError(code) },
       [GROUP_CHANGED]: { push: livePush(GROUP_CHANGED) },
     });
 
@@ -169,9 +168,9 @@ describe('seekSubscriptions', () => {
 
     expect(result.subscriptions).toStrictEqual([
       { name: GROUP_CHANGED, sought: true, backlog: 0 },
-      { name: ARCHIVED, sought: false, fallback: 'ordered-seek-unsupported', backlog: 0 },
+      { name: NOTE_CREATED, sought: false, fallback: 'ordered-seek-unsupported', backlog: 0 },
     ]);
-    expect(fake.pubsub.pullOnce).toHaveBeenCalledWith(`${SUBSCRIPTION_PREFIX}${ARCHIVED}`);
+    expect(fake.pubsub.pullOnce).toHaveBeenCalledWith(`${SUBSCRIPTION_PREFIX}${NOTE_CREATED}`);
   });
 
   it.each([
@@ -180,7 +179,7 @@ describe('seekSubscriptions', () => {
     ['another gRPC code', true, 5, ENV.PUBSUB_EMULATOR_HOST],
   ])('propagates the seek refusal of %s before peeking any backlog', async (_label, ordered, code, emulatorHost) => {
     const error = grpcError(code);
-    const fake = fakePubSub({ [ARCHIVED]: { push: livePush(ARCHIVED), ordered, seekError: error } });
+    const fake = fakePubSub({ [NOTE_CREATED]: { push: livePush(NOTE_CREATED), ordered, seekError: error } });
 
     const seek = seekSubscriptions(seekContext({ ...ENV, PUBSUB_EMULATOR_HOST: emulatorHost }).ctx, TO, { pubsub: fake.pubsub });
 
@@ -191,7 +190,7 @@ describe('seekSubscriptions', () => {
   it('throws SeekVerificationError naming each subscription that still delivers a message, after peeking them all', async () => {
     const fake = fakePubSub({
       [GROUP_CHANGED]: { push: livePush(GROUP_CHANGED), published: [TO_MS - MINUTE_MS] },
-      [ARCHIVED]: { push: livePush(ARCHIVED), published: [TO_MS + 1000] },
+      [NOTE_CREATED]: { push: livePush(NOTE_CREATED), published: [TO_MS + 1000] },
       [SITE_CHANGED]: { push: PULL, published: [TO_MS - MINUTE_MS, TO_MS + 5 * MINUTE_MS] },
     });
     const { ctx, logger } = seekContext();
@@ -199,9 +198,9 @@ describe('seekSubscriptions', () => {
     const error = await seekSubscriptions(ctx, TO, { pubsub: fake.pubsub }).catch((caught: unknown) => caught);
 
     expect(error).toBeInstanceOf(SeekVerificationError);
-    expect(error).toMatchObject({ nonEmpty: [SITE_CHANGED, ARCHIVED] });
+    expect(error).toMatchObject({ nonEmpty: [SITE_CHANGED, NOTE_CREATED] });
     expect(fake.pubsub.pullOnce).toHaveBeenCalledTimes(3);
-    expect(logger.warn.mock.calls.map((call: unknown[]) => call[1])).toStrictEqual([SITE_CHANGED, ARCHIVED]);
+    expect(logger.warn.mock.calls.map((call: unknown[]) => call[1])).toStrictEqual([SITE_CHANGED, NOTE_CREATED]);
   });
 });
 
@@ -212,8 +211,8 @@ const CREATED_QUEUES = Object.values(QUEUES)
   .flatMap(({ name, creators }) => creators.filter((service) => Object.hasOwn(SERVICE_URLS, service)).map((service) => `${service} ${name}`))
   .sort();
 const QUEUE_CONTROL_PATH = new RegExp(`^${QUEUE_CONTROL_PREFIX}/([^/]+)/(pause|resume|ensure)$`);
-const PAUSED: PauseResult = { siteMonitor: [SITE_MONITOR_TASK], surveys: SURVEY_TASKS };
-const RESTORED: RestoreResult = { siteMonitor: [SITE_MONITOR_TASK], surveys: SURVEY_TASKS };
+const PAUSED: PauseResult = { siteMonitor: [SITE_MONITOR_TASK] };
+const RESTORED: RestoreResult = { siteMonitor: [SITE_MONITOR_TASK] };
 
 const targetKey = ({ service, queue }: { service: string; queue: string }): string => `${service} ${queue}`;
 
@@ -230,7 +229,7 @@ function lastOps(calls: readonly RoutedServiceCall[]): Record<string, string> {
   return Object.fromEntries(queueOps(calls));
 }
 
-/** Every doubled port of one drain-and-suspend and resume, with the subscriptions the drain barrier requires in push mode, except `ARCHIVED`. */
+/** Every doubled port of one drain-and-suspend and resume, with the subscriptions the drain barrier requires in push mode, except `NOTE_CREATED`. */
 interface Cycle {
   t: TestContext;
   fake: ReturnType<typeof fakePubSub>;
@@ -259,7 +258,7 @@ async function cycleOver(t: TestContext): Promise<Cycle> {
   if (!(probe instanceof MissingSubscriptionError)) throw new Error(`The drain probe answered ${String(probe)}`);
   const declared = [...probe.subscriptions].sort();
   const specs: Record<string, FakeSubscriptionSpec> = Object.fromEntries(
-    declared.map((name) => [name, { push: name === ARCHIVED ? PULL : livePush(name) }]),
+    declared.map((name) => [name, { push: name === NOTE_CREATED ? PULL : livePush(name) }]),
   );
   specs[DLQ_REPLAY] = { push: PULL, published: [t.clock.now().getTime() - MINUTE_MS] };
   specs[FOREIGN] = { push: livePush(FOREIGN) };
@@ -333,13 +332,13 @@ describe.skipIf(!schemaAvailable)(
       }
       expect(lastOps(t.client.calls)).toStrictEqual(Object.fromEntries(CREATED_QUEUES.map((key) => [key, 'pause'])));
 
-      const pushed = declared.filter((name) => name !== ARCHIVED);
+      const pushed = declared.filter((name) => name !== NOTE_CREATED);
       expect(result.switchedToPull).toStrictEqual(pushed);
       for (const name of declared) {
         await expect(readPushConfig(fake.subscription(name))).resolves.toBeNull();
-        if (name !== ARCHIVED) expect(fake.subscription(name).modifyPushConfig).toHaveBeenCalledExactlyOnceWith({});
+        if (name !== NOTE_CREATED) expect(fake.subscription(name).modifyPushConfig).toHaveBeenCalledExactlyOnceWith({});
       }
-      for (const name of [ARCHIVED, DLQ_REPLAY, FOREIGN]) expect(fake.subscription(name).modifyPushConfig).not.toHaveBeenCalled();
+      for (const name of [NOTE_CREATED, DLQ_REPLAY, FOREIGN]) expect(fake.subscription(name).modifyPushConfig).not.toHaveBeenCalled();
       expect(c.scheduler.pauseAll).toHaveBeenCalledOnce();
 
       const stored = await c.background.get();
@@ -352,7 +351,7 @@ describe.skipIf(!schemaAvailable)(
           const [service = '', queue = ''] = key.split(' ');
           return { service, queue };
         }),
-        pausedTasks: [SITE_MONITOR_TASK, ...SURVEY_TASKS].sort(),
+        pausedTasks: [SITE_MONITOR_TASK],
       });
       expect(result.record).toStrictEqual({
         ...stored,
@@ -390,14 +389,14 @@ describe.skipIf(!schemaAvailable)(
       const logFrom = t.log.entries.length;
       const result = await resume(t.ctx, { background: c.background, pubsub: fake.pubsub, scheduler: c.scheduler });
 
-      const pushed = declared.filter((name) => name !== ARCHIVED);
+      const pushed = declared.filter((name) => name !== NOTE_CREATED);
       expect(result.resumed).toBe(true);
       expect(result.restoredPush).toStrictEqual(pushed);
       for (const [name, saved] of c.before) {
         await expect(readPushConfig(fake.subscription(name))).resolves.toStrictEqual(saved);
       }
       for (const name of pushed) expect(fake.subscription(name).modifyPushConfig).toHaveBeenLastCalledWith(c.before.get(name));
-      for (const name of [ARCHIVED, DLQ_REPLAY, FOREIGN]) expect(fake.subscription(name).modifyPushConfig).not.toHaveBeenCalled();
+      for (const name of [NOTE_CREATED, DLQ_REPLAY, FOREIGN]) expect(fake.subscription(name).modifyPushConfig).not.toHaveBeenCalled();
 
       const ops = queueOps(t.client.calls.slice(resumeFrom));
       expect(ops.filter(([, op]) => op === 'resume').map(([key]) => key)).toStrictEqual(CREATED_QUEUES);
@@ -441,7 +440,7 @@ describe.skipIf(!schemaAvailable)(
       suspended: true,
       since: null,
       reason: 'golden capture',
-      pushConfigs: { [ARCHIVED]: { pushEndpoint: endpoint(ARCHIVED), attributes: { 'x-goog-version': 'v1' }, noWrapper: { writeMetadata: false } } },
+      pushConfigs: { [NOTE_CREATED]: { pushEndpoint: endpoint(NOTE_CREATED), attributes: { 'x-goog-version': 'v1' }, noWrapper: { writeMetadata: false } } },
       pausedQueues: [{ service: 'programs-sites', queue: SITEMONITOR_QUEUE }],
       pausedTasks: [SITE_MONITOR_TASK],
     };

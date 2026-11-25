@@ -302,7 +302,7 @@ describe('cusers.edituser stored user', () => {
       [...existingUserEditData.privateGroups, ...existingUserEditData.publicGroups].map(({ UserID }) => UserID),
     );
     expect(boxes.filter(({ checked }) => checked).map(({ value }) => value)).toEqual([
-      GROUP_IDS.timesheetsEmployee,
+      GROUP_IDS.teamMember,
       GROUP_IDS.umbrellaMembers,
     ]);
     expect(part('#tabGroupmemberships').labels).toContain('Umbrella - Umbrella Members');
@@ -347,7 +347,7 @@ describe('cusers.edituser stored user', () => {
       selected,
       options: SITE_LIST_BY_ORDERNO.map(({ siteid, site }) => ({ value: siteid, label: site, selected: selected.includes(siteid) })),
     }]);
-    expect(valuesOf(advanced, ['tags', 'remoteID'])).toEqual({ tags: 'finance,remote', remoteID: 'HR-0001' });
+    expect(valuesOf(advanced, ['tags', 'remoteID'])).toEqual({ tags: 'outreach,remote', remoteID: 'HR-0001' });
   });
 
   it.each<[string, () => AdminRequest, readonly unknown[]]>([

@@ -8,7 +8,6 @@ import {
   isCoreModuleId,
   moduleRole,
   rolesForService,
-  type Role,
   type UserClaims,
 } from '@opt2/platform/auth';
 import { businessClock } from '@opt2/platform/testing';
@@ -31,7 +30,7 @@ import {
   type SiteData,
 } from '@/lib/request-context';
 import { fakeGatewayClient, routeKey, type FakeGatewayClient, type FakeReply } from './fake-gateway';
-import { SUBJECTS, syntheticSubject, userTokenFor, type WebTestSubject, type WebTestSubjectKey } from './tokens';
+import { SUBJECTS, userTokenFor, type WebTestSubject, type WebTestSubjectKey } from './tokens';
 
 type SessionUser = AdminSessionState['mura'];
 type SiteRecord = SiteData['record'];
@@ -430,7 +429,6 @@ export function makeAdminRequest(
     relayScopes: { posted: rc, scanned: rc },
     ses: false,
     currentUrl: `./?&muraAction=${muraAction}`,
-    requestTarget: `/admin/?muraAction=${muraAction}`,
     session,
     sessionWrites: {},
     site,
@@ -486,12 +484,6 @@ export function noSitesRequest(
   return makeAdminRequest({ ...partial, session: { ...partial.session, siteArray: [] } }, subject);
 }
 
-/** The tenant-a subject holding synthetic-module `role`, with `session.siteid` on its site, in the `/opt2` routes' mode. */
-export function opt2RoleRequest(role: Role, partial: AdminRequestPartial = {}): AdminRequest {
-  const subject = syntheticSubject(role);
-  return makeAdminRequest({ mode: 'opt2', ...partial, session: { siteid: subject.site, ...partial.session } }, subject);
-}
-
 /** Inputs of {@link buildTestAdminRequest}. */
 export interface TestAdminRequestInput {
   /** Circuit of the web path; the URL scope's `muraAction` is `<circuit>.<action>`. */
@@ -536,8 +528,6 @@ export async function buildTestAdminRequest(input: TestAdminRequestInput): Promi
   const request: AdminRequestInput = {
     params: { circuit: input.circuit, action: input.action },
     searchParams,
-    // The page-mode web path the gateway maps an admin action to.
-    receivedTarget: `/admin/${input.circuit}/${input.action}?${searchParams.toString()}`,
     headers: requestHeaders(input.headers),
     form,
     auth,

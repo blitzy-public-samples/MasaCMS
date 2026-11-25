@@ -53,7 +53,7 @@ function records(lines: readonly string[]): Record<string, unknown>[] {
 
 function scenario(over: Record<string, unknown> = {}): Scenario {
   return scenarioSchema.parse({
-    id: 'GS-CO-15',
+    id: 'GS-CO-85',
     title: 'Logging fixture',
     service: 'strategies-content',
     role: 'admin',
@@ -100,7 +100,7 @@ describe('replayScenario logging', () => {
       tableVersion: null,
       fixtures: { available: true, reason: null },
       steps: [],
-      sideEffects: { mail: [], rows: {}, tasks: [], files: [] },
+      sideEffects: { mail: [], rows: {}, files: [] },
     };
   }
 
@@ -110,7 +110,7 @@ describe('replayScenario logging', () => {
       { fixtures: 'required' },
       { available: false, reason: 'no CREATE SCHEMA' },
       'skipped',
-      `GS-CO-15: ${FIXTURES_UNAVAILABLE}`,
+      `GS-CO-85: ${FIXTURES_UNAVAILABLE}`,
     ],
     ['a browser scenario', BROWSER, { available: true, reason: null }, 'browser', BROWSER_MESSAGE],
   ])('logs %s as one INFO line', async (_label, over, fixtures, status, message) => {
@@ -141,7 +141,7 @@ describe('replayScenario logging', () => {
     const result = await replayScenario(crossing, deps({ logger, readGolden: async (id) => golden(id) }));
 
     expect(result.status).toBe('resumed-earlier');
-    const message = `GS-CO-15: already resumed after its transition; ${replayOutputPath(crossing.id, env)} stands`;
+    const message = `GS-CO-85: already resumed after its transition; ${replayOutputPath(crossing.id, env)} stands`;
     expect(records(lines)).toEqual([expect.objectContaining({ severity: 'INFO', message })]);
   });
 
@@ -156,20 +156,20 @@ describe('replayScenario logging', () => {
     [
       'a step that fails as one ERROR line',
       { answer: 'throw' },
-      [{ severity: 'ERROR', message: 'GS-CO-15: failed at read, 0 exchanges, 0 halted' }],
+      [{ severity: 'ERROR', message: 'GS-CO-85: failed at read, 0 exchanges, 0 halted' }],
     ],
     [
       'a halted case as a WARNING line before the INFO outcome',
       { gap: { reason: 'no candidate matched', candidatesTried: 1 }, answer: 200 },
       [
-        { severity: 'WARNING', message: expect.stringMatching(/^GS-CO-15 step read: halted \(no candidate matched\); EX-HALT-/) },
-        { severity: 'INFO', message: 'GS-CO-15: replayed, 1 exchanges, 1 halted' },
+        { severity: 'WARNING', message: expect.stringMatching(/^GS-CO-85 step read: halted \(no candidate matched\); EX-HALT-/) },
+        { severity: 'INFO', message: 'GS-CO-85: replayed, 1 exchanges, 1 halted' },
       ],
     ],
     [
       'a pause at a transition as one INFO line',
       { answer: 200, over: CROSSING, phase: 'pre-transition' },
-      [{ severity: 'INFO', message: expect.stringMatching(/^GS-CO-15: paused before step after; sessions saved to \/.*GS-CO-15\.json$/) }],
+      [{ severity: 'INFO', message: expect.stringMatching(/^GS-CO-85: paused before step after; sessions saved to \/.*GS-CO-85\.json$/) }],
     ],
   ])('logs %s', async (_label, { gap, answer, over, phase }, expected) => {
     const exceptionsPath = path.join(root, 'exceptions-list.json');
@@ -210,7 +210,7 @@ describe('replayScenario logging', () => {
 
     expect(result.status).toBe('error');
     expect(lines.join('')).not.toContain(SECRET);
-    const message = `GS-CO-15: replay failed: Error: golden set unreadable with ${REDACTED}`;
+    const message = `GS-CO-85: replay failed: Error: golden set unreadable with ${REDACTED}`;
     expect(records(lines)).toEqual([expect.objectContaining({ severity: 'ERROR', message })]);
   });
 
@@ -229,7 +229,7 @@ describe('replayScenario logging', () => {
 describe('capture logging', () => {
   const LEGACY_PORT = '18580';
   const CAPTURE_BROWSER_MESSAGE = 'GS-ID-02: browser flow admin-login, captured by harness/e2e/ui/interactions.e2e.ts';
-  const CAPTURED_MESSAGE = 'GS-CO-15: captured 1 exchanges';
+  const CAPTURED_MESSAGE = 'GS-CO-85: captured 1 exchanges';
   const AVAILABLE = { available: true, reason: null };
   const GAP_ROUTE = '/_api/json/v1/tenant-a/content/?pageIndex=gs';
   const GAP = { steps: [{ name: 'read', route: GAP_ROUTE, expected: 'gap', candidates: [{ method: 'GET', route: GAP_ROUTE }] }] };
@@ -268,7 +268,7 @@ describe('capture logging', () => {
       'a fixture-dependent scenario without fixtures as one INFO line',
       { fixtures: 'required' },
       { available: false, reason: 'no CREATE SCHEMA' },
-      [{ severity: 'INFO', message: `GS-CO-15: ${FIXTURES_UNAVAILABLE}` }],
+      [{ severity: 'INFO', message: `GS-CO-85: ${FIXTURES_UNAVAILABLE}` }],
     ],
     ['a browser scenario as one INFO line', BROWSER, AVAILABLE, [{ severity: 'INFO', message: CAPTURE_BROWSER_MESSAGE }]],
     ['a captured scenario as one INFO line', {}, AVAILABLE, [{ severity: 'INFO', message: CAPTURED_MESSAGE }]],
@@ -277,7 +277,7 @@ describe('capture logging', () => {
       GAP,
       AVAILABLE,
       [
-        { severity: 'WARNING', message: `GS-CO-15 step read: ${GAP_REASON}; recorded EX-GAP-GS-CO-15-READ` },
+        { severity: 'WARNING', message: `GS-CO-85 step read: ${GAP_REASON}; recorded EX-GAP-GS-CO-85-READ` },
         { severity: 'INFO', message: CAPTURED_MESSAGE },
       ],
     ],
@@ -305,7 +305,7 @@ describe('capture logging', () => {
     const stdout: string[] = [];
 
     const code = await runCli((argv) => captureMain(argv, env, { fetch, secrets, clock, logger }), {
-      argv: ['--only', 'GS-CO-15', '--catalogue', catalogue],
+      argv: ['--only', 'GS-CO-85', '--catalogue', catalogue],
       stdout: { write: (chunk: string) => stdout.push(chunk) },
       exit: () => undefined,
       command: 'golden:capture',
@@ -321,10 +321,10 @@ describe('capture logging', () => {
       skipped: 0,
       browser: 0,
       gaps: [],
-      failed: [{ id: 'GS-CO-15', error }],
+      failed: [{ id: 'GS-CO-85', error }],
     });
     expect(records(lines)).toEqual([
-      expect.objectContaining({ severity: 'ERROR', message: 'GS-CO-15: capture failed', error: logged }),
+      expect.objectContaining({ severity: 'ERROR', message: 'GS-CO-85: capture failed', error: logged }),
     ]);
     const written = [...lines, ...stdout].join('');
     for (const value of [RESOLVED, SECRET, PASSWORD, BEARER]) expect(written).not.toContain(value);

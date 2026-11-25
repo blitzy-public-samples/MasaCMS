@@ -1,4 +1,4 @@
-/** Forgot-password and send-login mail: legacy userUtility's lookup, password reset, redirect and text, requested from communications as `identity.login-mail.requested.v1`. */
+/** Forgot-password and send-login mail: legacy userUtility's lookup, password reset, redirect and text, requested as `identity.login-mail.requested.v1`. */
 import { randomInt } from 'node:crypto';
 import { cfUuid, javaTrim } from '@opt2/platform/legacy-compat';
 import { withGatedTenant } from '@opt2/platform/migration-kit';

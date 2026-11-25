@@ -1,5 +1,4 @@
 /** The `cwebservice` list, edit, save and delete routes over a throwaway `identity` schema: contract shape, the S2 gate, request validation, the session-site list, new-client defaults, the save without `siteid`, CSRF-gated writes, validation errors and the token cascade. */
-import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -16,6 +15,7 @@ import {
   assertResponseMatchesOpenApi,
   createThrowawaySchema,
   fixedClock,
+  loadOpenApiDocument,
   mintServiceToken,
   mintUserToken,
   pgAvailable,
@@ -32,7 +32,7 @@ import { registerAdminOAuthClientRoutes } from '../../src/routes/admin-oauth-cli
 type Method = 'GET' | 'PUT' | 'DELETE';
 type Payload = URLSearchParams | Record<string, unknown>;
 
-const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as {
+const OPENAPI = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as {
   paths: Record<string, Record<string, Record<string, unknown>>>;
 };
 const CONTRACT_PATHS = ['/v1/oauth-clients', '/v1/oauth-clients/{clientId}'];

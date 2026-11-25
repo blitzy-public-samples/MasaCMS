@@ -15,6 +15,7 @@ import {
 } from './closure.js';
 import {
   FILE_STORE_TABLE,
+  LEGACY_OWNER,
   ownershipEntryOf,
   parseRowPredicate,
   selectedByClassOwner,
@@ -33,7 +34,7 @@ export const WRITER_OVERRIDES_REF = 'harness/inventory/writer-overrides.yaml';
 /** Unit of a write to Masa's file store. */
 export const FILE_STORE_UNIT = 'file-store';
 
-/** Prefix of the unit of a written table that maps to no target unit: decision-list, retired or target-less. */
+/** Prefix of the unit of a written table that maps to no target unit: decision-list, retired, legacy or target-less. */
 export const LEGACY_UNIT_PREFIX = 'legacy:';
 
 /** Condition of a file-store write reached only under a guard the branch's request does not decide. */
@@ -617,7 +618,10 @@ export class UnitResolver {
         ? [{ unit: legacy, owner: entry.owner, decision: false }]
         : entry.targets.map((t) => ({ unit: t.unit, owner: t.owner, decision: false }));
     }
-    return this.splitUnits(entry, columns, via, branch, write).map((t) => ({ unit: t.unit, owner: t.owner, decision: false }));
+    const targets = this.splitUnits(entry, columns, via, branch, write);
+    // Only rows of a co-written legacy-only entity resolve to no target.
+    if (targets.length === 0) return [{ unit: legacy, owner: LEGACY_OWNER, decision: false }];
+    return targets.map((t) => ({ unit: t.unit, owner: t.owner, decision: false }));
   }
 
   /**

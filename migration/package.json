@@ -16,7 +16,7 @@
   },
   "scripts": {
     "postinstall": "npm ci --prefix ../platform && npm run build --prefix ../platform",
-    "generate": "openapi-typescript contracts/openapi.yaml -o src/generated/openapi.ts && openapi-typescript ../gateway/contracts/openapi.yaml -o src/generated/clients/gateway.ts && openapi-typescript ../services/strategies-content/contracts/openapi.yaml -o src/generated/clients/strategies-content.ts && openapi-typescript ../services/finance/contracts/openapi.yaml -o src/generated/clients/finance.ts && openapi-typescript ../services/reporting/contracts/openapi.yaml -o src/generated/clients/reporting.ts",
+    "generate": "openapi-typescript contracts/openapi.yaml -o src/generated/openapi.ts && openapi-typescript ../gateway/contracts/openapi.yaml -o src/generated/clients/gateway.ts && openapi-typescript ../services/strategies-content/contracts/openapi.yaml -o src/generated/clients/strategies-content.ts",
     "prebuild": "npm run generate",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p test/tsconfig.json",

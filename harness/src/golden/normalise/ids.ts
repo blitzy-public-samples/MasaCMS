@@ -1,5 +1,5 @@
 import { isCfUuid } from '@opt2/platform/legacy-compat';
-import type { IdRules, KeyedIdRule } from './rules.js';
+import type { IdRules } from './rules.js';
 
 /** First-sight ordinals of one id kind within a scenario, keyed by the kind's ordinal key. */
 export interface OrdinalCounter {
@@ -10,13 +10,9 @@ export interface OrdinalCounter {
 /**
  * One scenario side's id ordinals: CF UUIDs in `byId`/`next`. RFC 4122 uuids are numbered apart, so an
  * event or tenant id present on one side only never shifts the CF UUID numbering of the steps after it.
- * Audit chain hashes (chain-hashes.ts) are numbered apart for the same reason.
  */
 export interface IdOrdinals extends OrdinalCounter {
   readonly rfc4122: OrdinalCounter;
-  readonly chainHashes: OrdinalCounter;
-  /** Ordinals of each keyed id rule, by rule id; created when the side numbers its first keyed id. */
-  keyed?: Map<string, OrdinalCounter>;
 }
 
 /** Fresh ordinals for one scenario side; numbering starts at 1. */
@@ -25,7 +21,6 @@ export function createIdOrdinals(): IdOrdinals {
     byId: new Map(),
     next: 1,
     rfc4122: { byId: new Map(), next: 1 },
-    chainHashes: { byId: new Map(), next: 1 },
   };
 }
 
@@ -40,21 +35,11 @@ interface IdMatcher {
   readonly ordinalKey: (id: string) => string;
 }
 
-interface KeyedMatcher {
-  readonly id: string;
-  /** Keys the rule names, folded by `foldKey`. */
-  readonly keys: ReadonlySet<string>;
-  readonly foldKey: (key: string) => string;
-  readonly placeholder: string;
-  readonly ordinalKey: (id: string) => string;
-}
-
 interface CompiledIdRules {
   readonly cfUuid: IdMatcher;
   readonly rfc4122: IdMatcher | undefined;
   /** Upper-cased literals that stay as they are even when a pattern matches them. */
   readonly keepLiteral: ReadonlySet<string>;
-  readonly keyed: readonly KeyedMatcher[];
 }
 
 const upperCase = (id: string): string => id.toUpperCase();
@@ -68,7 +53,6 @@ const DEFAULT_RULES: CompiledIdRules = {
   cfUuid: { find: CF_UUID_IN_TEXT, confirm: isCfUuid, placeholder: '<id:{n}>', ordinalKey: upperCase },
   rfc4122: undefined,
   keepLiteral: new Set(),
-  keyed: [],
 };
 
 // Loaded rules are deep-frozen, so each object compiles once.
@@ -85,17 +69,6 @@ function matcher(rule: IdPatternRule, confirm: (candidate: string) => boolean): 
   };
 }
 
-function keyedMatcher(rule: KeyedIdRule): KeyedMatcher {
-  const foldKey = rule.keyMatch === 'case-insensitive' ? (key: string) => key.toLowerCase() : exact;
-  return {
-    id: rule.id,
-    keys: new Set(rule.keys.map(foldKey)),
-    foldKey,
-    placeholder: rule.placeholder,
-    ordinalKey: rule.ordinalKey === 'exact' ? exact : upperCase,
-  };
-}
-
 function compile(rules: IdRules | undefined): CompiledIdRules {
   if (rules === undefined) return DEFAULT_RULES;
   let compiled = compiledRules.get(rules);
@@ -104,7 +77,6 @@ function compile(rules: IdRules | undefined): CompiledIdRules {
       cfUuid: matcher(rules, isCfUuid),
       rfc4122: matcher(rules.rfc4122, anyMatch),
       keepLiteral: new Set(rules.keepLiteral.map(upperCase)),
-      keyed: rules.keyed.map(keyedMatcher),
     };
     compiledRules.set(rules, compiled);
   }
@@ -158,38 +130,14 @@ export function normaliseIdsInString(s: string, state: IdOrdinals, rules?: IdRul
   return replaceAllKinds(s, state, compile(rules));
 }
 
-function keyedPlaceholder(key: string, value: string, state: IdOrdinals, compiled: CompiledIdRules): string | undefined {
-  const kind = value === '' ? undefined : compiled.keyed.find((rule) => rule.keys.has(rule.foldKey(key)));
-  if (kind === undefined) return undefined;
-  const counters = (state.keyed ??= new Map());
-  let counter = counters.get(kind.id);
-  if (counter === undefined) {
-    counter = { byId: new Map(), next: 1 };
-    counters.set(kind.id, counter);
-  }
-  return assign(counter, kind.ordinalKey(value), kind.placeholder);
-}
-
-/**
- * Placeholder of `value` stored under `key` when a keyed id rule names `key`, assigning that rule's next scenario
- * ordinal on first sight; undefined for an empty value or a key no keyed rule names.
- */
-export function keyedOrdinalFor(key: string, value: string, state: IdOrdinals, rules?: IdRules): string | undefined {
-  return keyedPlaceholder(key, value, state, compile(rules));
-}
-
 function isPlainObject(value: object): value is Record<string, unknown> {
   const proto: unknown = Object.getPrototypeOf(value);
   return proto === Object.prototype || proto === null;
 }
 
-// Array elements take the key of the array.
-function walk(value: unknown, state: IdOrdinals, compiled: CompiledIdRules, key?: string): unknown {
-  if (typeof value === 'string') {
-    const keyed = key === undefined ? undefined : keyedPlaceholder(key, value, state, compiled);
-    return keyed ?? replaceAllKinds(value, state, compiled);
-  }
-  if (Array.isArray(value)) return value.map((item: unknown) => walk(item, state, compiled, key));
+function walk(value: unknown, state: IdOrdinals, compiled: CompiledIdRules): unknown {
+  if (typeof value === 'string') return replaceAllKinds(value, state, compiled);
+  if (Array.isArray(value)) return value.map((item: unknown) => walk(item, state, compiled));
   if (typeof value !== 'object' || value === null || !isPlainObject(value)) return value;
   // Sorted keys: CFML struct key order differs from the target's, and ordinals follow first sight.
   return Object.fromEntries(
@@ -197,15 +145,14 @@ function walk(value: unknown, state: IdOrdinals, compiled: CompiledIdRules, key?
       .sort()
       .map((name): [string, unknown] => [
         replaceAllKinds(name, state, compiled),
-        walk(value[name], state, compiled, name),
+        walk(value[name], state, compiled),
       ]),
   );
 }
 
 /**
- * New copy of `value` with ids replaced in every string and plain-object key, and non-empty string values under a
- * keyed id rule's keys replaced by that rule's ordinals; arrays keep their order and object keys are visited in
- * code-unit order. Other values are returned as they are; `value` is never mutated.
+ * New copy of `value` with ids replaced in every string and plain-object key; arrays keep their order and object keys
+ * are visited in code-unit order. Other values are returned as they are; `value` is never mutated.
  */
 export function normaliseIds(value: unknown, state: IdOrdinals, rules?: IdRules): unknown {
   return walk(value, state, compile(rules));

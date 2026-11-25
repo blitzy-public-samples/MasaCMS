@@ -1,12 +1,11 @@
 /** carch.list's in-view sort write (list.cfm:590-634) through `GET /v1/sites/{siteid}/content/tree` over a throwaway `content` schema. */
-import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import { Roles } from '@opt2/platform/auth';
 import { createLogger } from '@opt2/platform/logging';
 import { WRITE_POSITION_HEADER_LC, closeGates, openGates, registerWritePositionHeader, withGatedTenant } from '@opt2/platform/migration-kit';
 import { createService, loadEnv, type FastifyInstance, type FastifyRequest, type ServiceRequest } from '@opt2/platform/service-kit';
-import { TENANT_A, TENANT_B, assertResponseMatchesOpenApi, pgAvailable, testVerifier, type InjectResponse } from '@opt2/platform/testing';
+import { TENANT_A, TENANT_B, assertResponseMatchesOpenApi, loadOpenApiDocument, pgAvailable, testVerifier, type InjectResponse } from '@opt2/platform/testing';
 import { sortSiteManagerLevel } from '../../src/domain/content-tree.js';
 import { actorFromClaims } from '../../src/domain/context.js';
 import type { VersionInput } from '../../src/repo/repository.js';
@@ -19,7 +18,7 @@ import { ADMIN, END, HOME, SITE_ID, SITE_TREE, cfId, createContentFixture, type 
 
 type Json = Record<string, unknown>;
 
-const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
+const OPENAPI = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as object;
 const SERVICE = 'strategies-content';
 const USER = cfId('U', 1);
 const SITE_B = TENANT_B.siteId;

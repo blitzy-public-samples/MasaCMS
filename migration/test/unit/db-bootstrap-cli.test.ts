@@ -482,7 +482,7 @@ describe.skipIf(!dedicated)('opt2-db bootstrap against a dedicated PostgreSQL cl
     }
   });
 
-  it('bootstraps all thirteen schemas and prints exactly one JSON line', async () => {
+  it('bootstraps all seven schemas and prints exactly one JSON line', async () => {
     const io = captureIo();
     const source: NodeJS.ProcessEnv = {
       OPT2_ENV: 'local',
@@ -496,7 +496,7 @@ describe.skipIf(!dedicated)('opt2-db bootstrap against a dedicated PostgreSQL cl
     expect(await main(['bootstrap', '--target', 'local'], io, source), io.out()).toBe(0);
     const line = onlyJsonLine(io.out()) as unknown as BootstrapSummary;
     expect(line).toMatchObject({ command: 'bootstrap', target: 'local', ok: true, findings: [] });
-    expect(line.schemas).toHaveLength(13);
+    expect(line.schemas).toHaveLength(7);
     expect(line.schemas.map((entry) => entry.schema)).toEqual(Object.values(config.owners).map((owner) => owner.schema));
     for (const password of passwords) expect(`${io.out()}${io.err()}`).not.toContain(password);
   });

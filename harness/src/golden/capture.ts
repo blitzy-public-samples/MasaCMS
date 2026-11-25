@@ -30,6 +30,7 @@ import {
 import {
   KNOWN_ISSUE_IDS,
   createNormaliseState,
+  holdsHostPath,
   normaliseSideEffects,
   normaliseStep,
   normaliseTokens,
@@ -44,7 +45,6 @@ import {
   type NormalisedSideEffects,
   type NormalisedStep,
   type NormalisedTable,
-  type NormalisedTask,
   type StateTransitions,
 } from './normalise/index.js';
 import { RULES_PATH, loadRules } from './normalise/rules.js';
@@ -53,6 +53,7 @@ import {
   createScenarioContext,
   loadSecretStore,
   loadSeedStore,
+  resolveSeedAccountSecrets,
   secretValues,
   type ScenarioContextOptions,
   type SecretStore,
@@ -128,8 +129,8 @@ export interface GoldenStep {
   candidateIndex?: number;
 }
 
-/** Normalised side effects; the four kinds are always present, empty when the scenario does not compare them. */
-export type GoldenSideEffects = Required<Pick<NormalisedSideEffects, 'mail' | 'rows' | 'tasks' | 'files'>> &
+/** Normalised side effects; the three kinds are always present, empty when the scenario does not compare them. */
+export type GoldenSideEffects = Required<Pick<NormalisedSideEffects, 'mail' | 'rows' | 'files'>> &
   Pick<NormalisedSideEffects, 'transitions'>;
 
 /** One committed golden set, `harness/golden/sets/[rehearsal/]<scenarioId>.json`. */
@@ -281,13 +282,6 @@ const sideEffectsSchema: z.ZodType<GoldenSideEffects> = z.strictObject({
       entries: z.array(z.strictObject({ encoding: z.string(), count: z.number().int().positive() })),
       checksum: z.string(),
     }) satisfies z.ZodType<NormalisedTable>,
-  ),
-  tasks: z.array(
-    z.looseObject({
-      kind: z.string(),
-      target: z.string(),
-      offsetSeconds: z.number(),
-    }) satisfies z.ZodType<NormalisedTask>,
   ),
   files: z.array(z.record(z.string(), z.union([z.string(), z.number()]))),
   transitions: z
@@ -529,21 +523,22 @@ export function createGoldenStepBuilder(
         { state, rules, scenario, secrets },
         steps.map((step) => step.normalised),
       );
-      return { mail: [], rows: {}, tasks: [], files: [], ...normalised };
+      return { mail: [], rows: {}, files: [], ...normalised };
     },
   };
 }
 
 const exceptionEntrySchema = z.looseObject({
   id: z.string().min(1),
-  scenario: z.string().min(1),
+  // Absent once the entry's scenario and golden set were retired.
+  scenario: z.string().min(1).optional(),
   routeKey: z.string().min(1),
   appliesTo: z.array(z.string()).optional(),
   difference: z.string(),
   decision: z.enum(['preserve', 'fix']),
   reason: z.string(),
   status: z.enum(['open', 'accepted', 'halted']),
-  evidence: z.looseObject({ golden: z.string(), replay: z.string() }),
+  evidence: z.looseObject({ golden: z.string(), replay: z.string() }).optional(),
   sourceSha: z.string(),
 });
 const exceptionsListSchema = z.looseObject({ entries: z.array(exceptionEntrySchema) });
@@ -650,7 +645,7 @@ function describeFailure(err: unknown, secrets: readonly string[], env: EnvLike)
 }
 
 function emptySideEffects(): GoldenSideEffects {
-  return { mail: [], rows: {}, tasks: [], files: [] };
+  return { mail: [], rows: {}, files: [] };
 }
 
 /** JSON-string and plain forms of each secret; throws when any occurs in `text`, never naming the value. */
@@ -666,6 +661,11 @@ export function assertNoSecrets(text: string, secrets: readonly string[], what: 
 /** Throws when `text` holds reload key `key` as a URL query parameter name or reload value, never naming the value. */
 export function assertNoReloadKey(text: string, key: string | undefined, what: string): void {
   if (holdsReloadKey(text, key)) throw new Error(`${what}: a secret value remains after redaction`);
+}
+
+/** Throws when the checkout or state directory, plain or JavaScript-escaped, remains in `set`, never naming it. */
+function assertNoHostPaths(set: unknown, rules: NormaliseRules, what: string): void {
+  if (holdsHostPath(set, rules)) throw new Error(`${what}: a host path remains after normalisation`);
 }
 
 /**
@@ -711,9 +711,10 @@ export async function captureScenario(scenario: Scenario, deps: CaptureDeps): Pr
     secrets: deps.secrets,
     seed: deps.seed,
   });
+  resolveSeedAccountSecrets(ctx, scenario);
   const records = await runScenarioSteps(ctx, scenario, {
     mode: 'capture',
-    settle: settleHook(ctx, scenario, sideDeps),
+    settle: settleHook(ctx, sideDeps),
     fetch: deps.fetch,
     routeKeyOptions: deps.routeKeyOptions,
   });
@@ -745,6 +746,7 @@ export async function captureScenario(scenario: Scenario, deps: CaptureDeps): Pr
   const rawText = stableStringify(raw);
   assertNoSecrets(setText, secrets, `${scenario.id} golden set`);
   assertNoReloadKey(setText, reloadKey, `${scenario.id} golden set`);
+  assertNoHostPaths(set, deps.rules, `${scenario.id} golden set`);
   assertNoSecrets(rawText, secrets, `${scenario.id} raw capture`);
   assertNoReloadKey(rawText, reloadKey, `${scenario.id} raw capture`);
   logger.info(safeDiagnostic(`${label}: captured ${steps.length} exchanges`, env));

@@ -1,6 +1,6 @@
 // Unit tests for the current-url-query rule: legacy's 301 to its 404 page compares without its per-request order.
 import { beforeAll, describe, expect, it } from 'vitest';
-import { loadCatalogue, scenarioById, type Scenario } from '../../../src/golden/catalogue.js';
+import type { Scenario } from '../../../src/golden/catalogue.js';
 import {
   compareNormalised,
   createIdOrdinals,
@@ -23,22 +23,35 @@ const PAGE = 'AEAEFD1B-B638-0F03-01B3D64831264009';
 const PARAMS: Record<string, string> = {
   U: `userID=${USER}`,
   L: `favoriteLocation=${PAGE}`,
-  N: 'favoriteName=GS-PE-07-case',
+  N: 'favoriteName=GS-PE-77-case',
   T: 'favoriteType=internal_content',
 };
 const ROUTE =
-  `/core/modules/v1/favorites/ajax/savefavorite.cfm?userID=${USER}&siteid=tenant-a&favoriteName=GS-PE-07-case` +
+  `/core/modules/v1/favorites/ajax/savefavorite.cfm?userID=${USER}&siteid=tenant-a&favoriteName=GS-PE-77-case` +
   `&favoriteLocation=${PAGE}&favoriteType=internal_content`;
 const SORTED =
-  '<origin>/404/?favoriteLocation=<id:1>&favoriteName=GS-PE-07-case&favoriteType=internal_content&userID=<id:2>';
+  '<origin>/404/?favoriteLocation=<id:1>&favoriteName=GS-PE-77-case&favoriteType=internal_content&userID=<id:2>';
 const PAGE_404 = '<!DOCTYPE html><html><head><title>404 - Default</title></head><body><h1>404</h1></body></html>';
 
-let rules: NormaliseRules;
-let scenario: Scenario;
+/** A front-end favourites scenario comparing status, headers, auth, DOM and rows, with no overrides. */
+const scenario: Scenario = {
+  id: 'GS-PE-77',
+  title: 'Front-end favourite saves',
+  service: 'people',
+  role: 'anonymous',
+  sessions: { anon: { login: 'none', via: 'public' } },
+  seedRefs: [],
+  steps: [{ name: 'save-case-variant', method: 'GET', route: ROUTE, csrf: 'none' }],
+  compare: ['status', 'headers', 'auth', 'dom', 'rows'],
+  normalisationOverrides: {},
+  covers: ['cfm:/core/modules/v1/favorites/ajax/savefavorite.cfm'],
+  tableVersion: 'v0002',
+};
 
-beforeAll(async () => {
+let rules: NormaliseRules;
+
+beforeAll(() => {
   rules = loadRules(undefined, { PORT: '8500' });
-  scenario = scenarioById(await loadCatalogue(), 'GS-PE-07');
 });
 
 /** getCurrentURL's 301 target for the case-variant save, its url scope walked in `order` (letters of PARAMS). */
@@ -62,7 +75,7 @@ function hop(url: string, status: number, loc?: string): HttpHop {
   };
 }
 
-/** The GS-PE-07 save-case-variant step: the 301 alone, or followed to the 404 page. */
+/** The favourite save-case-variant step: the 301 alone, or followed to the 404 page. */
 function record(host: string, order: string, followed: boolean, loc = location(host, order)): StepRecord {
   const sha256 = '0'.repeat(64);
   const response: RecordedResponse = followed
@@ -95,7 +108,7 @@ async function compare(golden: StepRecord, replay: StepRecord, under: NormaliseR
 }
 
 describe('normaliseUrl on the 404 redirect', () => {
-  // Six orders the oracle answered one request with back to back, then GS-PE-07's golden and replay orders.
+  // Six orders the oracle answered one request with back to back, then a golden and a replay order.
   it.each(['NLUT', 'LNUT', 'TNUL', 'LUNT', 'TUNL', 'LTNU', 'ULNT', 'LTUN'])(
     'sorts the url-scope order %s by name before numbering ids',
     (order) => {
@@ -107,7 +120,7 @@ describe('normaliseUrl on the 404 redirect', () => {
   );
 
   it.each<[string, string, string]>([
-    ['the render-file 404 of GS-CO-08', 'http://localhost:8500/404/?size=file&fileid=', '<origin>/404/?fileid=&size=file'],
+    ['the render-file 404 of a file read', 'http://localhost:8500/404/?size=file&fileid=', '<origin>/404/?fileid=&size=file'],
     ['a root-relative URL, keeping the fragment', '/404/?b=2&A=1#top', '/404/?A=1&b=2#top'],
     ['token parameters, still masked', '/404/?csrf_token=abc&b=1', '/404/?b=1&csrf_token=<token>'],
   ])('sorts %s', (_label, url, expected) => {
@@ -127,7 +140,7 @@ describe('normaliseUrl on the 404 redirect', () => {
   });
 });
 
-describe('compareNormalised on GS-PE-07 save-case-variant', () => {
+describe('compareNormalised on the favourite save-case-variant', () => {
   it.each<[string, boolean, string[]]>([
     ['the 301 Location header', false, ['auth.redirectTargets[0].location', 'headers.location']],
     ['the 301 followed to the 404 page', true, ['auth.redirectTargets[0].location']],
@@ -142,7 +155,7 @@ describe('compareNormalised on GS-PE-07 save-case-variant', () => {
   });
 
   it('still reports a different value on the 404 redirect', async () => {
-    const changed = location(REPLAY_HOST, 'LTUN').replace('GS-PE-07-case', 'GS-PE-07-other');
+    const changed = location(REPLAY_HOST, 'LTUN').replace('GS-PE-77-case', 'GS-PE-77-other');
     const differences = await compare(record(CAPTURE_HOST, 'ULNT', true), record(REPLAY_HOST, '', true, changed));
     expect(differences.map((diff) => diff.path)).toStrictEqual(['auth.redirectTargets[0].location']);
   });

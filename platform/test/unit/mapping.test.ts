@@ -56,11 +56,11 @@ describe('defineMapping validation', () => {
     ['no columns', { columns: [] }, /maps no columns/],
     ['unqualified target', { targetTable: 'person' }, /schema-qualified/],
     ['unqualified unit', { unit: 'person' }, /schema-qualified/],
-    ['keyless fold', { key: null, fold: 'Program', legacyTable: 'timesheet' }, /cannot be folded/],
-    ['fold qualified table', { fold: 'Program', legacyTable: 'Program_1.timesheet' }, /without the Program_<id> schema/],
+    ['keyless fold', { key: null, fold: 'Program', legacyTable: 'score' }, /cannot be folded/],
+    ['fold qualified table', { fold: 'Program', legacyTable: 'Program_1.score' }, /without the Program_<id> schema/],
     [
       'fold declares legacy_program_id',
-      { fold: 'Program', legacyTable: 'timesheet', columns: [...base.columns, { legacy: 'p', target: 'legacy_program_id', type: 'i' }] },
+      { fold: 'Program', legacyTable: 'score', columns: [...base.columns, { legacy: 'p', target: 'legacy_program_id', type: 'i' }] },
       /managed by the platform/,
     ],
     ['keyless declares legacy_row_hash', { key: null, columns: [...base.columns, { legacy: 'h', target: 'legacy_row_hash', type: 's' }] }, /managed/],
@@ -236,7 +236,7 @@ describe('row conversion', () => {
 });
 
 describe('Program fold', () => {
-  const folded = defineMapping({ ...base, legacyTable: 'timesheet', targetTable: 'timesheets.timesheet', fold: 'Program' });
+  const folded = defineMapping({ ...base, legacyTable: 'score', targetTable: 'mk.score', fold: 'Program' });
 
   it('adds legacy_program_id and defaults to the program tenant', () => {
     expect(folded.fold).toBe('Program');
@@ -252,10 +252,10 @@ describe('Program fold', () => {
   });
 
   it('names and parses Program tables', () => {
-    expect(programTableName(1, 'timesheet')).toBe('Program_1.timesheet');
-    expect(parseProgramTable('Program_1.timesheet')).toEqual({ programId: 1, table: 'timesheet' });
-    expect(parseProgramTable('[Program_2].[timesheet_day]')).toEqual({ programId: 2, table: 'timesheet_day' });
-    expect(parseProgramTable('[program_12].blackout')).toEqual({ programId: 12, table: 'blackout' });
+    expect(programTableName(1, 'score')).toBe('Program_1.score');
+    expect(parseProgramTable('Program_1.score')).toEqual({ programId: 1, table: 'score' });
+    expect(parseProgramTable('[Program_2].[score_day]')).toEqual({ programId: 2, table: 'score_day' });
+    expect(parseProgramTable('[program_12].bonus')).toEqual({ programId: 12, table: 'bonus' });
     for (const name of ['dbo.tusers', 'tusers', 'Program_01.x', 'Program_1', '[Program_1.x', 'Program_1.a.b', 'Program_x.y']) {
       expect(parseProgramTable(name)).toBeNull();
     }
@@ -306,7 +306,7 @@ describe('tenant rule', () => {
   });
 
   describe('program sources', () => {
-    const folded = defineMapping({ ...base, legacyTable: 'timesheet', targetTable: 'timesheets.timesheet', fold: 'Program' });
+    const folded = defineMapping({ ...base, legacyTable: 'score', targetTable: 'mk.score', fold: 'Program' });
     const tenantA = tenantIdForSite('tenant-a');
 
     it.each([
@@ -329,10 +329,10 @@ describe('tenant rule', () => {
 
     it('rejects a program-sourced row without program context and names no row value', () => {
       expect(() => assertBatchTenant(folded, { UserID: 'opt2-secret-row', SiteID: 'tenant-a' }, tenantA)).toThrow(
-        new MappingError('timesheet', 'a program-sourced batch needs its Program_<id>'),
+        new MappingError('score', 'a program-sourced batch needs its Program_<id>'),
       );
       expect(() => assertBatchTenant(folded, { UserID: 'opt2-secret-row' }, tenantIdForSite('tenant-b'), { legacyProgramId: 1, programSiteId: lookups.programSiteId })).toThrow(
-        new MappingError('timesheet', 'Program_1 belongs to a tenant other than the batch tenant'),
+        new MappingError('score', 'Program_1 belongs to a tenant other than the batch tenant'),
       );
     });
   });

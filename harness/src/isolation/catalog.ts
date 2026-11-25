@@ -12,12 +12,6 @@ export const SERVICE_SCHEMAS = Object.freeze([
   { service: 'people', schema: 'people' },
   { service: 'programs-sites', schema: 'programs_sites' },
   { service: 'strategies-content', schema: 'content' },
-  { service: 'communications', schema: 'communications' },
-  { service: 'reporting', schema: 'reporting' },
-  { service: 'surveys', schema: 'surveys' },
-  { service: 'timesheets', schema: 'timesheets' },
-  { service: 'finance', schema: 'finance' },
-  { service: 'e-signature', schema: 'esignature' },
   { service: 'stub', schema: 'stub' },
 ] as const) satisfies readonly { service: string; schema: DbSchema }[];
 

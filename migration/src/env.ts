@@ -15,19 +15,7 @@ import {
 const SERVICE_NAME = 'migration';
 
 /** Services the migration service calls: the gateway and every data owner of `config/migration.config.json`. */
-const SERVER_CALLEES = [
-  'gateway',
-  'identity',
-  'people',
-  'programs-sites',
-  'strategies-content',
-  'communications',
-  'reporting',
-  'surveys',
-  'timesheets',
-  'finance',
-  'e-signature',
-] as const;
+const SERVER_CALLEES = ['gateway', 'identity', 'people', 'programs-sites', 'strategies-content'] as const;
 
 const SQL_SERVER_TYPES = new Set(['mssql', 'sqlserver', 'microsoft sql server']);
 

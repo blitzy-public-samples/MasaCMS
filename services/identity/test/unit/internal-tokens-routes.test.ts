@@ -1,5 +1,4 @@
 /** The `mintUserToken`, `authenticateRequest` and `getJwks` routes: contract shape, gateway-only access, body validation, the REST outcome mapping and tokens verified against the served key set. */
-import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -27,6 +26,7 @@ import {
   assertResponseMatchesOpenApi,
   authHeadersFor,
   createThrowawaySchema,
+  loadOpenApiDocument,
   mintServiceToken,
   mintUserToken,
   pgAvailable,
@@ -46,7 +46,7 @@ import { createRecordingDb } from '../helpers/memory-repo.js';
 type Method = 'GET' | 'POST';
 type ContractOperation = Record<string, unknown>;
 
-const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as {
+const OPENAPI = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as {
   paths: Record<string, Record<string, ContractOperation>>;
 };
 const TOKENS = '/internal/v1/tokens';
@@ -290,10 +290,10 @@ describe('access', () => {
   });
 
   it('refuses callers other than the gateway with 403 and a missing credential with the legacy 401', async () => {
-    for (const caller of ['people', 'identity', 'web', 'migration', 'reporting']) {
+    for (const caller of ['people', 'identity', 'web', 'migration', 'stub']) {
       expect((await send(offline, 'POST', TOKENS, await headersFor(caller), { sessionId: 'S1', siteId: SITE })).statusCode).toBe(403);
     }
-    expect((await send(offline, 'POST', AUTHENTICATE, await headersFor('reporting'), restRequest(REST_PATH))).statusCode).toBe(403);
+    expect((await send(offline, 'POST', AUTHENTICATE, await headersFor('stub'), restRequest(REST_PATH))).statusCode).toBe(403);
     const anonymous = await send(offline, 'POST', AUTHENTICATE, {}, restRequest(REST_PATH));
     expect(anonymous.statusCode).toBe(401);
     expect(anonymous.json()).toMatchObject({ apiversion: 'v1', error: { code: 'invalid_request' } });
@@ -431,8 +431,8 @@ describe.skipIf(!available)('against PostgreSQL', () => {
     expect(minted).toMatchObject({ epoch: 1, claims: { sub: S2_USER, sid: 'S-S2', site: SITE, tid: tenantIdForSite(SITE), roles: ['s2'], s2: true, epoch: 1 } });
   });
 
-  it('refuses reporting a token of a live session with 403, minting nothing', async () => {
-    const res = await send(app(), 'POST', TOKENS, await headersFor('reporting'), { sessionId: 'S-S2', siteId: SITE });
+  it('refuses people a token of a live session with 403, minting nothing', async () => {
+    const res = await send(app(), 'POST', TOKENS, await headersFor('people'), { sessionId: 'S-S2', siteId: SITE });
 
     expect(res.statusCode).toBe(403);
     expect(res.json()).toMatchObject({ error: { code: 'invalid_request' } });

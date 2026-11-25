@@ -6,17 +6,7 @@ import { isMainModule, parseFlags, runCli, UsageError, type CliOutcome } from '.
 import { REPO_ROOT } from '../lib/paths.js';
 
 /** Synthetic module roots, repository-relative with forward slashes. */
-export const SYNTHETIC_ROOTS: readonly string[] = [
-  'services/communications',
-  'services/reporting',
-  'services/surveys',
-  'services/timesheets',
-  'services/finance',
-  'services/e-signature',
-  'legacy-fixtures',
-  'web/app/opt2',
-  'web/src/screens/opt2',
-];
+export const SYNTHETIC_ROOTS: readonly string[] = ['legacy-fixtures'];
 
 /** Directories never walked: a directory name, or a `parent/name` pair such as `src/generated`. */
 export const SKIPPED_DIRS: readonly string[] = ['node_modules', 'dist', 'coverage', '.next', '.git', 'src/generated'];
@@ -72,7 +62,7 @@ ${SYNTHETIC_ROOTS.map((root) => `  ${root}`).join('\n')}
 
 Each ${Object.keys(LABEL_PREFIXES).join(', ')} file under them starts, after any #! line, with
 "<comment> SYNTHETIC: <module> - ${LABEL_TEXT}"
-(a CFML tag comment closes with " --->"; a service's module is its folder name), and each README.md opens with
+(a CFML tag comment closes with " --->"), and each README.md opens with
 ${README_LABEL}. Other files are exempt.
 Directories not walked: ${SKIPPED_DIRS.join(', ')}.
 
@@ -91,17 +81,15 @@ const MISPLACED_LABEL = /^\W*SYNTHETIC:/;
 // Closing marker a header needs after LABEL_TEXT, by prefix; prefixes not listed need none.
 const LABEL_CLOSERS: Record<string, string> = { '<!--- SYNTHETIC: ': ' --->' };
 
-// A service file's module is its folder name; any other root accepts a lower-case kebab slug.
-const SERVICE_PATH = /^services\/([^/]+)\//;
+// The module is a lower-case kebab slug.
 const MODULE_SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 function headerLine(prefix: string, module: string): string {
   return `${prefix}${module} - ${LABEL_TEXT}${LABEL_CLOSERS[prefix] ?? ''}`;
 }
 
-// Whether `header`, which starts with `prefix`, is its full header line naming `service`, or any slug when there is none.
-function isFullHeader(header: string, prefix: string, service: string | undefined): boolean {
-  if (service !== undefined) return header === headerLine(prefix, service);
+// Whether `header`, which starts with `prefix`, is its full header line naming a module slug.
+function isFullHeader(header: string, prefix: string): boolean {
   const suffix = headerLine(prefix, '').slice(prefix.length);
   return header.endsWith(suffix) && MODULE_SLUG.test(header.slice(prefix.length, header.length - suffix.length));
 }
@@ -118,7 +106,7 @@ export function classifyFile(relPath: string): FileClass {
 
 /**
  * Finding for file `relPath` holding `content`, or `null` when it is labelled or exempt.
- * The header (line 1, or line 2 after a `#!`) is `<prefix><module> - LABEL_TEXT`, plus ` --->` for a CFML tag; a service's module is its folder.
+ * The header (line 1, or line 2 after a `#!`) is `<prefix><module> - LABEL_TEXT`, plus ` --->` for a CFML tag.
  */
 export function checkLabel(relPath: string, content: string): SyntheticFinding | null {
   const fileClass = classifyFile(relPath);
@@ -134,10 +122,9 @@ export function checkLabel(relPath: string, content: string): SyntheticFinding |
   const prefixes = LABEL_PREFIXES[extensionOf(relPath)] ?? [];
   const header = (lines[0]?.startsWith('#!') ? lines[1] : lines[0]) ?? '';
   const prefix = prefixes.find((candidate) => header.startsWith(candidate));
-  const service = SERVICE_PATH.exec(relPath)?.[1];
-  if (prefix !== undefined && isFullHeader(header.trimEnd(), prefix, service)) return null;
+  if (prefix !== undefined && isFullHeader(header.trimEnd(), prefix)) return null;
   if (prefix !== undefined && header.slice(prefix.length).trim() !== '') {
-    const expected = prefixes.map((candidate) => headerLine(candidate, service ?? '<module>'));
+    const expected = prefixes.map((candidate) => headerLine(candidate, '<module>'));
     return { path: relPath, kind: 'malformed-label', expected };
   }
   const kind = prefix === undefined && MISPLACED_LABEL.test(header) ? 'wrong-syntax' : 'missing-label';

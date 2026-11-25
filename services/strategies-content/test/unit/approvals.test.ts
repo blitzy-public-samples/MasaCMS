@@ -1,8 +1,7 @@
-/** Approval chains and the status-modal actions over an in-memory approval store (GS-CO-09, GS-UI-02). */
-import { readFileSync } from 'node:fs';
+/** Approval chains and the status-modal actions over an in-memory approval store. */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { parse } from 'yaml';
-import { TENANT_A, TENANT_UMBRELLA, assertResponseMatchesOpenApi, type InjectResponse } from '@opt2/platform/testing';
+import { TENANT_A, TENANT_UMBRELLA, assertResponseMatchesOpenApi, loadOpenApiDocument, type InjectResponse } from '@opt2/platform/testing';
 import {
   UndefinedLegacyVariableError,
   approvalAction,
@@ -657,7 +656,7 @@ describe('chainAccess', () => {
 });
 
 describe('cchain routes', () => {
-  const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
+  const OPENAPI = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as object;
   const CHAINS_URL = `/v1/sites/${SITE_ID}/approval-chains`;
   const TOKEN = 'csrf_token=tok&csrf_token_expires=exp';
   const LIST_REDIRECT = { circuit: 'cchain', action: 'list', params: [['siteid', SITE_ID]] };

@@ -9,6 +9,13 @@ import {
   TENANT_B,
   TENANT_UMBRELLA,
   assertResponseMatchesOpenApi,
+  contractOperations,
+  declarationMismatches,
+  diffRoutes,
+  injectedBody,
+  injectedResponse,
+  loadOpenApiDocument,
+  operationIdProblems,
   pushTo,
   testEnvelope,
   withoutTenant,
@@ -22,24 +29,11 @@ import { buildTestApp, headersFor, type RecordingDb, type TestApp } from '../hel
 
 type HttpMethod = 'GET' | 'HEAD' | 'POST' | 'PUT' | 'DELETE' | 'OPTIONS' | 'PATCH';
 type JsonApiFamily = 'json' | 'ajax' | 'rest';
-type OperationObject = Record<string, unknown> & { operationId?: string };
 
 interface OpenApiDoc {
   openapi: string;
   info: { version: string; 'x-source-sha'?: string };
   paths: Record<string, Record<string, unknown>>;
-}
-
-interface ContractOperation {
-  method: string;
-  path: string;
-  operationId: string | undefined;
-  op: OperationObject;
-}
-
-interface RouteSetDiff {
-  undeclared: string[];
-  unregistered: string[];
 }
 
 /** A response as `sendCase` hands it to a case: the inject response and its body, JSON-parsed when JSON. */
@@ -66,11 +60,11 @@ interface Case {
   verify?: (answer: Answer, ctx: TestApp) => void;
 }
 
-const DOC = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as OpenApiDoc;
+const DOC = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as unknown as OpenApiDoc;
 const PIN = JSON.parse(readFileSync(new URL('../../../../opt2/source-pin.json', import.meta.url), 'utf8')) as { sha: string };
-
-const HTTP_METHODS = ['get', 'put', 'post', 'delete', 'patch', 'head', 'options'] as const;
-const JSON_MEDIA_TYPE = /^application\/(?:[\w.+-]+\+)?json\b/i;
+const OPERATIONS = contractOperations(DOC);
+// Routes in contract form: `/index.cfm`-prefixed and trailing-`*` routes share one path; an unserved operation is reported by key.
+const PATHS = { prefix: /^\/index\.cfm(?=\/)/i, wildcard: 'drop', report: 'key' } as const;
 const FORM = { 'content-type': 'application/x-www-form-urlencoded' };
 const TOKEN_FIELDS = 'csrf_token=T&csrf_token_expires=E';
 
@@ -253,55 +247,6 @@ function seed(db: RecordingDb): void {
   ]);
 }
 
-/** One entry per operation of `doc`, its method upper-cased. */
-function contractOperations(doc: OpenApiDoc): ContractOperation[] {
-  return Object.entries(doc.paths).flatMap(([path, item]) =>
-    HTTP_METHODS.flatMap((method) => {
-      const op = item[method] as OperationObject | undefined;
-      return op === undefined ? [] : [{ method: method.toUpperCase(), path, operationId: op.operationId, op }];
-    }),
-  );
-}
-
-/** A Fastify route pattern in contract form: `:name` as `{name}`; a leading `/index.cfm` and a trailing prefix `*` drop, as the contract serves those forms on one path. */
-function toOpenApiPath(fastifyUrl: string): string {
-  return fastifyUrl
-    .replace(/^\/index\.cfm(?=\/)/i, '')
-    .replace(/\*$/, '')
-    .replace(/:([A-Za-z_]\w*)/g, '{$1}');
-}
-
-/** `METHOD path` key of a registered route. */
-function routeKey(route: Pick<RouteMatrixEntry, 'method' | 'url'>): string {
-  return `${route.method} ${toOpenApiPath(route.url)}`;
-}
-
-/** `METHOD path` keys of the registered routes. */
-function routeKeys(routes: readonly RouteMatrixEntry[]): Set<string> {
-  return new Set(routes.map(routeKey));
-}
-
-/** `METHOD path` key of a contract operation: the Fastify route `x-opt2-fastify-path` names, in contract form, else its template. */
-function operationKey({ method, path, op }: ContractOperation): string {
-  const fastifyPath = op['x-opt2-fastify-path'];
-  return `${method} ${typeof fastifyPath === 'string' ? toOpenApiPath(fastifyPath) : path}`;
-}
-
-/** `METHOD path` keys of the contract operations. */
-function operationKeys(operations: readonly ContractOperation[]): Set<string> {
-  return new Set(operations.map(operationKey));
-}
-
-/** Routes the contract does not declare, and operations no route serves, each sorted. */
-function diffRouteSets(routes: readonly RouteMatrixEntry[], operations: readonly ContractOperation[]): RouteSetDiff {
-  const registered = routeKeys(routes);
-  const declared = operationKeys(operations);
-  return {
-    undeclared: [...registered].filter((key) => !declared.has(key)).sort(),
-    unregistered: [...declared].filter((key) => !registered.has(key)).sort(),
-  };
-}
-
 /** Sends `c` to the app, asserts its status, then validates the response against the operation it addresses. */
 async function sendCase(ctx: TestApp, c: Case): Promise<Answer> {
   const res =
@@ -313,11 +258,9 @@ async function sendCase(ctx: TestApp, c: Case): Promise<Answer> {
           ...(c.payload === undefined ? {} : { payload: c.payload }),
         })
       : await pushTo(ctx.app, SITE_CHANGED_SUBSCRIPTION, c.push());
-  const contentType = res.headers['content-type'];
-  const json = typeof contentType === 'string' && JSON_MEDIA_TYPE.test(contentType) && res.body !== '';
-  const body: unknown = json ? JSON.parse(res.body) : res.body;
+  const body = injectedBody(res, '');
   expect(res.statusCode, res.body).toBe(c.status);
-  assertResponseMatchesOpenApi(DOC, { method: c.method, path: c.url.split('?')[0] ?? c.url, status: res.statusCode, contentType, body });
+  assertResponseMatchesOpenApi(DOC, injectedResponse(c, res, { body }));
   return { res, body };
 }
 
@@ -1167,22 +1110,20 @@ describe('contract document', () => {
   });
 
   it('gives every operation a unique operationId', () => {
-    const ids = contractOperations(DOC).map(({ operationId }) => operationId);
-    expect(ids.filter((id) => typeof id !== 'string' || id === '')).toEqual([]);
-    expect(ids.filter((id, index) => ids.indexOf(id) !== index)).toEqual([]);
+    expect(operationIdProblems(OPERATIONS)).toEqual({ missing: [], duplicated: [] });
   });
 
   it('lists the withheld site.save route key of each JSON API operation only as an exclusion', () => {
     const reason = 'Withheld and served by legacy; every site save also writes trazunasettings, a decision-list table.';
-    const keyed = contractOperations(DOC).filter(({ op }) => op['x-opt2-route-keys'] !== undefined);
+    const keyed = OPERATIONS.filter(({ operation }) => operation['x-opt2-route-keys'] !== undefined);
     expect(keyed).toHaveLength(105);
-    for (const { path, op } of keyed) {
+    for (const { path, operation } of keyed) {
       const saveKey = path.startsWith('/_api/rest/') ? 'rest:site.save' : 'api:site.save';
-      const served = (op['x-opt2-route-keys'] as string[]).filter((key) => key.endsWith(':site.save'));
+      const served = (operation['x-opt2-route-keys'] as string[]).filter((key) => key.endsWith(':site.save'));
       expect(served, `${path} serves site.save`).toEqual([]);
-      expect(op['x-opt2-route-keys-excluded'], path).toEqual([{ key: saveKey, reason }]);
+      expect(operation['x-opt2-route-keys-excluded'], path).toEqual([{ key: saveKey, reason }]);
     }
-    const excludedElsewhere = contractOperations(DOC).filter(({ op }) => op['x-opt2-route-keys'] === undefined && op['x-opt2-route-keys-excluded'] !== undefined);
+    const excludedElsewhere = OPERATIONS.filter(({ operation }) => operation['x-opt2-route-keys'] === undefined && operation['x-opt2-route-keys-excluded'] !== undefined);
     expect(excludedElsewhere).toEqual([]);
   });
 });
@@ -1201,41 +1142,25 @@ describe('route declarations', () => {
   });
 
   it('registers exactly the contract operations', () => {
-    const { undeclared, unregistered } = diffRouteSets(routes, contractOperations(DOC));
+    const { undeclared, unregistered } = diffRoutes(routes, OPERATIONS, PATHS);
     expect(undeclared).toEqual([]);
     expect(unregistered).toEqual([]);
   });
 
   it('declares each route with the contract roles, public flag and transport', () => {
-    const operations = new Map(contractOperations(DOC).map((operation) => [operationKey(operation), operation.op]));
-    const declared = routes.map((route) => ({
-      route: routeKey(route),
-      requires: [...(route.requires ?? [])].sort(),
-      public: Boolean(route.public),
-      transport: route.transport,
-    }));
-    const contracted = routes.map((route) => {
-      const op = operations.get(routeKey(route));
-      return {
-        route: routeKey(route),
-        requires: [...((op?.['x-opt2-requires'] as string[] | undefined) ?? [])].sort(),
-        public: op?.['x-opt2-public'] === true,
-        transport: op?.['x-opt2-transport'],
-      };
-    });
-    expect(declared).toEqual(contracted);
+    expect(declarationMismatches(routes, OPERATIONS, PATHS)).toEqual([]);
   });
 
   it('reports a removed operation, a missing route and an extra route', () => {
     const trimmed = structuredClone(DOC);
     delete (trimmed.paths['/healthz'] as Record<string, unknown>).get;
-    expect(diffRouteSets(routes, contractOperations(trimmed))).toEqual({ undeclared: ['GET /healthz'], unregistered: [] });
+    expect(diffRoutes(routes, contractOperations(trimmed), PATHS)).toEqual({ undeclared: ['GET /healthz'], unregistered: [] });
 
     const withoutHealth = routes.filter((route) => route.url !== '/healthz');
-    expect(diffRouteSets(withoutHealth, contractOperations(DOC))).toEqual({ undeclared: [], unregistered: ['GET /healthz'] });
+    expect(diffRoutes(withoutHealth, OPERATIONS, PATHS)).toEqual({ undeclared: [], unregistered: ['GET /healthz'] });
 
     const extra: RouteMatrixEntry = { method: 'GET', url: '/v1/sites/:siteId/extra', transport: 'service', requires: ['s2'], siteCheck: true };
-    expect(diffRouteSets([...routes, extra], contractOperations(DOC))).toEqual({
+    expect(diffRoutes([...routes, extra], OPERATIONS, PATHS)).toEqual({
       undeclared: ['GET /v1/sites/{siteId}/extra'],
       unregistered: [],
     });
@@ -1244,18 +1169,17 @@ describe('route declarations', () => {
 
 describe('responses', () => {
   it('cover every contract operation with at least one case, and with a 2xx answer where the contract declares one', () => {
-    const operations = contractOperations(DOC);
-    expect(Object.keys(CASES).sort()).toEqual(operations.map(({ operationId }) => operationId ?? '').sort());
+    expect(Object.keys(CASES).sort()).toEqual(OPERATIONS.map(({ operationId }) => operationId).sort());
     const declaresSuccess = new Set(
-      operations
-        .filter(({ op }) => Object.keys((op.responses as Record<string, unknown> | undefined) ?? {}).some((status) => status.startsWith('2')))
+      OPERATIONS
+        .filter(({ operation }) => Object.keys((operation.responses as Record<string, unknown> | undefined) ?? {}).some((status) => status.startsWith('2')))
         .map(({ operationId }) => operationId),
     );
     const withoutSuccess = Object.entries(CASES).filter(
       ([id, cases]) => declaresSuccess.has(id) && !cases.some(({ status }) => status >= 200 && status < 300),
     );
     expect(withoutSuccess.map(([id]) => id)).toEqual([]);
-    expect(operations.filter(({ operationId }) => !declaresSuccess.has(operationId)).map(({ operationId }) => operationId)).toEqual(['updateSite']);
+    expect(OPERATIONS.filter(({ operationId }) => !declaresSuccess.has(operationId)).map(({ operationId }) => operationId)).toEqual(['updateSite']);
   });
 
   let ctx: TestApp | undefined;

@@ -515,7 +515,7 @@ describe('push delivery route', () => {
     {
       name: 'a delivery its unit gate refuses',
       data: JSON.stringify(envelopeJson()),
-      consumer: { apply: () => Promise.reject(new UnitNotAuthoritativeError(['communications.scheduled_task'])) },
+      consumer: { apply: () => Promise.reject(new UnitNotAuthoritativeError(['people.person'])) },
       status: 503,
       outcome: [['WARNING', 'service unavailable']],
       scope: BOTH,

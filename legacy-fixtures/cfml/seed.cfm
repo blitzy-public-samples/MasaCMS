@@ -5,34 +5,8 @@
 
 	variables.masaParts = "sites,groups,users,memberships,categories,content,files,oauthClients,formResponses,commenters,comments";
 	variables.loopback = "127.0.0.1,::1,0:0:0:0:0:0:0:1";
-	// Fixture tables and the seed procedure that loads each; an empty name marks a table seeded by no procedure.
-	variables.fixtureProcedures = {
-		"synthetic" = {
-			"person_archive" = "",
-			"survey" = "usp_seed_surveys",
-			"survey_schedule" = "usp_seed_surveys",
-			"survey_reminder" = "usp_seed_surveys",
-			"survey_target" = "usp_seed_surveys",
-			"survey_response" = "usp_seed_surveys",
-			"export_definition" = "usp_seed_reporting",
-			"export_job" = "usp_seed_reporting",
-			"message_template" = "usp_seed_communications",
-			"message" = "usp_seed_communications",
-			"delivery_status" = "usp_seed_communications",
-			"signature_request" = "usp_seed_esignature",
-			"signature" = "usp_seed_esignature",
-			"audit_entry" = "usp_seed_esignature"
-		},
-		"program" = {
-			"timesheet" = "usp_seed_timesheets",
-			"timesheet_day" = "usp_seed_timesheets",
-			"approval_action" = "usp_seed_timesheets",
-			"blackout" = "usp_seed_timesheets",
-			"finance_record" = "usp_seed_finance",
-			"finance_record_version" = "usp_seed_finance",
-			"finance_attachment" = "usp_seed_finance"
-		}
-	};
+	// Fixture tables of the dataset; the seed holds no rows for them.
+	variables.fixtureTables = "synthetic.person_archive";
 	// Envelope params carry only these three values, never the body, so no credential can be echoed.
 	variables.call = {"part" = "", "offset" = 0, "limit" = ""};
 	// The file types the seed generator writes (legacy-fixtures/seed/src/masa.ts buildFiles).
@@ -150,7 +124,55 @@
 		return local.limits;
 	}
 
-	/** Creates each absent site through settingsManager.create, which also creates its private-pool Admin group, and brings each existing site to its row's pageLimit through settingsManager.update. */
+	/** Creates, through Masa's imageSize bean, each custom image size the site's theme config declares and the site lacks; Masa's start-up looks sizes up through a 1 s query cache (settingsImageSizeBean.getQuery), so two start-ups close together would each insert one for a new site. */
+	void function seedThemeImageSizes(required string siteID) {
+		local.themePath = application.settingsManager.getSite(arguments.siteID).getThemeIncludePath();
+		local.themeDir = expandPath(local.themePath);
+		// Read and parsed as Masa's start-up reads it (core/appcfc/onApplicationStart_include.cfm).
+		if (fileExists(local.themeDir & "/config.xml.cfm")) {
+			savecontent variable = "local.config" {
+				include "#local.themePath#/config.xml.cfm";
+			}
+		} else if (fileExists(local.themeDir & "/config.xml")) {
+			local.config = fileRead(local.themeDir & "/config.xml");
+		} else {
+			return;
+		}
+		if (!isXML(local.config)) {
+			return;
+		}
+		local.root = xmlParse(local.config).xmlRoot;
+		if (!listFindNoCase("plugin,theme,mura,displayobject,contenttype", local.root.xmlName) || !isDefined("local.root.imagesizes")) {
+			return;
+		}
+		for (local.size in local.root.imagesizes.xmlChildren) {
+			// small, medium and large are site settings, not timagesizes rows.
+			if (compareNoCase(local.size.xmlName, "imagesize") || !structKeyExists(local.size.xmlAttributes, "name")
+				|| listFindNoCase("small,medium,large", local.size.xmlAttributes.name)) {
+				continue;
+			}
+			local.imageSize = application.serviceFactory.getBean("imageSize");
+			local.imageSize.setSiteID(arguments.siteID);
+			local.imageSize.setName(local.size.xmlAttributes.name);
+			// Uncached, unlike the bean's loadBy, so no empty answer is left for a start-up to reuse.
+			local.existing = queryExecute(
+				"SELECT sizeID FROM timagesizes WHERE siteID = :siteID AND name = :name",
+				{siteID = {value = arguments.siteID, cfsqltype = "cf_sql_varchar"}, name = {value = local.imageSize.getValue("name"), cfsqltype = "cf_sql_varchar"}}
+			);
+			if (local.existing.recordCount) {
+				continue;
+			}
+			if (structKeyExists(local.size.xmlAttributes, "height")) {
+				local.imageSize.setHeight(local.size.xmlAttributes.height);
+			}
+			if (structKeyExists(local.size.xmlAttributes, "width")) {
+				local.imageSize.setWidth(local.size.xmlAttributes.width);
+			}
+			local.imageSize.save();
+		}
+	}
+
+	/** Creates each absent site through settingsManager.create, which also creates its private-pool Admin group, and brings each existing site to its row's pageLimit through settingsManager.update; every site then gets its theme's image sizes. */
 	struct function seedSites(required array rows) {
 		requireSiteIDs(arguments.rows, "siteID,publicUserPoolID,privateUserPoolID,categoryPoolID,filePoolID,displayPoolID", "contentPoolID");
 		local.limits = pageLimits(arguments.rows);
@@ -164,6 +186,7 @@
 				if (len(local.pageLimit) && val(application.settingsManager.getSite(local.row.siteID).getPageLimit()) != local.pageLimit) {
 					requireValid(application.settingsManager.update({"siteID" = local.row.siteID, "pageLimit" = local.pageLimit}), local.row.siteID);
 				}
+				seedThemeImageSizes(local.row.siteID);
 				continue;
 			}
 			local.data = {
@@ -184,6 +207,7 @@
 				local.data["pageLimit"] = local.pageLimit;
 			}
 			requireValid(application.settingsManager.create(local.data), local.row.siteID);
+			seedThemeImageSizes(local.row.siteID);
 			local.inserted++;
 		}
 		return {"total" = arrayLen(arguments.rows), "inserted" = local.inserted};
@@ -565,83 +589,16 @@
 		return {"total" = arrayLen(arguments.rows), "inserted" = local.inserted};
 	}
 
-	/** Loads rows first .. first + count - 1 of a fixture part through its table's seed procedure; returns {total, inserted}. */
-	struct function seedFixture(required string part, required string body, required numeric first, required numeric count, required numeric rowCount) {
-		local.schemaName = listFirst(listRest(arguments.part, ":"), ".");
-		local.table = lCase(listLast(arguments.part, "."));
-		if (local.schemaName == "synthetic") {
-			local.schema = "synthetic";
-			local.procedures = variables.fixtureProcedures.synthetic;
-		} else if (reFindNoCase("^Program_[0-9]{1,9}$", local.schemaName)) {
-			local.program = queryExecute(
-				"SELECT program_id FROM synthetic.program_site WHERE program_id = :programId",
-				{programId = {value = listLast(local.schemaName, "_"), cfsqltype = "cf_sql_integer"}}
-			);
-			if (!local.program.recordCount) {
-				variables.envelope.raise("invalidParameters", "Unknown program schema");
-			}
-			// The schema name is built only from the stored integer, never from the request.
-			local.schema = "Program_" & int(local.program.program_id[1]);
-			local.procedures = variables.fixtureProcedures.program;
-		} else {
+	/** Accepts the empty part of a fixture table the seed holds no rows for; returns {total, inserted}. */
+	struct function seedFixture(required string part, required numeric rowCount) {
+		local.table = lCase(listRest(arguments.part, ":"));
+		if (!listFind(variables.fixtureTables, local.table)) {
 			variables.envelope.raise("invalidParameters", "Unknown seed part");
 		}
-		if (!structKeyExists(local.procedures, local.table)) {
-			variables.envelope.raise("invalidParameters", "Unknown seed part");
+		if (arguments.rowCount) {
+			variables.envelope.raise("invalidParameters", "#local.table# is seeded empty");
 		}
-		local.procedure = local.procedures[local.table];
-		if (!len(local.procedure)) {
-			if (arguments.rowCount) {
-				variables.envelope.raise("invalidParameters", "#local.schema#.#local.table# is seeded empty");
-			}
-			return {"total" = 0, "inserted" = 0};
-		}
-		if (local.procedure == "usp_seed_finance") {
-			local.businessDate = structKeyExists(url, "businessDate") ? url.businessDate : "";
-			if (!reFind("^[0-9]{4}-[0-9]{2}-[0-9]{2}$", local.businessDate) || !isDate(local.businessDate)) {
-				variables.envelope.raise("invalidParameters", "businessDate must be yyyy-mm-dd");
-			}
-			local.now = createDate(listGetAt(local.businessDate, 1, "-"), listGetAt(local.businessDate, 2, "-"), listGetAt(local.businessDate, 3, "-"));
-		}
-		if (!arguments.count) {
-			return {"total" = 0, "inserted" = 0};
-		}
-
-		// The raw body is reshaped in T-SQL: deserialised and re-serialised in CFML, money strings, hex and key case would not survive byte-exact.
-		local.params = {
-			body = {value = arguments.body, cfsqltype = "cf_sql_longnvarchar"},
-			tableName = {value = local.table, cfsqltype = "cf_sql_nvarchar"}
-		};
-		if (arguments.first == 0 && arguments.count == arguments.rowCount) {
-			local.rowsSql = "JSON_QUERY(@body, N'$.rows')";
-		} else {
-			local.rowsSql = "(SELECT N'[' + STRING_AGG(CAST([value] AS nvarchar(max)), N',') WITHIN GROUP (ORDER BY CAST([key] AS int)) + N']'"
-				& " FROM OPENJSON(@body, N'$.rows') WHERE CAST([key] AS int) >= :first AND CAST([key] AS int) < :stop)";
-			local.params.first = {value = arguments.first, cfsqltype = "cf_sql_integer"};
-			local.params.stop = {value = arguments.first + arguments.count, cfsqltype = "cf_sql_integer"};
-		}
-		local.sql = "SET NOCOUNT ON;"
-			& " DECLARE @body nvarchar(max) = :body;"
-			& " DECLARE @path nvarchar(200) = N'$.""' + :tableName + N'""';"
-			& " DECLARE @rows nvarchar(max) = #local.rowsSql#;"
-			& " DECLARE @json nvarchar(max) = JSON_MODIFY(N'{}', @path, JSON_QUERY(@rows));"
-			& " EXEC [#local.schema#].[#local.procedure#] @json = @json;";
-
-		transaction {
-			local.counts = queryExecute(local.sql, local.params);
-			if (local.procedure == "usp_seed_finance") {
-				queryExecute(
-					"EXEC [#local.schema#].[usp_finance_rollup] @now = :now",
-					{now = {value = local.now, cfsqltype = "cf_sql_timestamp"}}
-				);
-			}
-		}
-
-		local.inserted = 0;
-		for (local.column in listToArray(local.counts.columnList)) {
-			local.inserted += val(local.counts[local.column][1]);
-		}
-		return {"total" = arguments.count, "inserted" = local.inserted};
+		return {"total" = 0, "inserted" = 0};
 	}
 
 	/** Validates the request, selects its rows and runs the part's handler; returns {part, offset, limit, total, inserted}. */
@@ -657,7 +614,7 @@
 			variables.envelope.raise("invalidParameters", "fixtures must be a boolean");
 		}
 		if (local.isFixture && !local.fixtures) {
-			variables.envelope.raise("badRequest", "Fixture parts are disabled; the synthetic services are seeded directly");
+			variables.envelope.raise("badRequest", "Fixture parts are disabled; their owners are seeded directly");
 		}
 
 		// Another media type, such as a text/plain form, can be posted cross-site without a CORS preflight.
@@ -696,7 +653,7 @@
 		variables.call.limit = local.limit;
 
 		if (local.isFixture) {
-			local.result = seedFixture(local.part, local.raw, local.first, local.count, local.rowCount);
+			local.result = seedFixture(local.part, local.rowCount);
 		} else {
 			local.rows = local.count ? arraySlice(local.body.rows, local.first + 1, local.count) : [];
 			for (local.row in local.rows) {

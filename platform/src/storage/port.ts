@@ -2,9 +2,9 @@ import type { Readable } from 'node:stream';
 import { cfUuid, isCfUuid, LegacyServiceUnavailableError } from '../legacy-compat/index.js';
 
 /** Logical buckets; each is written only by the service that owns it. */
-export const BUCKETS = ['content-files', 'reporting-exports', 'finance-attachments', 'esignature-documents'] as const;
+export const BUCKETS = ['content-files'] as const;
 
-/** One of the four logical buckets. */
+/** One of the logical buckets. */
 export type BucketName = (typeof BUCKETS)[number];
 
 /** Default lifetime of a signed download URL, in seconds (15 minutes). */
@@ -131,7 +131,7 @@ export class StorageTimeoutError extends LegacyServiceUnavailableError {
   }
 }
 
-/** Whether `v` names one of the four buckets. */
+/** Whether `v` names one of the logical buckets. */
 export function isBucketName(v: string): v is BucketName {
   return (BUCKETS as readonly string[]).includes(v);
 }

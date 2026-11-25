@@ -26,9 +26,9 @@ import {
 } from './session.js';
 import { catalogueSeedKeys, type SeedKeyStores } from './workload.js';
 import { isMainModule, parseFlags, runCli, UsageError, type CliOutcome } from '../lib/cli.js';
-import { cutoverVersionPath, stateDir, type EnvLike } from '../lib/paths.js';
+import { cutoverVersionPath, repoPath, stateDir, type EnvLike } from '../lib/paths.js';
+import { pinnedSha } from '../lib/pin.js';
 import { readJson, stableStringify } from '../lib/report.js';
-import { SYNTHETIC_SERVICES } from '../reporting/check-reviewability.js';
 
 export { INVENTORY_PATH, VARIANTS_PATH, defaultRouteKeyOptions } from './route-key-options.js';
 
@@ -38,17 +38,28 @@ export const NEUTRAL_ID = '00000000-0000-0000-0000000000000000';
 /** Cut-over version whose entries the gate checks by default. */
 export const DEFAULT_VERSION = 'v0002';
 
+/** Committed list of required keys the catalogue no longer covers, by the gap each would report. */
+export const RELINQUISHED_PATH: string = repoPath('harness/golden/relinquished-covers.json');
+
 /** Finding kinds, in the order {@link checkCoverage} reports them. */
 export const FINDING_KINDS = [
   'unknown-cover',
   'uncovered-target',
   'uncovered-legacy-write',
   'uncovered-admin-action',
+  'stale-relinquished',
   'cover-not-exercised',
   'reserved-identity',
   'unresolved-seed-ref',
 ] as const;
 export type CoverageFindingKind = (typeof FINDING_KINDS)[number];
+
+/** Gap kinds a relinquished key may stand for. */
+export const RELINQUISHABLE_KINDS = ['uncovered-target', 'uncovered-legacy-write', 'uncovered-admin-action'] as const;
+export type RelinquishableKind = (typeof RELINQUISHABLE_KINDS)[number];
+
+/** Required keys per gap kind that are not findings while uncovered. */
+export type Relinquished = Record<RelinquishableKind, readonly string[]>;
 
 /** One coverage gap; any finding fails the gate. */
 export type CoverageFinding =
@@ -56,9 +67,12 @@ export type CoverageFinding =
   | { kind: 'uncovered-target'; route: string; owningService: string }
   | { kind: 'uncovered-legacy-write'; route: string }
   | { kind: 'uncovered-admin-action'; routeKey: string }
+  | { kind: 'stale-relinquished'; gap: RelinquishableKind; key: string; reason: 'covered' | 'not-required' }
   | { kind: 'cover-not-exercised'; scenario: string; cover: string }
   | { kind: 'reserved-identity'; scenario: string; value: string }
   | { kind: 'unresolved-seed-ref'; scenario: string; message: string };
+
+type GapFinding = Extract<CoverageFinding, { kind: RelinquishableKind }>;
 
 const cutoverEntrySchema = z.object({
   route: z.string().min(1),
@@ -98,6 +112,19 @@ const seedConfigSchema = z.object({
   }),
 });
 
+const sortedKeys = z
+  .array(z.string().min(1))
+  .refine((keys) => keys.every((key, i) => i === 0 || (keys[i - 1] as string) < key), 'must be sorted and unique');
+const relinquishedSchema = z.strictObject({
+  sourceSha: z.string(),
+  reason: z.string().min(1),
+  relinquished: z.strictObject({
+    'uncovered-target': sortedKeys,
+    'uncovered-legacy-write': sortedKeys,
+    'uncovered-admin-action': sortedKeys,
+  }),
+});
+
 /** Identities only the rollback-rehearsal scenarios may reference (`seed.config.json` `reserved.rehearsal`). */
 export interface ReservedRehearsal {
   persons: readonly string[];
@@ -110,7 +137,8 @@ export type CoverageScenario = Pick<Scenario, 'id' | 'covers' | 'steps'> &
 
 /**
  * Everything {@link checkCoverage} checks; `options` default to {@link defaultRouteKeyOptions}. `seedStores` resolve
- * seedRefs and seeded role accounts; without them a scenario that has any reports `unresolved-seed-ref`.
+ * seedRefs and seeded role accounts; without them a scenario that has any reports `unresolved-seed-ref`. Without
+ * `relinquished`, every uncovered required key is a finding.
  */
 export interface CoverageInputs {
   scenarios: readonly CoverageScenario[];
@@ -119,6 +147,13 @@ export interface CoverageInputs {
   reserved: ReservedRehearsal;
   options?: RouteKeyOptions;
   seedStores?: SeedKeyStores;
+  relinquished?: Relinquished;
+}
+
+/** Findings of {@link coverageResult} and the listed keys it relinquished, each uncovered and still required. */
+export interface CoverageResult {
+  findings: CoverageFinding[];
+  relinquished: Relinquished;
 }
 
 /** The request fields of a step or candidate. */
@@ -355,16 +390,9 @@ const FAMILIES: ReadonlySet<string> = new Set(ROUTE_FAMILIES);
 const VARIANT_SUFFIX = /\{([^{}]*)\}$/;
 /** Static entries the gateway or web serves itself, which no golden scenario can exercise. */
 const SELF_SERVED_OWNERS: ReadonlySet<string> = new Set(['gateway', 'web']);
-// The stub is the platform-proof service: it has no legacy oracle to capture, the catalogue admits only the ten
-// services, and the platform-proof e2e suite proves its routes. Its target entries need no golden cover.
+// The stub is the platform-proof service: it has no legacy oracle to capture, the catalogue admits no stub scenario,
+// and the platform-proof e2e suite proves its routes. Its target entries need no golden cover.
 const PLATFORM_PROOF_OWNER = 'stub';
-/** Owners of the `/v1/` entries a fixtures-unavailable build makes target: no legacy oracle exists to capture them. */
-const NO_ORACLE_OWNERS: ReadonlySet<string> = new Set(SYNTHETIC_SERVICES);
-
-/** Whether `entry` is a synthetic service's own `/v1/` route, as the gateway's version builder adds it. */
-function syntheticV1Entry(entry: Pick<CutoverEntry, 'route' | 'owningService'>): boolean {
-  return NO_ORACLE_OWNERS.has(entry.owningService) && entry.route.slice(entry.route.indexOf(':') + 1).startsWith('/v1/');
-}
 
 /** An authored route key read as `matchRouteKey` reads a computed one; `undefined` for an unknown family. */
 function keyOf(text: string): RouteKeyResult | undefined {
@@ -501,12 +529,17 @@ function unexercisedCovers(scenario: CoverageScenario, opts: RouteKeyOptions): s
 
 /**
  * Every coverage gap, none short-circuiting: covers that match no cut-over entry (error keys aside); `target`
- * entries (bar the stub's, the synthetic services' own `/v1/` ones and static entries the gateway or web serves
- * itself), `legacy-write` entries and carried admin actions no cover matches; covers no step of a non-browser
+ * entries (bar the stub's and static entries the gateway or web serves itself), `legacy-write` entries and carried admin actions no cover matches; covers no step of a non-browser
  * scenario exercises; reserved rehearsal identities a scenario outside `REHEARSAL_SCENARIO_IDS` names or selects
- * through its seedRefs and seeded role accounts; and such selections that do not resolve.
+ * through its seedRefs and seeded role accounts; and such selections that do not resolve. A relinquished key is no
+ * gap while uncovered; one that is covered or no longer required is `stale-relinquished`.
  */
 export function checkCoverage(inputs: CoverageInputs): CoverageFinding[] {
+  return coverageResult(inputs).findings;
+}
+
+/** {@link checkCoverage}'s findings with the relinquished keys that stood in for gaps. */
+export function coverageResult(inputs: CoverageInputs): CoverageResult {
   const opts = inputs.options ?? defaultRouteKeyOptions();
   const routes = inputs.entries.map((entry) => entry.route);
   const findings: CoverageFinding[] = [];
@@ -524,22 +557,47 @@ export function checkCoverage(inputs: CoverageInputs): CoverageFinding[] {
       }
     }
   }
+  const listed = new Set(
+    RELINQUISHABLE_KINDS.flatMap((kind) => (inputs.relinquished?.[kind] ?? []).map((key) => `${kind} ${key}`)),
+  );
+  const required = new Set<string>();
+  const uncovered = new Set<string>();
+  // A required key no cover reaches is a gap finding, unless it is listed as relinquished.
+  const requireKey = (gap: GapFinding, covered: boolean): void => {
+    const id = `${gap.kind} ${gap.kind === 'uncovered-admin-action' ? gap.routeKey : gap.route}`;
+    required.add(id);
+    if (covered) return;
+    uncovered.add(id);
+    if (!listed.has(id)) findings.push(gap);
+  };
   for (const entry of inputs.entries) {
     const selfServed = entry.kind === 'static' && SELF_SERVED_OWNERS.has(entry.owningService);
-    const exempt = selfServed || syntheticV1Entry(entry) || entry.owningService === PLATFORM_PROOF_OWNER;
-    if (entry.state === 'target' && !exempt && !coveredRoutes.has(entry.route)) {
-      findings.push({ kind: 'uncovered-target', route: entry.route, owningService: entry.owningService });
+    const exempt = selfServed || entry.owningService === PLATFORM_PROOF_OWNER;
+    if (entry.state === 'target' && !exempt) {
+      const gap = { kind: 'uncovered-target', route: entry.route, owningService: entry.owningService } as const;
+      requireKey(gap, coveredRoutes.has(entry.route));
     }
   }
   for (const entry of inputs.entries) {
-    if (entry.kind === 'legacy-write' && !coveredRoutes.has(entry.route)) {
-      findings.push({ kind: 'uncovered-legacy-write', route: entry.route });
+    if (entry.kind === 'legacy-write') {
+      requireKey({ kind: 'uncovered-legacy-write', route: entry.route }, coveredRoutes.has(entry.route));
     }
   }
   for (const routeKey of carriedAdminActions(inputs.controllers)) {
     const result = keyOf(routeKey);
-    if (result === undefined || matchRouteKey(result, covers) === undefined) {
-      findings.push({ kind: 'uncovered-admin-action', routeKey });
+    const covered = result !== undefined && matchRouteKey(result, covers) !== undefined;
+    requireKey({ kind: 'uncovered-admin-action', routeKey }, covered);
+  }
+  const relinquished: Record<RelinquishableKind, string[]> = {
+    'uncovered-target': [],
+    'uncovered-legacy-write': [],
+    'uncovered-admin-action': [],
+  };
+  for (const gap of RELINQUISHABLE_KINDS) {
+    for (const key of inputs.relinquished?.[gap] ?? []) {
+      const id = `${gap} ${key}`;
+      if (uncovered.has(id)) relinquished[gap].push(key);
+      else findings.push({ kind: 'stale-relinquished', gap, key, reason: required.has(id) ? 'covered' : 'not-required' });
     }
   }
   for (const scenario of inputs.scenarios) {
@@ -566,7 +624,7 @@ export function checkCoverage(inputs: CoverageInputs): CoverageFinding[] {
     }
   }
   findings.push(...unresolved);
-  return findings;
+  return { findings, relinquished };
 }
 
 /** Finding count per kind, every kind present. */
@@ -584,28 +642,37 @@ export interface CoveragePaths {
   catalogue?: string;
   inventory?: string;
   seedConfig?: string;
+  relinquished?: string;
 }
 
 /**
- * Reads and validates the catalogue, cut-over version, inventory controllers and reserved rehearsal identities; the
- * seed stores read `${OPT2_STATE_DIR}` seed dataset and credentials on first use.
+ * Reads and validates the catalogue, cut-over version, inventory controllers, reserved rehearsal identities and
+ * relinquished keys; the seed stores read `${OPT2_STATE_DIR}` seed dataset and credentials on first use.
  */
 export async function loadCoverageInputs(
   paths: CoveragePaths = {},
   env: EnvLike = process.env,
 ): Promise<CoverageInputs> {
-  const [catalogue, version, inventory, seed] = await Promise.all([
+  const relinquishedPath = paths.relinquished ?? RELINQUISHED_PATH;
+  const [catalogue, version, inventory, seed, relinquished] = await Promise.all([
     loadCatalogue(paths.catalogue ?? CATALOGUE_PATH),
     readJson(paths.version ?? cutoverVersionPath(DEFAULT_VERSION, env), versionSchema),
     readJson(paths.inventory ?? INVENTORY_PATH, inventorySchema),
     readJson(paths.seedConfig ?? SEED_CONFIG_PATH, seedConfigSchema),
+    readJson(relinquishedPath, relinquishedSchema),
   ]);
+  if (relinquished.sourceSha !== pinnedSha()) {
+    throw new GoldenConfigError(`${relinquishedPath}: sourceSha ${relinquished.sourceSha} is not the pinned source SHA`, {
+      path: relinquishedPath,
+    });
+  }
   return {
     scenarios: catalogue.scenarios,
     entries: version.entries,
     controllers: inventory.controllers,
     reserved: seed.reserved.rehearsal,
     seedStores: { seed: loadSeedStore(env, { configPath: paths.seedConfig }), secrets: loadSecretStore(env), env },
+    relinquished: relinquished.relinquished,
   };
 }
 
@@ -616,7 +683,7 @@ function describeFinding(finding: CoverageFinding): string {
 
 const USAGE =
   'usage: tsx src/golden/coverage.ts [--version <cut-over version json>] [--catalogue <catalogue yaml>] ' +
-  '[--seed-config <seed config json>]';
+  '[--seed-config <seed config json>] [--relinquished <relinquished keys json>]';
 const HELP = `${USAGE}
 
 Checks that golden-scenario covers reach every target and legacy-write entry of the cut-over version (default
@@ -624,18 +691,26 @@ v0002 of \${OPT2_CUTOVER_DIR}, else gateway/cutover) and every carried admin act
 by a step, and that no scenario but GS-PE-RH-01, GS-PE-RH-02 and GS-PE-RH-03 names or selects a reserved rehearsal
 identity (--seed-config, default legacy-fixtures/seed/seed.config.json). SeedRefs and seeded role accounts resolve
 against \${OPT2_STATE_DIR}/seed/dataset.json and \${OPT2_STATE_DIR}/secrets/seed-credentials.json; one that does not
-resolve is a finding. Writes \${OPT2_STATE_DIR}/golden/coverage.json; exits 1 on any finding.`;
+resolve is a finding. Keys of --relinquished (default harness/golden/relinquished-covers.json) need no cover; a listed
+key that is covered or no longer required is a finding. Writes \${OPT2_STATE_DIR}/golden/coverage.json with the
+relinquished keys; exits 1 on any finding.`;
 
 /** CLI entry: writes `<state>/golden/coverage.json` and exits 1 when any finding exists. */
 export async function main(argv: string[], env: EnvLike = process.env): Promise<CliOutcome> {
   const { values } = parseFlags(argv, {
-    options: { version: { type: 'string' }, catalogue: { type: 'string' }, 'seed-config': { type: 'string' } },
+    options: {
+      version: { type: 'string' },
+      catalogue: { type: 'string' },
+      'seed-config': { type: 'string' },
+      relinquished: { type: 'string' },
+    },
     usage: USAGE,
     help: HELP,
   });
   if (values.version === '') throw new UsageError('--version needs a path', USAGE);
   if (values.catalogue === '') throw new UsageError('--catalogue needs a path', USAGE);
   if (values['seed-config'] === '') throw new UsageError('--seed-config needs a path', USAGE);
+  if (values.relinquished === '') throw new UsageError('--relinquished needs a path', USAGE);
   const report = path.join(stateDir(env), 'golden', 'coverage.json');
   const seedConfig = values['seed-config'];
   const inputs = await loadCoverageInputs(
@@ -643,11 +718,13 @@ export async function main(argv: string[], env: EnvLike = process.env): Promise<
       version: values.version === undefined ? undefined : path.resolve(values.version),
       catalogue: values.catalogue === undefined ? undefined : path.resolve(values.catalogue),
       seedConfig: seedConfig === undefined ? undefined : path.resolve(seedConfig),
+      relinquished: values.relinquished === undefined ? undefined : path.resolve(values.relinquished),
     },
     env,
   );
-  const findings = checkCoverage(inputs);
+  const { findings, relinquished } = coverageResult(inputs);
   const byKind = countByKind(findings);
+  const relinquishedCounts = Object.fromEntries(RELINQUISHABLE_KINDS.map((kind) => [kind, relinquished[kind].length]));
   const counts = {
     scenarios: inputs.scenarios.length,
     covers: inputs.scenarios.reduce((n, s) => n + s.covers.length, 0),
@@ -655,11 +732,13 @@ export async function main(argv: string[], env: EnvLike = process.env): Promise<
     legacyWriteEntries: inputs.entries.filter((e) => e.kind === 'legacy-write').length,
     carriedAdminActions: carriedAdminActions(inputs.controllers).length,
     findings: byKind,
+    relinquished: relinquishedCounts,
   };
   await mkdir(path.dirname(report), { recursive: true });
-  await writeFile(report, stableStringify({ findings, counts }), 'utf8');
+  await writeFile(report, stableStringify({ findings, counts, relinquished }), 'utf8');
   for (const finding of findings) process.stderr.write(`${describeFinding(finding)}\n`);
-  return { code: findings.length > 0 ? 1 : 0, summary: { findings: findings.length, byKind, report } };
+  const summary = { findings: findings.length, byKind, relinquished: relinquishedCounts, report };
+  return { code: findings.length > 0 ? 1 : 0, summary };
 }
 
 if (isMainModule(import.meta.url)) void runCli(main);

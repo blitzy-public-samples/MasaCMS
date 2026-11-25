@@ -42,7 +42,7 @@ const LOGIN_ROUTE = normaliseRouteKey('admin:clogin.login');
 export const FILE_STORE = 'file-store';
 // Masa's file store holds the bytes of tfiles rows (fileDAO.cfc:153-209), so its writes are writes of the tfiles units.
 export const FILE_STORE_TABLE = 'tfiles';
-/** Prefix of a write unit naming a decision-list or retired table, which has no target unit. */
+/** Prefix of a write unit naming a decision-list, retired or legacy-only table, which has no target unit. */
 export const DECISION_TABLE_PREFIX = 'legacy:';
 
 function describeError(error: ErrorObject): string {
@@ -456,7 +456,7 @@ function ownershipViolations(ownership: OwnershipDoc): Violation[] {
   return violations;
 }
 
-/** Inventory writes whose unit is no ownership unit, no mapped file store and no decision-list table. */
+/** Inventory writes whose unit is no ownership unit, no mapped file store and no `legacy:<table>` unit. */
 function inventoryViolations(inventory: InventoryDoc, ownership: OwnershipDoc): Violation[] {
   const units = new Set(ownership.units.map((unit) => unit.unit));
   const fileStoreMapped = ownership.tables.some((table) => table.table.toLowerCase() === FILE_STORE_TABLE && table.targets.length > 0);

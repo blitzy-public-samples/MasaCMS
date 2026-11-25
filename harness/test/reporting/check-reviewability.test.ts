@@ -11,8 +11,7 @@ import {
   INVENTORY_PATH,
   OWNERSHIP_PATH,
   PASS_CONDITION,
-  SYNTHETIC_SERVICES,
-  TEN_SERVICES,
+  SERVICES,
   buildReport,
   carriedOrOwnedItems,
   checkService,
@@ -83,20 +82,30 @@ const EXPECTED_ITEMS: Record<ServiceName, readonly string[]> = {
   people: ['ctl:cusers', 'ctl:cusers.listusers', 'ctl:cusers.update{type=2,action=add}', 'tbl:tusers'],
   'programs-sites': ['job:sitemonitor'],
   'strategies-content': ['api:content.findone'],
-  communications: ['ctl:cemail', 'ctl:cemail.list'],
-  reporting: [],
-  surveys: [],
-  timesheets: [],
-  finance: [],
-  'e-signature': [],
 };
 const IDENTITY_LOGIN_ITEMS = ['ctl:clogin', 'ctl:clogin.login', 'tbl:tusersmemb', 'tbl:tusers'];
 /** Identity items of {@link LOGIN_CARRIED} that no row of the traceability fixture names. */
 const UNCOVERED_BY_FIXTURE = ['ctl:clogin', 'tbl:tusersmemb', 'tbl:tusers'];
 
-/** The mini inventory with `ctl:cemail.list` owned by communications only as a decision-list proposal. */
-const CEMAIL_PROPOSED: Inventory = (() => {
+/** A package outside SERVICES that owns the legacy-served `ctl:cemail` controller and action, carrying neither. */
+const CEMAIL_OWNER = 'stub';
+
+/** The mini inventory with `ctl:cemail` and its owned variants owned by {@link CEMAIL_OWNER}. */
+const CEMAIL_OWNED: Inventory = (() => {
   const inventory = structuredClone(INVENTORY);
+  for (const controller of inventory.controllers) {
+    if (controller.id !== 'ctl:cemail') continue;
+    controller.owningService = CEMAIL_OWNER;
+    for (const action of controller.actions ?? []) {
+      for (const variant of action.variants ?? []) if (variant.owningService) variant.owningService = CEMAIL_OWNER;
+    }
+  }
+  return inventory;
+})();
+
+/** {@link CEMAIL_OWNED} with `ctl:cemail.list` owned only as a decision-list proposal. */
+const CEMAIL_PROPOSED: Inventory = (() => {
+  const inventory = structuredClone(CEMAIL_OWNED);
   const proposed = { disposition: 'decision', ownerBasis: 'decision-list-proposal' };
   for (const controller of inventory.controllers) {
     for (const action of controller.actions ?? []) {
@@ -225,30 +234,8 @@ function ids(items: readonly ReviewItem[]): string[] {
 }
 
 describe('service constants', () => {
-  it('TEN_SERVICES lists the ten services in plan order', () => {
-    expect(TEN_SERVICES).toStrictEqual([
-      'identity',
-      'people',
-      'programs-sites',
-      'strategies-content',
-      'communications',
-      'reporting',
-      'surveys',
-      'timesheets',
-      'finance',
-      'e-signature',
-    ]);
-  });
-
-  it('SYNTHETIC_SERVICES lists the last six services in plan order', () => {
-    expect(SYNTHETIC_SERVICES).toStrictEqual([
-      'communications',
-      'reporting',
-      'surveys',
-      'timesheets',
-      'finance',
-      'e-signature',
-    ]);
+  it('SERVICES lists the four services in plan order', () => {
+    expect(SERVICES).toStrictEqual(['identity', 'people', 'programs-sites', 'strategies-content']);
   });
 });
 
@@ -292,7 +279,7 @@ describe('parseTraceabilityRows', () => {
         columns: 5,
         sourceRefs: ['admin/core/controllers/cperm.cfc:119-160'],
         codePaths: ['services/identity/src/routes/admin-permissions.ts', 'services/identity/src/domain/permissions.ts'],
-        testRefs: ['GS-ID-07'],
+        testRefs: ['GS-ID-77'],
         testNames: [],
       },
     ]);
@@ -411,20 +398,20 @@ describe('parseTraceabilityRows', () => {
     const markdown = [
       '| a | b | c |',
       '|---|---|---|',
-      '| `legacy-fixtures/cfml/modules/finance.cfc` | `src/domain/lifecycle.ts`, `web/test/shell.ts` |' +
-        ' `test/unit/lifecycle.table.test.ts:12` |',
+      '| `legacy-fixtures/cfml/modules/people.cfc` | `src/domain/archive.ts`, `web/test/shell.ts` |' +
+        ' `test/unit/archive.test.ts:12` |',
     ].join('\n');
 
     const [row] = parseTraceabilityRows(markdown);
 
-    expect(row?.sourceRefs).toEqual(['legacy-fixtures/cfml/modules/finance.cfc']);
-    expect(row?.codePaths).toEqual(['src/domain/lifecycle.ts']);
-    expect(row?.testRefs).toEqual(['test/unit/lifecycle.table.test.ts']);
+    expect(row?.sourceRefs).toEqual(['legacy-fixtures/cfml/modules/people.cfc']);
+    expect(row?.codePaths).toEqual(['src/domain/archive.ts']);
+    expect(row?.testRefs).toEqual(['test/unit/archive.test.ts']);
   });
 });
 
 describe('carriedOrOwnedItems', () => {
-  it.each(TEN_SERVICES.map((service) => [service, EXPECTED_ITEMS[service]] as const))(
+  it.each(SERVICES.map((service) => [service, EXPECTED_ITEMS[service]] as const))(
     'selects the mini-fixture items %s carries or owns',
     (service, expected) => {
       expect(ids(carriedOrOwnedItems(service, INVENTORY, OWNERSHIP))).toEqual(expected);
@@ -480,8 +467,8 @@ describe('carriedOrOwnedItems', () => {
     ]);
   });
 
-  it('selects the owned legacy-served controller and action communications does not carry, with no code path', () => {
-    expect(carriedOrOwnedItems('communications', INVENTORY, OWNERSHIP)).toEqual([
+  it('selects the owned legacy-served controller and action its owner does not carry, with no code path', () => {
+    expect(carriedOrOwnedItems(CEMAIL_OWNER, CEMAIL_OWNED, OWNERSHIP)).toEqual([
       { id: 'ctl:cemail', category: 'admin-controller', disposition: null, codeRequired: false },
       {
         id: 'ctl:cemail.list',
@@ -504,7 +491,7 @@ describe('carriedOrOwnedItems', () => {
   });
 
   it('excludes an item whose owner is only a decision-list proposal', () => {
-    expect(ids(carriedOrOwnedItems('communications', CEMAIL_PROPOSED, OWNERSHIP))).toEqual(['ctl:cemail']);
+    expect(ids(carriedOrOwnedItems(CEMAIL_OWNER, CEMAIL_PROPOSED, OWNERSHIP))).toEqual(['ctl:cemail']);
   });
 
   it('selects an admin action once its variant is carried by the service', () => {
@@ -607,14 +594,14 @@ describe('coverageKeys', () => {
     [
       'a fixture-schema table also by its unqualified name',
       {
-        id: 'tbl:Program_1.timesheet',
+        id: 'tbl:synthetic.person_archive',
         category: 'table',
         disposition: 'carry',
         codeRequired: true,
-        table: 'Program_1.timesheet',
-        units: ['timesheets.timesheet'],
+        table: 'synthetic.person_archive',
+        units: ['people.person_archive'],
       },
-      ['tbl:program_1.timesheet', 'program_1.timesheet', 'timesheet', 'timesheets.timesheet'],
+      ['tbl:synthetic.person_archive', 'synthetic.person_archive', 'person_archive', 'people.person_archive'],
     ],
     [
       'a route by its id and both route keys, lower-cased',
@@ -705,17 +692,17 @@ describe('checkService', () => {
 
   describe('owned items that stay on legacy', () => {
     const CONTROLLER_ROW =
-      '| `ctl:cemail` | `admin/core/controllers/cemail.cfc:76-143` | legacy-served (circuit) | — | GS-CM-01 |';
+      '| `ctl:cemail` | `admin/core/controllers/cemail.cfc:76-143` | legacy-served (circuit) | — | GS-ID-01 |';
     const ACTION_ROW =
       '| `ctl:cemail.list`, `admin:cemail.list` | `admin/core/controllers/cemail.cfc:84-90` | legacy-served | — |' +
-      ' GS-CM-01 |';
+      ' GS-ID-01 |';
 
-    it('passes communications when its owned legacy-served rows cite a source and a test but no code', async () => {
-      await buildService(root, 'communications', {
-        traceability: traceabilityFor('communications', [CONTROLLER_ROW, ACTION_ROW]),
+    it('passes the owner when its owned legacy-served rows cite a source and a test but no code', async () => {
+      await buildService(root, CEMAIL_OWNER, {
+        traceability: traceabilityFor(CEMAIL_OWNER, [CONTROLLER_ROW, ACTION_ROW]),
       });
 
-      const report = await checkService('communications', deps(root, INVENTORY));
+      const report = await checkService(CEMAIL_OWNER, deps(root, CEMAIL_OWNED));
 
       expect(report.inventoryItems).toEqual({ carriedOrOwned: 2, covered: 2, missing: [] });
       expect(report.result).toBe('pass');
@@ -728,10 +715,10 @@ describe('checkService', () => {
         CONTROLLER_ROW,
         { id: 'ctl:cemail.list', routeKey: 'admin:cemail.list', reason: 'no-row' },
       ],
-    ])('fails communications once the row of %s is removed', async (_name, kept, missing) => {
-      await buildService(root, 'communications', { traceability: traceabilityFor('communications', [kept]) });
+    ])('fails the owner once the row of %s is removed', async (_name, kept, missing) => {
+      await buildService(root, CEMAIL_OWNER, { traceability: traceabilityFor(CEMAIL_OWNER, [kept]) });
 
-      const report = await checkService('communications', deps(root, INVENTORY));
+      const report = await checkService(CEMAIL_OWNER, deps(root, CEMAIL_OWNED));
 
       expect(report.inventoryItems).toEqual({ carriedOrOwned: 2, covered: 1, missing: [missing] });
       expect(report.result).toBe('fail');
@@ -877,7 +864,7 @@ describe('checkService', () => {
         'a row naming its table with wildcard and templated paths and a GS id',
         [
           `| \`tusersmemb\` | ${SOURCE} | carry | \`services/identity/src/routes/*.ts\`,` +
-            ` \`services/identity/src/routes/{name}.ts\` | GS-ID-06 |`,
+            ` \`services/identity/src/routes/{name}.ts\` | GS-ID-76 |`,
         ],
         null,
       ],
@@ -899,7 +886,7 @@ describe('checkService', () => {
       const inventory = inventorySchema.parse({
         tables: [{ id: 'tbl:tpermissions', table: 'tpermissions', owningService: 'identity', disposition }],
       });
-      const row = `| \`tbl:tpermissions\` | \`core/setup/db/mssql.sql:380-390\` | ${disposition} | — | GS-ID-07 |`;
+      const row = `| \`tbl:tpermissions\` | \`core/setup/db/mssql.sql:380-390\` | ${disposition} | — | GS-ID-77 |`;
       await buildService(root, 'identity', { traceability: traceabilityFor('identity', [row]) });
 
       const report = await checkService('identity', deps(root, inventory, ownershipSchema.parse({})));
@@ -937,7 +924,7 @@ describe('cited test names', () => {
     ].join('\n'),
     'services/identity/test/unit/cases/index.ts': [
       'export const ROWS = [',
-      "  { from: 'DRAFT', action: 'submit', role: 'timesheets.employee', guard: 'blackout', status: 409 },",
+      "  { from: 'DRAFT', action: 'submit', role: 'editor', guard: 'approval', status: 409 },",
       '];',
     ].join('\n'),
     'services/identity/test/unit/setup': 'not a module\n',
@@ -1026,7 +1013,7 @@ describe('cited test names', () => {
       [],
     ],
     ['a data-driven %s case name', cite('refuses a blank name'), []],
-    ['a computed %s title with a nested template', cite('DRAFT submit as timesheets.employee (blackout) → 409'), []],
+    ['a computed %s title with a nested template', cite('DRAFT submit as editor (approval) → 409'), []],
     ['a $operationId $title case', cite('getUser answers the stored user'), []],
     ['a case name its own .each rows hold', citeIn('probe-case.test.ts', 'the real case'), []],
     [
@@ -1089,8 +1076,8 @@ describe('cited test names', () => {
     ],
     [
       'a computed title missing its literal words',
-      cite('DRAFT submit by timesheets.employee → 409'),
-      ['DRAFT submit by timesheets.employee → 409'],
+      cite('DRAFT submit by editor → 409'),
+      ['DRAFT submit by editor → 409'],
     ],
     ['a title only a type-only import holds', cite('only a type file title'), ['only a type file title']],
     ['an identifier a one-letter template ends', cite('lookupSiteFeedSettings'), ['lookupSiteFeedSettings']],
@@ -1182,31 +1169,31 @@ describe('buildReport and markdownLines', () => {
 
   it('renders unpinned, mismatched and absent files, partial events and judged rows', () => {
     const service: ServiceReport = {
-      service: 'reporting',
-      readme: { path: 'services/reporting/README.md', present: true, sha: null },
-      traceability: { path: 'services/reporting/TRACEABILITY.md', present: true, sha: ZERO_SHA, rows: 2 },
+      service: 'people',
+      readme: { path: 'services/people/README.md', present: true, sha: null },
+      traceability: { path: 'services/people/TRACEABILITY.md', present: true, sha: ZERO_SHA, rows: 2 },
       contracts: {
-        openapi: { path: 'services/reporting/contracts/openapi.yaml', present: false, sha: null },
+        openapi: { path: 'services/people/contracts/openapi.yaml', present: false, sha: null },
         events: [
-          { path: 'services/reporting/contracts/events/reporting.changed.v1.json', present: true, sha: OTHER_SHA },
-          { path: 'services/reporting/contracts/events/reporting.failed.v1.json', present: true, sha: SHA },
+          { path: 'services/people/contracts/events/people.changed.v1.json', present: true, sha: OTHER_SHA },
+          { path: 'services/people/contracts/events/people.failed.v1.json', present: true, sha: SHA },
         ],
       },
       inventoryItems: {
         carriedOrOwned: 2,
         covered: 0,
         missing: [
-          { id: 'tbl:synthetic.export_job', reason: 'incomplete-row', line: 7, lacks: ['code-path', 'test-ref'] },
+          { id: 'tbl:synthetic.person_archive', reason: 'incomplete-row', line: 7, lacks: ['code-path', 'test-ref'] },
           {
-            id: 'api:reporting.exports',
-            routeKey: 'fixture:reporting/exports',
+            id: 'api:people.archive',
+            routeKey: 'fixture:people/archive',
             reason: 'test-missing',
             line: 8,
-            paths: ['test/unit/exports.test.ts'],
+            paths: ['test/unit/archive.test.ts'],
           },
         ],
       },
-      citations: { names: 3, unresolved: [{ line: 9, file: 'test/unit/run-export.test.ts', name: 'runs %s twice' }] },
+      citations: { names: 3, unresolved: [{ line: 9, file: 'test/unit/run-archive.test.ts', name: 'runs %s twice' }] },
       result: 'fail',
     };
     const report: ReviewabilityReport = {
@@ -1222,17 +1209,17 @@ describe('buildReport and markdownLines', () => {
 
     const lines = markdownLines(report);
 
-    expect(lines).toContain('| reporting | no SHA | SHA mismatch | absent | 1/2 ok | 2 | 2 | 0 | 2 | fail |');
-    expect(lines).toContain('- `tbl:synthetic.export_job`: incomplete-row at line 7 (lacks code-path, test-ref)');
+    expect(lines).toContain('| people | no SHA | SHA mismatch | absent | 1/2 ok | 2 | 2 | 0 | 2 | fail |');
+    expect(lines).toContain('- `tbl:synthetic.person_archive`: incomplete-row at line 7 (lacks code-path, test-ref)');
     expect(lines).toContain(
-      '- `api:reporting.exports` (`fixture:reporting/exports`): test-missing at line 8: `test/unit/exports.test.ts`',
+      '- `api:people.archive` (`fixture:people/archive`): test-missing at line 8: `test/unit/archive.test.ts`',
     );
     expect(lines.slice(lines.indexOf('## Unresolved test names'))).toEqual([
       '## Unresolved test names',
       '',
-      '### reporting',
+      '### people',
       '',
-      '- line 9: `test/unit/run-export.test.ts` › "runs %s twice"',
+      '- line 9: `test/unit/run-archive.test.ts` › "runs %s twice"',
       '',
     ]);
   });
@@ -1270,14 +1257,14 @@ function summaryLine(run: CliRun): Record<string, unknown> {
   return JSON.parse(run.output) as Record<string, unknown>;
 }
 
-/** A checkout at `dir` with the pin, the mini inventory and ownership, and all ten services passing. */
+/** A checkout at `dir` with the pin, the mini inventory and ownership, and all services passing. */
 async function buildCheckout(dir: string): Promise<void> {
   await writeTree(dir, {
     'opt2/source-pin.json': PIN_JSON,
     [INVENTORY_PATH]: INVENTORY_JSON,
     [OWNERSHIP_PATH]: OWNERSHIP_JSON,
   });
-  for (const service of TEN_SERVICES) {
+  for (const service of SERVICES) {
     const items = EXPECTED_ITEMS[service];
     await buildService(dir, service, {
       traceability: traceabilityFor(service, items.map((id) => coverRow(service, id))),
@@ -1315,7 +1302,7 @@ describe('main', () => {
     vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
   });
 
-  it('exits 0 and writes reviewability.json and .md when all ten services pass', async () => {
+  it('exits 0 and writes reviewability.json and .md when all services pass', async () => {
     await buildCheckout(checkout);
 
     const run = await runCheck(['--root', checkout]);
@@ -1327,7 +1314,7 @@ describe('main', () => {
     expect(report.result).toBe('pass');
     expect(
       report.services.map(({ service, result, inventoryItems }) => [service, result, inventoryItems.carriedOrOwned]),
-    ).toEqual(TEN_SERVICES.map((service) => [service, 'pass', EXPECTED_ITEMS[service].length]));
+    ).toEqual(SERVICES.map((service) => [service, 'pass', EXPECTED_ITEMS[service].length]));
     const markdown = (await readFile(path.join(out, 'reviewability.md'), 'utf8')).split('\n');
     expect(markdown[0]).toBe('# Reviewability');
     expect(markdown[1]).toBe(`Source SHA: ${SHA}`);
@@ -1386,7 +1373,7 @@ describe('main', () => {
   });
 
   it.each<[string[], string | undefined]>([
-    [['--service', 'stub'], `--service stub: not one of ${TEN_SERVICES.join(', ')}`],
+    [['--service', 'stub'], `--service stub: not one of ${SERVICES.join(', ')}`],
     [['--root', ''], '--root needs a directory'],
     [['--format', 'json'], undefined],
   ])('exits 2 with a UsageError for %j', async (argv, message) => {

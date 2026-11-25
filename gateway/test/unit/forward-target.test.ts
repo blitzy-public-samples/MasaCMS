@@ -737,21 +737,21 @@ describe('forwardToTarget fail closed', () => {
   it.each<{ label: string; path: string; base: string; received: string }>([
     {
       label: 'an encoded backslash item closing with ..',
-      path: '/legacy-fixtures/cfml/api.cfm/finance/records/x%5C../versions?siteid=tenant-a',
+      path: '/legacy-fixtures/cfml/api.cfm/people/persons/x%5C../archive?siteid=tenant-a',
       base: '/',
-      received: '/legacy-fixtures/cfml/api.cfm/finance/records/x%5C../versions?siteid=tenant-a',
+      received: '/legacy-fixtures/cfml/api.cfm/people/persons/x%5C../archive?siteid=tenant-a',
     },
     {
       label: 'an item closing with ..',
-      path: '/legacy-fixtures/cfml/api.cfm/finance/records/x../versions',
+      path: '/legacy-fixtures/cfml/api.cfm/people/persons/x../archive',
       base: '/',
-      received: '/legacy-fixtures/cfml/api.cfm/finance/records/x../versions',
+      received: '/legacy-fixtures/cfml/api.cfm/people/persons/x../archive',
     },
     {
       label: "an item closing with .. after the callee's base path",
-      path: '/legacy-fixtures/cfml/api.cfm/finance/records/x../versions?a=%2e%2e',
+      path: '/legacy-fixtures/cfml/api.cfm/people/persons/x../archive?a=%2e%2e',
       base: '/svc//',
-      received: '/svc/legacy-fixtures/cfml/api.cfm/finance/records/x../versions?a=%2e%2e',
+      received: '/svc/legacy-fixtures/cfml/api.cfm/people/persons/x../archive?a=%2e%2e',
     },
   ])('sends a raw target with $label byte for byte, past what reply-from rejects', async ({ path, base, received }) => {
     const raw = await startHarness(() => service, { gatewayAgent: true });
@@ -1138,29 +1138,29 @@ describe('forwardToTarget lines through the platform logger', () => {
       .filter((line) => line !== '')
       .map((line) => JSON.parse(line) as Record<string, unknown>);
 
-  const FINANCE: Overrides = { service: 'finance', mode: 'legacy-primary', sessionId: SESSION_ID };
+  const PEOPLE: Overrides = { service: 'people', mode: 'legacy-primary', sessionId: SESSION_ID };
 
   it.each<[string, (h: Harness, failure: Error) => void]>([
-    ['target forward to finance (legacy-primary) onSettled failed', (h, failure) => h.set({ ...FINANCE, onSettled: () => Promise.reject(failure) })],
+    ['target forward to people (legacy-primary) onSettled failed', (h, failure) => h.set({ ...PEOPLE, onSettled: () => Promise.reject(failure) })],
     [
-      'target write declaration for finance (legacy-primary) not released',
+      'target write declaration for people (legacy-primary) not released',
       (h, failure) => {
-        h.set({ ...FINANCE, declaresWrite: true });
+        h.set({ ...PEOPLE, declaresWrite: true });
         h.setReleaseFailure(failure);
       },
     ],
     [
-      'target write position from finance (legacy-primary) not recorded',
+      'target write position from people (legacy-primary) not recorded',
       (h, failure) => {
-        service.setHandler((_req, res) => sendJson(res, 201, { data: 1 }, { 'x-opt2-write-position': 'finance=42' }));
-        h.set(FINANCE);
+        service.setHandler((_req, res) => sendJson(res, 201, { data: 1 }, { 'x-opt2-write-position': 'people=42' }));
+        h.set(PEOPLE);
         h.setRecordFailure(failure);
       },
     ],
   ])('writes `%s` as a log-record.v1 ERROR line naming the callee and session mode', async (message, fail) => {
     const failure = new Error('store down');
     fail(platformHarness, failure);
-    await platformHarness.app.inject({ method: 'POST', url: '/v1/finance' });
+    await platformHarness.app.inject({ method: 'POST', url: '/v1/persons' });
     await vi.waitFor(() => expect(records().some((record) => record.message === message)).toBe(true));
     for (const record of records()) expect(validateLogRecord(record), JSON.stringify(record)).toStrictEqual({ valid: true, errors: [] });
     expect(records().find((record) => record.message === message)).toMatchObject({

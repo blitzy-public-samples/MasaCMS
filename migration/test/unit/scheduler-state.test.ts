@@ -7,24 +7,19 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   SCHEDULER_KEYS,
   SCHEDULER_STATE_TABLE,
-  SURVEY_TASK_PREFIX,
   SchedulerStateConflictError,
   SchedulerStateError,
   defaultSiteMonitorRecord,
-  defaultSurveyTasksRecord,
   isSiteMonitorTask,
-  isSurveyTask,
   readSchedulerKey,
   readSchedulerState,
   siteMonitorRecordSchema,
-  surveyTasksRecordSchema,
   updateSchedulerKey,
   writeSchedulerKey,
   type NativeTask,
   type NativeTasksRecord,
   type SchedulerKey,
   type SiteMonitorRecord,
-  type SurveyTasksRecord,
 } from '../../src/scheduler/state.js';
 
 const T1 = new Date('2026-06-30T12:00:00.000Z');
@@ -45,10 +40,10 @@ const MONITOR: NativeTask = {
   paused: false,
 };
 
-const SURVEY_LAUNCH: NativeTask = {
+const OPERATOR_TASK: NativeTask = {
   ...MONITOR,
-  task: 'opt2-survey-41-launch',
-  url: 'http://localhost:20000/surveys/41/launch',
+  task: 'ops-link-check',
+  url: 'http://localhost:8080/ops/link-check.cfm',
   interval: 'once',
   startTime: '09:00:00',
 };
@@ -57,7 +52,7 @@ const CAPTURE: NativeTasksRecord = {
   capturedAt: '2026-06-30 11:00:00',
   originalPing: false,
   siteMonitorTask: MONITOR.task,
-  tasks: [MONITOR, SURVEY_LAUNCH],
+  tasks: [MONITOR, OPERATOR_TASK],
   sourceSha256: createHash('sha256').update('native-tasks').digest('hex'),
   importedAt: T1.toISOString(),
 };
@@ -151,10 +146,9 @@ function siteMonitor(overrides: Partial<SiteMonitorRecord> = {}): SiteMonitorRec
 }
 
 describe('scheduler state keys', () => {
-  it('owns the sitemonitor, nativeTasks and surveyTasks rows of migration.scheduler_state', () => {
+  it('owns the sitemonitor and nativeTasks rows of migration.scheduler_state', () => {
     expect(SCHEDULER_STATE_TABLE).toBe('migration.scheduler_state');
-    expect(SCHEDULER_KEYS).toEqual({ siteMonitor: 'sitemonitor', nativeTasks: 'nativeTasks', surveyTasks: 'surveyTasks' });
-    expect(SURVEY_TASK_PREFIX).toBe('opt2-survey-');
+    expect(SCHEDULER_KEYS).toEqual({ siteMonitor: 'sitemonitor', nativeTasks: 'nativeTasks' });
   });
 });
 
@@ -168,21 +162,9 @@ describe('isSiteMonitorTask', () => {
     ['the name scheduler.describe reports', { task: 'Masa monitor', url: 'http://localhost:8080/' }, 'Masa monitor', true],
     ['a longer path segment', { task: 'nightly', url: 'http://localhost:8080/_api/sitemonitors' }, undefined, false],
     ['an empty describe name', { task: '', url: 'http://localhost:8080/' }, '', false],
-    ['a survey task', { task: 'opt2-survey-41-launch', url: SURVEY_LAUNCH.url }, MONITOR.task, false],
+    ['an operator task', { task: OPERATOR_TASK.task, url: OPERATOR_TASK.url }, MONITOR.task, false],
   ])('classifies %s, %j named %j, as the monitor: %s', (_case, task, name, expected) => {
     expect(isSiteMonitorTask(task, name)).toBe(expected);
-  });
-});
-
-describe('isSurveyTask', () => {
-  it.each([
-    ['opt2-survey-41-launch', true],
-    ['opt2-survey-41-reminder-1', true],
-    ['opt2-surveys', false],
-    ['OPT2-SURVEY-41-launch', false],
-    ['siteMonitor', false],
-  ])('classifies %s as a survey task: %s', (task, expected) => {
-    expect(isSurveyTask({ task })).toBe(expected);
   });
 });
 
@@ -200,13 +182,6 @@ describe('default records', () => {
       updatedAt: '2026-06-30T12:00:00.000Z',
     });
     expect(siteMonitorRecordSchema.parse(record)).toEqual(record);
-  });
-
-  it('starts the survey tasks on legacy, unpaused and unadopted', () => {
-    const record = defaultSurveyTasksRecord(T2);
-
-    expect(record).toEqual({ state: 'legacy', definitions: [], paused: null, adoptedNames: [], updatedAt: T2.toISOString() });
-    expect(surveyTasksRecordSchema.parse(record)).toEqual(record);
   });
 });
 
@@ -256,7 +231,6 @@ describe('readSchedulerState', () => {
     expect(await readSchedulerState(table.db(), T3)).toEqual({
       sitemonitor: defaultSiteMonitorRecord(T3),
       nativeTasks: null,
-      surveyTasks: defaultSurveyTasksRecord(T3),
     });
   });
 
@@ -269,21 +243,21 @@ describe('readSchedulerState', () => {
 
     const state = await readSchedulerState(table.db(), T3);
 
-    expect(state).toEqual({ sitemonitor: monitor, nativeTasks: CAPTURE, surveyTasks: defaultSurveyTasksRecord(T3) });
+    expect(state).toEqual({ sitemonitor: monitor, nativeTasks: CAPTURE });
     expect(table.transactions).toBe(1);
     expect(table.statements).toEqual([
       {
         sql: `SELECT key, value FROM ${SCHEDULER_STATE_TABLE} WHERE key = ANY($1::text[])`,
-        values: [['sitemonitor', 'nativeTasks', 'surveyTasks']],
+        values: [['sitemonitor', 'nativeTasks']],
       },
     ]);
   });
 
   it('throws SchedulerStateError when a stored record fails its schema', async () => {
     const table = new SchedulerTable();
-    table.seed('surveyTasks', { ...defaultSurveyTasksRecord(T1), state: 'paused' });
+    table.seed('sitemonitor', { ...siteMonitor(), state: 'paused' });
 
-    await expect(readSchedulerState(table.db(), T3)).rejects.toMatchObject({ name: 'SchedulerStateError', key: 'surveyTasks' });
+    await expect(readSchedulerState(table.db(), T3)).rejects.toMatchObject({ name: 'SchedulerStateError', key: 'sitemonitor' });
   });
 });
 
@@ -313,8 +287,6 @@ describe('writeSchedulerKey', () => {
     ['a definition without a task name', 'sitemonitor', { ...siteMonitor(), definition: { ...MONITOR, task: '' } }],
     ['an upper-case capture hash', 'nativeTasks', { ...CAPTURE, sourceSha256: CAPTURE.sourceSha256.toUpperCase() }],
     ['a capture without its capture time', 'nativeTasks', { ...CAPTURE, capturedAt: '' }],
-    ['a survey state outside legacy and adopted', 'surveyTasks', { ...defaultSurveyTasksRecord(T1), state: 'paused' }],
-    ['a non-string adopted task name', 'surveyTasks', { ...defaultSurveyTasksRecord(T1), adoptedNames: [41] }],
   ])('refuses %s before any statement runs', async (_case, key, value) => {
     const table = new SchedulerTable();
 
@@ -422,14 +394,14 @@ describe('updateSchedulerKey', () => {
 
   it('refuses a result that fails its schema and writes nothing', async () => {
     const table = new SchedulerTable();
-    table.seed('surveyTasks', defaultSurveyTasksRecord(T1));
+    table.seed('sitemonitor', siteMonitor());
 
     await expect(
-      updateSchedulerKey(table.db(), 'surveyTasks', (current) => ({ ...current, paused: 'operator' as never }), T2),
-    ).rejects.toMatchObject({ name: 'SchedulerStateError', key: 'surveyTasks' });
+      updateSchedulerKey(table.db(), 'sitemonitor', (current) => ({ ...current, nativePaused: 'operator' as never }), T2),
+    ).rejects.toMatchObject({ name: 'SchedulerStateError', key: 'sitemonitor' });
 
     expect(table.writes()).toEqual([]);
-    expect(table.stored('surveyTasks')).toEqual(defaultSurveyTasksRecord(T1));
+    expect(table.stored('sitemonitor')).toEqual(siteMonitor());
   });
 
   it('refuses a key it does not own before opening a transaction', async () => {
@@ -475,35 +447,5 @@ describe('updateSchedulerKey', () => {
       handedOffAt: T3.toISOString(),
       updatedAt: T4.toISOString(),
     });
-  });
-
-  it('records the survey task pause with each definition as it was, then their adoption', async () => {
-    const table = new SchedulerTable();
-    const db = table.db();
-    const reminder: NativeTask = { ...SURVEY_LAUNCH, task: 'opt2-survey-41-reminder-1', paused: true };
-
-    await updateSchedulerKey(db, 'surveyTasks', (current) => ({ ...current, definitions: [SURVEY_LAUNCH, reminder], paused: 'transition' }), T2);
-    const adopted = await updateSchedulerKey(
-      db,
-      'surveyTasks',
-      (current): SurveyTasksRecord => ({
-        ...current,
-        state: 'adopted',
-        paused: null,
-        adoptedNames: current.definitions.map((definition) => definition.task),
-        adoptedAt: T3.toISOString(),
-      }),
-      T3,
-    );
-
-    expect(adopted).toEqual({
-      state: 'adopted',
-      definitions: [SURVEY_LAUNCH, reminder],
-      paused: null,
-      adoptedNames: ['opt2-survey-41-launch', 'opt2-survey-41-reminder-1'],
-      adoptedAt: T3.toISOString(),
-      updatedAt: T3.toISOString(),
-    });
-    expect((await readSchedulerState(db, T4)).surveyTasks).toEqual(adopted);
   });
 });

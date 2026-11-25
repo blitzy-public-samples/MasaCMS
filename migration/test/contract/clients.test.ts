@@ -204,20 +204,6 @@ const OWNER_SPECIFIC: readonly ClientCase[] = [
     check: (result) => expect(result).toEqual({ key: `${TENANT}/${FILE_ID}_small.jpg`, deleted: false, writePositions: new Map() }),
   },
   {
-    name: 'getAttachmentObject from finance',
-    run: (owners) => owners.getAttachmentObject({ tenantId: TENANT, attachmentId: FILE_ID }),
-    answer: () => streamAnswer(BYTES),
-    operations: ['finance GET /internal/v1/migration/objects'],
-    check: async (result) => expect(await text(result as Readable)).toBe(BYTES.toString()),
-  },
-  {
-    name: 'getExportObject from reporting',
-    run: (owners) => owners.getExportObject({ tenantId: TENANT, jobId: FILE_ID }),
-    answer: () => streamAnswer(BYTES),
-    operations: ['reporting GET /internal/v1/migration/objects'],
-    check: async (result) => expect(await text(result as Readable)).toBe(BYTES.toString()),
-  },
-  {
     name: 'siteMonitorState of programs-sites',
     run: (owners) => owners.siteMonitorState(),
     answer: () => jsonAnswer(200, { lastMonitored: WALL_CLOCK, updatedAt: WALL_CLOCK }),
@@ -230,23 +216,6 @@ const OWNER_SPECIFIC: readonly ClientCase[] = [
     answer: () => jsonAnswer(200, { lastMonitored: WALL_CLOCK, updatedAt: WALL_CLOCK }),
     operations: ['programs-sites PUT /internal/v1/sitemonitor/state'],
     check: (result) => expect(result).toEqual({ lastMonitored: WALL_CLOCK, updatedAt: WALL_CLOCK }),
-  },
-  {
-    name: 'adoptScheduledTasks to communications',
-    run: (owners) =>
-      owners.adoptScheduledTasks({
-        tasks: [{ name: 'opt2-survey-9C1D7E2F-3A4B-4C5D-8E9F0A1B2C3D4E5F-launch', siteId: 'tenant-a', scheduleTime: WALL_CLOCK, scheduleVersion: 1 }],
-      }),
-    answer: () => jsonAnswer(200, { adopted: 1, existing: 0, scheduledImmediately: 0 }),
-    operations: ['communications POST /internal/v1/migration/adopt-scheduled-tasks'],
-    check: (result) => expect(result).toEqual({ adopted: 1, existing: 0, scheduledImmediately: 0 }),
-  },
-  {
-    name: 'cancelAdoptedScheduledTasks to communications',
-    run: (owners) => owners.cancelAdoptedScheduledTasks({ names: ['opt2-survey-9C1D7E2F-3A4B-4C5D-8E9F0A1B2C3D4E5F-launch'] }),
-    answer: () => jsonAnswer(200, { cancelled: 1 }),
-    operations: ['communications POST /internal/v1/migration/cancel-adopted-scheduled-tasks'],
-    check: (result) => expect(result).toEqual({ cancelled: 1 }),
   },
 ];
 
@@ -310,9 +279,9 @@ describe('remote background client against the real background routes', () => {
     suspended: true,
     since: '2026-06-30T11:30:00.000Z',
     reason: 'golden capture',
-    pushConfigs: { 'timesheets.people.person.archived.v1': { pushEndpoint: 'http://127.0.0.1:20118/internal/v1/events/x', attributes: {} } },
+    pushConfigs: { 'identity.people.person.changed.v1': { pushEndpoint: 'http://127.0.0.1:20111/internal/v1/events/x', attributes: {} } },
     pausedQueues: [{ service: 'people', queue: 'people-outbox-sweep' }],
-    pausedTasks: ['opt2-survey-9C1D7E2F-3A4B-4C5D-8E9F0A1B2C3D4E5F-launch'],
+    pausedTasks: ['/var/www/index.cfm/_api/sitemonitor/'],
   };
   let t: RouteApp;
   const calls: ContractCall[] = [];
@@ -385,7 +354,7 @@ describe('window and transition clients against the migration contract', () => {
   });
 
   it.each<{ name: string; run: () => Promise<unknown>; operationId: string }>([
-    { name: 'openWindowViaService', run: () => openWindowViaService(ctx, { units: ['people.person_archive', 'timesheets.blackout'] }), operationId: 'windowOpen' },
+    { name: 'openWindowViaService', run: () => openWindowViaService(ctx, { units: ['people.person_archive', 'people.person'] }), operationId: 'windowOpen' },
     { name: 'completeWindowViaService', run: () => completeWindowViaService(ctx, WINDOW_ID, { forwarded: true }), operationId: 'windowComplete' },
     { name: 'resolveWindowViaService', run: () => resolveWindowViaService(ctx, WINDOW_ID), operationId: 'windowResolve' },
     { name: 'requestTransition', run: () => requestTransition(ctx, { to: 'v0002', pollMs: 1 }), operationId: 'transitionStart' },

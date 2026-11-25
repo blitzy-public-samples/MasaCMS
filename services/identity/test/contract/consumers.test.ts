@@ -1,5 +1,4 @@
 /** Consumer contracts of identity: the producer event schemas its consumers read and the gateway, people, strategies-content and programs-sites operations it calls. */
-import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { beforeAll, describe, expect, it } from 'vitest';
@@ -15,6 +14,7 @@ import {
   assertRequestMatchesOpenApi,
   assertResponseMatchesOpenApi,
   findOperation,
+  loadOpenApiDocument,
   type ConsumerExpectation,
   type ContractViolation,
   type JsonType,
@@ -54,7 +54,7 @@ const FILES_LOOKUP_PATH = '/internal/v1/files:lookup';
 const CURRENT_USER_URL = `/_api/json/v1/${TENANT_A.siteId}/findCurrentUser`;
 
 function loadContract(url: URL): Contract {
-  return { file: path.relative(REPO_ROOT, fileURLToPath(url)), doc: parse(readFileSync(url, 'utf8')) as OpenApiDoc };
+  return { file: path.relative(REPO_ROOT, fileURLToPath(url)), doc: loadOpenApiDocument(url, parse) as OpenApiDoc };
 }
 
 const IDENTITY = loadContract(new URL('../../contracts/openapi.yaml', import.meta.url));

@@ -28,7 +28,7 @@ const NEW_CREDITS = `opt2-fault-${WINDOW_ID}`;
 const CONTENT_UNIT = 'content.content';
 const CONTENT_OWNER = 'strategies-content';
 // Target-authoritative in the committed v0002 and no unit of tcontent.
-const TARGET_UNIT = 'reporting.export_job';
+const TARGET_UNIT = 'identity.redirect';
 // No carry write entry writes it, so legacy-authoritative in every committed version.
 const COMMITTED_LEGACY_UNIT = 'content.display_title_approval';
 const DEFAULTS = windowImportInterrupted.paramsSchema.parse({});

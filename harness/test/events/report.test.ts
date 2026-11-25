@@ -1,5 +1,5 @@
 // Events report over temp contract trees and temp state directories: nothing is dialled and nothing is written in the checkout.
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -46,8 +46,6 @@ import { vitestResultPath } from '../../src/reporting/speed.js';
 const SAMPLES = fileURLToPath(new URL('../fixtures/contract-samples/', import.meta.url));
 const REPORTING = fileURLToPath(new URL('../fixtures/reporting/', import.meta.url));
 const SAMPLE_RESULTS = readFileSync(path.join(REPORTING, 'vitest-results.sample.json'), 'utf8');
-const FIXTURES_UNAVAILABLE_STATUS = readFileSync(path.join(REPORTING, 'fixtures-unavailable.json'), 'utf8');
-const FIXTURES_AVAILABLE_STATUS = JSON.stringify({ available: true, reason: null, checkedAt: '2026-06-30T00:00:00Z' });
 const UNAVAILABLE_REASON = 'CREATE SCHEMA permission denied in the legacy database';
 
 const COMMITTED_REPORT = repoPath('opt2', 'reports', 'events.json');
@@ -63,22 +61,17 @@ const CHANGED = 'people.person.changed.v1';
 const STUB_NOTE = 'stub.note.created.v1';
 const TREE_TOPICS: readonly string[] = [ARCHIVED, CHANGED, STUB_NOTE];
 
-const SAMPLE_OPENAPI = ['people', 'timesheets', 'stub', 'identity'] as const;
+const SAMPLE_OPENAPI = ['people', 'stub', 'identity'] as const;
 const SKELETON_CONTRACTS = [
   'gateway/contracts/openapi.yaml',
   'migration/contracts/openapi.yaml',
   'services/programs-sites/contracts/openapi.yaml',
   'services/strategies-content/contracts/openapi.yaml',
-  'services/communications/contracts/openapi.yaml',
-  'services/reporting/contracts/openapi.yaml',
-  'services/surveys/contracts/openapi.yaml',
-  'services/finance/contracts/openapi.yaml',
-  'services/e-signature/contracts/openapi.yaml',
 ] as const;
 
 const SNAPSHOT: OutboxReplayResult['before'] = {
-  inboxCounts: { 'timesheets/timesheets.people.person.archived.v1': 3 },
-  aggregateChecksums: { 'timesheets/timesheets.blackout/7d4f3c1e-0000-5000-8000-000000000001': { rows: 3, checksum: 'a1b2c3' } },
+  inboxCounts: { 'stub/stub.stub.note.created.v1': 3 },
+  aggregateChecksums: { 'stub/stub.note_projection/7d4f3c1e-0000-5000-8000-000000000001': { rows: 3, checksum: 'a1b2c3' } },
 };
 
 const OUTBOX_EVIDENCE: OutboxReplayResult = {
@@ -86,7 +79,7 @@ const OUTBOX_EVIDENCE: OutboxReplayResult = {
   before: SNAPSHOT,
   after: structuredClone(SNAPSHOT),
   unchanged: true,
-  replays: [{ service: 'people', exitCode: 0, summary: { republished: 3 } }],
+  replays: [{ service: 'stub', exitCode: 0, summary: { republished: 3 } }],
   differences: [],
 };
 
@@ -112,8 +105,7 @@ const MERGE_RECORDS: readonly RecordEntry[] = [
   ['unpublishedRowSwept', passed({ sweptRows: 1 })],
   ['sweepChainRecreated', { result: FIXTURES_UNAVAILABLE, evidence: { reason: UNAVAILABLE_REASON }, source: SOURCE }],
   ['outboxReplay', passed(OUTBOX_EVIDENCE)],
-  ['seams.archiveToBlackout', passed({ blackouts: 2 })],
-  ['seams.surveyToCloudTasks', passed({ tasks: 3 })],
+  ['seams.noteToProjection', passed({ projections: 1 })],
 ];
 
 const COMPLETE_RECORDS: readonly RecordEntry[] = [
@@ -145,7 +137,7 @@ async function copy(from: string, to: string): Promise<void> {
   await copyFile(from, to);
 }
 
-/** The contract-sample tree: three event schemas, four sample contracts and an empty contract for every other package. */
+/** The contract-sample tree: three event schemas, three sample contracts and an empty contract for every other package. */
 async function buildContractTree(root: string): Promise<void> {
   for (const schema of [ARCHIVED, CHANGED]) {
     await copy(path.join(SAMPLES, 'events', `${schema}.json`), path.join(root, 'services/people/contracts/events', `${schema}.json`));
@@ -164,14 +156,13 @@ interface StateSetup {
   resultsAt?: 'test-all' | 'fallback';
   /** Further packages' vitest JSON, by package folder. */
   otherResults?: Readonly<Record<string, string>>;
-  fixtures?: string;
   records?: readonly RecordEntry[];
 }
 
 /** Environment naming a state directory. */
 type StateEnv = EnvLike & { OPT2_STATE_DIR: string };
 
-/** A fresh state directory holding the people package's vitest JSON, the fixture status and the e2e records. */
+/** A fresh state directory holding the people package's vitest JSON and the e2e records. */
 async function seedState(setup: StateSetup): Promise<StateEnv> {
   const state = await tempDir('state');
   const env: StateEnv = { OPT2_STATE_DIR: state };
@@ -180,7 +171,6 @@ async function seedState(setup: StateSetup): Promise<StateEnv> {
     await put(file, setup.results);
   }
   for (const [pkg, text] of Object.entries(setup.otherResults ?? {})) await put(vitestResultPath(pkg, env), text);
-  if (setup.fixtures !== undefined) await put(path.join(state, 'fixtures.json'), setup.fixtures);
   for (const [key, record] of setup.records ?? []) {
     await expect(recordEventResult<string>(key, record, env)).resolves.toBe(e2eResultPath(key, env));
   }
@@ -250,7 +240,7 @@ describe('report constants', () => {
     ]);
   });
 
-  it('lists the ten contract topics in report order', () => {
+  it('lists the nine contract topics in report order', () => {
     expect(EVENT_TOPICS).toEqual([
       'programs-sites.site.changed.v1',
       'identity.group.changed.v1',
@@ -259,9 +249,8 @@ describe('report constants', () => {
       'identity.login-mail.requested.v1',
       'people.person.changed.v1',
       'people.person.archived.v1',
-      'surveys.survey.scheduled.v1',
-      'communications.message.delivery-status-changed.v1',
       'stub.note.created.v1',
+      'stub.note.commented.v1',
     ]);
   });
 
@@ -270,14 +259,13 @@ describe('report constants', () => {
   });
 
   it('keys e2e records by check, seam and outbox replay', () => {
-    expect(E2E_KEYS).toEqual([...EVENT_CHECK_IDS, 'seams.archiveToBlackout', 'seams.surveyToCloudTasks', 'outboxReplay']);
-    expect(SEAM_TOPICS).toEqual({ archiveToBlackout: ARCHIVED, surveyToCloudTasks: 'surveys.survey.scheduled.v1' });
+    expect(E2E_KEYS).toEqual([...EVENT_CHECK_IDS, 'seams.noteToProjection', 'outboxReplay']);
+    expect(SEAM_TOPICS).toEqual({ noteToProjection: STUB_NOTE });
   });
 
   it.each<[string, string, SeamResult]>([
     ['a passed seam', 'pass', { passed: true, evidence: {} }],
     ['a failed seam', 'fail', { passed: false, evidence: {} }],
-    ['a skipped seam', FIXTURES_UNAVAILABLE, { passed: false, skipped: FIXTURES_UNAVAILABLE, evidence: { reason: UNAVAILABLE_REASON } }],
   ])('records %s as %s', (_title, expected, seam) => {
     expect(seamRecordResult(seam)).toBe(expected);
   });
@@ -286,6 +274,13 @@ describe('report constants', () => {
 describe('topicsFromContracts', () => {
   it('returns one row per contract topic in report order', () => {
     expect(treeTopics.map((row) => row.topic)).toEqual([...EVENT_TOPICS]);
+    // The list holds exactly the event schemas the checkout's services declare.
+    const services = repoPath('services');
+    const declared = readdirSync(services).flatMap((service) => {
+      const dir = path.join(services, service, 'contracts', 'events');
+      return existsSync(dir) ? readdirSync(dir).filter((file) => file.endsWith('.json')).map((file) => file.slice(0, -'.json'.length)) : [];
+    });
+    expect([...EVENT_TOPICS].sort()).toEqual(declared.sort());
   });
 
   it.each<[string, TopicRow]>([
@@ -294,7 +289,7 @@ describe('topicsFromContracts', () => {
       {
         topic: ARCHIVED,
         producer: 'people',
-        consumers: ['timesheets'],
+        consumers: [],
         kind: 'process',
         fanout: 'userPool',
         schema: `services/people/contracts/events/${ARCHIVED}.json`,
@@ -328,7 +323,7 @@ describe('topicsFromContracts', () => {
 
   it('reports a topic without a schema as not found, with no kind and no checkout path', () => {
     const missing = treeTopics.filter((row) => !TREE_TOPICS.includes(row.topic));
-    expect(missing).toHaveLength(7);
+    expect(missing).toHaveLength(6);
     for (const row of missing) {
       expect(row).toMatchObject({ kind: null, fanout: null, consumers: [], error: `${row.schema}: event schema not found` });
       expect(row.error).not.toContain(root);
@@ -338,14 +333,14 @@ describe('topicsFromContracts', () => {
   it('names a malformed schema and marks the readable rows with the topology error', async () => {
     const broken = await tempDir('broken-tree');
     await buildContractTree(broken);
-    const survey = 'services/surveys/contracts/events/surveys.survey.scheduled.v1.json';
-    await put(path.join(broken, survey), JSON.stringify({ $id: 'surveys.survey.scheduled.v1', 'x-opt2-kind': 'bogus' }));
+    const loginMail = 'services/identity/contracts/events/identity.login-mail.requested.v1.json';
+    await put(path.join(broken, loginMail), JSON.stringify({ $id: 'identity.login-mail.requested.v1', 'x-opt2-kind': 'bogus' }));
 
     const rows = await topicsFromContracts(broken);
 
-    const surveyRow = rows.find((row) => row.topic === 'surveys.survey.scheduled.v1');
-    expect(surveyRow?.kind).toBeNull();
-    expect(surveyRow?.error).toMatch(new RegExp(`^${survey}: .*x-opt2-kind must be one of`));
+    const loginMailRow = rows.find((row) => row.topic === 'identity.login-mail.requested.v1');
+    expect(loginMailRow?.kind).toBeNull();
+    expect(loginMailRow?.error).toMatch(new RegExp(`^${loginMail}: .*x-opt2-kind must be one of`));
     const changedRow = rows.find((row) => row.topic === CHANGED);
     expect(changedRow).toMatchObject({ kind: 'state', consumers: [] });
     expect(changedRow?.error).toMatch(/^local topology: /);
@@ -396,7 +391,7 @@ describe('merging package results with e2e records', () => {
   let report: EventsReport;
 
   beforeAll(async () => {
-    env = await seedState({ results: SAMPLE_RESULTS, fixtures: FIXTURES_AVAILABLE_STATUS, records: MERGE_RECORDS });
+    env = await seedState({ results: SAMPLE_RESULTS, records: MERGE_RECORDS });
     inputs = await readEventsReportInputs({ env, repoRoot: root, clock: CLOCK });
     report = buildEventsReport({ ...inputs, topics: completeTopics });
   });
@@ -407,10 +402,9 @@ describe('merging package results with e2e records', () => {
     expect(inputs.packages.filter((entry) => entry.file !== null).map((entry) => entry.package)).toEqual([PEOPLE]);
   });
 
-  it('loads the pin, clock, fixture status, e2e records and tree topics', async () => {
+  it('loads the pin, clock, e2e records and tree topics', async () => {
     expect(inputs.sourceSha).toBe(PIN_SHA);
     expect(inputs.generatedAt).toBe('2026-06-30T00:00:00.000Z');
-    expect(inputs.fixtures).toMatchObject({ available: true, reason: null });
     expect(inputs.results).toEqual(Object.fromEntries(MERGE_RECORDS));
     expect(inputs.topics).toEqual(await topicsFromContracts(root));
   });
@@ -464,10 +458,9 @@ describe('merging package results with e2e records', () => {
     });
   });
 
-  it('passes both seams on their e2e records', () => {
+  it('passes the seam on its e2e record', () => {
     expect(report.seams).toStrictEqual({
-      archiveToBlackout: { topic: ARCHIVED, result: 'pass', evidence: { blackouts: 2 }, source: SOURCE },
-      surveyToCloudTasks: { topic: 'surveys.survey.scheduled.v1', result: 'pass', evidence: { tasks: 3 }, source: SOURCE },
+      noteToProjection: { topic: STUB_NOTE, result: 'pass', evidence: { projections: 1 }, source: SOURCE },
     });
   });
 
@@ -498,7 +491,7 @@ describe('merging package results with e2e records', () => {
 
 describe('package result fallback', () => {
   it('reads results/<package-slug>.json when test-all wrote no vitest file', async () => {
-    const env = await seedState({ results: SAMPLE_RESULTS, resultsAt: 'fallback', fixtures: FIXTURES_AVAILABLE_STATUS });
+    const env = await seedState({ results: SAMPLE_RESULTS, resultsAt: 'fallback' });
     const fallback = path.join(env.OPT2_STATE_DIR, 'results', 'services-people.json');
 
     expect(packageResultPath(PEOPLE, env)).toBe(fallback);
@@ -569,7 +562,7 @@ describe('a fully evidenced report', () => {
     const before = (JSON.parse(SAMPLE_RESULTS) as VitestJson).testResults.flatMap((file) => file.assertionResults);
     const after = (JSON.parse(cleaned) as VitestJson).testResults.flatMap((file) => file.assertionResults);
     expect(before.length - after.length).toBe(1);
-    const env = await seedState({ results: cleaned, fixtures: FIXTURES_AVAILABLE_STATUS, records: COMPLETE_RECORDS });
+    const env = await seedState({ results: cleaned, records: COMPLETE_RECORDS });
     report = buildEventsReport({ ...(await readEventsReportInputs({ env, repoRoot: root, clock: CLOCK })), topics: completeTopics });
   });
 
@@ -582,11 +575,11 @@ describe('a fully evidenced report', () => {
   it.each<[string, (draft: EventsReport) => void, 'fail' | 'unmet', string]>([
     ['a changed outbox replay', (draft) => void (draft.outboxReplay.unchanged = false), 'fail', 'outboxReplay'],
     ['no recorded outbox replay', (draft) => void (draft.outboxReplay.unchanged = null), 'unmet', 'outboxReplay'],
-    ['a failed seam', (draft) => void (draft.seams.archiveToBlackout.result = 'fail'), 'fail', 'seams.archiveToBlackout'],
-    ['a skipped seam', (draft) => void (draft.seams.surveyToCloudTasks.result = FIXTURES_UNAVAILABLE), 'unmet', 'seams.surveyToCloudTasks'],
+    ['a failed seam', (draft) => void (draft.seams.noteToProjection.result = 'fail'), 'fail', 'seams.noteToProjection'],
+    ['a skipped seam', (draft) => void (draft.seams.noteToProjection.result = FIXTURES_UNAVAILABLE), 'unmet', 'seams.noteToProjection'],
     ['a not-run check', (draft) => void (draft.checks.dlqReplayOnce.result = 'not-run'), 'unmet', 'checks.dlqReplayOnce'],
     ['an unreadable topic', (draft) => void (draft.topics[0]!.error = 'local topology: unreadable'), 'fail', `topics.${EVENT_TOPICS[0]}`],
-    ['a topic without a declared kind', (draft) => void (draft.topics[9]!.kind = null), 'unmet', `topics.${EVENT_TOPICS[9]}`],
+    ['a topic without a declared kind', (draft) => void (draft.topics[7]!.kind = null), 'unmet', `topics.${EVENT_TOPICS[7]}`],
   ])('with %s the outcome is %s', (_title, change, result, id) => {
     const draft = structuredClone(report);
     change(draft);
@@ -596,32 +589,11 @@ describe('a fully evidenced report', () => {
   });
 });
 
-describe('fixtures unavailable', () => {
-  it('marks both seams skipped even when e2e seam results exist', async () => {
-    const env = await seedState({ results: SAMPLE_RESULTS, fixtures: FIXTURES_UNAVAILABLE_STATUS, records: MERGE_RECORDS });
-    const report = buildEventsReport(await readEventsReportInputs({ env, repoRoot: root, clock: CLOCK }));
-
-    expect(report.seams).toStrictEqual({
-      archiveToBlackout: { topic: ARCHIVED, result: FIXTURES_UNAVAILABLE, reason: UNAVAILABLE_REASON },
-      surveyToCloudTasks: { topic: 'surveys.survey.scheduled.v1', result: FIXTURES_UNAVAILABLE, reason: UNAVAILABLE_REASON },
-    });
-    expect(eventsOutcome(report).unmet).toEqual(expect.arrayContaining(['seams.archiveToBlackout', 'seams.surveyToCloudTasks']));
-  });
-
-  it('treats a state directory without fixtures.json as unavailable', async () => {
-    const env = await seedState({ records: MERGE_RECORDS });
-    const report = buildEventsReport(await readEventsReportInputs({ env, repoRoot: root, clock: CLOCK }));
-    for (const id of SEAM_IDS) {
-      expect(report.seams[id]).toStrictEqual({ topic: SEAM_TOPICS[id], result: FIXTURES_UNAVAILABLE, reason: 'fixtures.json not found' });
-    }
-  });
-});
-
 describe('report shape and entry point', () => {
   let env: StateEnv;
 
   beforeAll(async () => {
-    env = await seedState({ results: SAMPLE_RESULTS, fixtures: FIXTURES_AVAILABLE_STATUS, records: MERGE_RECORDS });
+    env = await seedState({ results: SAMPLE_RESULTS, records: MERGE_RECORDS });
   });
 
   it('keeps the top-level, check and seam keys of the committed report', async () => {
@@ -630,8 +602,8 @@ describe('report shape and entry point', () => {
 
     expect(Object.keys(report).sort()).toEqual(Object.keys(committed).sort());
     expect(Object.keys(report.checks).sort()).toEqual(Object.keys(committed.checks).sort());
-    expect(Object.keys(report.seams)).toEqual(['archiveToBlackout', 'surveyToCloudTasks']);
-    expect(report.topics).toHaveLength(10);
+    expect(Object.keys(report.seams)).toEqual(['noteToProjection']);
+    expect(report.topics).toHaveLength(9);
   });
 
   it('writes events.json to OPT2_REPORTS_DIR with the pinned SHA and leaves the checkout reports untouched', async () => {

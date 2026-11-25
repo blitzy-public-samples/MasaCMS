@@ -836,7 +836,7 @@ describe.skipIf(!(await pgAvailable()))('routes/jsonapi/file', () => {
 
     describe('save as beanORM.save', () => {
       const POOLED = { ...TENANT_A, filePoolId: TENANT_UMBRELLA.siteId };
-      // Keys of the legacy oracle's answer to the GS-CO-17 metadata-save step (ACF 2023), which the serializer lower-cases.
+      // Keys of the legacy oracle's answer to a fileMetaData save (ACF 2023), which the serializer lower-cases.
       const SAVED_META_KEYS = [
         'alttext', 'caption', 'contenthistid', 'contentid', 'contentsubtype', 'contenttype', 'created', 'credits', 'directimages', 'entityname',
         'errors', 'exif', 'fileext', 'fileid', 'filename', 'filesize', 'id', 'isnew', 'links', 'metaid', 'remoteid', 'remotepubdate',
@@ -863,7 +863,7 @@ describe.skipIf(!(await pgAvailable()))('routes/jsonapi/file', () => {
         const before = await metaCount(UMBRELLA);
         const params = {
           method: 'save', entityname: 'fileMetaData', siteid: TENANT_A.siteId, id: metaId, metaid: metaId, fileid: fileId, contentid: CONTENT_ID,
-          contenthistid: HIST_ID, alttext: 'GS-CO-17 PDF', caption: 'GS-CO-17 caption', credits: '',
+          contenthistid: HIST_ID, alttext: 'Pooled PDF', caption: 'Pooled caption', credits: '',
         };
         const result = await handlerOf(fileMetaDataHandler, 'save')(ctx, call({ method: 'save', id: metaId, site: POOLED, actor: actorOf(TENANT_A), params }).call);
         const data = dataOf(result);
@@ -878,13 +878,13 @@ describe.skipIf(!(await pgAvailable()))('routes/jsonapi/file', () => {
           self: expect.stringMatching(new RegExp(`/_api/json/v1/${TENANT_A.siteId}/fileMetaData/${metaId}$`)),
         });
         expect(data).toMatchObject({
-          id: metaId, metaid: metaId, fileid: fileId, contentid: CONTENT_ID, contenthistid: HIST_ID, alttext: 'GS-CO-17 PDF', caption: 'GS-CO-17 caption',
+          id: metaId, metaid: metaId, fileid: fileId, contentid: CONTENT_ID, contenthistid: HIST_ID, alttext: 'Pooled PDF', caption: 'Pooled caption',
           credits: '', exif: '{}', filename: 'gs-document.pdf', fileext: 'pdf', filesize: 595, contenttype: 'application', contentsubtype: 'pdf',
           remotepubdate: '', siteid: TENANT_A.siteId, isnew: 0, directimages: true, entityname: 'fileMetaData', saveErrors: false, errors: {},
         });
         expect(await keyedRow(TENANT_A.tenantId, metaId)).toMatchObject({
-          metaid: metaId, siteid: TENANT_A.siteId, fileid: fileId, contentid: CONTENT_ID, contenthistid: HIST_ID, alttext: 'GS-CO-17 PDF',
-          caption: 'GS-CO-17 caption', credits: null, exif: '{}', remotepubdate: null,
+          metaid: metaId, siteid: TENANT_A.siteId, fileid: fileId, contentid: CONTENT_ID, contenthistid: HIST_ID, alttext: 'Pooled PDF',
+          caption: 'Pooled caption', credits: null, exif: '{}', remotepubdate: null,
         });
         expect(await metaCount(UMBRELLA)).toBe(before);
       });

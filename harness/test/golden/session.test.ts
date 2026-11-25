@@ -29,6 +29,7 @@ import {
   oauthClientCredentials,
   originBaseUrl,
   resolvePlaceholders,
+  resolveSeedAccountSecrets,
   secretValues,
   session,
   type Origin,
@@ -274,7 +275,7 @@ describe('origins', () => {
       const fake = fakeFetch(on('GET', '/', () => html('<p>ok</p>')));
       const sessions = { admin: NO_LOGIN, visitor: { login: 'none', via: 'public', site: 'tenant-a' } } as const;
       const ctx = createScenarioContext(
-        { id: 'GS-PUB-01', sessions },
+        { id: 'GS-PUB-71', sessions },
         { origin, env: { ...env, ...originEnv }, fetch: fake.fetch },
       );
       expect(ctx.baseUrl).toBe(expected);
@@ -288,21 +289,21 @@ describe('origins', () => {
       when: 'the dataset has no such site',
       site: 'tenant-x',
       message:
-        'GS-PUB-01: seedRef site tenant-x: no row at index 0 among the 0 rows of masa.sites matching {"siteID":"tenant-x"}',
+        'GS-PUB-71: seedRef site tenant-x: no row at index 0 among the 0 rows of masa.sites matching {"siteID":"tenant-x"}',
     },
-    { when: 'its site row has no domain', site: 'tenant-b', message: 'GS-PUB-01: site tenant-b has no domain in masa.sites' },
+    { when: 'its site row has no domain', site: 'tenant-b', message: 'GS-PUB-71: site tenant-b has no domain in masa.sites' },
     {
       when: 'its domain is not a host name',
       site: 'tenant-b',
       domain: 'tenant b.localhost',
-      message: 'GS-PUB-01: site tenant-b domain tenant b.localhost in masa.sites is not a host name',
+      message: 'GS-PUB-71: site tenant-b domain tenant b.localhost in masa.sites is not a host name',
     },
   ])('throws GoldenConfigError for a session site when $when', ({ site, domain, message }) => {
     if (domain !== undefined) {
       const sites = DATASET.masa.sites.map((row) => (row.siteID === site ? { ...row, domain } : row));
       writeJson(join(stateDir, 'seed', 'dataset.json'), { ...DATASET, masa: { ...DATASET.masa, sites } });
     }
-    const err = thrown(() => context({ id: 'GS-PUB-01', sessions: { visitor: { login: 'none', via: 'public', site } } }));
+    const err = thrown(() => context({ id: 'GS-PUB-71', sessions: { visitor: { login: 'none', via: 'public', site } } }));
     expect(err).toBeInstanceOf(GoldenConfigError);
     expect((err as GoldenConfigError).message).toBe(message);
   });
@@ -310,7 +311,7 @@ describe('origins', () => {
 
 describe('resolvePlaceholders', () => {
   it('resolves every placeholder kind in strings, nested objects and arrays, keeping surrounding text', () => {
-    const scenario = scenarioById(catalogue, 'GS-CO-05');
+    const scenario = scenarioById(catalogue, 'GS-CO-75');
     const ctx = context(scenario);
     ctx.bindings.set('create.data', { id: CREATED_ID });
 
@@ -321,7 +322,7 @@ describe('resolvePlaceholders', () => {
   });
 
   it("selects the scenario's seedRefs rows by their where filter", () => {
-    const ctx = context(scenarioById(catalogue, 'GS-CO-05'));
+    const ctx = context(scenarioById(catalogue, 'GS-CO-75'));
     expect(ctx.seedRows.get('page')).toStrictEqual(DATASET.masa.content[2]);
   });
 
@@ -364,7 +365,7 @@ describe('resolvePlaceholders', () => {
   ])('raises MissingSecretError naming the placeholder when $when', (c) => {
     if (c.removeCredentials === true) rmSync(credentialsPath());
     const ctxEnv = c.unsetEnv === undefined ? env : { ...env, [c.unsetEnv]: undefined };
-    const ctx = context({ id: 'GS-ID-05' }, fakeFetch(), ctxEnv);
+    const ctx = context({ id: 'GS-ID-75' }, fakeFetch(), ctxEnv);
 
     const err = thrown(() => resolvePlaceholders({ form: [`pw=${c.placeholder}`] }, ctx));
     expect(err).toBeInstanceOf(MissingSecretError);
@@ -376,18 +377,18 @@ describe('resolvePlaceholders', () => {
     ['a seed alias the scenario does not declare', '${seed.absent.contentid}'],
     ['a role the credential file names no user for', '${user:tenant-a:fixture-role}'],
   ])('raises GoldenConfigError prefixed with the scenario id for %s', (_label, placeholder) => {
-    const ctx = context({ id: 'GS-ID-05' });
+    const ctx = context({ id: 'GS-ID-75' });
 
     const err = thrown(() => resolvePlaceholders(`/route?value=${placeholder}`, ctx));
     expect(err).toBeInstanceOf(GoldenConfigError);
-    expect((err as GoldenConfigError).message).toMatch(/^GS-ID-05: /);
+    expect((err as GoldenConfigError).message).toMatch(/^GS-ID-75: /);
     expect((err as GoldenConfigError).message).toContain(placeholder);
   });
 });
 
 describe('secretValues', () => {
   it('lists every resolved secret value and none of the non-secret ones', () => {
-    const ctx = context(scenarioById(catalogue, 'GS-CO-05'));
+    const ctx = context(scenarioById(catalogue, 'GS-CO-75'));
     ctx.bindings.set('create.data', { id: CREATED_ID });
     expect(secretValues(ctx)).toStrictEqual([]);
 
@@ -453,7 +454,7 @@ describe('legacy authentication helpers', () => {
     },
   ])('reads the CSRF pair, hidden fields and action of $form', async ({ selector, token, action, fields }) => {
     const fake = fakeFetch(on('GET', ADMIN_LOGIN_PATH, loginPage));
-    const s = session(context({ id: 'GS-ID-04' }, fake));
+    const s = session(context({ id: 'GS-ID-74' }, fake));
 
     expect(await fetchFormTokens(s, ADMIN_LOGIN_PATH, selector)).toStrictEqual({
       token,
@@ -491,7 +492,7 @@ describe('legacy authentication helpers', () => {
           data: { [CSRF_FIELD_TOKEN]: API_TOKEN, [CSRF_FIELD_EXPIRES]: EXPIRES },
         }),
     });
-    const s = session(context({ id: 'GS-CO-05' }, fake));
+    const s = session(context({ id: 'GS-CO-75' }, fake));
 
     expect(await jsonApiTokens(s, 'tenant-a', csrfContext)).toStrictEqual({
       [CSRF_HEADER_TOKEN]: API_TOKEN,
@@ -514,7 +515,7 @@ describe('legacy authentication helpers', () => {
         json({ access_token: ACCESS_TOKEN, token_type: 'Bearer', expires_in: 3600 }),
       ),
     );
-    const s = session(context({ id: 'GS-ID-08' }, fake));
+    const s = session(context({ id: 'GS-ID-78' }, fake));
 
     const { accessToken, result } = await oauthClientCredentials(s, {
       site: 'tenant-a',
@@ -565,5 +566,52 @@ describe('createScenarioContext', () => {
     expect(await session(first, 'admin').cookieHeader()).toBe('CFID=2002');
     expect(await session(second, 'admin').cookieHeader()).toBe('');
     expect(second.bindings.size).toBe(0);
+  });
+});
+
+describe('resolveSeedAccountSecrets', () => {
+  const ACCOUNT: Scenario['seedRefs'][number] = {
+    as: 'person',
+    source: 'dataset',
+    path: 'masa.users',
+    where: { siteID: 'tenant-a', isPublic: 0 },
+  };
+  const PAGE: Scenario['seedRefs'][number] = { as: 'page', source: 'dataset', path: 'masa.content', where: { type: 'Page' } };
+
+  function accountContext(origin: Origin, seedRefs: Scenario['seedRefs']): ScenarioContext {
+    return createScenarioContext({ id: 'GS-PE-75', seedRefs }, { origin, env, fetch: fakeFetch().fetch });
+  }
+
+  it.each<[Origin]>([['legacy'], ['gateway']])(
+    "resolves the account a masa.users seedRef selected as seed:<username> on the %s side",
+    (origin) => {
+      const ctx = accountContext(origin, [PAGE, ACCOUNT]);
+      resolveSeedAccountSecrets(ctx, { seedRefs: [PAGE, ACCOUNT], compare: ['status', 'rows'] });
+
+      expect([...(ctx.resolvedSecrets ?? [])]).toStrictEqual([[`seed:${SEED_USER}`, SEED_PASSWORD]]);
+      expect(secretValues(ctx)).toStrictEqual([SEED_PASSWORD]);
+    },
+  );
+
+  it.each<[label: string, seedRefs: Scenario['seedRefs'], compare: Scenario['compare']]>([
+    ['the scenario compares no rows', [ACCOUNT], ['status', 'dom']],
+    ['no seedRef selects a masa.users row', [PAGE], ['status', 'rows']],
+  ])('resolves nothing when %s', (_label, seedRefs, compare) => {
+    const ctx = accountContext('legacy', seedRefs);
+    resolveSeedAccountSecrets(ctx, { seedRefs, compare });
+
+    expect([...(ctx.resolvedSecrets ?? [])]).toStrictEqual([]);
+    expect(secretValues(ctx)).toStrictEqual([]);
+  });
+
+  it.each<[label: string, user: Record<string, unknown>, error: typeof GoldenConfigError | typeof MissingSecretError]>([
+    ['has no username', { userID: 'FIXTURE-USER-0002', siteID: 'tenant-a', isPublic: 0 }, GoldenConfigError],
+    ['has no seeded credential', { userID: 'FIXTURE-USER-0003', siteID: 'tenant-a', isPublic: 0, username: 'x.y' }, MissingSecretError],
+  ])('throws when the selected account %s', (_label, user, error) => {
+    writeJson(join(stateDir, 'seed', 'dataset.json'), { ...DATASET, masa: { ...DATASET.masa, users: [user] } });
+    const ctx = accountContext('legacy', [ACCOUNT]);
+
+    expect(() => resolveSeedAccountSecrets(ctx, { seedRefs: [ACCOUNT], compare: ['rows'] })).toThrow(error);
+    expect(secretValues(ctx)).toStrictEqual([]);
   });
 });

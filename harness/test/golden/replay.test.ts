@@ -8,8 +8,10 @@ import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import bcrypt from 'bcryptjs';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { INVOCATION_HEADER } from '@opt2/platform/auth';
+import { decodeRow } from '@opt2/platform/migration-kit';
 import {
   EXCEPTIONS_LIST_PATH,
   GOLDEN_SETS_DIR,
@@ -36,11 +38,12 @@ import {
   type ReplayDeps,
   type ReplayOutput,
 } from '../../src/golden/replay.js';
-import type { SecretStore, SeedStore } from '../../src/golden/session.js';
-import type { SideEffectConfig } from '../../src/golden/side-effects.js';
+import { loadSecretStore, type SecretStore, type SeedStore } from '../../src/golden/session.js';
+import type { SideEffectConfig, TableOwnership } from '../../src/golden/side-effects.js';
 import { GAP_REASON } from '../../src/golden/steps.js';
 import { UsageError } from '../../src/lib/cli.js';
 import { createHarnessInvoker, type HarnessInvoker } from '../../src/lib/invocation.js';
+import type { ReadOnlyMssql } from '../../src/lib/mssql.js';
 import { repoPath, type EnvLike } from '../../src/lib/paths.js';
 import { pinnedSha } from '../../src/lib/pin.js';
 
@@ -90,7 +93,7 @@ let catalogueFixtureCo05: Scenario;
 beforeAll(async () => {
   committed = await committedOutputs();
   rules = loadRules(RULES_PATH, { PORT: '8500' });
-  catalogueFixtureCo05 = scenarioById(await loadCatalogue(CATALOGUE_FIXTURE), 'GS-CO-05');
+  catalogueFixtureCo05 = scenarioById(await loadCatalogue(CATALOGUE_FIXTURE), 'GS-CO-75');
 });
 
 afterAll(async () => {
@@ -147,7 +150,7 @@ function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 }
 
-/** The GS-CO-05 findone body and headers of the replay sample, its ids raw and its ETag the body's own hash. */
+/** The GS-CO-75 findone body and headers of the replay sample, its ids raw and its ETag the body's own hash. */
 function contentResponse(): Response {
   const body = JSON.stringify(replaySample.steps[0]?.response.body)
     .replaceAll('<id:1>', HISTORY_ID)
@@ -308,17 +311,17 @@ function catalogueScenarios(halt: HaltVariant, site?: string): Record<string, un
       : contentStep('probe', 'step=probe', { expected: 'halted', exceptionId: DECLARED_ID });
   return [
     contentScenario('GS-CO-04', [probe]),
-    contentScenario('GS-CO-05', [
+    contentScenario('GS-CO-75', [
       contentStep('findone', undefined, { extract: { contentid: { from: 'body', path: 'data.contentid' } } }),
     ]),
-    contentScenario('GS-CO-14', [
+    contentScenario('GS-CO-84', [
       contentStep('list', 'step=list'),
       contentStep('probe', 'step=probe', {
         candidates: [0, 1, 2].map((n) => ({ route: contentRoute(`candidate=${n}`) })),
       }),
       contentStep('after', 'step=after'),
     ]),
-    contentScenario('GS-BR-01', [contentStep('first', 'step=first'), contentStep('second', 'step=second')], {
+    contentScenario('GS-BR-71', [contentStep('first', 'step=first'), contentStep('second', 'step=second')], {
       replayFaults: [{ fault: 'projector-delay', ms: 3000 }],
     }),
     {
@@ -411,7 +414,7 @@ const summaryOf = (over: Record<string, unknown>): Record<string, unknown> => ({
 });
 
 describe('replayScenario', () => {
-  it('writes the GS-CO-05 findone normalised exactly as its golden set, under the version the gateway reports', async () => {
+  it('writes the GS-CO-75 findone normalised exactly as its golden set, under the version the gateway reports', async () => {
     const stack = fakeStack();
     const invoker = await operatorInvoker();
     const tableVersion = await activeTableVersion({ env, fetch: stack.fetch, invoker });
@@ -423,13 +426,13 @@ describe('replayScenario', () => {
 
     const result = await replayScenario(catalogueFixtureCo05, deps);
 
-    const file = replayOutputPath('GS-CO-05', { OPT2_STATE_DIR: env.OPT2_STATE_DIR });
-    expect(file).toBe(path.join(root, 'state', 'golden', 'replay', 'GS-CO-05.json'));
+    const file = replayOutputPath('GS-CO-75', { OPT2_STATE_DIR: env.OPT2_STATE_DIR });
+    expect(file).toBe(path.join(root, 'state', 'golden', 'replay', 'GS-CO-75.json'));
     expect(result).toMatchObject({ status: 'replayed', path: file });
-    const output = await readOutput('GS-CO-05');
+    const output = await readOutput('GS-CO-75');
     expect(output).toMatchObject({
       sourceSha: SHA,
-      scenarioId: 'GS-CO-05',
+      scenarioId: 'GS-CO-75',
       replayedAt: REPLAYED_AT,
       origin: 'gateway',
       tableVersion: 'v0002',
@@ -442,25 +445,98 @@ describe('replayScenario', () => {
   });
 
   it('sends the steps in golden order, a candidate step only with the candidate its golden set kept', async () => {
-    const golden = await writeGolden('GS-CO-14', [
+    const golden = await writeGolden('GS-CO-84', [
       { name: 'list', url: `${CONTENT_PATH}?step=list` },
       { name: 'probe', url: `${CONTENT_PATH}?candidate=1`, candidateIndex: 1 },
       { name: 'after', url: `${CONTENT_PATH}?step=after` },
     ]);
     const stack = fakeStack();
 
-    const result = await replayScenario(scenarioOf('GS-CO-14'), await replayDeps(stack));
+    const result = await replayScenario(scenarioOf('GS-CO-84'), await replayDeps(stack));
 
     expect(result.status).toBe('replayed');
     expect(stack.steps().map((s) => `${s.url.pathname}${s.url.search}`)).toEqual(
       golden.steps.map((step) => step.request.url),
     );
-    const output = await readOutput('GS-CO-14');
+    const output = await readOutput('GS-CO-84');
     expect(output.steps.map((step) => [step.name, step.candidateIndex])).toEqual([
       ['list', undefined],
       ['probe', 1],
       ['after', undefined],
     ]);
+  });
+
+  it("names a seedRef account's stored hash after its seeded credential, as capture does, writing no credential", async () => {
+    const account = 'fixture.person';
+    const password = ['FIXTURE', 'ACCOUNT', 'PASSWORD'].join('-');
+    const userId = 'FIXTURE-USER-0001';
+    const unit = 'identity.credential';
+    const hash = bcrypt.hashSync(password, bcrypt.genSaltSync(4).replace('$2b$', '$2a$'));
+    await mkdir(path.join(root, 'state', 'secrets'), { recursive: true });
+    const credentials = { users: { 'tenant-a': { [account]: password } } };
+    await writeFile(path.join(root, 'state', 'secrets', 'seed-credentials.json'), JSON.stringify(credentials));
+    const accountSeed: SeedStore = {
+      ...seed,
+      select: (ref) => (ref.path === 'masa.users' ? { userID: userId, siteID: 'tenant-a', username: account } : seed.select(ref)),
+    };
+    // Legacy SQL holding the account's tusers row; every unit is legacy-authoritative, so replay reads it there.
+    const mssql: ReadOnlyMssql = {
+      async readOnlyQuery<T>(sql: string): Promise<T[]> {
+        const catalog = [
+          { COLUMN_NAME: 'UserID', DATA_TYPE: 'char', NUMERIC_SCALE: null },
+          { COLUMN_NAME: 'Password', DATA_TYPE: 'varchar', NUMERIC_SCALE: null },
+        ];
+        return (sql.startsWith('SELECT COLUMN_NAME') ? catalog : [{ UserID: userId, Password: hash }]) as T[];
+      },
+      close: () => Promise.resolve(),
+    };
+    const ownership: TableOwnership = {
+      tables: [
+        {
+          table: 'tusers',
+          schema: 'dbo',
+          owner: 'identity',
+          rowIdentity: 'key',
+          split: null,
+          targets: [{ unit, owner: 'identity', rowPredicate: null, keyColumns: ['UserID'], ownedColumns: ['Password'] }],
+        },
+      ],
+      units: [{ unit, owner: 'identity' }],
+    };
+    const stack = fakeStack();
+    const fetch: FetchLike = async (input, init) =>
+      new URL(input).pathname === CUTOVER_STATUS_PATH
+        ? json({ tableVersion: 'v0002', epoch: 7, instances: [], groupAuthority: {} })
+        : stack.fetch(input, init);
+    await writeGolden('GS-PE-75', [{ name: 'findone', url: CONTENT_PATH }]);
+    const scenario = scenarioSchema.parse(
+      contentScenario('GS-PE-75', [contentStep('findone')], {
+        seedRefs: [
+          { as: 'page', source: 'dataset', path: 'masa.content', where: { siteID: 'tenant-a', type: 'Page' } },
+          { as: 'person', source: 'dataset', path: 'masa.users', where: { siteID: 'tenant-a' } },
+        ],
+        compare: ['status', 'rows'],
+        rows: [{ table: 'tusers', where: { userid: '${seed.person.userID}' } }],
+      }),
+    );
+    const invoker = await operatorInvoker();
+    const deps = await replayDeps(stack, {
+      fetch,
+      invoker,
+      secrets: loadSecretStore(env),
+      seed: accountSeed,
+      sideEffects: { config: SIDE_EFFECTS, mssql, ownership, invoker },
+    });
+
+    expect((await replayScenario(scenario, deps)).status).toBe('replayed');
+    const output = await readOutput('GS-PE-75');
+    expect(output.error).toBeUndefined();
+    const table = output.sideEffects.rows[unit];
+    if (table === undefined) throw new Error(`no ${unit} rows replayed`);
+    expect(table.entries.map((entry) => decodeRow(table.columns, entry.encoding).Password)).toEqual([
+      `$2a$04$<verifies:seed:${account}>`,
+    ]);
+    expect(await readFile(replayOutputPath('GS-PE-75', env), 'utf8')).not.toContain(password);
   });
 });
 
@@ -501,7 +577,7 @@ describe('replayScenario without an injected fetch', () => {
     const result = await replayScenario(catalogueFixtureCo05, deps);
 
     expect(result.status).toBe('replayed');
-    const output = await readOutput('GS-CO-05');
+    const output = await readOutput('GS-CO-75');
     expect(output.error).toBeUndefined();
     expect(output.steps.map((step) => step.response.status)).toEqual([200]);
     expect(stack.steps().map((s) => s.url.pathname)).toEqual([CONTENT_PATH]);
@@ -530,10 +606,10 @@ describe('halted cases', () => {
         ? { name: 'probe', url: `${CONTENT_PATH}?candidate=1`, candidateIndex: 1, gap: true }
         : { name: 'probe', url: `${CONTENT_PATH}?step=probe` },
     ]);
-    await writeGolden('GS-CO-05', [{ name: 'findone', url: CONTENT_PATH }]);
+    await writeGolden('GS-CO-75', [{ name: 'findone', url: CONTENT_PATH }]);
     const seeded = await readExceptions();
     const deps = mainDeps(fakeStack(), await operatorInvoker());
-    const argv = ['--only', 'GS-CO-04,GS-CO-05', '--catalogue', catalogueFile];
+    const argv = ['--only', 'GS-CO-04,GS-CO-75', '--catalogue', catalogueFile];
 
     const outcome = await main(argv, env, deps);
 
@@ -542,7 +618,7 @@ describe('halted cases', () => {
     const first = await readOutput('GS-CO-04');
     expect(first.halted).toEqual([{ step: 'probe', routeKey: ROUTE_KEY, reason, exceptionId }]);
     expect(first.steps.map((step) => [step.name, step.exceptionId])).toEqual([['probe', exceptionId]]);
-    const second = await readOutput('GS-CO-05');
+    const second = await readOutput('GS-CO-75');
     expect(second.halted).toEqual([]);
     expect(second.error).toBeUndefined();
     expect(second.steps.map((step) => step.name)).toEqual(['findone']);
@@ -601,7 +677,7 @@ describe('replay-only faults', () => {
   const PROJECTOR_DELAY = [{ fault: 'projector-delay', ms: 3000 }];
 
   beforeEach(async () => {
-    await writeGolden('GS-BR-01', [
+    await writeGolden('GS-BR-71', [
       { name: 'first', url: `${CONTENT_PATH}?step=first` },
       { name: 'second', url: `${CONTENT_PATH}?step=second` },
     ]);
@@ -612,7 +688,7 @@ describe('replay-only faults', () => {
     const callees: string[] = [];
 
     const result = await replayScenario(
-      scenarioOf('GS-BR-01'),
+      scenarioOf('GS-BR-71'),
       await replayDeps(stack, { invoker: await operatorInvoker(callees) }),
     );
 
@@ -637,10 +713,10 @@ describe('replay-only faults', () => {
       },
     });
 
-    const result = await replayScenario(scenarioOf('GS-BR-01'), await replayDeps(stack));
+    const result = await replayScenario(scenarioOf('GS-BR-71'), await replayDeps(stack));
 
     expect(result.status).toBe('error');
-    expect((await readOutput('GS-BR-01')).error).toMatchObject({ step: 'first' });
+    expect((await readOutput('GS-BR-71')).error).toMatchObject({ step: 'first' });
     expect(trace(stack)).toEqual([
       `PUT migration ${FAULT}`,
       `GET gateway ${CONTENT_PATH}?step=first`,
@@ -681,7 +757,7 @@ describe('replay-only faults', () => {
 describe('main flags', () => {
   beforeEach(async () => {
     await writeCatalogue();
-    await writeGolden('GS-CO-05', [{ name: 'findone', url: CONTENT_PATH }]);
+    await writeGolden('GS-CO-75', [{ name: 'findone', url: CONTENT_PATH }]);
     await writeGolden('GS-PE-RH-01', [{ name: 'rehearsal', url: `${CONTENT_PATH}?scenario=rehearsal` }]);
     for (const crossing of [false, true]) {
       await writeGolden(
@@ -710,12 +786,12 @@ describe('main flags', () => {
 
   it('rejects --rehearsal naming a scenario that replays under v0002 as a usage error, sending nothing', async () => {
     const stack = fakeStack();
-    const argv = ['--rehearsal', '--only', 'GS-CO-05', '--catalogue', catalogueFile];
+    const argv = ['--rehearsal', '--only', 'GS-CO-75', '--catalogue', catalogueFile];
 
     const run = main(argv, env, mainDeps(stack, await operatorInvoker()));
 
     await expect(run).rejects.toBeInstanceOf(UsageError);
-    await expect(run).rejects.toThrow('GS-CO-05 (v0002) do not replay under v0003');
+    await expect(run).rejects.toThrow('GS-CO-75 (v0002) do not replay under v0003');
     expect(stack.sent).toEqual([]);
   });
 
@@ -904,7 +980,7 @@ describe('main flags', () => {
   it('replays an acrossTransition scenario before the others without --phase, in capture order', async () => {
     await crossGsId09([], 'pre-transition', 'v0001');
     const stack = fakeStack();
-    const argv = ['--only', 'GS-CO-05,GS-ID-09', '--catalogue', catalogueFile];
+    const argv = ['--only', 'GS-CO-75,GS-ID-09', '--catalogue', catalogueFile];
 
     const outcome = await main(argv, env, mainDeps(stack, await operatorInvoker()));
 

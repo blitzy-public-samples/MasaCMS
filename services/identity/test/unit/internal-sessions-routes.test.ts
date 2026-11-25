@@ -1,5 +1,4 @@
 /** The `adoptSession`, `getSessionState`, `getSessionAdminSite`, `getSessionAdminState`, `importSessionAdminState`, `getSessionSnapshot` and `endSession` routes over a throwaway `identity` schema: contract shape, gateway-only access, body validation, adoption, admin-site, admin-state and hydration reads, admin-state import and ending. */
-import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -14,6 +13,7 @@ import { SYSTEM_TENANT_ID, tenantIdForSite, withMetadata, withTenant, type Tenan
 import {
   assertResponseMatchesOpenApi,
   createThrowawaySchema,
+  loadOpenApiDocument,
   mintServiceToken,
   mintUserToken,
   pgAvailable,
@@ -31,7 +31,7 @@ import { registerSessionRoutes } from '../../src/routes/internal-sessions.js';
 type ContractOperation = Record<string, unknown>;
 type Method = 'GET' | 'POST';
 
-const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as {
+const OPENAPI = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as {
   paths: Record<string, Record<string, ContractOperation>>;
 };
 const CONTRACT_PATHS = [

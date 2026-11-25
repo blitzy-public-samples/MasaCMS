@@ -169,7 +169,7 @@ function goldenOf(scenario: Scenario): GoldenSet {
     tableVersion: null,
     fixtures: { available: true, reason: null },
     steps: scenario.steps.map((step, i) => exchange(step.name, i, scenario.covers[i] ?? 'admin:unknown')),
-    sideEffects: { mail: [], rows: {}, tasks: [], files: [] },
+    sideEffects: { mail: [], rows: {}, files: [] },
   };
 }
 

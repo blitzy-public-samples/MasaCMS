@@ -9,7 +9,7 @@ import { LegacyApiError, cfUuid } from '@opt2/platform/legacy-compat';
 import { REDACTED } from '@opt2/platform/logging';
 import { systemClock } from '@opt2/platform/service-kit';
 import type { TenantDb } from '@opt2/platform/tenancy';
-import { assertResponseMatchesOpenApi, createThrowawaySchema, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
+import { assertResponseMatchesOpenApi, createThrowawaySchema, loadOpenApiDocument, pgAvailable, type ThrowawaySchema } from '@opt2/platform/testing';
 import { MemorySpanExporter, activeSpanIds, flushTracing, shutdownTracing, startTracing } from '@opt2/platform/tracing';
 import { parse } from 'yaml';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -63,7 +63,7 @@ const CONFIG = loadConfig();
 /** Claims renewed every 500 ms and a claim pass every 50 ms. */
 const SHORT = { ...CONFIG, windows: { ...CONFIG.windows, openBudgetMs: 1500, importRetryMs: 50 } };
 const MIGRATIONS_DIR = fileURLToPath(new URL('../../db/migrations', import.meta.url));
-const DOC = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
+const DOC = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as object;
 const pg = await pgAvailable();
 // Free text no redaction pattern masks, so it reaches a log only if interpolated there.
 const FREE_TEXT = ['Jane', 'Doe', 'salary', '91250'].join(' ');
@@ -89,7 +89,6 @@ const PLAN: TransitionPlan = {
   siteMonitorEntryMoves: false,
   siteMonitorUnits: [],
   contentToTarget: false,
-  exportJobsWriteT: false,
   returnsToLegacy: false,
 };
 
@@ -377,14 +376,14 @@ describe.skipIf(!pg)('transition service against PostgreSQL', () => {
       failing: 'the gate reset',
       undone: { closedGates: [{ owner: 'people', unit: 'people.person', prior: 'legacy' }] },
       leased: true,
-      held: 'still held: gates people.person at people; leases people.person; paused legacy tasks opt2-survey-1-launch',
+      held: 'still held: gates people.person at people; leases people.person; paused legacy tasks /var/www/index.cfm/_api/sitemonitor/',
       failure: resumeFailure,
     },
     {
       failing: 'the legacy task resume',
       undone: { closedGates: [] },
       leased: false,
-      held: 'still held: paused legacy tasks opt2-survey-1-launch',
+      held: 'still held: paused legacy tasks /var/www/index.cfm/_api/sitemonitor/',
       failure: resumeFailure,
     },
     {
@@ -392,7 +391,7 @@ describe.skipIf(!pg)('transition service against PostgreSQL', () => {
       failing: 'controlled legacy restart',
       undone: { orphanRestart: { units: ['people.person'], phase: 'executing', importAttempts: 0, restartedAt: '2026-06-30T12:00:00.000Z' } },
       leased: true,
-      held: 'still held: legacy restart gates people.person; gates people.person at people; leases people.person; paused legacy tasks opt2-survey-1-launch',
+      held: 'still held: legacy restart gates people.person; gates people.person at people; leases people.person; paused legacy tasks /var/www/index.cfm/_api/sitemonitor/',
       failure: new TransitionAbortedError(3, 'Controlled legacy restart failed: restart command exited with 1', { units: ['people.person'] }),
     },
   ])('escalates an abort whose $failing keeps failing past the retry budget, naming what it still holds, and finishes it once the undo recovers', async ({ undone, leased, held, failure }) => {
@@ -400,7 +399,7 @@ describe.skipIf(!pg)('transition service against PostgreSQL', () => {
       await deps.persist({
         ...record.progress,
         closedGates: [{ owner: 'people', unit: 'people.person', prior: 'legacy' }],
-        schedulerPause: { siteMonitor: [], surveys: ['opt2-survey-1-launch'] },
+        schedulerPause: { siteMonitor: ['/var/www/index.cfm/_api/sitemonitor/'] },
       });
       throw new TransitionAbortedError(5, 'gates held by another holder');
     });

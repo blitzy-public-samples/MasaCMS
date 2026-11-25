@@ -15,7 +15,6 @@ import {
   loadGroups,
   loadVersion,
   type Authority,
-  type CutoverEntry,
   type CutoverStatusV2,
   type CutoverVersion,
 } from '../../src/cutover/index.js';
@@ -148,26 +147,23 @@ const R_UNITS = [
   'people.user_address',
   'people.user_interest',
   'people.user_tag',
-  'timesheets.blackout',
 ];
-const R_OWNERS = ['identity', 'people', 'timesheets'];
+const R_OWNERS = ['identity', 'people'];
 // Free text no redaction pattern masks, so it reaches a log only if interpolated there.
 const FREE_TEXT = ['Jane', 'Doe', 'salary', '91250'].join(' ');
 /** Stream the mocked streamChangedEntries returns; the transfer must receive this very stream. */
 const CHANGED_ENTRIES = (async function* () {})();
 
-/** A person-archive event timesheets dead-lettered without applying its blackouts. */
+/** A person-change event identity dead-lettered without applying it. */
 const DEAD_LETTERED: DeadLetteredDelivery = {
   eventId: 'de391048-ceeb-4696-98f5-e2f9df258e18',
-  topic: 'people.person.archived.v1',
+  topic: 'people.person.changed.v1',
   tenantId: '0b0c4f7e-3f7a-4c1e-9a55-1d2b3c4d5e6f',
-  consumer: 'timesheets',
-  subscription: 'timesheets.people.person.archived.v1',
+  consumer: 'identity',
+  subscription: 'identity.people.person.changed.v1',
 };
 const SERVICE_URLS = Object.fromEntries(
-  ['identity', 'people', 'programs-sites', 'strategies-content', 'communications', 'reporting', 'surveys', 'timesheets', 'finance', 'e-signature'].map(
-    (s, i) => [s, `http://127.0.0.1:${String(26211 + i)}`],
-  ),
+  ['identity', 'people', 'programs-sites', 'strategies-content'].map((s, i) => [s, `http://127.0.0.1:${String(26211 + i)}`]),
 );
 const STATE_ROOT = mkdtempSync(path.join(tmpdir(), 'opt2-transition-steps-'));
 afterAll(() => rmSync(STATE_ROOT, { recursive: true, force: true }));
@@ -263,14 +259,12 @@ function harness(opts: {
     }),
     close: vi.fn(),
   };
-  const exportJobs: string[][] = [];
   const pool = {
     request: () => ({
       query: vi.fn(async (sql: string) => {
         if (sql.includes('OBJECT_ID')) return { recordset: [{ present: 1 }] };
         if (sql === CLUSTER_COMMANDS_COUNT_SQL) return { recordset: [{ n: opts.clusterCommands ?? 0 }] };
-        const next = exportJobs.shift() ?? [];
-        return { recordset: next.map((job_id) => ({ job_id })) };
+        return { recordset: [] };
       }),
     }),
   };
@@ -293,23 +287,19 @@ function harness(opts: {
   const scheduler = {
     pauseFor: vi.fn(async () => {
       calls.push(['pauseFor']);
-      return { siteMonitor: ['monitor'], surveys: [] };
+      return { siteMonitor: ['monitor'] };
     }),
     handOffSiteMonitorToTarget: vi.fn(async () => {
       calls.push(['handOffSiteMonitor']);
       return { deletedTasks: ['monitor'], cursor: null, recurringEnabled: true };
     }),
-    handOffSurveysToTarget: vi.fn(async () => {
-      calls.push(['handOffSurveys']);
-      return { adopted: [], deleted: [] };
-    }),
-    restoreToLegacy: vi.fn(async (_units: unknown, scope: unknown) => {
+    restoreToLegacy: vi.fn(async (scope: unknown) => {
       calls.push(['restoreToLegacy', scope]);
-      return { siteMonitor: [], surveys: [] };
+      return { siteMonitor: [] };
     }),
     resumePaused: vi.fn(async () => {
       calls.push(['resumePaused']);
-      return { siteMonitor: [], surveys: [] };
+      return { siteMonitor: [] };
     }),
   };
   const persisted: TransitionProgress[] = [];
@@ -342,7 +332,7 @@ function harness(opts: {
       now += ms;
     }),
   } as unknown as StepDeps;
-  return { ctx, deps, calls, status, gateway, owners, client, scheduler, projector, windows, startupGuard, persisted, exportJobs, advance: (ms: number) => (now += ms) };
+  return { ctx, deps, calls, status, gateway, owners, client, scheduler, projector, windows, startupGuard, persisted, advance: (ms: number) => (now += ms) };
 }
 
 function newRecord(from: string, to: string): TransitionRecord {
@@ -469,11 +459,9 @@ describe('deriveTransitionPlan', () => {
     expect(plan.heldLegacy).toEqual([]);
     expect(plan.setT).toEqual(plan.toTarget);
     expect(plan.setT).toContain('people.person_archive');
-    expect(plan.setT).toContain('timesheets.blackout');
     expect(plan.setT).toEqual([...plan.setT].sort());
     expect(plan.returnsToLegacy).toBe(false);
     expect(plan.siteMonitorEntryMoves).toBe(true);
-    expect(plan.exportJobsWriteT).toBe(true);
     expect(plan.contentToTarget).toBe(true);
     const routes = new Set(v1.entries.map((e) => e.route));
     expect(plan.frozenRoutes.every((r) => routes.has(r))).toBe(true);
@@ -496,13 +484,7 @@ describe('deriveTransitionPlan', () => {
     expect(plan.owners).toEqual([...new Set(R.units.map((u) => catalog.ownerOf(u)))].sort());
     expect(plan.owners).toEqual(R_OWNERS);
     expect(plan.siteMonitorEntryMoves).toBe(false);
-    expect(plan.exportJobsWriteT).toBe(false);
-    // A module's actions follow its screens' units.
-    const v3ByRoute = new Map(v3.entries.map((e) => [e.route, e]));
-    const unitsOf = (entry: CutoverEntry): readonly string[] =>
-      (v3ByRoute.get(entry.route.replace('opt2:/opt2/admin-actions/', 'opt2:/opt2/admin/')) ?? entry).units;
-    expect(plan.entriesChanged.every((e) => unitsOf(e.entry).some((u) => plan.setT.includes(u)) || e.entry.kind !== 'write')).toBe(true);
-    expect(plan.frozenRoutes).toEqual(expect.arrayContaining(['opt2:/opt2/admin-actions/timesheets/**', 'opt2:/opt2/admin/timesheets/**']));
+    expect(plan.entriesChanged.every((e) => e.entry.units.some((u) => plan.setT.includes(u)) || e.entry.kind !== 'write')).toBe(true);
     // Every write entry of R's groups and every legacy-write entry meeting T is frozen, so no writer of R's units runs.
     const rWrites = v2.entries.filter((e) => e.kind === 'write' && R.groups.includes(e.group ?? '')).map((e) => e.route);
     const legacyWrites = v3.entries.filter((e) => e.kind === 'legacy-write' && e.units.some((u) => R.units.includes(u))).map((e) => e.route).sort();
@@ -530,7 +512,7 @@ describe('deriveTransitionPlan', () => {
         throw new UnknownLegacyTableError(t);
       },
     } as unknown as UnitCatalog;
-    expect(deriveTransitionPlan(v2, v3, groups, fake).exportJobsWriteT).toBe(false);
+    expect(deriveTransitionPlan(v1, v2, groups, fake).contentToTarget).toBe(false);
     const boom = { ...fake, unitsForLegacyTable: () => { throw new Error('boom'); } } as unknown as UnitCatalog;
     expect(() => deriveTransitionPlan(v2, v3, groups, boom)).toThrow('boom');
   });
@@ -538,13 +520,18 @@ describe('deriveTransitionPlan', () => {
 
 describe('queuesToPause', () => {
   it('pauses non-sweep queues whose creator or target owns T, at the creator', () => {
-    expect(queuesToPause(['surveys'], SERVICE_URLS)).toEqual([{ service: 'communications', queue: 'surveys-launch' }]);
-    expect(queuesToPause(['communications'], SERVICE_URLS)).toEqual([
-      { service: 'communications', queue: 'communications-reminders' },
-      { service: 'communications', queue: 'surveys-launch' },
+    expect(queuesToPause(['strategies-content'], SERVICE_URLS)).toEqual([
+      { service: 'programs-sites', queue: 'content-feed-import' },
+      { service: 'programs-sites', queue: 'content-scheduled-publish' },
+      { service: 'strategies-content', queue: 'content-scheduled-publish' },
     ]);
-    expect(queuesToPause(['people', 'timesheets'], SERVICE_URLS)).toEqual([]);
-    expect(queuesToPause(['surveys'], { surveys: 'http://x' })).toEqual([]);
+    expect(queuesToPause(['programs-sites'], SERVICE_URLS)).toEqual([
+      { service: 'programs-sites', queue: 'content-feed-import' },
+      { service: 'programs-sites', queue: 'content-scheduled-publish' },
+      { service: 'programs-sites', queue: 'programs-sites-sitemonitor' },
+    ]);
+    expect(queuesToPause(['people', 'identity'], SERVICE_URLS)).toEqual([]);
+    expect(queuesToPause(['programs-sites'], { 'strategies-content': 'http://x' })).toEqual([]);
     const all = queuesToPause(['strategies-content', 'programs-sites'], SERVICE_URLS);
     expect(all.some((q) => q.queue.endsWith('-outbox-sweep'))).toBe(false);
     expect(all).toContainEqual({ service: 'programs-sites', queue: 'content-feed-import' });
@@ -669,7 +656,7 @@ describe('units of R legacy-authoritative in both versions', () => {
       name: 'step 2 pauses their tasks and step 4 drains their consumers',
       check: ({ h }) => {
         expect(h.scheduler.pauseFor).toHaveBeenCalledWith(expect.arrayContaining(held), expect.anything());
-        expect(m.awaitDrained).toHaveBeenCalledWith(h.ctx, expect.objectContaining({ owners: ['identity', 'people', 'timesheets'], consumersWriting: expect.arrayContaining(held) }));
+        expect(m.awaitDrained).toHaveBeenCalledWith(h.ctx, expect.objectContaining({ owners: ['identity', 'people'], consumersWriting: expect.arrayContaining(held) }));
       },
     },
     {
@@ -712,16 +699,13 @@ describe('units of R legacy-authoritative in both versions', () => {
 describe('full run v0001 -> v0002', () => {
   it('snapshots, brings T to it, hands schedulers to the target and reconciles post-cutover', async () => {
     const h = harness({ active: 'v0001' });
-    h.exportJobs.push(['JOB-1'], []);
     const record = await runAll(h, newRecord('v0001', 'v0002'));
-    expect(h.deps.sleep).toHaveBeenCalled();
     expect(m.takeSnapshot).toHaveBeenCalledWith(h.ctx, { kind: 'transition', holderId: record.transitionId });
     expect(m.restartFeedFor).toHaveBeenCalledWith(h.ctx, { units: record.plan?.toTarget, snapshotSeq: 7 });
     expect(m.streamChangedEntries).toHaveBeenCalledWith(h.ctx, 3, 7);
     expect(m.transferFiles).toHaveBeenCalledWith(h.ctx, 7, { entries: CHANGED_ENTRIES });
     expect(m.reconcileUnits).toHaveBeenCalledWith(h.ctx, expect.objectContaining({ point: 'post-cutover', snapshotSeq: 7 }));
     expect(h.scheduler.handOffSiteMonitorToTarget).toHaveBeenCalledTimes(1);
-    expect(h.scheduler.handOffSurveysToTarget).toHaveBeenCalledTimes(1);
     expect(h.scheduler.restoreToLegacy).not.toHaveBeenCalled();
     expect(h.gateway.activate).toHaveBeenCalledWith('v0002');
     expect(record.progress.activatedEpoch).toBe(h.status.epoch - 1);
@@ -819,12 +803,12 @@ describe('reconciliation evidence around activation', () => {
     const h = harness({ active: 'v0001' });
     const record = await runAll(h, newRecord('v0001', 'v0002'), 5);
     const tenants = Array.from({ length: DIFFERENCE_LIMIT }, (_, i) => `site${String(i).padStart(3, '0')}`);
-    const units = [unitEntry('people.person_archive', 'default', 0), ...tenants.map((t) => unitEntry('people.person_archive', t, 1)), unitEntry('timesheets.blackout', 'default', 2)];
+    const units = [unitEntry('people.person_archive', 'default', 0), ...tenants.map((t) => unitEntry('people.person_archive', t, 1)), unitEntry('programs_sites.site', 'default', 2)];
     m.reconcileUnits.mockResolvedValueOnce(reportOf('post-cutover', units, 'v0001', 7));
     const err = (await runTransitionStep(h.deps, record, 6).catch((e: unknown) => e)) as TransitionAbortedError;
     expect(err).toBeInstanceOf(TransitionAbortedError);
     expect(err.step).toBe(6);
-    expect(err.reason).toBe(`Reconciliation before activation found ${String(DIFFERENCE_LIMIT + 2)} differences in 2 units: people.person_archive, timesheets.blackout`);
+    expect(err.reason).toBe(`Reconciliation before activation found ${String(DIFFERENCE_LIMIT + 2)} differences in 2 units: people.person_archive, programs_sites.site`);
     expect(m.writeReconciliationReport).not.toHaveBeenCalled();
     const evidence = h.persisted.at(-1)?.preActivationReconciliation;
     expect(err.details).toEqual(evidence);
@@ -849,7 +833,6 @@ describe('reconciliation evidence around activation', () => {
     const firstOpen = order(h.owners.gate)[h.owners.gate.mock.calls.findIndex(([, req]) => req.op === 'open')]!;
     const reopened = Math.min(
       order(h.scheduler.handOffSiteMonitorToTarget)[0]!,
-      order(h.scheduler.handOffSurveysToTarget)[0]!,
       firstOpen,
       order(h.gateway.unfreeze)[0]!,
       order(m.releaseLeases)[0]!,
@@ -873,14 +856,13 @@ describe('reconciliation evidence around activation', () => {
   it('a post-activation difference throws at step 8 before any hand-off, gate open, unfreeze or lease release', async () => {
     const h = harness({ active: 'v0001' });
     const record = await runAll(h, newRecord('v0001', 'v0002'), 7);
-    m.reconcileUnits.mockResolvedValueOnce(reportOf('post-cutover', [unitEntry('timesheets.blackout', 'default', 2)], 'v0002', 7));
+    m.reconcileUnits.mockResolvedValueOnce(reportOf('post-cutover', [unitEntry('programs_sites.site', 'default', 2)], 'v0002', 7));
     const err = (await runTransitionStep(h.deps, record, 8).catch((e: unknown) => e)) as TransitionAbortedError;
     expect(err).toBeInstanceOf(TransitionAbortedError);
     expect(err.step).toBe(8);
     expect(err.reason).toBe('Reconciliation post-cutover found 2 differences in 1 units; see /r/reconciliation/post-cutover.json');
     expect(opensGate(h)).toBe(false);
     expect(h.scheduler.handOffSiteMonitorToTarget).not.toHaveBeenCalled();
-    expect(h.scheduler.handOffSurveysToTarget).not.toHaveBeenCalled();
     expect(h.gateway.unfreeze).not.toHaveBeenCalled();
     expect(m.releaseLeases).not.toHaveBeenCalled();
     expect(h.scheduler.resumePaused).not.toHaveBeenCalled();
@@ -1046,7 +1028,7 @@ describe('aborts', () => {
   });
 });
 
-describe('orphans and export jobs', () => {
+describe('orphans', () => {
   const orphan = { instanceId: 'gw-dead', route: '', side: 'legacy' as const, count: 1, oldestStartedAt: '2026-06-30T11:59:00Z', orphaned: true };
   const dead = { instanceId: 'gw-dead', seenEpoch: 5, heartbeatAt: '2026-06-30T11:00:00Z', live: false };
   const live = { instanceId: 'gw-1', seenEpoch: 10, heartbeatAt: '2026-06-30T12:00:00Z', live: true };
@@ -1122,14 +1104,6 @@ describe('orphans and export jobs', () => {
     await expect(runTransitionStep(h.deps, record, 3)).rejects.toThrow('spawn');
     h.gateway.clearOrphans.mockResolvedValueOnce({ cleared: 0 });
     await expect(runTransitionStep(h.deps, record, 3)).rejects.toThrow(/remain after the restart/);
-  });
-
-  it('waits for fixture export jobs and aborts naming those still running', async () => {
-    const h = harness({ active: 'v0001' });
-    const record = await runAll(h, newRecord('v0001', 'v0002'), 2);
-    h.exportJobs.push(...Array.from({ length: 2000 }, () => ['JOB-9']));
-    const err = (await runTransitionStep(h.deps, record, 3).catch((e: unknown) => e)) as TransitionAbortedError;
-    expect(err.reason).toContain('JOB-9');
   });
 });
 

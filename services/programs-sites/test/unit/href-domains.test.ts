@@ -1,9 +1,8 @@
 /** The sanitizeHref domain reads of `SitesDomain.hrefDomains` over a recording repository. */
-import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import { parse } from 'yaml';
 import { registeredTenants, tenantIdForSite, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
-import { assertResponseMatchesOpenApi } from '@opt2/platform/testing';
+import { assertResponseMatchesOpenApi, loadOpenApiDocument } from '@opt2/platform/testing';
 import { createSitesDomain, type SitesDomain } from '../../src/domain/sites.js';
 import type { ProgramsSitesRepository } from '../../src/repo/repository.js';
 import type { SiteRow } from '../../src/repo/tables.js';
@@ -13,7 +12,7 @@ vi.mock('@opt2/platform/tenancy', async (importOriginal) => {
   return { ...actual, registeredTenants: vi.fn() };
 });
 
-const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
+const OPENAPI = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as object;
 /** The columns the repository's `listSiteDomains` selects. */
 const DOMAIN_COLUMNS = ['siteid', 'domain', 'domainalias', 'isremote', 'resourcedomain'] as const;
 

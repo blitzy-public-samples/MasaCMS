@@ -13,24 +13,33 @@ import {
   Roles,
   UndeclaredRouteError,
   collectRouteMatrix,
-  hasAnyRole,
-  isServiceRole,
-  renderAuthDenial,
-  rolesForService,
   serviceRole,
   type RouteMatrixEntry,
 } from '@opt2/platform/auth';
 import { signBridgeAssertion } from '@opt2/platform/legacy-compat';
-import type { FastifyInstance, FastifyRequest } from '@opt2/platform/service-kit';
+import type { FastifyInstance } from '@opt2/platform/service-kit';
 import {
+  DENIED_STATUSES,
+  MINIMUM_SUBJECTS,
   ROLE_SET,
   TENANT_B,
+  authDenialProblems,
+  contractOperations as openApiOperations,
+  createCredentialCache,
+  headerStrings,
+  isErrorEnvelope,
+  matrixCells,
   mintServiceToken,
   mintTasksInvokerToken,
   mintUserToken,
+  parsedJson,
+  roleSubjectNamed,
   subjectQueryFor,
   testVerifier,
+  unexpectedVerdicts,
+  withQuery,
   type InjectResponse,
+  type MatrixCell,
   type RoleSubject,
 } from '@opt2/platform/testing';
 import { SERVICE_NAME, buildApp } from '../../src/app.js';
@@ -46,8 +55,6 @@ type Headers = Record<string, string>;
 type ExpectedRoute = RouteMatrixEntry & { operationId: string };
 
 const SITE_A = 'tenant-a';
-const DENIED: ReadonlySet<number> = new Set([401, 403]);
-const MINIMUM_SUBJECTS = ['anonymous', 'member', 'system-user', 'editor', 'site-admin', 's2', 'other-tenant'] as const;
 const CONTRACT_URL = new URL('../../contracts/openapi.yaml', import.meta.url);
 const CONTRACT_METHODS = ['get', 'head', 'post', 'put', 'patch', 'delete', 'options'] as const;
 const BRIDGE_PREFIX = '/gateway/legacy-bridge/';
@@ -244,43 +251,6 @@ function rowNamed(operationId: string): ExpectedRoute {
   return row;
 }
 
-function subjectNamed(name: string): RoleSubject {
-  const subject = ROLE_SET.find((candidate) => candidate.name === name);
-  if (subject === undefined) throw new TypeError(`ROLE_SET has no subject named ${name}`);
-  return subject;
-}
-
-/** Credentials `headersFor(subject)` presents to the service transport. */
-interface Presented {
-  /** Roles of the invocation credential; absent when none is sent. */
-  invocation?: readonly string[];
-  /** Non-workload roles of the bearer user token. */
-  userRoles?: readonly string[];
-  /** `Authorization` carries a bearer token that is no user token. */
-  foreignBearer?: true;
-}
-
-/** A user subject's token travels beside the gateway's own invocation credential; managed invokers send none. */
-function presentedBy(subject: RoleSubject): Presented {
-  if (subject.kind === 'anonymous') return {};
-  if (subject.kind === 'user') {
-    return { invocation: rolesForService(SERVICE_NAME), userRoles: subject.roles.filter((role) => !isServiceRole(role)) };
-  }
-  if (subject.caller === 'pubsub-invoker') return {};
-  if (subject.caller === 'tasks-invoker') return { foreignBearer: true };
-  return { invocation: subject.roles };
-}
-
-/** The denial the service transport and `row`'s roles give `subject`; undefined when the subject is admitted. */
-function expectedDenial(row: ExpectedRoute, subject: RoleSubject): AuthDenial | undefined {
-  if (row.edge === true) return undefined;
-  const { invocation, userRoles = [], foreignBearer } = presentedBy(subject);
-  if (invocation === undefined && row.invocationOptional !== true) return AuthDenial.unauthenticated('missing-credential');
-  if (foreignBearer === true) return AuthDenial.invalidToken();
-  if (row.public === true) return undefined;
-  return hasAnyRole([...userRoles, ...(invocation ?? [])], row.requires ?? []) ? undefined : AuthDenial.forbidden();
-}
-
 /** Everything a request may change: the gateway schema and what every double received. */
 interface Effects {
   tables: GatewayTables;
@@ -377,29 +347,10 @@ async function callerSeenBy(callee: string, request: RecordedRequest | undefined
   return caller?.name;
 }
 
-const credentialCache = new Map<string, { mintedAt: number; headers: Promise<Headers> }>();
-// Tokens live 300 s; re-minting after 120 s keeps a slow run from presenting an expired one.
-const CREDENTIAL_REUSE_MS = 120_000;
+const cachedCredentials = createCredentialCache<Headers>();
 
 /** `headersFor(subject)`, reused across probes while its tokens are fresh. */
-function credentialsOf(subject: RoleSubject): Promise<Headers> {
-  const cached = credentialCache.get(subject.name);
-  if (cached !== undefined && Date.now() - cached.mintedAt < CREDENTIAL_REUSE_MS) return cached.headers;
-  const headers = headersFor(subject);
-  credentialCache.set(subject.name, { mintedAt: Date.now(), headers });
-  return headers;
-}
-
-function withQuery(url: string, query: Headers): string {
-  const search = new URLSearchParams(query).toString();
-  return search === '' ? url : `${url}${url.includes('?') ? '&' : '?'}${search}`;
-}
-
-function headerStrings(res: InjectResponse): Headers {
-  return Object.fromEntries(
-    Object.entries(res.headers).map(([name, value]) => [name, Array.isArray(value) ? value.join(', ') : String(value)]),
-  );
-}
+const credentialsOf = (subject: RoleSubject): Promise<Headers> => cachedCredentials(subject.name, () => headersFor(subject));
 
 /** Sends `request` with `credentials` and `query` to `gw` and records its answer and effects. */
 async function send(gw: TestGateway, request: ProbeRequest, credentials: Headers, query: Headers = {}): Promise<Outcome> {
@@ -413,51 +364,20 @@ async function send(gw: TestGateway, request: ProbeRequest, credentials: Headers
   return { status: res.statusCode, body: res.body, headers: headerStrings(res), query, before, after: effectsOf(gw) };
 }
 
-function parsedBody(body: string): unknown {
-  try {
-    return JSON.parse(body) as unknown;
-  } catch {
-    return undefined;
-  }
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/** Whether `body` is the legacy JSON API error envelope `{apiversion, method, params?, error: {code, message}}`. */
-function isErrorEnvelope(body: unknown): boolean {
-  if (!isRecord(body) || !isRecord(body.error) || !(body.params === undefined || isRecord(body.params))) return false;
-  const { apiversion, method, error } = body;
-  return typeof apiversion === 'string' && typeof method === 'string' && typeof error.code === 'string' && typeof error.message === 'string';
-}
-
 /** Every way `outcome` departs from `denial` as renderAuthDenial answers it: status, body, headers and no effect anywhere. */
 function denialProblems(outcome: Outcome, denial: AuthDenial): string[] {
-  const rendered = renderAuthDenial(denial, { query: outcome.query } as unknown as FastifyRequest);
-  const problems: string[] = [];
-  if (outcome.status !== rendered.status) problems.push(`answered ${outcome.status}, expected ${rendered.status}: ${outcome.body.slice(0, 160)}`);
-  if (!isErrorEnvelope(parsedBody(outcome.body))) problems.push(`not the legacy error envelope: ${outcome.body.slice(0, 160)}`);
-  if (outcome.body !== String(rendered.body)) problems.push(`body ${outcome.body.slice(0, 160)} is not ${String(rendered.body)}`);
-  for (const [name, value] of Object.entries(rendered.headers)) {
-    const sent = outcome.headers[name.toLowerCase()];
-    if (sent !== value) problems.push(`header ${name} is ${String(sent)}, not ${value}`);
-  }
   const changed = changedEffects(outcome.before, outcome.after);
-  if (changed.length > 0) problems.push(`denial changed ${changed.join(', ')}`);
-  return problems;
+  return [...authDenialProblems(outcome, denial), ...(changed.length > 0 ? [`denial changed ${changed.join(', ')}`] : [])];
 }
 
-/** One route × subject cell of the matrix, with the denial it must answer, if any. */
-interface Cell {
-  row: ExpectedRoute;
-  subject: RoleSubject;
-  denial: AuthDenial | undefined;
-}
+/** One route × subject cell of the matrix, with the denial the platform hooks owe it, if any. */
+type Cell = MatrixCell<ExpectedRoute>;
 
-const CELLS: readonly Cell[] = EXPECTED_ROUTES.flatMap((row) =>
-  ROLE_SET.map((subject) => ({ row, subject, denial: expectedDenial(row, subject) })),
-);
+const CELLS: readonly Cell[] = matrixCells(EXPECTED_ROUTES);
 
 function titleOf(cell: Cell): string {
   const verdict = cell.denial === undefined ? 'allowed' : `denied with ${cell.denial.statusCode}`;
@@ -468,7 +388,7 @@ function titleOf(cell: Cell): string {
 async function admissionProblems(gw: TestGateway, cell: Cell, outcome: Outcome): Promise<string[]> {
   const { row } = cell;
   const probe = probeOf(row);
-  if (DENIED.has(outcome.status)) return [`expected admission, answered ${outcome.status}: ${outcome.body.slice(0, 160)}`];
+  if (DENIED_STATUSES.has(outcome.status)) return [`expected admission, answered ${outcome.status}: ${outcome.body.slice(0, 160)}`];
   const problems: string[] = [];
   if (outcome.status !== probe.admitted) problems.push(`admitted with ${outcome.status}, expected ${probe.admitted}: ${outcome.body.slice(0, 160)}`);
   const upstreams = reached(outcome.before, outcome.after);
@@ -483,7 +403,7 @@ async function admissionProblems(gw: TestGateway, cell: Cell, outcome: Outcome):
   const after = outcome.after.tables;
   const cutoverState = (tables: GatewayTables): unknown => [tables.cutover_state, tables.cutover_freeze];
   if (probe.fresh === undefined && !isDeepStrictEqual(cutoverState(after), cutoverState(before))) problems.push('changed the cut-over state');
-  const body = parsedBody(outcome.body);
+  const body = parsedJson(outcome.body);
   const frozen = isRecord(body) && Array.isArray(body.frozen) ? (body.frozen as unknown[]) : undefined;
   switch (row.url) {
     case ACTIVATE_URL:
@@ -557,24 +477,15 @@ interface ContractOperation {
 
 /** Every operation of `gateway/contracts/openapi.yaml` with its `x-opt2-*` declaration, ordered by operationId. */
 async function contractOperations(): Promise<ContractOperation[]> {
-  const contract = parse(await readFile(CONTRACT_URL, 'utf8')) as { paths: Record<string, Record<string, unknown>> };
-  return Object.values(contract.paths)
-    .flatMap((item) =>
-      CONTRACT_METHODS.flatMap((method) => {
-        const operation = item[method];
-        if (!isRecord(operation)) return [];
-        return [
-          {
-            operationId: String(operation.operationId),
-            method: method.toUpperCase(),
-            transport: operation['x-opt2-transport'],
-            requires: operation['x-opt2-requires'],
-            public: operation['x-opt2-public'],
-            edge: operation['x-opt2-edge'],
-          },
-        ];
-      }),
-    )
+  return openApiOperations(parse(await readFile(CONTRACT_URL, 'utf8')) as object, { methods: CONTRACT_METHODS })
+    .map(({ operationId, method, operation: op }) => ({
+      operationId,
+      method,
+      transport: op['x-opt2-transport'],
+      requires: op['x-opt2-requires'],
+      public: op['x-opt2-public'],
+      edge: op['x-opt2-edge'],
+    }))
     .sort((a, b) => a.operationId.localeCompare(b.operationId, 'en'));
 }
 
@@ -617,7 +528,7 @@ describe('route declarations', () => {
 
   it('ROLE_SET holds the minimum subjects, with other-tenant minted for another tenant', () => {
     expect(ROLE_SET.map((subject) => subject.name)).toEqual(expect.arrayContaining([...MINIMUM_SUBJECTS]));
-    expect(subjectNamed('other-tenant').crossTenant).toBe(true);
+    expect(roleSubjectNamed('other-tenant').crossTenant).toBe(true);
   });
 });
 
@@ -637,14 +548,8 @@ describe('route admission matrix', () => {
   });
 
   it('zero unexpected allows and denies', () => {
-    const mismatched = (allowed: boolean): string[] =>
-      CELLS.filter((cell) => (cell.denial === undefined) === allowed)
-        .filter((cell) => DENIED.has(verdicts.get(titleOf(cell))?.status ?? 0) === allowed)
-        .map((cell) => `${titleOf(cell)}: ${verdicts.get(titleOf(cell))?.status ?? 'not probed'}`);
-    expect({ unexpectedAllows: mismatched(false), unexpectedDenies: mismatched(true) }).toEqual({
-      unexpectedAllows: [],
-      unexpectedDenies: [],
-    });
+    const reader = { title: titleOf, admits: (cell: Cell) => cell.denial === undefined, status: (cell: Cell) => verdicts.get(titleOf(cell))?.status };
+    expect(unexpectedVerdicts(CELLS, reader)).toEqual({ unexpectedAllows: [], unexpectedDenies: [] });
   });
 });
 
@@ -664,7 +569,7 @@ describe('user tokens on service routes', () => {
   );
 
   it.each(cases)("refuses $subject's user token $placement on $operationId", async ({ operationId, subject, headers, denial }) => {
-    const token = await userTokenOf(subjectNamed(subject));
+    const token = await userTokenOf(roleSubjectNamed(subject));
     const outcome = await send(gw, requestFor(rowNamed(operationId)), headers(token));
     expect(denialProblems(outcome, denial)).toEqual([]);
   });
@@ -753,7 +658,7 @@ describe('inbound trust headers', () => {
   );
 
   it("admits on the gateway's own routes only a siteid equal to the user token's site", async () => {
-    const headers = await headersFor(subjectNamed('other-tenant'), { site: SITE_A });
+    const headers = await headersFor(roleSubjectNamed('other-tenant'), { site: SITE_A });
     const [own, foreign] = await Promise.all([
       gw.app.inject({ method: 'GET', url: `/healthz?siteid=${TENANT_B.siteId}`, headers }),
       gw.app.inject({ method: 'GET', url: `/healthz?siteid=${SITE_A}`, headers }),
@@ -849,7 +754,7 @@ describe('with v0002 active', () => {
       const { res, before, after } = await observed({ method: 'GET', url: ALIAS_PATH, headers: await credentials(token) });
       expect(res.statusCode).toBe(status);
       if (status !== 200) {
-        expect({ envelope: isErrorEnvelope(parsedBody(res.body)), reached: reached(before, after) }).toEqual({ envelope: true, reached: [] });
+        expect({ envelope: isErrorEnvelope(parsedJson(res.body)), reached: reached(before, after) }).toEqual({ envelope: true, reached: [] });
         return;
       }
       const received = target('people').requests.at(-1);
@@ -916,13 +821,10 @@ describe('with v0002 active', () => {
     const adminSiteCalls = (): number => v2.identity.requests.filter((req) => req.path.endsWith('/admin-site')).length;
 
     it.each<[string, string, string, string, boolean]>([
-      ['a site-less web screen', '/opt2/admin/finance/claims', 'tenant-b', 'tenant-b', true],
-      ['a site-less web screen of a session without an admin site', '/opt2/admin/finance/claims', '', 'default', true],
-      ['a web screen naming its siteid', '/opt2/admin/finance/claims?siteid=tenant-a', 'tenant-b', 'tenant-a', false],
       ['a site-less non-web target', '/opt2/stub/notes', 'tenant-b', 'default', false],
       ['a non-web target naming its siteid', '/opt2/stub/notes?siteid=tenant-b', 'tenant-a', 'tenant-b', false],
     ])('%s gets a token for its site', async (_label, url, adminSite, expectedSite, readsAdminSite) => {
-      const callee = url.startsWith('/opt2/admin/') ? 'web' : 'stub';
+      const callee = 'stub';
       v2.identity.setAdminSite(adminSite);
       const consulted = adminSiteCalls();
       const forged = await mintUserToken({ sub: 'forger', site: TENANT_B.siteId, roles: [Roles.s2, Roles.systemUser] });

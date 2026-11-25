@@ -121,14 +121,11 @@ describe('surfaceForFamily', () => {
     ['admin', '/internal/v1/relay'],
     ['page', '/Internal/V1/Relay/identity/sessions?next=/admin/'],
     [undefined, '/OPT2/SVC/x'],
-    ['opt2', '/v1/timesheets/sheets?siteid=tenant-a'],
-    ['opt2', '/V1/Templates'],
-    [undefined, '/v1/messages/x'],
   ] as const)('answers family %s on %s in the envelope whatever the family', (family, path) => {
     expect(surfaceForFamily(family, path)).toBe('api');
   });
 
-  it.each(['/opt2/stubs', '/opt2/web/admin', '/internal/v1/relayed', '/v1/messagesx', '/v1/users'])(
+  it.each(['/opt2/stubs', '/opt2/web/admin', '/internal/v1/relayed'])(
     'answers %s by its family when it only shares a namespace prefix',
     (path) => {
       expect(surfaceForFamily('opt2', path)).toBe('admin');
@@ -142,8 +139,8 @@ describe('surfaceForFamily', () => {
     ['/INDEX.CFM/_api/ajax/v1/default/', 'api'],
     ['/tasks/feed/', 'api'],
     ['/index.cfm/tasks/render/file/', 'api'],
-    ['/legacy-fixtures/cfml/api.cfm/finance/invoices', 'api'],
-    ['/index.cfm/legacy-fixtures/cfml/api.cfm/surveys/surveys', 'api'],
+    ['/legacy-fixtures/cfml/api.cfm/people/persons', 'api'],
+    ['/index.cfm/legacy-fixtures/cfml/api.cfm/people/archives', 'api'],
     ['/', 'admin'],
     ['/index.cfm', 'admin'],
     ['/index.cfm?x=/_api/', 'admin'],
@@ -189,10 +186,10 @@ describe('failContextFor', () => {
   });
 
   it('reports a fixture route by the method its path names, never a supplied one, as a fixture method', () => {
-    const route = routeOf('fixture', 'finance/invoices@get', { method: 'list' });
-    expect(failContextFor(route, '/legacy-fixtures/cfml/api.cfm/finance/invoices?method=list')).toEqual({
+    const route = routeOf('fixture', 'people/persons@get', { method: 'list' });
+    expect(failContextFor(route, '/legacy-fixtures/cfml/api.cfm/people/persons?method=list')).toEqual({
       surface: 'api',
-      method: 'finance.invoices',
+      method: 'people.persons',
       params: route.params,
       fixture: true,
     });
@@ -441,9 +438,9 @@ describe('failClosed', () => {
   });
 
   it('answers a fixture context with the fixture envelope 503, code before message, naming its dotted method as is', async () => {
-    const ctx: FailContext = { surface: 'api', method: 'finance.records', params: { siteid: 'a' }, fixture: true };
+    const ctx: FailContext = { surface: 'api', method: 'people.persons', params: { siteid: 'a' }, fixture: true };
     const served = await serve((reply) => failClosed(reply, ctx, CAUSE));
-    const body = '{"apiversion":"v1","method":"finance.records","error":{"code":"server_error","message":"Unhandled Exception"}}';
+    const body = '{"apiversion":"v1","method":"people.persons","error":{"code":"server_error","message":"Unhandled Exception"}}';
     expect(served.status).toBe(503);
     expect(served.statusMessage).toBe('Service Unavailable');
     expect(served.body).toBe(body);
@@ -453,13 +450,13 @@ describe('failClosed', () => {
   it.each<[string, FailCause, string, Record<string, unknown> | undefined]>([
     [
       'an unavailability at ERROR with its error',
-      { reason: 'finance unavailable', error: Object.assign(coded('ECONNREFUSED'), { syscall: 'connect' }) },
+      { reason: 'people unavailable', error: Object.assign(coded('ECONNREFUSED'), { syscall: 'connect' }) },
       'ERROR',
       { type: 'Error', message: 'connect ECONNREFUSED', stack: expect.stringContaining('Error: connect ECONNREFUSED') },
     ],
-    ['a cause no unavailability caused at WARNING', { reason: 'finance entry frozen past the 30000 ms wait', level: 'warn' }, 'WARNING', undefined],
+    ['a cause no unavailability caused at WARNING', { reason: 'people entry frozen past the 30000 ms wait', level: 'warn' }, 'WARNING', undefined],
   ])('logs %s as the one fail-closed line, with the route key, method and 503', async (_case, cause, severity, error) => {
-    const ctx: FailContext = { surface: 'api', route: 'fixture:finance/records@get', owner: 'finance' };
+    const ctx: FailContext = { surface: 'api', route: 'fixture:people/persons@get', owner: 'people' };
     const served = await serve((reply) => failClosed(reply, ctx, cause));
     expect(served.status).toBe(503);
     expect(served.lines).toHaveLength(1);
@@ -467,7 +464,7 @@ describe('failClosed', () => {
     expect(line).toMatchObject({
       severity,
       message: `fail-closed: ${cause.reason}`,
-      route: 'fixture:finance/records@get',
+      route: 'fixture:people/persons@get',
       httpMethod: 'GET',
       statusCode: 503,
     });

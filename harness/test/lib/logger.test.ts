@@ -20,7 +20,7 @@ describe('createHarnessLogger', () => {
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
 
-    createHarnessLogger('harness-test', env).warn('GS-CO-05: fail (1 unlisted difference)');
+    createHarnessLogger('harness-test', env).warn('GS-CO-75: fail (1 unlisted difference)');
 
     expect(stdout).not.toHaveBeenCalled();
     expect(stderr).toHaveBeenCalledTimes(1);
@@ -28,7 +28,7 @@ describe('createHarnessLogger', () => {
     expect(validateLogRecord(record)).toEqual({ valid: true, errors: [] });
     expect(record).toMatchObject({
       severity: 'WARNING',
-      message: 'GS-CO-05: fail (1 unlisted difference)',
+      message: 'GS-CO-75: fail (1 unlisted difference)',
       service: 'harness-test',
       version: VERSION,
       env: expected,

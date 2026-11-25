@@ -94,7 +94,7 @@ function unbracket(part: string): string {
   return part.length >= 2 && part.startsWith('[') && part.endsWith(']') ? part.slice(1, -1) : part;
 }
 
-/** Splits `tcontent`, `dbo.tcontent` or `[Program_1].[timesheet]` at the first `.`; a bare name is in `dbo`. */
+/** Splits `tcontent`, `dbo.tcontent` or `[Program_1].[<table>]` at the first `.`; a bare name is in `dbo`. */
 export function parseQualifiedName(name: string): { schema: string; table: string } {
   const dot = name.indexOf('.');
   if (dot < 0) return { schema: DEFAULT_SCHEMA, table: unbracket(name) };

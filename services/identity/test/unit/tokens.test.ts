@@ -37,9 +37,9 @@ import { TEST_WEB_API_KEY } from '../helpers/firebase.js';
 import { createMemoryIdentityRepo, createRecordingDb, type IdentitySeed, type MemoryIdentityRepo, type RecordingDb } from '../helpers/memory-repo.js';
 import {
   ADMIN_S2,
+  EDITOR,
   POOLED_MEMBER,
   SITE_ADMIN_A,
-  SYNTHETIC_MEMBERS,
   actorSeed,
   groupRow,
   loginSnapshotFixture,
@@ -73,9 +73,6 @@ function required<T>(value: T | undefined, what: string): T {
 }
 
 const ADMIN_GROUP = required(SITE_ADMIN_A.groups[0], 'tenant-a Admin group');
-const PREPARER = required(SYNTHETIC_MEMBERS[Roles.financePreparer], 'finance.preparer member');
-const SYNTHETIC_ACTORS = Object.values(SYNTHETIC_MEMBERS);
-const SYNTHETIC_GROUPS = SYNTHETIC_ACTORS.flatMap((actor) => actor.groups);
 
 /** Core modules granted on tenant-a, in role order. */
 const GRANTED_MODULES = [
@@ -90,15 +87,15 @@ const MODULE_GRANTS = GRANTED_MODULES.map((contentid, index) =>
   permissionRow({ contentid, groupid: required(GRANT_GROUPS[index], 'module grantee group').userid, type: 'module' }),
 );
 
-/** An S2 user of tenant-a's private pool in its Admin group, every role-map group and every module-grant group. */
+/** An S2 user of tenant-a's private pool in its Admin group and every module-grant group. */
 const MOST_ROLES_SNAPSHOT = loginSnapshotFixture({
   actor: ADMIN_S2,
-  groups: [ADMIN_GROUP, ...SYNTHETIC_GROUPS, ...GRANT_GROUPS],
+  groups: [ADMIN_GROUP, ...GRANT_GROUPS],
   overrides: { account: { ...ADMIN_S2.account, siteid: SITE } },
 });
-const MOST_ROLES = [Roles.s2, Roles.siteAdmin, ...GRANTED_MODULES.map(moduleRole), Roles.systemUser, ...Object.keys(SYNTHETIC_MEMBERS)];
+const MOST_ROLES = [Roles.s2, Roles.siteAdmin, ...GRANTED_MODULES.map(moduleRole), Roles.systemUser];
 
-const ACTOR_SEED = actorSeed(ADMIN_S2, SITE_ADMIN_A, POOLED_MEMBER, ...SYNTHETIC_ACTORS);
+const ACTOR_SEED = actorSeed(ADMIN_S2, SITE_ADMIN_A, POOLED_MEMBER);
 const SEED: IdentitySeed = { ...ACTOR_SEED, groups: [...(ACTOR_SEED.groups ?? []), ...GRANT_GROUPS], permissions: MODULE_GRANTS };
 
 /** `tenant_registry` rows of the platform fixture sites; an unset pool is the site's own, as settingsBean defaults it. */
@@ -234,14 +231,9 @@ describe('local user-token claims', () => {
   });
 
   it.each<[string, LoginSnapshot, readonly string[]]>([
-    ['an S2 site admin in every role-map group with module grants', MOST_ROLES_SNAPSHOT, MOST_ROLES],
+    ['an S2 site admin with module grants', MOST_ROLES_SNAPSHOT, MOST_ROLES],
     ['a tenant-a site admin', loginSnapshotFixture({ actor: SITE_ADMIN_A }), [Roles.siteAdmin, Roles.systemUser]],
     ['a pooled public member', loginSnapshotFixture({ actor: POOLED_MEMBER }), [Roles.member]],
-    ...Object.entries(SYNTHETIC_MEMBERS).map(([role, actor]): [string, LoginSnapshot, readonly string[]] => [
-      `the ${role} group member`,
-      loginSnapshotFixture({ actor }),
-      [Roles.systemUser, role],
-    ]),
   ])('keeps the custom claims of %s under 1,000 UTF-8 bytes', async (_label, snapshot, roles) => {
     await h.login(snapshot);
 
@@ -281,37 +273,37 @@ describe('the login-time snapshot', () => {
   let atLogin: UserClaims;
 
   beforeEach(async () => {
-    h = harness({ ...actorSeed(PREPARER), groups: [...PREPARER.groups, NEW_ADMIN_GROUP] });
-    await h.login(loginSnapshotFixture({ actor: PREPARER }));
+    h = harness({ ...actorSeed(EDITOR), groups: [...EDITOR.groups, NEW_ADMIN_GROUP] });
+    await h.login(loginSnapshotFixture({ actor: EDITOR }));
     atLogin = (await h.mint()).claims;
-    await withTenant(h.db, TENANT_A.tenantId, (tx) => h.repo.addMembership(tx, PREPARER.account.userid, NEW_ADMIN_GROUP.userid));
+    await withTenant(h.db, TENANT_A.tenantId, (tx) => h.repo.addMembership(tx, EDITOR.account.userid, NEW_ADMIN_GROUP.userid));
   });
 
   it('keeps minting the login-time roles after an Admin membership is added', async () => {
     expect(h.repo.rows('membership', TENANT_A.tenantId)).toContainEqual(
-      expect.objectContaining(membershipRow({ userid: PREPARER.account.userid, groupid: NEW_ADMIN_GROUP.userid })),
+      expect.objectContaining(membershipRow({ userid: EDITOR.account.userid, groupid: NEW_ADMIN_GROUP.userid })),
     );
 
     const { claims } = await h.mint();
 
-    expect(atLogin.roles).toEqual([Roles.systemUser, Roles.financePreparer]);
+    expect(atLogin.roles).toEqual([Roles.systemUser]);
     expect(claims).toEqual(atLogin);
   });
 
   it('mints the rebuilt roles and the next epoch after a re-login', async () => {
     const relogin = buildLoginSnapshot({
-      account: PREPARER.account,
-      credential: PREPARER.credential,
-      loginState: PREPARER.loginState,
-      contact: PREPARER.contact,
-      groups: [...PREPARER.groups, NEW_ADMIN_GROUP].map(membershipGroupOf),
+      account: EDITOR.account,
+      credential: EDITOR.credential,
+      loginState: EDITOR.loginState,
+      contact: EDITOR.contact,
+      groups: [...EDITOR.groups, NEW_ADMIN_GROUP].map(membershipGroupOf),
     });
 
     const epoch = await h.login(relogin);
     const { claims } = await h.mint();
 
     expect(epoch).toBe(atLogin.epoch + 1);
-    expect(claims).toEqual({ ...atLogin, roles: [Roles.siteAdmin, Roles.systemUser, Roles.financePreparer], epoch });
+    expect(claims).toEqual({ ...atLogin, roles: [Roles.siteAdmin, Roles.systemUser], epoch });
   });
 });
 
@@ -395,7 +387,7 @@ describe('the token routes', () => {
     await expect(verified).rejects.toMatchObject({ type: 'accessTokenExpired', statusCode: 401 });
   });
 
-  it.each(['people', 'web', 'migration', 'identity', 'reporting', 'operator'])(
+  it.each(['people', 'web', 'migration', 'identity', 'operator'])(
     'refuses %s a token with 403 before the session or registry is read',
     async (caller) => {
       const before = t.db.statements().length;

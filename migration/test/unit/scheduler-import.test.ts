@@ -45,10 +45,10 @@ const MONITOR: NativeTask = {
   paused: false,
 };
 
-const SURVEY: NativeTask = {
+const OTHER: NativeTask = {
   ...MONITOR,
-  task: 'opt2-survey-41-launch',
-  url: 'http://localhost:20000/surveys/41/launch',
+  task: 'ops-link-check',
+  url: 'http://localhost:8080/ops/link-check.cfm',
   interval: 'once',
   startTime: '09:00:00',
   paused: true,
@@ -58,7 +58,7 @@ const CAPTURE: NativeTasksFile = {
   capturedAt: CAPTURED_AT,
   originalPing: true,
   siteMonitorTask: MONITOR_NAME,
-  tasks: [SURVEY, MONITOR],
+  tasks: [OTHER, MONITOR],
 };
 
 /** The CAPTURE tasks as `box cfconfig export` writes them: keyed by name, `URL`, `httpPort`, `status`, no operation. */
@@ -82,7 +82,7 @@ const CFCONFIG_CAPTURE = {
   capturedAt: CAPTURED_AT,
   ping: true,
   siteMonitorTask: MONITOR_NAME,
-  scheduledTasks: Object.fromEntries([MONITOR, SURVEY].map((task) => [task.task, cfconfigTask(task)])),
+  scheduledTasks: Object.fromEntries([MONITOR, OTHER].map((task) => [task.task, cfconfigTask(task)])),
 };
 
 /** In-memory migration.scheduler_state for the statements state.ts issues, rolled back when a transaction throws. */
@@ -178,13 +178,13 @@ describe('defaultNativeTasksFile', () => {
 
 describe('normaliseNativeTasksFile', () => {
   it('sorts the tasks of a native-tasks.json document by name', () => {
-    expect(normaliseNativeTasksFile(CAPTURE)).toEqual({ ...CAPTURE, tasks: [MONITOR, SURVEY] });
+    expect(normaliseNativeTasksFile(CAPTURE)).toEqual({ ...CAPTURE, tasks: [MONITOR, OTHER] });
   });
 
   it('maps a box cfconfig export keyed by name, with status Paused, to the same capture and digest', () => {
     const normalised = normaliseNativeTasksFile(CFCONFIG_CAPTURE);
     expect(normalised).toEqual(normaliseNativeTasksFile(CAPTURE));
-    expect(normalised.tasks.find((task) => task.task === SURVEY.task)?.paused).toBe(true);
+    expect(normalised.tasks.find((task) => task.task === OTHER.task)?.paused).toBe(true);
     expect(JSON.stringify(normalised)).not.toContain('not-stored');
     expect(nativeTasksDigest(normalised)).toBe(nativeTasksDigest(normaliseNativeTasksFile(CAPTURE)));
   });
@@ -234,20 +234,18 @@ describe('nativeTasksDigest', () => {
   it('is lowercase hex SHA-256, independent of key order and capture time, and changes with any task field', () => {
     const digest = nativeTasksDigest(normaliseNativeTasksFile(CAPTURE));
     expect(digest).toMatch(/^[0-9a-f]{64}$/);
-    const reordered = { tasks: [SURVEY, MONITOR], siteMonitorTask: MONITOR_NAME, originalPing: true, capturedAt: '2026-07-01T00:00:00Z' };
+    const reordered = { tasks: [OTHER, MONITOR], siteMonitorTask: MONITOR_NAME, originalPing: true, capturedAt: '2026-07-01T00:00:00Z' };
     expect(nativeTasksDigest(normaliseNativeTasksFile(reordered))).toBe(digest);
-    const changed = { ...CAPTURE, tasks: [SURVEY, { ...MONITOR, interval: '600' }] };
+    const changed = { ...CAPTURE, tasks: [OTHER, { ...MONITOR, interval: '600' }] };
     expect(nativeTasksDigest(normaliseNativeTasksFile(changed))).not.toBe(digest);
   });
 });
 
 describe('importNativeTasks', () => {
-  it('stores the capture and the monitor definition, keeping the hand-off flags and the survey record', async () => {
+  it('stores the capture and the monitor definition, keeping the hand-off flags', async () => {
     const table = new SchedulerTable();
     const current: SiteMonitorRecord = { ...defaultSiteMonitorRecord(T1), nativePaused: 'suspend', targetTriggerDisabled: true };
-    const surveys = { state: 'legacy', definitions: [], paused: null, adoptedNames: [], updatedAt: T1.toISOString() };
     table.seed('sitemonitor', current);
-    table.seed('surveyTasks', surveys);
 
     const outcome = await importNativeTasks(deps(table, T2), CAPTURE);
     const sourceSha256 = nativeTasksDigest(normaliseNativeTasksFile(CAPTURE));
@@ -256,7 +254,7 @@ describe('importNativeTasks', () => {
       capturedAt: CAPTURED_AT,
       originalPing: true,
       siteMonitorTask: MONITOR_NAME,
-      tasks: [MONITOR, SURVEY],
+      tasks: [MONITOR, OTHER],
       sourceSha256,
       importedAt: T2.toISOString(),
     });
@@ -268,12 +266,11 @@ describe('importNativeTasks', () => {
       state: 'legacy',
       updatedAt: T2.toISOString(),
     });
-    expect(table.stored('surveyTasks')).toEqual(surveys);
   });
 
   it('records a capture without the monitor task, as ping=false leaves it, as nativeExisted false', async () => {
     const table = new SchedulerTable();
-    const outcome = await importNativeTasks(deps(table), { capturedAt: CAPTURED_AT, originalPing: false, tasks: [SURVEY] });
+    const outcome = await importNativeTasks(deps(table), { capturedAt: CAPTURED_AT, originalPing: false, tasks: [OTHER] });
     expect(outcome).toMatchObject({ imported: true, reason: 'imported', nativeExisted: false, siteMonitorTask: null, taskCount: 1 });
     expect(table.stored('sitemonitor')).toMatchObject({
       nativeExisted: false,
@@ -294,7 +291,7 @@ describe('importNativeTasks', () => {
   it('replaces a different capture before the hand-off', async () => {
     const table = new SchedulerTable();
     await importNativeTasks(deps(table), CAPTURE);
-    const outcome = await importNativeTasks(deps(table, T2), { ...CAPTURE, originalPing: false, tasks: [SURVEY] });
+    const outcome = await importNativeTasks(deps(table, T2), { ...CAPTURE, originalPing: false, tasks: [OTHER] });
     expect(outcome).toMatchObject({ imported: true, reason: 'replaced', nativeExisted: false, taskCount: 1 });
     expect(table.stored('nativeTasks').importedAt).toBe(T2.toISOString());
     expect(table.stored('sitemonitor')).toMatchObject({ nativeExisted: false, definition: null });
@@ -328,7 +325,7 @@ describe('importSchedulerRequest', () => {
       capturedAt: T2.toISOString(),
       originalPing: ping,
       siteMonitorTask: MONITOR_NAME,
-      tasks: [MONITOR, SURVEY],
+      tasks: [MONITOR, OTHER],
       sourceSha256,
       importedAt: T2.toISOString(),
     });
@@ -389,7 +386,7 @@ describe('importSchedulerState', () => {
   });
 
   it('logs an absent monitor for a capture without one', async () => {
-    const file = await writeCapture('no-monitor.json', JSON.stringify({ ...CAPTURE, siteMonitorTask: null, tasks: [SURVEY] }));
+    const file = await writeCapture('no-monitor.json', JSON.stringify({ ...CAPTURE, siteMonitorTask: null, tasks: [OTHER] }));
     const { ctx, info } = context(new SchedulerTable());
     await importSchedulerState(ctx, file);
     expect(info.mock.calls[0]?.[0]).toContain('native site monitor absent');

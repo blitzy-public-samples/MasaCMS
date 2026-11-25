@@ -76,11 +76,10 @@ RECON_DIR="$REPORTS_DIR/reconciliation"
 STAGE_FUNCS=(stage_pin stage_baseline stage_platform stage_services stage_migration stage_capture stage_cutover
   stage_equivalence stage_rollback stage_reports)
 PLATFORM_PACKAGES=(platform gateway services/stub)
-SERVICE_PACKAGES=(services/identity services/people services/programs-sites services/strategies-content
-  services/communications services/reporting services/surveys services/timesheets services/finance services/e-signature
-  web migration harness)
+SERVICE_PACKAGES=(services/identity services/people services/programs-sites services/strategies-content web migration
+  harness)
 E2E_SUITES=(isolation/tenant-isolation events/seams events/dlq-replay events/trace events/roster-protocol
-  security/authz-matrix synthetic/v1-writes)
+  security/authz-matrix)
 # Reconciling faults that need a target-authoritative unit: stage 6 runs them under v0002, after reconcile post-cutover.
 POST_CUTOVER_FAULTS=(window-import-interrupted)
 # Settings of the migration process up.sh recorded, so every command here addresses the same stack it started.

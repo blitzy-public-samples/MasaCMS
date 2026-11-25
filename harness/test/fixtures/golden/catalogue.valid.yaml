@@ -47,7 +47,7 @@ scenarios:
       - admin:clogin.login
       - admin:home.redirect
       - admin:clogin.logout
-  - id: GS-CO-05
+  - id: GS-CO-75
     title: JSON API content read
     service: strategies-content
     role: anonymous

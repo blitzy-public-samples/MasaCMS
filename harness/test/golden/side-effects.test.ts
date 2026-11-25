@@ -24,7 +24,6 @@ import {
   type CompareKind,
   type RowSpec,
   type Step,
-  type TaskSpec,
 } from '../../src/golden/catalogue.js';
 import { GoldenConfigError } from '../../src/golden/errors.js';
 import { createScenarioContext, session, type Origin, type ScenarioContext } from '../../src/golden/session.js';
@@ -36,18 +35,15 @@ import {
   SETTLE_POLL_MS,
   SettleTimeoutError,
   SideEffectError,
-  TASKS_QUIET_MS,
   collectFiles,
   collectMail,
   collectSideEffects,
-  collectTasks,
   legacyRows,
   loadCutoverGroups,
   loadTableOwnership,
   pushSubscriptions,
   resetMailpit,
   resolveSideEffectConfig,
-  scheduledSurveys,
   serviceUrl,
   settleHook,
   sideEffectEnvSchema,
@@ -95,7 +91,6 @@ const GATEWAY = 'http://gateway.fixture.test';
 const MAILPIT = 'http://mailpit.fixture.test:8025';
 const TOKEN = 'Bearer FIXTURE-INVOCATION-TOKEN';
 const CURSOR = 'FIXTURE-CURSOR-1';
-const SURVEYS = '/legacy-fixtures/cfml/api.cfm/surveys/surveys';
 const NO_LOGIN = { login: 'none', via: 'admin' } as const;
 const SQL_ENV: EnvLike = {
   MURA_DBHOST: 'sql.fixture.test',
@@ -396,45 +391,39 @@ const TUSERS = table({
 const EMAIL_STATS = table({
   table: 'temailstats',
   rowIdentity: 'multiset',
-  targets: [target('communications.email_stat', 'communications', null, [], ['EmailID', 'Email', 'SiteID'])],
+  targets: [target('content.email_stat', 'strategies-content', null, [], ['EmailID', 'Email', 'SiteID'])],
 });
-const FINANCE = table({
-  table: 'Program_N.finance_record',
-  schema: 'Program_N',
+const RECORDS = table({
+  table: 'synthetic.record',
+  schema: 'synthetic',
   targets: [
     target(
-      'finance.record',
-      'finance',
+      'people.record',
+      'people',
       null,
       ['record_id'],
       ['siteID', 'title', 'amount', 'fee', 'created', 'period', 'content', 'approved', 'ratio'],
     ),
   ],
 });
-const BLACKOUT = table({
-  table: 'Program_N.blackout',
-  schema: 'Program_N',
-  targets: [target('timesheets.blackout', 'timesheets', null, ['blackout_id'], ['blackout_id', 'day_id', 'reason'])],
-});
 const SAMPLE = table({
   table: 'synthetic.sample',
   schema: 'synthetic',
-  targets: [target('finance.sample', 'finance', null, ['id'], ['id', 'siteID', 'v'])],
+  targets: [target('people.sample', 'people', null, ['id'], ['id', 'siteID', 'v'])],
 });
 const OWNERSHIP: TableOwnership = {
   tables: [
     table({ table: 'fb_*', pattern: true, targets: [] }),
     TUSERS,
     EMAIL_STATS,
-    FINANCE,
-    BLACKOUT,
+    RECORDS,
     SAMPLE,
-    table({ table: 'tclustercommands', targets: [] }),
+    table({ table: 'tclustercommands', owner: 'decision-list', targets: [] }),
   ],
   units: [
     { unit: 'identity.user_account', owner: 'identity' },
     { unit: 'identity.group_account', owner: 'identity' },
-    { unit: 'communications.email_stat', owner: 'communications' },
+    { unit: 'content.email_stat', owner: 'strategies-content' },
   ],
 };
 
@@ -544,12 +533,11 @@ interface ExportPage {
   unit: string;
   siteId: string;
   after?: string;
-  programId?: string;
   tables: ExportTable[];
   next?: string;
 }
 
-/** Scripts `owner`'s migration export: the page whose unit, site, cursor and program the query names. */
+/** Scripts `owner`'s migration export: the page whose unit, site and cursor the query names. */
 function exportService(http: FakeHttp, owner: string, pages: readonly ExportPage[]): FakeHttp {
   return http.route('GET', `${serviceBase(owner)}${MIGRATION_PATH_PREFIX}/export`, (url) => {
     const q = url.searchParams;
@@ -557,8 +545,7 @@ function exportService(http: FakeHttp, owner: string, pages: readonly ExportPage
       (p) =>
         p.unit === q.get('unit') &&
         p.siteId === q.get('siteId') &&
-        (p.after ?? null) === q.get('after') &&
-        (p.programId ?? null) === q.get('programId'),
+        (p.after ?? null) === q.get('after'),
     );
     if (page === undefined) throw new Error(`no export page for ${owner}${url.search}`);
     const tenantId = `FIXTURE-TENANT-${page.siteId}`;
@@ -601,7 +588,7 @@ const GROUPS: CutoverGroups = {
   groups: [
     { id: 'grp:identity', units: ['identity.user_account', 'identity.group_account'] },
     { id: 'grp:people', units: ['people.person'] },
-    { id: 'grp:communications', units: ['communications.email_stat'] },
+    { id: 'grp:content', units: ['content.email_stat'] },
   ],
 };
 
@@ -678,16 +665,6 @@ async function context(
 function step(fields: Record<string, unknown>): Step {
   return stepSchema.parse(fields);
 }
-
-function scheduleStep(name: string, surveyId: string, fields: Record<string, unknown>): Step {
-  return step({ name, method: 'POST', route: `${SURVEYS}/${surveyId}/schedule`, ...fields });
-}
-
-function tasksReply(items: unknown[], totalpages = 1): Handler {
-  return () => json({ apiversion: 'v1', method: 'GET', data: { items, totalpages } });
-}
-
-const TASKS: TaskSpec = { source: 'scheduled-tasks', prefix: 'opt2-survey-' };
 
 /** The error `promise` rejects with. */
 async function failure(promise: Promise<unknown>): Promise<Error> {
@@ -858,7 +835,7 @@ describe('collectMail', () => {
     const list = fixture('mailpit-list.json');
     const forgot = fixture('mailpit-message.json') as { Text: string; HTML: string; Headers: Record<string, string[]> };
     const send = {
-      From: { Name: 'Tenant A Communications', Address: 'communications@example.test' },
+      From: { Name: 'Tenant A Newsletter', Address: 'newsletter@example.test' },
       To: [{ Name: 'Blake Recipient', Address: 'blake.recipient@example.test' }],
       Subject: 'June programme update',
       Text: 'Hello Blake,',
@@ -878,7 +855,7 @@ describe('collectMail', () => {
     expect(mail).toStrictEqual([
       {
         to: ['Blake Recipient <blake.recipient@example.test>'],
-        from: 'Tenant A Communications <communications@example.test>',
+        from: 'Tenant A Newsletter <newsletter@example.test>',
         subject: 'June programme update',
         text: 'Hello Blake,',
         htmlText: 'Hello Blake,',
@@ -1041,8 +1018,8 @@ describe('legacyRows', () => {
     expect(snapshots).toStrictEqual([
       snapshot(
         {
-          unit: 'communications.email_stat',
-          owner: 'communications',
+          unit: 'content.email_stat',
+          owner: 'strategies-content',
           legacyTable: 'temailstats',
           columns: STAT_COLUMNS,
           keyColumns: [],
@@ -1053,7 +1030,49 @@ describe('legacyRows', () => {
     ]);
   });
 
-  it('reads a Program_<n> table from its schema, selecting each type through an exact-value expression', async () => {
+  it.each([
+    { label: 'keyless', entry: table({ table: 'tmailinglist', rowIdentity: 'multiset', targets: [] }), keyColumns: [] },
+    { label: 'keyed', entry: table({ table: 'tmailinglist', primaryKey: ['MLID'], targets: [] }), keyColumns: ['MLID'] },
+  ])(
+    'snapshots a $label legacy-only table as one legacy:<table> unit over every live column',
+    async ({ entry, keyColumns }) => {
+      const row = {
+        MLID: 'FIXTURE-L1',
+        SiteID: 'default',
+        Name: 'Fixture list',
+        LastUpdate: '2026-06-30 09:15:00.0000000',
+        isPurge: 0,
+      };
+      const sql = await fakeSql({
+        'dbo.tmailinglist': {
+          columns: [
+            ['MLID', 'char'],
+            ['SiteID', 'nvarchar'],
+            ['Name', 'nvarchar'],
+            ['LastUpdate', 'datetime'],
+            ['isPurge', 'int', 0],
+          ],
+          rows: [row, { ...row, MLID: 'FIXTURE-L2', SiteID: 'tenant-a' }],
+        },
+      });
+      const columns = [col('MLID', 's'), col('SiteID', 's'), col('Name', 's'), col('LastUpdate', 't'), col('isPurge', 'i')];
+
+      const snapshots = await legacyRows(
+        { table: 'tmailinglist', where: { SiteID: 'default' } },
+        { mssql: sql.mssql, ownership: withTables(entry) },
+      );
+
+      const unit = { unit: 'legacy:tmailinglist', owner: 'legacy', legacyTable: 'tmailinglist' };
+      const keyless = entry.rowIdentity === 'multiset';
+      expect(snapshots).toStrictEqual([snapshot({ ...unit, columns, keyColumns, keyless }, [row])]);
+      expect(sql.queries[1]?.sql).toBe(
+        'SELECT [MLID], [SiteID], [Name], CONVERT(varchar(27), CAST([LastUpdate] AS datetime2(7)), 121) AS [LastUpdate], ' +
+          '[isPurge] FROM [dbo].[tmailinglist] WHERE [SiteID] = @w0',
+      );
+    },
+  );
+
+  it('reads a table from its schema, selecting each type through an exact-value expression', async () => {
     const row = {
       record_id: 'FIXTURE-R1',
       siteID: 'tenant-b',
@@ -1067,7 +1086,7 @@ describe('legacyRows', () => {
       ratio: 0.25,
     };
     const sql = await fakeSql({
-      'Program_2.finance_record': {
+      'synthetic.record': {
         columns: [
           ['record_id', 'uniqueidentifier'],
           ['siteID', 'varchar'],
@@ -1097,20 +1116,20 @@ describe('legacyRows', () => {
     ];
 
     const snapshots = await legacyRows(
-      { table: 'Program_2.finance_record', where: { record_id: 'FIXTURE-R1' } },
+      { table: 'synthetic.record', where: { record_id: 'FIXTURE-R1' } },
       { mssql: sql.mssql, ownership: OWNERSHIP },
     );
 
-    const record = { unit: 'finance.record', owner: 'finance', legacyTable: 'Program_N.finance_record' };
+    const record = { unit: 'people.record', owner: 'people', legacyTable: 'synthetic.record' };
     expect(snapshots).toStrictEqual([snapshot({ ...record, columns, keyColumns: ['record_id'] }, [row])]);
-    expect(sql.queries[0]?.params).toStrictEqual({ schema: 'Program_2', table: 'finance_record' });
+    expect(sql.queries[0]?.params).toStrictEqual({ schema: 'synthetic', table: 'record' });
     expect(sql.queries[1]?.sql).toBe(
       'SELECT [record_id], [siteID], CAST([title] AS nvarchar(max)) AS [title], ' +
         'CONVERT(varchar(64), [amount]) AS [amount], CONVERT(varchar(64), [fee], 2) AS [fee], ' +
         'CONVERT(varchar(27), CAST([created] AS datetime2(7)), 121) AS [created], ' +
         'CONVERT(varchar(27), CAST([period] AS datetime2(7)), 121) AS [period], ' +
         'CAST([content] AS varbinary(max)) AS [content], [approved], [ratio] ' +
-        'FROM [Program_2].[finance_record] WHERE [record_id] = @w0',
+        'FROM [synthetic].[record] WHERE [record_id] = @w0',
     );
   });
 
@@ -1256,8 +1275,8 @@ describe('legacyRows', () => {
         table: 'synthetic.flag',
         schema: 'synthetic',
         targets: [
-          target('finance.active_flag', 'finance', 'active = 1', ['flagID'], ['active']),
-          target('finance.inactive_flag', 'finance', 'active = 0', ['flagID'], ['active']),
+          target('people.active_flag', 'people', 'active = 1', ['flagID'], ['active']),
+          target('people.inactive_flag', 'people', 'active = 0', ['flagID'], ['active']),
         ],
       }),
       db: {
@@ -1272,7 +1291,7 @@ describe('legacyRows', () => {
       },
       idColumn: 'flagID',
       columns: [col('flagID', 's'), col('active', 'i')],
-      expected: { 'finance.active_flag': ['FIXTURE-F1'], 'finance.inactive_flag': ['FIXTURE-F2'] },
+      expected: { 'people.active_flag': ['FIXTURE-F1'], 'people.inactive_flag': ['FIXTURE-F2'] },
       lookups: [],
     },
     {
@@ -1387,7 +1406,7 @@ describe('legacyRows', () => {
     {
       label: 'a table owned by no target unit',
       spec: { table: 'tclustercommands', where: { siteid: 'default' } },
-      error: /tclustercommands maps to no target unit \(owner legacy\)/,
+      error: /tclustercommands maps to no target unit \(owner decision-list\)/,
     },
     {
       label: 'a table the live catalog lacks',
@@ -1496,7 +1515,6 @@ describe('targetRows', () => {
       expect(call.method).toBe('GET');
       expect(call.url.pathname).toBe('/internal/v1/migration/export');
       expect(call.url.searchParams.get('limit')).toBe(String(MAX_EXPORT_LIMIT));
-      expect(call.url.searchParams.has('programId')).toBe(false);
       expect(call.headers[INVOCATION_HEADER]).toBe(TOKEN);
     }
     expect(new Set(minted.map((m) => `${m.name} ${m.url}`))).toStrictEqual(
@@ -1577,45 +1595,6 @@ describe('targetRows', () => {
     expect(units).toStrictEqual(SPLIT_USERS.targets.map((t) => t.unit));
   });
 
-  it("reads a Program_<n> table's export in the program's site with its programId", async () => {
-    const columns = [col('blackout_id', 's'), col('day_id', 's'), col('reason', 's')];
-    const blackouts = [
-      { blackout_id: 'FIXTURE-B1', day_id: 'FIXTURE-D1', reason: 'Holiday' },
-      { blackout_id: 'FIXTURE-B2', day_id: 'FIXTURE-D2', reason: 'Closure' },
-    ];
-    const http = exportService(fakeHttp(), 'timesheets', [
-      {
-        unit: 'timesheets.blackout',
-        siteId: 'tenant-b',
-        programId: '2',
-        tables: [exportTable('timesheets.blackout', 'Program_2.blackout', columns, ['blackout_id'], blackouts)],
-      },
-    ]);
-    const sql = await fakeSql({
-      'synthetic.program_site': {
-        rows: [
-          { program_id: 1, siteID: 'tenant-a' },
-          { program_id: 2, siteID: 'tenant-b  ' },
-        ],
-      },
-    });
-
-    const snapshots = await targetRows(
-      { table: 'Program_2.blackout', where: { day_id: 'FIXTURE-D1' } },
-      await rowDeps(http, sql),
-    );
-
-    const blackout = { unit: 'timesheets.blackout', owner: 'timesheets', legacyTable: 'Program_N.blackout' };
-    const [first] = blackouts;
-    expect(snapshots).toStrictEqual([snapshot({ ...blackout, columns, keyColumns: ['blackout_id'] }, [first ?? {}])]);
-    expect(sql.queries).toStrictEqual([
-      {
-        sql: 'SELECT [siteID] AS siteId FROM [synthetic].[program_site] WHERE [program_id] = @programId',
-        params: { programId: 2 },
-      },
-    ]);
-  });
-
   /** Export of synthetic.sample per site, holding one row per `values` entry of column `v`. */
   function sampleWorld(v: CanonicalColumn, values: unknown[], sites: string[] = ['default', 'tenant-a']): FakeHttp {
     const columns = [col('id', 's'), col('siteID', 's'), v];
@@ -1623,11 +1602,11 @@ describe('targetRows', () => {
       values.map((value, i) => ({ id: `FIXTURE-${siteId}-${i}`, siteID: siteId, v: value }));
     return exportService(
       fakeHttp(),
-      'finance',
+      'people',
       sites.map((siteId) => ({
-        unit: 'finance.sample',
+        unit: 'people.sample',
         siteId,
-        tables: [exportTable('finance.sample', 'synthetic.sample', columns, ['id'], rowsOf(siteId))],
+        tables: [exportTable('people.sample', 'synthetic.sample', columns, ['id'], rowsOf(siteId))],
       })),
     );
   }
@@ -1667,11 +1646,11 @@ describe('targetRows', () => {
 
   it('keeps each duplicate row of a keyless export, across tenants', async () => {
     const stats = (rows: Record<string, unknown>[]): ExportTable[] => [
-      exportTable('communications.email_stat', 'temailstats', STAT_COLUMNS, [], rows),
+      exportTable('content.email_stat', 'temailstats', STAT_COLUMNS, [], rows),
     ];
-    const http = exportService(fakeHttp(), 'communications', [
-      { unit: 'communications.email_stat', siteId: 'default', tables: stats([STAT, STAT, OTHER_STAT]) },
-      { unit: 'communications.email_stat', siteId: 'tenant-a', tables: stats([STAT]) },
+    const http = exportService(fakeHttp(), 'strategies-content', [
+      { unit: 'content.email_stat', siteId: 'default', tables: stats([STAT, STAT, OTHER_STAT]) },
+      { unit: 'content.email_stat', siteId: 'tenant-a', tables: stats([STAT]) },
     ]);
     const sql = await fakeSql(legacyDb());
 
@@ -1680,7 +1659,7 @@ describe('targetRows', () => {
       await rowDeps(http, sql),
     );
 
-    const stat = { unit: 'communications.email_stat', owner: 'communications', legacyTable: 'temailstats' };
+    const stat = { unit: 'content.email_stat', owner: 'strategies-content', legacyTable: 'temailstats' };
     expect(snapshots).toStrictEqual([
       snapshot({ ...stat, columns: STAT_COLUMNS, keyColumns: [], keyless: true }, [STAT, STAT, OTHER_STAT, STAT]),
     ]);
@@ -1742,13 +1721,6 @@ describe('targetRows', () => {
       error: /unit identity\.user_account does not own every where column of tusers, and no sibling unit that does/,
     },
     {
-      label: 'a program no site maps to',
-      http: fakeHttp,
-      spec: { table: 'Program_3.blackout', where: { day_id: 'FIXTURE-D1' } },
-      type: GoldenConfigError,
-      error: /synthetic\.program_site maps no site to program 3/,
-    },
-    {
       label: 'a where on a binary column',
       http: () => sampleWorld(col('v', 'b'), [Buffer.from('FIXTURE')]),
       spec: { table: 'synthetic.sample', where: { v: 'ab' } },
@@ -1759,166 +1731,13 @@ describe('targetRows', () => {
 
   it.each(TARGET_ERRORS)('rejects $label', async ({ env = {}, http: world, spec, type, error }) => {
     const http = world();
-    const sql = await fakeSql(legacyDb({ 'synthetic.program_site': { rows: [] } }));
+    const sql = await fakeSql(legacyDb());
 
     const err = await failure(targetRows(spec, await rowDeps(http, sql, env)));
 
     expect(err).toBeInstanceOf(type);
     expect(err.message).toMatch(error);
     expect(err.message).not.toContain('FIXTURE-BODY-DETAIL');
-  });
-});
-
-describe('scheduled tasks', () => {
-  const steps = [
-    step({ name: 'create', method: 'POST', route: `${SURVEYS}/`, body: { title: 'Pulse' } }),
-    scheduleStep('first', '${create.surveyid}', { as: 'editor', body: { launchAt: '2026-07-01T09:00:00' } }),
-    step({
-      name: 'again',
-      method: 'POST',
-      route: `${SURVEYS}/\${create.surveyid}/schedule?SiteID=tenant-a`,
-      as: 'editor',
-      body: { LaunchAt: '2026-07-01T23:30:00' },
-    }),
-    step({
-      name: 'second',
-      method: 'POST',
-      route: `${SURVEYS}/FIXTURE-SV-2/schedule/`,
-      form: { launchAt: '2026-08-15T08:00:00' },
-    }),
-    step({ name: 'read', route: `${SURVEYS}/FIXTURE-SV-2/schedule` }),
-  ];
-
-  /** Context on `origin` with the survey id binding `create.surveyid`. */
-  async function surveyContext(http: FakeHttp, origin: Origin = 'legacy'): Promise<ScenarioContext> {
-    const ctx = await context(http, origin);
-    ctx.bindings.set('create.surveyid', 'FIXTURE SV 1');
-    return ctx;
-  }
-
-  it('lists each scheduled survey once, from its last scheduling request', async () => {
-    const ctx = await surveyContext(fakeHttp());
-
-    expect(scheduledSurveys(steps, ctx)).toStrictEqual([
-      { surveyId: 'FIXTURE SV 1', siteId: 'tenant-a', launchAt: '2026-07-01T23:30:00', session: 'editor' },
-      { surveyId: 'FIXTURE-SV-2', siteId: undefined, launchAt: '2026-08-15T08:00:00', session: undefined },
-    ]);
-  });
-
-  it('skips a schedule step whose route resolves to no schedule path', async () => {
-    const ctx = await surveyContext(fakeHttp());
-    ctx.bindings.set('create.surveyid', 'FIXTURE/SV');
-
-    expect(scheduledSurveys(steps.slice(0, 3), ctx)).toStrictEqual([]);
-  });
-
-  it.each([
-    {
-      label: 'a schedule step over a matrix',
-      step: step({
-        name: 'each',
-        method: 'POST',
-        route: `${SURVEYS}/FIXTURE-SV-2/schedule?siteid=\${matrix.site}`,
-        matrix: { site: ['a', 'b'] },
-        body: { launchAt: '2026-07-01T09:00:00' },
-      }),
-      error: /GS-SE-01: step each schedules surveys over a matrix/,
-    },
-    {
-      label: 'a launchAt without seconds',
-      step: scheduleStep('late', 'FIXTURE-SV-2', { body: { launchAt: '2026-07-01 09:00' } }),
-      error: /step late schedules a survey without a YYYY-MM-DDTHH:MM:SS launchAt/,
-    },
-    {
-      label: 'no launchAt',
-      step: scheduleStep('late', 'FIXTURE-SV-2', {}),
-      error: /step late schedules a survey without a YYYY-MM-DDTHH:MM:SS launchAt/,
-    },
-  ])('throws GoldenConfigError for $label', async ({ step: bad, error }) => {
-    const ctx = await surveyContext(fakeHttp());
-
-    expect(() => scheduledSurveys([bad], ctx)).toThrow(GoldenConfigError);
-    expect(() => scheduledSurveys([bad], ctx)).toThrow(error);
-  });
-
-  const task = (taskname: string, kind: string, route: string, offsetminutes: number): Record<string, unknown> => ({
-    taskname,
-    kind,
-    route,
-    offsetminutes,
-  });
-
-  it.each<Origin>(['legacy', 'gateway'])(
-    'reads the prefixed tasks of each survey on the %s origin in its scheduling session, offset from the launch',
-    async (origin) => {
-      const base = origin === 'legacy' ? LEGACY : GATEWAY;
-      const http = fakeHttp()
-        .route(
-          'GET',
-          `${base}${SURVEYS}/FIXTURE%20SV%201/tasks`,
-          tasksReply([
-            task('opt2-survey-sv1-launch', 'launch', '/surveys/sv1/launch', 0),
-            task('opt2-survey-sv1-reminder', 'reminder', '/surveys/sv1/remind', 45),
-            task('manual-task', 'other', '/elsewhere', 5),
-          ]),
-        )
-        .route(
-          'GET',
-          `${base}${SURVEYS}/FIXTURE-SV-2/tasks`,
-          tasksReply([task('opt2-survey-sv2-close', 'close', '/surveys/sv2/close', 14 * 24 * 60)]),
-        );
-      const ctx = await surveyContext(http, origin);
-
-      const tasks = await collectTasks(TASKS, ctx, steps);
-
-      const launch = '2026-07-01T23:30:00';
-      expect(tasks).toStrictEqual([
-        {
-          name: 'opt2-survey-sv1-launch',
-          kind: 'launch',
-          target: '/surveys/sv1/launch',
-          scheduledAt: launch,
-          base: launch,
-        },
-        {
-          name: 'opt2-survey-sv1-reminder',
-          kind: 'reminder',
-          target: '/surveys/sv1/remind',
-          scheduledAt: '2026-07-02T00:15:00',
-          base: launch,
-        },
-        {
-          name: 'opt2-survey-sv2-close',
-          kind: 'close',
-          target: '/surveys/sv2/close',
-          scheduledAt: '2026-08-29T08:00:00',
-          base: '2026-08-15T08:00:00',
-        },
-      ]);
-      expect(sentWithCookies(http)).toStrictEqual([
-        `${SURVEYS}/FIXTURE%20SV%201/tasks?siteid=tenant-a CFID=FIXTURE-editor`,
-        `${SURVEYS}/FIXTURE-SV-2/tasks CFID=FIXTURE-default`,
-      ]);
-    },
-  );
-
-  it.each([
-    { label: 'answers 500', reply: () => json({}, 500), error: /tasks of survey FIXTURE-SV-2 answered 500/ },
-    { label: 'answers without data.items', reply: () => json({ data: {} }), error: /answered without data\.items/ },
-    { label: 'spans several pages', reply: tasksReply([], 2), error: /tasks of survey FIXTURE-SV-2 span 2 pages/ },
-    {
-      label: 'lists a task without its offset',
-      reply: tasksReply([{ taskname: 'opt2-survey-x', kind: 'launch', route: '/r' }]),
-      error: /a task of survey FIXTURE-SV-2 lacks taskname, kind, route or offsetminutes/,
-    },
-  ])('rejects with SideEffectError when the task list $label', async ({ reply, error }) => {
-    const http = fakeHttp().route('GET', `${LEGACY}${SURVEYS}/FIXTURE-SV-2/tasks`, reply);
-    const ctx = await surveyContext(http);
-
-    const err = await failure(collectTasks(TASKS, ctx, [steps[3] as Step]));
-
-    expect(err).toBeInstanceOf(SideEffectError);
-    expect(err.message).toMatch(error);
   });
 });
 
@@ -2007,8 +1826,8 @@ describe('pushSubscriptions', () => {
   it("lists every push path of the service contracts as the consuming service and its topic", async () => {
     const subscriptions = await pushSubscriptions();
 
-    expect(subscriptions).toContainEqual({ consumer: 'timesheets', topic: 'people.person.archived.v1' });
-    expect(subscriptions).toContainEqual({ consumer: 'communications', topic: 'identity.login-mail.requested.v1' });
+    expect(subscriptions).toContainEqual({ consumer: 'identity', topic: 'people.person.changed.v1' });
+    expect(subscriptions).toContainEqual({ consumer: 'people', topic: 'identity.group.changed.v1' });
     for (const { consumer, topic } of subscriptions) {
       expect(SERVICES).toContain(consumer);
       expect(topic).toMatch(/^[a-z-]+\.[\w.-]+\.v\d+$/);
@@ -2038,7 +1857,7 @@ describe('pushSubscriptions', () => {
 });
 
 describe('settleHook', () => {
-  const TOPIC = 'people.person.archived.v1';
+  const TOPIC = 'people.person.changed.v1';
   const EVENT = '0F1E2D3C-0000-4000-8000-00000000A001';
 
   /** Scripts `service`'s migration position, answering each query through `answer`. */
@@ -2073,35 +1892,9 @@ describe('settleHook', () => {
     const clock = fakeClock();
     const ctx = await context(http);
 
-    await settleHook(ctx, undefined, { fetch: http.fetch, sleep: clock.sleep, now: clock.now })('mail', 60_000);
+    await settleHook(ctx, { fetch: http.fetch, sleep: clock.sleep, now: clock.now })('mail', 60_000);
 
     expect(clock.elapsed()).toBe(SETTLE_POLL_MS + MAIL_QUIET_MS);
-  });
-
-  it("waits for tasks until the scenario's task list is non-empty and unchanged for TASKS_QUIET_MS", async () => {
-    const task = { taskname: 'opt2-survey-sv2-launch', kind: 'launch', route: '/surveys/sv2/launch', offsetminutes: 0 };
-    const tasks = inTurn(tasksReply([]), tasksReply([task]));
-    const http = fakeHttp().route('GET', `${LEGACY}${SURVEYS}/FIXTURE-SV-2/tasks`, tasks);
-    const clock = fakeClock();
-    const ctx = await context(http);
-    const schedule = scheduleStep('schedule', 'FIXTURE-SV-2', { body: { launchAt: '2026-07-01T09:00:00' } });
-    const scenario = { steps: [schedule], tasks: TASKS };
-
-    await settleHook(ctx, scenario, { sleep: clock.sleep, now: clock.now })('tasks', 60_000);
-
-    expect(clock.elapsed()).toBe(SETTLE_POLL_MS + TASKS_QUIET_MS);
-  });
-
-  it.each([
-    { label: 'no scenario', scenario: undefined },
-    { label: 'a scenario without tasks', scenario: { steps: [] } },
-  ])('rejects a tasks settle given $label', async ({ scenario }) => {
-    const ctx = await context(fakeHttp());
-
-    const err = await failure(settleHook(ctx, scenario)('tasks', 1_000));
-
-    expect(err).toBeInstanceOf(GoldenConfigError);
-    expect(err.message).toBe('GS-SE-01: settle tasks needs the scenario and its tasks declaration');
   });
 
   it.each(['bogus', 'seam:', 'mail:'])('rejects the settle %s', async (spec) => {
@@ -2120,7 +1913,7 @@ describe('settleHook', () => {
       const sql = await fakeSql({});
       const ctx = await context(http);
 
-      await settleHook(ctx, undefined, await hookDeps(http, undefined, { mssql: sql.mssql }))(spec, 1_000);
+      await settleHook(ctx, await hookDeps(http, undefined, { mssql: sql.mssql }))(spec, 1_000);
 
       expect(http.calls).toStrictEqual([]);
       expect(sql.queries).toStrictEqual([]);
@@ -2148,9 +1941,9 @@ describe('settleHook', () => {
     const clock = fakeClock();
     const ctx = await context(http, 'gateway');
 
-    await settleHook(ctx, undefined, await hookDeps(http, clock))(`seam:${TOPIC}`, 5_000);
+    await settleHook(ctx, await hookDeps(http, clock))(`seam:${TOPIC}`, 5_000);
 
-    expect(consumers).toContain('timesheets');
+    expect(consumers).toContain('identity');
     expect(http.to(serviceBase('people'))).toHaveLength(2);
     for (const call of http.calls) expect(call.headers[INVOCATION_HEADER]).toBe(TOKEN);
     expect(clock.elapsed()).toBe(0);
@@ -2163,7 +1956,7 @@ describe('settleHook', () => {
     for (const producer of producers) position(http, producer, () => ({ outbox: drained, published: [] }));
     const ctx = await context(http, 'gateway');
 
-    await settleHook(ctx, undefined, await hookDeps(http))('seam', 5_000);
+    await settleHook(ctx, await hookDeps(http))('seam', 5_000);
 
     expect(new Set(http.calls.map((call) => call.url.origin))).toStrictEqual(new Set(producers.map(serviceBase)));
   });
@@ -2175,14 +1968,14 @@ describe('settleHook', () => {
     const clock = fakeClock();
     const ctx = await context(http, 'gateway');
 
-    const err = await failure(settleHook(ctx, undefined, await hookDeps(http, clock))(`seam:${TOPIC}`, 3_000));
+    const err = await failure(settleHook(ctx, await hookDeps(http, clock))(`seam:${TOPIC}`, 3_000));
 
     expect(err).toBeInstanceOf(SettleTimeoutError);
     expect(err).toBeInstanceOf(SideEffectError);
     expect(err.message).toContain(
       `settle seam ${TOPIC}: after 3000 ms 0 outbox rows are unpublished or held and 1 deliveries lack a receipt`,
     );
-    expect(err.message).toContain(`timesheets:${EVENT.toLowerCase()}`);
+    expect(err.message).toContain(`identity:${EVENT.toLowerCase()}`);
     expect(clock.elapsed()).toBe(3_000);
   });
 
@@ -2226,7 +2019,7 @@ describe('settleHook', () => {
     );
     const ctx = await context(http, 'gateway');
 
-    const err = await failure(settleHook(ctx, undefined, await hookDeps(http))(spec, 1_000));
+    const err = await failure(settleHook(ctx, await hookDeps(http))(spec, 1_000));
 
     expect(err).toBeInstanceOf(type);
     expect(err.message).toMatch(error);
@@ -2248,7 +2041,7 @@ describe('settleHook', () => {
     tables: OWNERSHIP.tables,
     units: [...OWNERSHIP.units, { unit: 'people.person', owner: 'people' }],
   };
-  const IDENTITY_AND_PEOPLE = { 'grp:identity': 'target', 'grp:people': 'target', 'grp:communications': 'legacy' };
+  const IDENTITY_AND_PEOPLE = { 'grp:identity': 'target', 'grp:people': 'target', 'grp:content': 'legacy' };
 
   /** The reverse projector's checkpoint table holding `rows` of `owner`, `tenant_id`, `applied_horizon`. */
   function checkpoints(...rows: [owner: string, tenant: string, horizon: string][]): LegacyTable {
@@ -2263,7 +2056,7 @@ describe('settleHook', () => {
     const sql = await fakeSql(db);
     const ctx = await context(http, 'gateway', scenarioEnv(TWO_OWNERS));
     const deps = await hookDeps(http, clock, { mssql: sql.mssql, ownership: PROJECTION_OWNERSHIP, groups: GROUPS });
-    return { db, http, sql, clock, hook: settleHook(ctx, undefined, deps) };
+    return { db, http, sql, clock, hook: settleHook(ctx, deps) };
   }
 
   it.each([
@@ -2337,7 +2130,7 @@ describe('settleHook', () => {
     {
       label: 'every group is legacy-authoritative',
       spec: 'projection',
-      authority: { 'grp:identity': 'legacy', 'grp:people': 'legacy', 'grp:communications': 'legacy' },
+      authority: { 'grp:identity': 'legacy', 'grp:people': 'legacy', 'grp:content': 'legacy' },
     },
     {
       label: 'the named owner is legacy-authoritative',
@@ -2408,7 +2201,7 @@ describe('settleHook', () => {
     const ctx = await context(http, 'gateway', scenarioEnv(env));
     const deps = await hookDeps(http, undefined, { mssql: sql.mssql, ownership: PROJECTION_OWNERSHIP, groups });
 
-    const err = await failure(settleHook(ctx, undefined, deps)(spec, 1_000));
+    const err = await failure(settleHook(ctx, deps)(spec, 1_000));
 
     expect(err).toBeInstanceOf(type);
     expect(err.message).toMatch(error);
@@ -2424,7 +2217,7 @@ describe('settleHook', () => {
     const ctx = await context(http, 'gateway', scenarioEnv(TWO_OWNERS));
     const deps = await hookDeps(http, undefined, { mssql: sql.mssql, ownership: PROJECTION_OWNERSHIP, groups: GROUPS });
 
-    const err = await failure(settleHook(ctx, undefined, deps)('projection', 1_000));
+    const err = await failure(settleHook(ctx, deps)('projection', 1_000));
 
     expect(err).toBeInstanceOf(SideEffectError);
     expect(err.message).toBe(`gateway cut-over status answered ${status}`);
@@ -2448,7 +2241,7 @@ describe('settleHook', () => {
     const http = position(cutover(fakeHttp(), { [group.id]: 'target' }), 'people', () => ({ position: '120' }));
     const ctx = await context(http, 'gateway');
 
-    const err = await failure(settleHook(ctx, undefined, await hookDeps(http))('projection:people', 1_000));
+    const err = await failure(settleHook(ctx, await hookDeps(http))('projection:people', 1_000));
 
     expect(err.message).toBe(
       'SQL Server connection settings missing: MURA_DBHOST, MURA_DATABASE, MURA_DBUSERNAME, MURA_DBPASSWORD',
@@ -2501,15 +2294,11 @@ describe('collectSideEffects', () => {
     headers: {},
   };
   const upload = step({ name: 'upload', method: 'POST', route: '/admin/upload' });
-  const launch = '2026-07-01T09:00:00';
-  const schedule = scheduleStep('schedule', 'FIXTURE-SV-2', { body: { launchAt: launch } });
-  const task = { taskname: 'opt2-survey-sv2-launch', kind: 'launch', route: '/surveys/sv2/launch', offsetminutes: 0 };
   const pdf = (): Response => new Response(TINY_PDF, { headers: { 'content-type': 'application/pdf' } });
 
-  /** Mailpit, render and task routes on legacy, with the legacy fixtures and a scenario reaching every collector. */
+  /** Mailpit and render routes on legacy, with the legacy fixtures and a scenario reaching every collector. */
   async function world(compare: CompareKind[], rows: RowSpec[] = [BY_SITE]) {
     const http = mailpit(fakeHttp(), [MAIL])
-      .route('GET', `${LEGACY}${SURVEYS}/FIXTURE-SV-2/tasks`, tasksReply([task]))
       .route('GET', `${LEGACY}/_api/render/file/`, pdf)
       .route('GET', `${LEGACY}/_api/render/small/`, () => new Response('', { status: 404 }))
       .route('GET', `${LEGACY}/_api/render/medium/`, () => new Response('', { status: 404 }));
@@ -2518,7 +2307,7 @@ describe('collectSideEffects', () => {
     const ctx = await context(http);
     ctx.bindings.set('upload.fileid', 'FIXTURE-F1');
     ctx.bindings.set('signup.username', 'fixture-ada');
-    const scenario = { compare, rows, tasks: TASKS, steps: [schedule, upload] };
+    const scenario = { compare, rows, steps: [upload] };
     const deps: SideEffectDeps = {
       fetch: http.fetch,
       mssql: sql.mssql,
@@ -2530,12 +2319,11 @@ describe('collectSideEffects', () => {
     return { http, sql, ctx, scenario, deps };
   }
 
-  /** What a run read: `mailpit`, `tasks` and `files` requests, `sql` queries. */
+  /** What a run read: `mailpit` and `files` requests, `sql` queries. */
   function channels(http: FakeHttp, sql: FakeSql): string[] {
     const read = new Set<string>();
     for (const call of http.calls) {
       if (call.url.origin === MAILPIT) read.add('mailpit');
-      else if (call.url.pathname.startsWith(SURVEYS)) read.add('tasks');
       else if (call.url.pathname.startsWith('/_api/render/')) read.add('files');
       else read.add(`${call.url.origin}${call.url.pathname}`);
     }
@@ -2547,9 +2335,8 @@ describe('collectSideEffects', () => {
     { compare: ['status', 'envelope', 'dom'], read: [] },
     { compare: ['mail'], read: ['mailpit'] },
     { compare: ['rows'], read: ['sql'] },
-    { compare: ['tasks'], read: ['tasks'] },
     { compare: ['files'], read: ['files'] },
-    { compare: ['status', 'mail', 'rows', 'tasks', 'files'], read: ['files', 'mailpit', 'sql', 'tasks'] },
+    { compare: ['status', 'mail', 'rows', 'files'], read: ['files', 'mailpit', 'sql'] },
   ])('collects only the side effects $compare asks for', async ({ compare, read }) => {
     const { http, sql, ctx, scenario, deps } = await world(compare);
 
@@ -2560,13 +2347,12 @@ describe('collectSideEffects', () => {
     expect(sql.queries.filter((q) => !/^(SELECT|WITH)\b/.test(q.sql))).toStrictEqual([]);
     expect(effects.mail.length > 0).toBe(compare.includes('mail'));
     expect(Object.keys(effects.rows).length > 0).toBe(compare.includes('rows'));
-    expect(effects.tasks.length > 0).toBe(compare.includes('tasks'));
     expect(effects.files.length > 0).toBe(compare.includes('files'));
     expect('legacyRows' in effects).toBe(false);
   });
 
   it('collects every kind on legacy, leaving the injected SQL client open', async () => {
-    const { ctx, scenario, sql, deps } = await world(['mail', 'rows', 'tasks', 'files']);
+    const { ctx, scenario, sql, deps } = await world(['mail', 'rows', 'files']);
     const close = vi.spyOn(sql.mssql, 'close');
 
     const effects = await collectSideEffects(ctx, scenario, undefined, deps);
@@ -2579,7 +2365,6 @@ describe('collectSideEffects', () => {
         'identity.user_account': LEGACY_USERS[0],
         'people.person': LEGACY_USERS[1],
       },
-      tasks: [{ name: task.taskname, kind: 'launch', target: task.route, scheduledAt: launch, base: launch }],
       files: [
         {
           fileId: 'FIXTURE-F1',
@@ -2605,14 +2390,14 @@ describe('collectSideEffects', () => {
     const { rows } = await collectSideEffects(ctx, scenario, 'legacy', deps);
 
     expect(Object.keys(rows)).toStrictEqual([
-      'communications.email_stat',
+      'content.email_stat',
       'identity.group_account',
       'identity.user_account',
       'people.person',
     ]);
     expect(rows['identity.user_account']?.rows).toStrictEqual(encoded(ACCOUNT_COLUMNS, [U1, U2, U3]));
     const perScope = [STAT, STAT, OTHER_STAT];
-    expect(rows['communications.email_stat']?.rows).toStrictEqual(encoded(STAT_COLUMNS, [...perScope, ...perScope]));
+    expect(rows['content.email_stat']?.rows).toStrictEqual(encoded(STAT_COLUMNS, [...perScope, ...perScope]));
   });
 
   it.each([
@@ -2636,12 +2421,12 @@ describe('collectSideEffects', () => {
     }
   });
 
-  const ALL_TARGET = { 'grp:identity': 'target', 'grp:people': 'target', 'grp:communications': 'target' };
+  const ALL_TARGET = { 'grp:identity': 'target', 'grp:people': 'target', 'grp:content': 'target' };
   const ADA_SCOPE = { table: 'tusers', where: { username: '${signup.username}' } } satisfies RowSpec;
   const STAT_SCOPE = { table: 'temailstats', where: { EmailID: 'FIXTURE-E1' } } satisfies RowSpec;
   const [ADA_ACCOUNTS, ADA_PERSONS, ADA_GROUPS] = userSnapshots([U1], [U1], []);
   const [TARGET_ACCOUNTS, TARGET_PERSONS, TARGET_GROUPS] = TARGET_USERS;
-  const STATS = { unit: 'communications.email_stat', owner: 'communications', legacyTable: 'temailstats' };
+  const STATS = { unit: 'content.email_stat', owner: 'strategies-content', legacyTable: 'temailstats' };
   const LEGACY_STATS = snapshot({ ...STATS, columns: STAT_COLUMNS, keyColumns: [], keyless: true }, [STAT, STAT, OTHER_STAT]);
   const LEGACY_ADA = { 'identity.group_account': ADA_GROUPS, 'identity.user_account': ADA_ACCOUNTS, 'people.person': ADA_PERSONS };
 
@@ -2701,10 +2486,10 @@ describe('collectSideEffects', () => {
     },
     {
       label: 'the active version returns every group to legacy',
-      authority: { 'grp:identity': 'legacy', 'grp:people': 'legacy', 'grp:communications': 'legacy' },
+      authority: { 'grp:identity': 'legacy', 'grp:people': 'legacy', 'grp:content': 'legacy' },
       scopes: [ADA_SCOPE, STAT_SCOPE],
-      rows: { 'communications.email_stat': LEGACY_STATS, ...LEGACY_ADA },
-      legacy: { 'communications.email_stat': LEGACY_STATS, ...LEGACY_ADA },
+      rows: { 'content.email_stat': LEGACY_STATS, ...LEGACY_ADA },
+      legacy: { 'content.email_stat': LEGACY_STATS, ...LEGACY_ADA },
       owners: [],
     },
     {
@@ -2717,15 +2502,15 @@ describe('collectSideEffects', () => {
     },
     {
       label: 'one table holds units of both authorities and another only legacy units',
-      authority: { 'grp:identity': 'target', 'grp:people': 'legacy', 'grp:communications': 'legacy' },
+      authority: { 'grp:identity': 'target', 'grp:people': 'legacy', 'grp:content': 'legacy' },
       scopes: [ADA_SCOPE, STAT_SCOPE],
       rows: {
-        'communications.email_stat': LEGACY_STATS,
+        'content.email_stat': LEGACY_STATS,
         'identity.group_account': TARGET_GROUPS,
         'identity.user_account': TARGET_ACCOUNTS,
         'people.person': ADA_PERSONS,
       },
-      legacy: { 'communications.email_stat': LEGACY_STATS, ...LEGACY_ADA },
+      legacy: { 'content.email_stat': LEGACY_STATS, ...LEGACY_ADA },
       owners: ['identity', 'people'],
     },
   ])(
@@ -2769,15 +2554,6 @@ describe('collectSideEffects', () => {
     expect(err.message).toBe('GS-SE-01: side effects of origin gateway asked of a legacy context');
   });
 
-  it('rejects compare tasks without a tasks declaration', async () => {
-    const { ctx, scenario, deps } = await world(['tasks']);
-
-    const err = await failure(collectSideEffects(ctx, { ...scenario, tasks: undefined }, 'legacy', deps));
-
-    expect(err).toBeInstanceOf(GoldenConfigError);
-    expect(err.message).toBe('GS-SE-01: compare tasks needs a tasks declaration');
-  });
-
   it('reads opt2/table-ownership.json when no ownership is injected', async () => {
     const { ctx, scenario, deps } = await world(['rows'], [{ table: 'tfixture_absent', where: { siteid: 'default' } }]);
 
@@ -2819,7 +2595,7 @@ describe('side-effect configuration', () => {
     {
       entry: 'settleHook',
       run: async (ctx, deps) => {
-        const hook = settleHook(ctx, undefined, deps);
+        const hook = settleHook(ctx, deps);
         await hook('mail', 60_000);
         await hook('mail', 60_000);
       },

@@ -80,11 +80,8 @@ function tenantFor(siteId: string | null | undefined): string {
 /** The installed site, which no platform tenant fixture covers. */
 export const DEFAULT_SITE = Object.freeze({ siteId: 'default', tenantId: tenantIdForSite('default') });
 
-/** `effectiveFrom` of the seam-1 archive scenarios: the day after the business date. */
+/** `effectiveFrom` of the archive scenarios: the day after the business date. */
 export const ARCHIVE_EFFECTIVE_FROM: string = addDays(BUSINESS_DATE, 1);
-
-/** Open timesheet days of the archived person on or after `ARCHIVE_EFFECTIVE_FROM`, each of which becomes a blackout. */
-export const OPEN_TIMESHEET_DAYS: readonly string[] = Object.freeze([0, 1, 2].map((days) => addDays(ARCHIVE_EFFECTIVE_FROM, days)));
 
 /** A Type=2 `person` row; names and email follow the call-order counter, timestamps business noon. */
 export function personRow(overrides: Partial<PersonRow> = {}): PersonRow {
@@ -411,7 +408,7 @@ export const POOLED_MEMBER_PERSON: PersonRow = Object.freeze(
   personRow({ siteid: TENANT_UMBRELLA.siteId, fname: 'Pat', lname: 'Pooled', email: 'pooled_member@umbrella.opt2.test' }),
 );
 
-/** The pooled person the seam-1 archive scenarios archive; never archived by the seed. */
+/** The pooled person the archive scenarios archive; never archived by the seed. */
 export const ARCHIVE_PERSON: PersonRow = Object.freeze(
   personRow({ siteid: TENANT_UMBRELLA.siteId, fname: 'Alex', lname: 'Archive', email: 'archive_person@umbrella.opt2.test' }),
 );

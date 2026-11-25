@@ -1,5 +1,4 @@
 /** The admin session routes over a throwaway `identity` schema: `sanitizeHref` and `removeLeadingDoubleSlash`, contract shape and auth, clogin login and logout redirects, the session's sites and admin state, CSRF token issue and the login mail. */
-import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -17,6 +16,7 @@ import {
   assertResponseMatchesOpenApi,
   createThrowawaySchema,
   fixedClock,
+  loadOpenApiDocument,
   mintServiceToken,
   mintUserToken,
   pgAvailable,
@@ -36,7 +36,7 @@ import { registerAdminSessionRoutes, removeLeadingDoubleSlash, sanitizeHref, typ
 type Method = 'GET' | 'POST';
 type Payload = URLSearchParams | Record<string, unknown>;
 
-const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as {
+const OPENAPI = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as {
   paths: Record<string, Record<string, Record<string, unknown>>>;
 };
 const CONTRACT_PATHS = [

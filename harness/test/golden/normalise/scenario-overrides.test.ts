@@ -1,11 +1,8 @@
 import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import ExcelJS from 'exceljs';
 import { cfHash } from '@opt2/platform/legacy-compat';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { loadCatalogue, scenarioById, scenarioSchema, type Scenario } from '../../../src/golden/catalogue.js';
+import { scenarioSchema, type Scenario } from '../../../src/golden/catalogue.js';
 import {
   compareNormalised,
   createNormaliseState,
@@ -19,22 +16,47 @@ import type { StepRecord } from '../../../src/golden/steps.js';
 const JSON_TYPE = 'application/json; charset=utf-8';
 const HTML_TYPE = 'text/html; charset=UTF-8';
 const ORIGIN = 'http://127.0.0.1:8500';
-const PAGE = 'gs-co-09-approval-page';
-const NEXT_PAGE = 'gs-co-09-approval-page1';
+const PAGE = 'gs-co-79-approval-page';
+const NEXT_PAGE = 'gs-co-79-approval-page1';
+
+/** An approval flow's page reads, compared by status, auth, DOM and rows, with no overrides. */
+const approvals: Scenario = scenarioSchema.parse({
+  id: 'GS-CO-79',
+  title: 'Approval page versions',
+  service: 'strategies-content',
+  role: 'admin',
+  sessions: { admin: { login: 'admin', via: 'admin' } },
+  steps: [
+    { name: 'saved-version', route: '/_api/json/v1/tenant-a/content/' },
+    { name: 'submit-form', route: '/admin/?muraAction=cArch.edit' },
+  ],
+  compare: ['status', 'auth', 'dom', 'rows'],
+  rows: [{ table: 'tapprovalrequests', where: { siteid: 'tenant-a' } }],
+  normalisationOverrides: {},
+  covers: [],
+});
+
+/** OAuth client screens, whose Connected Account options compare unordered and whose client secret is a token. */
+const clients: Scenario = scenarioSchema.parse({
+  id: 'GS-ID-78',
+  title: 'OAuth client accounts',
+  service: 'identity',
+  role: 'admin',
+  sessions: { admin: { login: 'admin', via: 'admin' } },
+  steps: [{ name: 'new', route: '/admin/?muraAction=cWebservice.edit' }],
+  compare: ['status', 'envelope', 'headers', 'auth', 'dom'],
+  normalisationOverrides: {
+    extraTokenFields: ['clientsecret'],
+    applyRules: ['error-stacktrace'],
+    domUnordered: ['select[name=userid]'],
+  },
+  covers: [],
+});
 
 let rules: NormaliseRules;
-let approvals: Scenario;
-let clients: Scenario;
-let exportJobs: Scenario;
-let tinyPdf: Buffer;
 
-beforeAll(async () => {
+beforeAll(() => {
   rules = loadRules(undefined, { PORT: '8500' });
-  const catalogue = await loadCatalogue();
-  approvals = scenarioById(catalogue, 'GS-CO-09');
-  clients = scenarioById(catalogue, 'GS-ID-08');
-  exportJobs = scenarioById(catalogue, 'GS-RE-01');
-  tinyPdf = readFileSync(fileURLToPath(new URL('../../fixtures/exports/tiny.pdf', import.meta.url)));
 });
 
 /** A step record of `name` as the step runner records a 200 response; a JSON body carries its legacy ETag. */
@@ -67,7 +89,7 @@ async function differences(scenario: Scenario, golden: StepRecord, replay: StepR
   return compareNormalised(await side(golden), await side(replay), { rules, scenario });
 }
 
-describe('GS-CO-09 overrides', () => {
+describe('approval page versions without overrides', () => {
   const ids = {
     contentid: '04FAE8CF-9E4F-40AF-DC65641B2B037D12',
     contenthistid: '04FAFC03-BC66-C9B8-C05F179A8CDA01FF',
@@ -84,12 +106,12 @@ describe('GS-CO-09 overrides', () => {
     const data = {
       ...id,
       siteid: 'tenant-a',
-      title: 'GS-CO-09 Approval Page',
+      title: 'GS-CO-79 Approval Page',
       filename: PAGE,
       urltitle: PAGE,
       url: `${ORIGIN}/${PAGE}/`,
       assocurl: `${ORIGIN}/${PAGE}/`,
-      body: '<p>GS-CO-09 Approval Page</p>',
+      body: '<p>GS-CO-79 Approval Page</p>',
       links: { rendered: `${RENDERED}/${PAGE}` },
       ...changes,
     };
@@ -98,7 +120,7 @@ describe('GS-CO-09 overrides', () => {
   };
 
   /** The requester's edit form of the page: filename, URL title, body, preview link and header draft badge. */
-  const editForm = (page = PAGE, body = 'GS-CO-09 Approval Page v2', drafts = '2', id = ids): StepRecord =>
+  const editForm = (page = PAGE, body = 'GS-CO-79 Approval Page v2', drafts = '2', id = ids): StepRecord =>
     record(
       'submit-form',
       'admin:carch.edit',
@@ -123,7 +145,7 @@ describe('GS-CO-09 overrides', () => {
     ['url', () => savedVersion({ url: `${ORIGIN}/${NEXT_PAGE}/` }), 'envelope.data.url'],
     ['assocurl', () => savedVersion({ assocurl: `${ORIGIN}/${NEXT_PAGE}/` }), 'envelope.data.assocurl'],
     ['rendered link', () => savedVersion({ links: { rendered: `${RENDERED}/${NEXT_PAGE}` } }), 'envelope.data.links.rendered'],
-    ['body', () => savedVersion({ body: '<p>GS-CO-09 Approval Page v9</p>' }), 'envelope.data.body'],
+    ['body', () => savedVersion({ body: '<p>GS-CO-79 Approval Page v9</p>' }), 'envelope.data.body'],
   ])('reports a wrong %s in the saved version', async (_label, wrong, path) => {
     const found = await differences(approvals, savedVersion(), wrong());
     expect(found.map((difference) => [difference.path, difference.classification])).toStrictEqual([
@@ -137,7 +159,7 @@ describe('GS-CO-09 overrides', () => {
       () => editForm(NEXT_PAGE),
       ['domModel.controls[1].value', 'domModel.controls[2].value', 'domModel.links[1].href'],
     ],
-    ['rendered body', () => editForm(PAGE, 'GS-CO-09 Approval Page v9'), ['domModel.controls[3].value']],
+    ['rendered body', () => editForm(PAGE, 'GS-CO-79 Approval Page v9'), ['domModel.controls[3].value']],
     ['draft count', () => editForm(PAGE, undefined, '3'), ['domModel.links[0].text']],
   ])('reports a wrong %s on the edit form', async (_label, wrong, paths) => {
     const found = await differences(approvals, editForm(), wrong());
@@ -145,7 +167,7 @@ describe('GS-CO-09 overrides', () => {
   });
 });
 
-describe('GS-ID-08 domUnordered accounts', () => {
+describe('domUnordered OAuth client accounts', () => {
   const ACCOUNTS: readonly [string, string][] = [
     ['27C4FCE2-1996-41A1-26530CB53D4B2C83', 'Keshawn Abbott'],
     ['2E65064D-9DE9-98C9-FAD8C648035B90DF', 'Montana Abbott'],
@@ -153,7 +175,7 @@ describe('GS-ID-08 domUnordered accounts', () => {
     ['9AF28F80-F0B4-610E-7FE9BDEB630A9A00', 'Jacinthe Abbott'],
   ];
   const SELECTED = ACCOUNTS[2]![0];
-  const SECRET = createHash('sha256').update('opt2-gs-id-08').digest('hex').toUpperCase();
+  const SECRET = createHash('sha256').update('opt2-gs-id-78').digest('hex').toUpperCase();
 
   /** The cwebservice.edit form with `accounts` as Connected Account options, `selected` marked selected. */
   const editPage = (accounts: readonly (readonly [string, string])[], selected: string = SELECTED): StepRecord =>
@@ -204,101 +226,5 @@ describe('GS-ID-08 domUnordered accounts', () => {
     ]);
     expect(step.domModel?.controls[0]?.value).toBe(rules.tokens.placeholder);
     expect(JSON.stringify(step)).not.toContain(SECRET);
-  });
-});
-
-describe('GS-RE-01 dropPaths export byte hashes', () => {
-  const TYPES = {
-    xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-    csv: 'text/csv',
-    pdf: 'application/pdf',
-  } as const;
-  type Format = keyof typeof TYPES;
-  const FORMATS = Object.keys(TYPES) as Format[];
-  const JOB_IDS: Record<Format, string> = {
-    xlsx: '56856E16-008F-601A-E2F97704648B4AA3',
-    csv: '5A1F7C20-11B2-4C3D-8E9F0A1B2C3D4E5F',
-    pdf: '5B2E8D31-22C3-4D4E-9FA01B2C3D4E5F60',
-  };
-  const TIMESHEET_ID = '7EDFAD01-DC76-57C6-993CE5D531B1DBC7';
-
-  const fileHash = (side: string, format: Format): string =>
-    createHash('sha256').update(`${side} ${format} bytes`).digest('hex');
-
-  /** A done job of `format` whose file `side` produced, with `changes` over its fields. */
-  const job = (format: Format, side: string, changes: Record<string, unknown> = {}) => ({
-    job_id: JOB_IDS[format],
-    format,
-    state: 'done',
-    content_type: TYPES[format],
-    file_name: `export-${JOB_IDS[format]}.${format}`,
-    output_sha256: fileHash(side, format),
-    ...changes,
-  });
-
-  const envelope = (data: unknown): string => JSON.stringify({ apiversion: 'v1', method: 'reporting.exports', data });
-
-  const poll = (format: Format, side: string, changes?: Record<string, unknown>): StepRecord =>
-    record(`${format}-poll`, 'fixture:reporting/exports/{id}@get', JSON_TYPE, envelope(job(format, side, changes)));
-
-  /** The job list; `pdfChanges` apply to its PDF job. */
-  const list = (side: string, pdfChanges?: Record<string, unknown>): StepRecord =>
-    record(
-      'list',
-      'fixture:reporting/exports@get',
-      JSON_TYPE,
-      envelope({ endindex: 3, items: FORMATS.map((f) => job(f, side, f === 'pdf' ? pdfChanges : {})) }),
-    );
-
-  const download = (format: Format, body: string | Buffer): StepRecord =>
-    record(`${format}-download`, 'fixture:reporting/exports/{id}/download@get', TYPES[format], body);
-
-  const csv = (status: string): string => `timesheet_id,status\r\n${TIMESHEET_ID},${status}\r\n`;
-
-  const workbook = async (status: string): Promise<Buffer> => {
-    const book = new ExcelJS.Workbook();
-    book.addWorksheet('export').addRows([['timesheet_id', 'status'], [TIMESHEET_ID, status]]);
-    return Buffer.from(await book.xlsx.writeBuffer());
-  };
-
-  // Same-length text keeps tiny.pdf's stream length and xref offsets valid.
-  const pdf = (text: string): Buffer => Buffer.from(tinyPdf.toString('latin1').replace('page 1', text), 'latin1');
-
-  it.each<[string, () => Promise<[StepRecord, StepRecord]>, string[]]>([
-    ['xlsx-poll with another file hash', async () => [poll('xlsx', 'legacy'), poll('xlsx', 'target')], []],
-    ['csv-poll with another file hash', async () => [poll('csv', 'legacy'), poll('csv', 'target')], []],
-    ['pdf-poll with another file hash', async () => [poll('pdf', 'legacy'), poll('pdf', 'target')], []],
-    ['list with other file hashes', async () => [list('legacy'), list('target')], []],
-    [
-      'xlsx-poll with another state',
-      async () => [poll('xlsx', 'legacy'), poll('xlsx', 'target', { state: 'failed' })],
-      ['envelope.data.state'],
-    ],
-    [
-      'list with another PDF file name',
-      async () => [list('legacy'), list('target', { file_name: 'export.pdf' })],
-      ['envelope.data.items[2].file_name'],
-    ],
-    [
-      'csv-download with another cell',
-      async () => [download('csv', csv('APPROVED')), download('csv', csv('RETURNED'))],
-      ['export.rows[1][1]'],
-    ],
-    [
-      'xlsx-download with another cell',
-      async () => [download('xlsx', await workbook('APPROVED')), download('xlsx', await workbook('RETURNED'))],
-      ['export.sheets[0].rows[1][1]'],
-    ],
-    [
-      'pdf-download with other page text',
-      async () => [download('pdf', tinyPdf), download('pdf', pdf('page 2'))],
-      ['export.pages[0]'],
-    ],
-  ])('compares %s with differences at %j', async (_label, sides, paths) => {
-    const [golden, replay] = await sides();
-    const found = await differences(exportJobs, golden, replay);
-    expect(found.map((difference) => [difference.path, difference.classification])).toStrictEqual(
-      paths.map((path) => [path, 'difference']),
-    );
   });
 });

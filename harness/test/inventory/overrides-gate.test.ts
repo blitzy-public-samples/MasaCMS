@@ -209,19 +209,19 @@ function writerDocument(): Record<string, unknown> {
         reason: 'The stored ttrash objectClass decides the table at run time.',
       },
       {
-        id: 'wov:fixture-survey-tasks',
-        tables: ['synthetic.survey', 'synthetic.survey_reminder'],
-        component: 'legacy-fixtures/cfml/modules/surveys.cfc',
-        method: 'handle',
+        id: 'wov:native-sitemonitor-task',
+        tables: ['opt2_sync.projector_checkpoint', 'tcontent'],
+        component: 'core/mura/content/contentServer.cfc',
+        method: 'handleAPIRequest',
         op: 'update',
-        source: ref('legacy-fixtures/cfml/modules/surveys.cfc', 37, 42),
-        routeKeys: ['fixture:surveys/surveys/{id}/launch@get'],
-        keyScope: ['id'],
+        source: ref('core/mura/content/contentServer.cfc', 669, 747),
+        routeKeys: ['sitemonitor:run'],
+        keyScope: ['siteid'],
         trigger: 'scheduler',
         sessionEffects: 'none',
         noGroupJoin: true,
-        preventedBy: 'fixture-survey-tasks',
-        reason: 'ACF tasks the fixture registers issue these requests.',
+        preventedBy: 'native-sitemonitor-task',
+        reason: 'The ACF scheduler, not an inventoried request, calls the site-monitor handler.',
       },
     ],
   };
@@ -329,8 +329,6 @@ describe('enumerations', () => {
         'scheduler-registration',
         'native-sitemonitor-task',
         'startup-url-conversion',
-        'fixture-survey-tasks',
-        'fixture-export-threads',
       ],
     ],
     ['SettledResolution', SettledResolution.options, ['not-cfml', 'non-write', 'unreachable', 'counted']],
@@ -610,7 +608,7 @@ describe('parseWriterOverrides', () => {
       ['wov:login-lastlogin', ['tusers'], undefined],
       ['wov:remember-me-login', ['tusers'], undefined],
       ['wov:ctrash-restore-object-save', [], undefined],
-      ['wov:fixture-survey-tasks', ['synthetic.survey', 'synthetic.survey_reminder'], undefined],
+      ['wov:native-sitemonitor-task', ['opt2_sync.projector_checkpoint', 'tcontent'], undefined],
     ]);
     expect(doc.writers[0]?.method).toBeNull();
   });
@@ -620,10 +618,6 @@ describe('parseWriterOverrides', () => {
     ['a dynamic request writer with no route keys', { 'writers.3.routeKeys': [] }],
     ['a request writer with both route keys and an entryScope', { 'writers.2.routeKeys': ['admin:clogin.login'] }],
     ['a scheduler writer with no route keys', { 'writers.4.routeKeys': [] }],
-    [
-      'a thread writer prevented by its validator',
-      { 'writers.4.trigger': 'thread', 'writers.4.preventedBy': 'fixture-export-threads' },
-    ],
     ['a dynamic writer that still names a table', { 'writers.3.tables': ['ttrash'] }],
     [
       'a writer that reaches the saves of its run-time beans',
@@ -675,7 +669,7 @@ describe('parseWriterOverrides', () => {
     ],
     [
       'a doubly qualified table name',
-      { 'writers.4.tables': ['dbo.synthetic.survey'] },
+      { 'writers.4.tables': ['dbo.opt2_sync.projector_checkpoint'] },
       ['writers.4.tables.0: must be a lower-cased legacy table name'],
     ],
     ['an empty tablesFrom job', { 'writers.0.tablesFrom.job': '' }, [`writers.0.tablesFrom.job: ${NO_CHARACTERS}`]],
@@ -706,7 +700,7 @@ describe('parseWriterOverrides', () => {
       { 'writers.0.preventedBy': 'manual' },
       [
         'writers.0.preventedBy: Invalid option: expected one of "scheduler-registration"|"native-sitemonitor-task"|' +
-          '"startup-url-conversion"|"fixture-survey-tasks"|"fixture-export-threads"',
+          '"startup-url-conversion"',
       ],
     ],
     [

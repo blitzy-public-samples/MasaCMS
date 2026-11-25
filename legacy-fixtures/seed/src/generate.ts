@@ -47,7 +47,7 @@ const USAGE = `Usage: node dist/generate.js [--direct] [--config <file>] [--out 
 
 Generates the fixed-seed dataset and its credentials into <out>, keeping every secret already in
 \${OPT2_STATE_DIR}/secrets/seed-credentials.json, which only the default <out> rewrites; with --direct,
-sends the dataset already in <out> to the synthetic services' migration apply endpoints instead.
+sends the fixture rows of the dataset already in <out> to their owners' migration apply endpoints instead.
 
   --direct         apply <out>/dataset.json through OPT2_SERVICE_URLS as the migration workload
   --config <file>  seed configuration (default <package>/seed.config.json)
@@ -144,7 +144,7 @@ async function direct(
   let client = deps.client;
   let owned: ServiceClient | undefined;
   if (client === undefined) {
-    const unmapped = directServices(dataset, config).filter((service) => !Object.hasOwn(serviceUrls, service));
+    const unmapped = directServices(dataset).filter((service) => !Object.hasOwn(serviceUrls, service));
     if (unmapped.length > 0) {
       fail(`seed: OPT2_SERVICE_URLS has no URL for ${unmapped.join(', ')}`);
       return 2;

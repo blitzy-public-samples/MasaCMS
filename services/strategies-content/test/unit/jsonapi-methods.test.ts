@@ -1,12 +1,11 @@
 // JSON API public methods over a throwaway `content` schema with tenant-a, whose file and category pools are the umbrella
 // site. Expected shapes follow what Masa 7.6.1 on ACF 2023 answers for the same calls.
-import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import { buildEnvelope, serializeResponse } from '@opt2/platform/legacy-compat';
 import { withGatedTenant } from '@opt2/platform/migration-kit';
 import type { QueryConfig, QueryResult, QueryResultRow, TenantDb, TenantTx } from '@opt2/platform/tenancy';
-import { TENANT_A, TENANT_UMBRELLA, assertResponseMatchesOpenApi, pgAvailable, seedRegistry } from '@opt2/platform/testing';
+import { TENANT_A, TENANT_UMBRELLA, assertResponseMatchesOpenApi, loadOpenApiDocument, pgAvailable, seedRegistry } from '@opt2/platform/testing';
 import { createCategory, type CategoryBean } from '../../src/domain/categories.js';
 import { saveContent } from '../../src/domain/content.js';
 import { actorFromClaims, type Actor } from '../../src/domain/context.js';
@@ -20,7 +19,7 @@ import { recordingRelatedReader } from '../helpers/related-reader.js';
 type Struct = Record<string, unknown>;
 type Method = 'findCrumbArray' | 'findVersionHistory' | 'findRelatedContent' | 'findCalendarItems' | 'getURLForImage' | 'submitForm';
 
-const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
+const OPENAPI = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as object;
 const ANONYMOUS = actorFromClaims(undefined, '');
 /** A tenant-a user with the Categories module, which category writes need. */
 const CATEGORY_EDITOR: Actor = { ...NOBODY, userId: cfId('U', 3), roles: ['system-user', 'm:010'] };

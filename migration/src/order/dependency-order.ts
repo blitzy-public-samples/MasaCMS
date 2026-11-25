@@ -604,7 +604,7 @@ function inheritTenants(
 function ownerOf(catalog: OrderCatalog, table: string): DataOwner | 'split' {
   if (catalog.isSplit(table)) return 'split';
   const owner = catalog.ownersForLegacyTable(table)[0] ?? catalog.legacyTableOwner(table);
-  if (owner === 'decision-list' || owner === 'retired') throw new DependencyOrderError(`ordered table ${table} is owned by "${owner}"`);
+  if (owner === 'decision-list' || owner === 'retired' || owner === 'legacy') throw new DependencyOrderError(`ordered table ${table} is owned by "${owner}"`);
   return owner;
 }
 

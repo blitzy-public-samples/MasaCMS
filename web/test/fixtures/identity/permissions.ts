@@ -22,10 +22,10 @@ export const MODULE_IDS = Object.freeze({
 export const nodePermissionRows: Readonly<Record<keyof typeof CONTENT_NODE_IDS, Readonly<NodeVerdicts>>> = Object.freeze({
   root: Object.freeze({
     groups: [
-      Object.freeze({ groupId: GROUP_IDS.communicationsSender, groupName: 'communications.sender', perm: 'none' }),
+      Object.freeze({ groupId: GROUP_IDS.archiveViewer, groupName: 'archive.viewer', perm: 'none' }),
       Object.freeze({ groupId: GROUP_IDS.defaultEditor, groupName: 'Editor', perm: 'editor' }),
-      Object.freeze({ groupId: GROUP_IDS.financeApprover, groupName: 'finance.approver', perm: 'author' }),
-      Object.freeze({ groupId: GROUP_IDS.reportingExporter, groupName: 'reporting.exporter', perm: 'deny' }),
+      Object.freeze({ groupId: GROUP_IDS.libraryApprover, groupName: 'library.approver', perm: 'author' }),
+      Object.freeze({ groupId: GROUP_IDS.recordsClerk, groupName: 'records.clerk', perm: 'deny' }),
     ],
     publicGroups: [
       Object.freeze({ groupId: GROUP_IDS.umbrellaMembers, groupName: 'Umbrella Members', perm: 'editor' }),
@@ -33,10 +33,10 @@ export const nodePermissionRows: Readonly<Record<keyof typeof CONTENT_NODE_IDS, 
   }),
   child: Object.freeze({
     groups: [
-      Object.freeze({ groupId: GROUP_IDS.communicationsSender, groupName: 'communications.sender', perm: 'none' }),
+      Object.freeze({ groupId: GROUP_IDS.archiveViewer, groupName: 'archive.viewer', perm: 'none' }),
       Object.freeze({ groupId: GROUP_IDS.defaultEditor, groupName: 'Editor', perm: 'author' }),
-      Object.freeze({ groupId: GROUP_IDS.financeApprover, groupName: 'finance.approver', perm: 'read' }),
-      Object.freeze({ groupId: GROUP_IDS.reportingExporter, groupName: 'reporting.exporter', perm: 'editor' }),
+      Object.freeze({ groupId: GROUP_IDS.libraryApprover, groupName: 'library.approver', perm: 'read' }),
+      Object.freeze({ groupId: GROUP_IDS.recordsClerk, groupName: 'records.clerk', perm: 'editor' }),
     ],
     publicGroups: [
       Object.freeze({ groupId: GROUP_IDS.umbrellaMembers, groupName: 'Umbrella Members', perm: 'read' }),
@@ -44,10 +44,10 @@ export const nodePermissionRows: Readonly<Record<keyof typeof CONTENT_NODE_IDS, 
   }),
   grandchild: Object.freeze({
     groups: [
-      Object.freeze({ groupId: GROUP_IDS.communicationsSender, groupName: 'communications.sender', perm: 'none' }),
+      Object.freeze({ groupId: GROUP_IDS.archiveViewer, groupName: 'archive.viewer', perm: 'none' }),
       Object.freeze({ groupId: GROUP_IDS.defaultEditor, groupName: 'Editor', perm: 'read' }),
-      Object.freeze({ groupId: GROUP_IDS.financeApprover, groupName: 'finance.approver', perm: 'deny' }),
-      Object.freeze({ groupId: GROUP_IDS.reportingExporter, groupName: 'reporting.exporter', perm: 'author' }),
+      Object.freeze({ groupId: GROUP_IDS.libraryApprover, groupName: 'library.approver', perm: 'deny' }),
+      Object.freeze({ groupId: GROUP_IDS.recordsClerk, groupName: 'records.clerk', perm: 'author' }),
     ],
     publicGroups: [
       Object.freeze({ groupId: GROUP_IDS.umbrellaMembers, groupName: 'Umbrella Members', perm: 'deny' }),
@@ -86,9 +86,9 @@ export const cpermMainSystemGroupsAnswer: GroupList = Object.freeze({
       isPublic: 0,
     }),
     Object.freeze({
-      UserID: GROUP_IDS.communicationsSender,
+      UserID: GROUP_IDS.archiveViewer,
       Email: null,
-      GroupName: 'communications.sender',
+      GroupName: 'archive.viewer',
       Type: 1,
       Counter: null,
       Perm: 0,
@@ -104,18 +104,18 @@ export const cpermMainSystemGroupsAnswer: GroupList = Object.freeze({
       isPublic: 0,
     }),
     Object.freeze({
-      UserID: GROUP_IDS.financeApprover,
+      UserID: GROUP_IDS.libraryApprover,
       Email: null,
-      GroupName: 'finance.approver',
+      GroupName: 'library.approver',
       Type: 1,
       Counter: null,
       Perm: 0,
       isPublic: 0,
     }),
     Object.freeze({
-      UserID: GROUP_IDS.reportingExporter,
+      UserID: GROUP_IDS.recordsClerk,
       Email: null,
-      GroupName: 'reporting.exporter',
+      GroupName: 'records.clerk',
       Type: 1,
       Counter: null,
       Perm: 0,
@@ -130,10 +130,10 @@ export const cpermModuleUsersAnswer: ModulePermissions = Object.freeze({
   moduleId: MODULE_IDS.users,
   siteId: 'default',
   privateGroups: [
-    Object.freeze({ groupId: GROUP_IDS.communicationsSender, groupName: 'communications.sender', granted: false }),
+    Object.freeze({ groupId: GROUP_IDS.archiveViewer, groupName: 'archive.viewer', granted: false }),
     Object.freeze({ groupId: GROUP_IDS.defaultEditor, groupName: 'Editor', granted: true }),
-    Object.freeze({ groupId: GROUP_IDS.financeApprover, groupName: 'finance.approver', granted: false }),
-    Object.freeze({ groupId: GROUP_IDS.reportingExporter, groupName: 'reporting.exporter', granted: true }),
+    Object.freeze({ groupId: GROUP_IDS.libraryApprover, groupName: 'library.approver', granted: false }),
+    Object.freeze({ groupId: GROUP_IDS.recordsClerk, groupName: 'records.clerk', granted: true }),
   ],
   publicGroups: [Object.freeze({ groupId: GROUP_IDS.umbrellaMembers, groupName: 'Umbrella Members', granted: false })],
 });
@@ -142,10 +142,10 @@ export const cpermModuleCategoriesAnswer: ModulePermissions = Object.freeze({
   moduleId: MODULE_IDS.categories,
   siteId: 'default',
   privateGroups: [
-    Object.freeze({ groupId: GROUP_IDS.communicationsSender, groupName: 'communications.sender', granted: false }),
+    Object.freeze({ groupId: GROUP_IDS.archiveViewer, groupName: 'archive.viewer', granted: false }),
     Object.freeze({ groupId: GROUP_IDS.defaultEditor, groupName: 'Editor', granted: false }),
-    Object.freeze({ groupId: GROUP_IDS.financeApprover, groupName: 'finance.approver', granted: true }),
-    Object.freeze({ groupId: GROUP_IDS.reportingExporter, groupName: 'reporting.exporter', granted: false }),
+    Object.freeze({ groupId: GROUP_IDS.libraryApprover, groupName: 'library.approver', granted: true }),
+    Object.freeze({ groupId: GROUP_IDS.recordsClerk, groupName: 'records.clerk', granted: false }),
   ],
   publicGroups: [Object.freeze({ groupId: GROUP_IDS.umbrellaMembers, groupName: 'Umbrella Members', granted: true })],
 });

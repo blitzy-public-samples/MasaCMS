@@ -49,8 +49,8 @@ const INBOUND_TRACE_ID = '4bf92f3577b34da6a3ce929d0e0e4736';
 const INBOUND_PARENT_ID = '00f067aa0ba902b7';
 const TRACEPARENT = /^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$/;
 
-const TOPIC = 'people.person.archived.v1';
-const SUBSCRIPTION = subscriptionName('timesheets', TOPIC);
+const TOPIC = 'people.person.changed.v1';
+const SUBSCRIPTION = subscriptionName('identity', TOPIC);
 const PERSON_ID = 'A1B2C3D4-E5F6-A7B8-C9D0E1F2A3B4C5D6';
 const SCHEDULE_TIME = new Date('2026-06-30T12:00:00Z');
 const TASK_BUILD = {
@@ -173,7 +173,7 @@ function continuityFailure(spans: ReadableSpan[]): ContinuityResult {
   throw new Error('trace continuity held although a hop dropped its context');
 }
 
-/** Gateway -> people over HTTP -> envelope -> Pub/Sub -> timesheets consumer -> Cloud Task, each hop seeded only by its carrier. */
+/** Gateway -> people over HTTP -> envelope -> Pub/Sub -> identity consumer -> Cloud Task, each hop seeded only by its carrier. */
 async function runChain(options: ChainOptions = {}): Promise<ChainResult> {
   const { dropEnvelopeContext = false, dropTaskContext = false, inbound = INBOUND } = options;
   received = [];
@@ -198,7 +198,7 @@ async function runChain(options: ChainOptions = {}): Promise<ChainResult> {
             aggregateId: PERSON_ID,
             aggregateVersion: 1,
             occurredAt: SCHEDULE_TIME,
-            payload: { personId: PERSON_ID, siteId: TENANT_A.siteId, effectiveFrom: '2026-06-30' },
+            payload: { personId: PERSON_ID, siteId: TENANT_A.siteId },
           }),
         ),
       );
@@ -226,10 +226,10 @@ async function runChain(options: ChainOptions = {}): Promise<ChainResult> {
           const build = () =>
             buildCloudTask(
               {
-                queue: 'communications-reminders',
+                queue: 'identity-outbox-sweep',
                 name: 'contract-trace',
                 scheduleTime: SCHEDULE_TIME,
-                url: 'http://communications.test/internal/v1/tasks/contract',
+                url: 'http://identity.test/internal/v1/tasks/contract',
                 body: { personId: PERSON_ID },
                 deadlineS: 60,
                 tenantId: TENANT_A.tenantId,

@@ -648,7 +648,7 @@ describe.skipIf(!available)('identity account operations against PostgreSQL', ()
   describe('invocation credentials', () => {
     it.each<[string, () => Promise<Record<string, string>>]>([
       ['a user token relayed by the gateway', () => headersFor(Roles.siteAdmin)],
-      ["another service's credential", () => headersFor('service:timesheets')],
+      ["another service's credential", () => headersFor('service:stub')],
       ['no credential', async () => ({})],
     ])('refuses every step presented with %s before it runs', async (_label, credentials) => {
       const user = await seedUser([groupOne]);

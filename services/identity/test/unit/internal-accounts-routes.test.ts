@@ -1,5 +1,4 @@
 /** The roster account-operation routes over a throwaway `identity` schema: contract shape, people-only access, path binding, validation and the domain outcomes as statuses. */
-import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -17,6 +16,7 @@ import {
   createCapturingPublisher,
   createThrowawaySchema,
   findOperation,
+  loadOpenApiDocument,
   mintServiceToken,
   mintUserToken,
   pgAvailable,
@@ -34,7 +34,7 @@ import { registerAccountRoutes } from '../../src/routes/internal-accounts.js';
 type Method = 'GET' | 'POST';
 type Action = 'prepare' | 'commit' | 'abort' | 'finish' | 'revert';
 
-const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as {
+const OPENAPI = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as {
   paths: Record<string, Record<string, Record<string, unknown>>>;
 };
 const BASE_TEMPLATE = '/internal/v1/accounts/{userId}/operations/{operationId}';

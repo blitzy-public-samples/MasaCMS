@@ -23,6 +23,7 @@ const HMAC_KEY = Buffer.from(TEST_STORAGE_HMAC_KEY, 'utf8');
 const FILES_PREFIX = 'opt2:/opt2/files/';
 const FILES_CATCH_ALL = `${FILES_PREFIX}**`;
 const STUB_NOTES = '/opt2/stub/notes';
+const PERSON_ID = '00532E14-B51F-226C-36938FA3E4A6396C';
 const BRIDGE_SESSION = '/gateway/legacy-bridge/cfml/session.cfm';
 const TEST_RELOAD_KEY = 'opt2reload';
 
@@ -211,12 +212,7 @@ describe('admin target destinations', () => {
 
 describe('signed file URLs', () => {
   it('names the owner of each bucket', () => {
-    expect(BUCKET_OWNERS).toStrictEqual({
-      'content-files': 'strategies-content',
-      'reporting-exports': 'reporting',
-      'finance-attachments': 'finance',
-      'esignature-documents': 'e-signature',
-    });
+    expect(BUCKET_OWNERS).toStrictEqual({ 'content-files': 'strategies-content' });
   });
 
   it.each(BUCKETS.map((bucket): [BucketName, OwningService] => [bucket, BUCKET_OWNERS[bucket]]))(
@@ -235,12 +231,12 @@ describe('signed file URLs', () => {
     },
   );
 
-  const VALID = signed('finance-attachments', 'reports/q2.pdf');
+  const VALID = signed('content-files', 'reports/q2.pdf');
   it.each<[string, string, string]>([
-    ['a tampered signature', VALID.replace(/.$/, (digit) => (digit === '0' ? '1' : '0')), `${FILES_PREFIX}finance-attachments/**`],
-    ['an expired signature', signed('finance-attachments', 'reports/q2.pdf', NOW_S - 1), `${FILES_PREFIX}finance-attachments/**`],
-    ['no signature', '/opt2/files/finance-attachments/reports/q2.pdf', `${FILES_PREFIX}finance-attachments/**`],
-    ['an unknown bucket', VALID.replace('/finance-attachments/', '/payroll-archive/'), FILES_CATCH_ALL],
+    ['a tampered signature', VALID.replace(/.$/, (digit) => (digit === '0' ? '1' : '0')), `${FILES_PREFIX}content-files/**`],
+    ['an expired signature', signed('content-files', 'reports/q2.pdf', NOW_S - 1), `${FILES_PREFIX}content-files/**`],
+    ['no signature', '/opt2/files/content-files/reports/q2.pdf', `${FILES_PREFIX}content-files/**`],
+    ['an unknown bucket', VALID.replace('/content-files/', '/payroll-archive/'), FILES_CATCH_ALL],
   ])('answers a bare 403 for %s, neither target nor legacy', async (_label, url, route) => {
     const outcome = await matchOf(requestFor(url), FIXTURE_INDEX);
     expect(outcome.entry?.route).toBe(route);
@@ -426,12 +422,13 @@ describe('edge dispatch', () => {
     for (const url of legacyUrls) expect((await app.inject({ method: 'GET', url })).statusCode, url).toBe(200);
     expect(forwardedToLegacy(legacy)).toEqual(legacyUrls);
 
-    expect((await app.inject({ method: 'GET', url: '/legacy-fixtures/cfml/api.cfm/finance/records?siteid=tenant-a' })).statusCode).toBe(200);
-    expect(targets.finance?.echoes().map((echo) => echo.path)).toEqual(['/legacy-fixtures/cfml/api.cfm/finance/records']);
+    const archive = `/legacy-fixtures/cfml/api.cfm/people/persons/${PERSON_ID}/archive`;
+    expect((await app.inject({ method: 'POST', url: `${archive}?siteid=tenant-a` })).statusCode).toBe(200);
+    expect(targets.people?.echoes().map((echo) => echo.path)).toEqual([archive]);
     expect((await app.inject({ method: 'GET', url: STUB_NOTES })).statusCode).toBe(200);
     expect(targets.stub?.echoes().map((echo) => echo.path)).toEqual([STUB_NOTES]);
-    await app.inject({ method: 'GET', url: '/opt2/admin/finance/' });
-    expect(targets.web?.echoes().map((echo) => echo.path)).toEqual(['/opt2/admin/finance/']);
+    await app.inject({ method: 'GET', url: '/admin/?muraAction=cArch.list&siteid=tenant-a' });
+    expect(targets.web?.echoes().map((echo) => echo.path)).toEqual(['/admin/carch/list']);
     expect(forwardedToLegacy(legacy)).toEqual(legacyUrls);
   });
 

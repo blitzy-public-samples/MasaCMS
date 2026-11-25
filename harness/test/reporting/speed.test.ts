@@ -10,12 +10,7 @@ import { gitArchiveExtract } from '../../src/lib/git.js';
 import type { ProcessRunner } from '../../src/lib/git.js';
 import { REPO_ROOT, isInsideRepo } from '../../src/lib/paths.js';
 import { pinnedSha, readPin } from '../../src/lib/pin.js';
-import {
-  SYNTHETIC_SERVICES,
-  TEN_SERVICES,
-  inventorySchema,
-  traceabilityRowCount,
-} from '../../src/reporting/check-reviewability.js';
+import { SERVICES, inventorySchema, traceabilityRowCount } from '../../src/reporting/check-reviewability.js';
 import type { Inventory, ServiceName } from '../../src/reporting/check-reviewability.js';
 import {
   ACTIVITY_PATH,
@@ -32,7 +27,6 @@ import {
   computeBlitzyHours,
   expandBraces,
   inventoryCounts,
-  isSynthetic,
   languageCode,
   measuredMetric,
   missingMetrics,
@@ -78,31 +72,19 @@ const SAMPLE_TESTS = 14;
 const IDENTITY_ROWS = 3;
 const RUN_TOTAL_HOURS = 12;
 const RUN_TOTAL_SOURCE = 'runTotal 2026-06-01T08:00:00Z to 2026-06-01T20:00:00Z';
-const MEASURED_HOURS: Readonly<Partial<Record<ServiceName, number>>> = { identity: 2.5, timesheets: 1 };
+const MEASURED_HOURS: Readonly<Partial<Record<ServiceName, number>>> = { identity: 2.5, 'programs-sites': 1 };
 
 const TS_LINES: Readonly<Record<ServiceName, number>> = {
   identity: 200,
   people: 100,
-  'programs-sites': 150,
-  'strategies-content': 250,
-  communications: 50,
-  reporting: 100,
-  surveys: 50,
-  timesheets: 100,
-  finance: 150,
-  'e-signature': 50,
+  'programs-sites': 300,
+  'strategies-content': 600,
 };
 const TS_TOTAL = 1_200;
 // 12 h × lines / 1,200 lines.
 const ESTIMATED_HOURS: Readonly<Partial<Record<ServiceName, number>>> = {
   people: 1,
-  'programs-sites': 1.5,
-  'strategies-content': 2.5,
-  communications: 0.5,
-  reporting: 1,
-  surveys: 0.5,
-  finance: 1.5,
-  'e-signature': 0.5,
+  'strategies-content': 6,
 };
 
 const INPUTS: SpeedInputs = {
@@ -122,9 +104,6 @@ const AUGMENTED_INVENTORY: Inventory = inventorySchema.parse({
   ],
   tables: [
     ...miniList('tables'),
-    { id: 'tbl:Program_N.timesheet', table: 'Program_N.timesheet', owningService: 'timesheets', origin: 'fixture' },
-    { id: 'tbl:Program_N.timesheet_day', table: 'Program_N.timesheet_day', owningService: 'timesheets', origin: 'fixture' },
-    { id: 'tbl:Program_N.finance_record', table: 'Program_N.finance_record', owningService: 'finance', origin: 'fixture' },
     { id: 'tbl:tsettings', table: 'tsettings', owningService: 'programs-sites', origin: 'bootstrap' },
   ],
   controllers: [...miniList('controllers'), { id: 'ctl:cperm', actions: [{ id: 'ctl:cperm.main', owningService: 'identity' }] }],
@@ -150,9 +129,9 @@ interface FakeRunner {
   calls: RunnerCall[];
 }
 
-/** Every pin REFERENCE path of the ten services, created as an empty file or directory under `target`. */
+/** Every pin REFERENCE path of the services, created as an empty file or directory under `target`. */
 async function writePinTree(target: string): Promise<void> {
-  const entries = [...new Set(TEN_SERVICES.flatMap((service) => SERVICE_REFERENCE_SOURCES[service].pin))];
+  const entries = [...new Set(SERVICES.flatMap((service) => SERVICE_REFERENCE_SOURCES[service].pin))];
   for (const entry of entries) {
     const full = path.join(target, entry);
     if (entry.endsWith('/')) {
@@ -192,7 +171,7 @@ const logCalls = (calls: readonly RunnerCall[]): RunnerCall[] => calls.filter((c
 
 function tsMetrics(lines: Readonly<Partial<Record<ServiceName, number>>> = TS_LINES): Partial<Record<ServiceName, Metric>> {
   return Object.fromEntries(
-    TEN_SERVICES.flatMap((service) => {
+    SERVICES.flatMap((service) => {
       const value = lines[service];
       return value === undefined ? [] : [[service, measuredMetric(value, `cloc TypeScript code lines in services/${service}/src/`)]];
     }),
@@ -260,7 +239,7 @@ describe('computeBlitzyHours', () => {
       label: 'measured',
       basis: `services.identity end − start in ${ACTIVITY_PATH} (2026-06-01T09:00:00Z to 2026-06-01T11:30:00Z)`,
     });
-    expect(hours.timesheets).toMatchObject({ value: 1, label: 'measured' });
+    expect(hours['programs-sites']).toMatchObject({ value: 1, label: 'measured' });
   });
 
   it('labels apportioned hours estimated with a TypeScript-line basis', () => {
@@ -274,22 +253,22 @@ describe('computeBlitzyHours', () => {
           `${TS_LINES[service]} / ${TS_TOTAL} lines`,
       });
     }
-    expect(Object.keys(ESTIMATED_HOURS).length + Object.keys(MEASURED_HOURS).length).toBe(TEN_SERVICES.length);
+    expect(Object.keys(ESTIMATED_HOURS).length + Object.keys(MEASURED_HOURS).length).toBe(SERVICES.length);
   });
 
-  it('apportions the run total over all ten services by TypeScript-line share', () => {
+  it('apportions the run total over all services by TypeScript-line share', () => {
     const hours = computeBlitzyHours(ACTIVITY, tsMetrics());
-    const estimated = TEN_SERVICES.filter((service) => hours[service].label === 'estimated');
+    const estimated = SERVICES.filter((service) => hours[service].label === 'estimated');
     const estimatedSum = estimated.reduce((sum, service) => sum + (hours[service].value ?? 0), 0);
     const estimatedLines = estimated.reduce((sum, service) => sum + TS_LINES[service], 0);
     expect(estimatedSum).toBeCloseTo((RUN_TOTAL_HOURS * estimatedLines) / TS_TOTAL, 9);
-    expect(estimatedSum).toBeCloseTo(9, 9);
+    expect(estimatedSum).toBeCloseTo(7, 9);
   });
 
   it('falls back to the sum of measured spans when runTotal has no bounds', () => {
     const hours = computeBlitzyHours(activitySchema.parse({ ...ACTIVITY, runTotal: null }), tsMetrics());
     expect(hours.people).toMatchObject({ value: 0.29, label: 'estimated' });
-    expect(hours['strategies-content']).toMatchObject({ value: 0.73, label: 'estimated' });
+    expect(hours['strategies-content']).toMatchObject({ value: 1.75, label: 'estimated' });
     expect(hours.people.basis).toContain('3.5 h (sum of measured service spans) × 100 / 1200 lines');
     expect(hours.identity).toMatchObject({ value: 2.5, label: 'measured' });
   });
@@ -302,7 +281,7 @@ describe('computeBlitzyHours', () => {
   ])('leaves every service unavailable when %s', (_case, raw, reason) => {
     const activity = raw === null ? null : activitySchema.parse(raw);
     const hours = computeBlitzyHours(activity, tsMetrics());
-    for (const service of TEN_SERVICES) {
+    for (const service of SERVICES) {
       expect(hours[service]).toMatchObject({ value: null, label: 'unavailable' });
       expect(hours[service].basis).toContain(reason);
       expect(hours[service].basis).toContain('rates not computed');
@@ -314,17 +293,17 @@ describe('computeBlitzyHours', () => {
     const incomplete = computeBlitzyHours(ACTIVITY, tsMetrics(withoutPeople));
     expect(incomplete.people).toMatchObject({ value: null, label: 'unavailable' });
     expect(incomplete.people.basis).toContain('output TypeScript lines are unavailable');
-    expect(incomplete.finance.basis).toContain('output TypeScript total is incomplete');
+    expect(incomplete['strategies-content'].basis).toContain('output TypeScript total is incomplete');
     expect(incomplete.identity).toMatchObject({ value: 2.5, label: 'measured' });
 
-    const zero = computeBlitzyHours(ACTIVITY, tsMetrics(Object.fromEntries(TEN_SERVICES.map((s) => [s, 0]))));
-    expect(zero.finance).toMatchObject({ value: null, label: 'unavailable' });
-    expect(zero.finance.basis).toContain('output TypeScript total is zero');
+    const zero = computeBlitzyHours(ACTIVITY, tsMetrics(Object.fromEntries(SERVICES.map((s) => [s, 0]))));
+    expect(zero['strategies-content']).toMatchObject({ value: null, label: 'unavailable' });
+    expect(zero['strategies-content'].basis).toContain('output TypeScript total is zero');
   });
 
   it('never bases hours on commit timestamps', () => {
     const hours = computeBlitzyHours(ACTIVITY, tsMetrics());
-    for (const service of TEN_SERVICES) expect(hours[service].basis).not.toMatch(/commit/i);
+    for (const service of SERVICES) expect(hours[service].basis).not.toMatch(/commit/i);
   });
 });
 
@@ -342,23 +321,17 @@ describe('spanHours', () => {
 });
 
 describe('speed report helpers', () => {
-  it('maps e-signature to the esignature fixture module and only fixture services to a module', () => {
-    expect(FIXTURE_MODULE['e-signature']).toBe('esignature');
-    const withModule = TEN_SERVICES.filter((service) => FIXTURE_MODULE[service] !== undefined);
-    expect(withModule).toEqual(['people', ...SYNTHETIC_SERVICES]);
+  it('maps only people to a fixture module', () => {
+    expect(FIXTURE_MODULE).toEqual({ people: 'people' });
+    const withModule = SERVICES.filter((service) => FIXTURE_MODULE[service] !== undefined);
+    expect(withModule).toEqual(['people']);
   });
 
-  it('lists only fixture CFML for synthetic services and expanded pin paths for migrated ones', () => {
-    for (const service of TEN_SERVICES) {
+  it('lists expanded pin paths for every service', () => {
+    for (const service of SERVICES) {
       const { pin, fixture } = SERVICE_REFERENCE_SOURCES[service];
       expect([...pin, ...fixture].some((entry) => entry.includes('{'))).toBe(false);
-      expect(isSynthetic(service)).toBe((SYNTHETIC_SERVICES as readonly string[]).includes(service));
-      if (isSynthetic(service)) {
-        expect(pin).toEqual([]);
-        expect(fixture).toEqual([`legacy-fixtures/cfml/modules/${FIXTURE_MODULE[service] ?? service}.cfc`]);
-      } else {
-        expect(pin.length).toBeGreaterThan(0);
-      }
+      expect(pin.length).toBeGreaterThan(0);
     }
     expect(SERVICE_REFERENCE_SOURCES.identity.pin).toEqual(
       expect.arrayContaining(['admin/core/controllers/clogin.cfc', 'admin/core/views/cmessage/', 'core/mura/client/api/oauth/']),
@@ -375,7 +348,7 @@ describe('speed report helpers', () => {
 
   it.each([
     ['services/people', 'services-people'],
-    ['services\\e-signature', 'services-e-signature'],
+    ['services\\strategies-content', 'services-strategies-content'],
     ['/harness/', 'harness'],
     ['legacy-fixtures//seed', 'legacy-fixtures-seed'],
   ])('slugs %s as %s', (pkg, slug) => {
@@ -406,7 +379,6 @@ describe('speed report helpers', () => {
     ['people', 0, 2],
     ['programs-sites', 0, 0],
     ['strategies-content', 0, 1],
-    ['communications', 0, 1],
   ] as const)('counts %s entities and endpoints owned in the mini inventory', (service, entities, endpoints) => {
     const counts = inventoryCounts(service, MINI_INVENTORY);
     expect(counts.entities).toMatchObject({ value: entities, label: 'measured' });
@@ -418,10 +390,7 @@ describe('speed report helpers', () => {
     ['identity', 2, 4, 'class other than not-entity'],
     ['programs-sites', 0, 0, 'class other than not-entity'],
     ['strategies-content', 0, 2, 'class other than not-entity'],
-    ['communications', 0, 1, 'owned fixture tables'],
-    ['timesheets', 2, 0, 'owned fixture tables'],
-    ['finance', 1, 0, 'owned fixture tables'],
-  ] as const)('counts %s from owned entities, fixture tables, actions, front-end entries and job steps', (service, entities, endpoints, basis) => {
+  ] as const)('counts %s from owned entities, actions, front-end entries and job steps', (service, entities, endpoints, basis) => {
     const counts = inventoryCounts(service, AUGMENTED_INVENTORY);
     expect(counts.entities).toMatchObject({ value: entities, label: 'measured' });
     expect(counts.entities.basis).toContain(basis);
@@ -466,7 +435,7 @@ describe('buildSpeedReport', () => {
 
   const build = (
     activity: Activity | null = ACTIVITY,
-    services: readonly ServiceName[] = TEN_SERVICES,
+    services: readonly ServiceName[] = SERVICES,
     inventory: Inventory = AUGMENTED_INVENTORY,
   ): SpeedReport =>
     buildSpeedReport({
@@ -487,7 +456,7 @@ describe('buildSpeedReport', () => {
     expect(calls).toEqual([{ file: 'cloc', args: ['--json', '--fullpath', '--quiet', '.'], cwd: work }]);
   });
 
-  it('builds one row per service in TEN_SERVICES order with every metric labelled', () => {
+  it('builds one row per service in SERVICES order with every metric labelled', () => {
     const report = build();
     expect(report).toMatchObject({
       sourceSha: SHA,
@@ -498,11 +467,10 @@ describe('buildSpeedReport', () => {
       bases: { reviewMinutesPerRow: REVIEW_MINUTES_PER_ROW, hoursApportionment: HOURS_APPORTIONMENT },
       labels: [...METRIC_LABELS],
     });
-    expect(report.services.map((row) => row.service)).toEqual([...TEN_SERVICES]);
+    expect(report.services.map((row) => row.service)).toEqual([...SERVICES]);
     for (const row of report.services) {
       expect(row).toMatchObject({
         folder: `services/${row.service}`,
-        synthetic: isSynthetic(row.service),
         fixtureModule: FIXTURE_MODULE[row.service] ?? null,
       });
       for (const key of METRIC_KEYS) expect(METRIC_LABELS).toContain(row[key].label);
@@ -527,7 +495,6 @@ describe('buildSpeedReport', () => {
     expect(people.cfmlLines).toMatchObject({ value: SAMPLE_CFML, label: 'measured' });
     expect(people.fixtureSqlLines).toMatchObject({ value: SAMPLE_SQL, label: 'measured' });
     expect(people.fixtureSqlLines.basis).toContain('legacy-fixtures/sql/people/');
-    expect(rowOf(report, 'e-signature').fixtureSqlLines.basis).toContain('legacy-fixtures/sql/esignature/');
     expect(rowOf(report, 'identity').fixtureSqlLines).toMatchObject({ value: null, label: 'unavailable' });
   });
 
@@ -555,8 +522,6 @@ describe('buildSpeedReport', () => {
     });
     expect(identity.hoursPer1000CfmlLines.value).toBeCloseTo(2.5 / (SAMPLE_CFML / 1000), 2);
     expect(identity.hoursPerEntity).toMatchObject({ value: 1.25, label: 'derived' });
-    expect(rowOf(report, 'timesheets').hoursPerEntity).toMatchObject({ value: 0.5, label: 'derived' });
-    expect(rowOf(report, 'finance').hoursPerEntity).toMatchObject({ value: 1.5, label: 'estimated' });
     expect(rowOf(report, 'people').hoursPer1000CfmlLines).toMatchObject({ value: 0.01, label: 'estimated' });
     expect(rowOf(report, 'people').hoursPerEntity).toEqual({
       value: null,
@@ -576,7 +541,7 @@ describe('buildSpeedReport', () => {
 
   it('fills services missing from the input as not measured', () => {
     const report = build(ACTIVITY, ['identity']);
-    expect(report.services.map((row) => row.service)).toEqual([...TEN_SERVICES]);
+    expect(report.services.map((row) => row.service)).toEqual([...SERVICES]);
     expect(rowOf(report, 'identity').blitzyElapsedHours).toMatchObject({ value: 2.5, label: 'measured' });
     expect(rowOf(report, 'people').cfmlLines).toEqual({ value: null, label: 'unavailable', basis: 'not measured' });
     expect(rowOf(report, 'people').blitzyElapsedHours).toMatchObject({ value: null, label: 'unavailable' });
@@ -584,16 +549,16 @@ describe('buildSpeedReport', () => {
   });
 
   it('names every absent or malformed metric', () => {
-    expect(missingMetrics({ services: [] })).toHaveLength(TEN_SERVICES.length * METRIC_KEYS.length);
+    expect(missingMetrics({ services: [] })).toHaveLength(SERVICES.length * METRIC_KEYS.length);
     const report = build();
     const broken = {
       services: report.services.map((row) =>
-        row.service === 'finance'
+        row.service === 'strategies-content'
           ? { ...row, coverage: { value: null, label: 'measured' as const, basis: 'x' }, tests: { value: 3, label: 'measured' as const, basis: '' } }
           : row,
       ),
     };
-    expect(missingMetrics(broken)).toEqual(['finance.tests', 'finance.coverage']);
+    expect(missingMetrics(broken)).toEqual(['strategies-content.tests', 'strategies-content.coverage']);
   });
 });
 
@@ -604,15 +569,15 @@ describe('renderSpeedMarkdown', () => {
       generatedAt: AT,
       activity: ACTIVITY,
       inputs,
-      services: TEN_SERVICES.map((service) => sampleMeasurements(service, SAMPLE_CFML, SAMPLE_SQL, AUGMENTED_INVENTORY)),
+      services: SERVICES.map((service) => sampleMeasurements(service, SAMPLE_CFML, SAMPLE_SQL, AUGMENTED_INVENTORY)),
     });
 
   it('renders a legend naming all four labels and one metrics row per service', () => {
     const lines = renderSpeedMarkdown(report());
     for (const label of METRIC_LABELS) expect(lines.some((line) => line.startsWith(`- ${label}: `))).toBe(true);
     const metrics = lines.slice(lines.indexOf('## Metrics'), lines.indexOf('## Basis of each metric'));
-    const rows = metrics.filter((line) => TEN_SERVICES.some((service) => line.startsWith(`| ${service} |`)));
-    expect(rows.map((line) => line.split(' | ')[0])).toEqual(TEN_SERVICES.map((service) => `| ${service}`));
+    const rows = metrics.filter((line) => SERVICES.some((service) => line.startsWith(`| ${service} |`)));
+    expect(rows.map((line) => line.split(' | ')[0])).toEqual(SERVICES.map((service) => `| ${service}`));
     expect(rows).toContain(
       '| identity | 2.5 (measured) | 0.25 (estimated) | 146,851 (measured) | — (unavailable) | 2 (measured) | ' +
         '4 (measured) | 200 (measured) | 14 (measured) | 92% (measured) | 0.02 (derived) | 1.25 (derived) |',
@@ -633,11 +598,10 @@ describe('renderSpeedMarkdown', () => {
 
 
 describe('main and collectSpeedInputs over a temp checkout', () => {
-  const FIXTURE_MODULES = TEN_SERVICES.flatMap((service) => {
+  const FIXTURE_MODULES = SERVICES.flatMap((service) => {
     const module = FIXTURE_MODULE[service];
     return module === undefined ? [] : [module];
   });
-  const MIGRATED = TEN_SERVICES.filter((service) => !isSynthetic(service));
   let root: string;
   let speed: SpeedModule;
   let cli: CliModule;
@@ -681,7 +645,7 @@ describe('main and collectSpeedInputs over a temp checkout', () => {
     if (opts.clocSha !== null) await put(root, 'opt2/inventory/cloc.json', JSON.stringify({ sourceSha: opts.clocSha ?? SHA }));
     if (opts.inventory !== false) await put(root, 'opt2/inventory/legacy-inventory.json', fixtureText(INVENTORY_FILE));
     if (opts.sources !== false) {
-      for (const service of TEN_SERVICES) await put(root, `services/${service}/src/main.ts`, 'export {};\n');
+      for (const service of SERVICES) await put(root, `services/${service}/src/main.ts`, 'export {};\n');
       for (const module of FIXTURE_MODULES) {
         await put(root, `legacy-fixtures/sql/${module}/100_${module}.sql`, `-- SYNTHETIC: ${module}\n`);
         await put(root, `legacy-fixtures/cfml/modules/${module}.cfc`, `// SYNTHETIC: ${module}\n`);
@@ -721,7 +685,7 @@ describe('main and collectSpeedInputs over a temp checkout', () => {
     expect(exits).toEqual([0]);
     const summary = JSON.parse(out.join('')) as { ok: boolean; written: boolean; missing: string[]; labels: Record<string, number> };
     expect(summary).toMatchObject({ ok: true, written: true, missing: [] });
-    expect(Object.values(summary.labels).reduce((sum, n) => sum + n, 0)).toBe(TEN_SERVICES.length * METRIC_KEYS.length);
+    expect(Object.values(summary.labels).reduce((sum, n) => sum + n, 0)).toBe(SERVICES.length * METRIC_KEYS.length);
 
     expect((await readdir(env.OPT2_REPORTS_DIR)).sort()).toEqual(['speed.json', 'speed.md']);
     expect(existsSync(path.join(root, 'opt2', 'reports'))).toBe(false);
@@ -730,7 +694,7 @@ describe('main and collectSpeedInputs over a temp checkout', () => {
     const report = JSON.parse(await readFile(path.join(env.OPT2_REPORTS_DIR, 'speed.json'), 'utf8')) as SpeedReport;
     expect(report.sourceSha).toBe(pinnedSha());
     expect(report.generatedAt).toBe(AT);
-    expect(report.services.map((row) => row.service)).toEqual([...TEN_SERVICES]);
+    expect(report.services.map((row) => row.service)).toEqual([...SERVICES]);
     expect(report.inputs).toMatchObject({
       activity: { path: ACTIVITY_PATH, present: true },
       cloc: { present: true, sourceSha: SHA, matchesPin: true, extractedFrom: `git archive ${SHA}` },
@@ -755,7 +719,7 @@ describe('main and collectSpeedInputs over a temp checkout', () => {
 
     const people = rowOf(report, 'people');
     expect(people).toMatchObject({
-      blitzyElapsedHours: { value: 1.2, label: 'estimated' },
+      blitzyElapsedHours: { value: 3, label: 'estimated' },
       cfmlLines: { value: 2 * SAMPLE_CFML, label: 'measured' },
       fixtureSqlLines: { value: SAMPLE_SQL, label: 'measured' },
       endpoints: { value: 2, label: 'measured' },
@@ -764,16 +728,12 @@ describe('main and collectSpeedInputs over a temp checkout', () => {
     });
     expect(people.tests.basis).toContain('13 passed, 1 failed, 0 skipped or todo');
     expect(people.coverage.basis).toContain('(184/200 statements)');
-    expect(rowOf(report, 'timesheets').blitzyElapsedHours).toMatchObject({ value: 1, label: 'measured' });
-    const esignature = rowOf(report, 'e-signature');
-    expect(esignature.cfmlLines).toMatchObject({ value: SAMPLE_CFML, label: 'measured' });
-    expect(esignature.cfmlLines.basis).toContain('legacy-fixtures/cfml/modules/esignature.cfc');
-    expect(esignature.fixtureSqlLines.basis).toContain('legacy-fixtures/sql/esignature/');
-    expect(rowOf(report, 'finance').tests).toMatchObject({ value: null, label: 'unavailable' });
+    expect(rowOf(report, 'programs-sites').blitzyElapsedHours).toMatchObject({ value: 1, label: 'measured' });
+    expect(rowOf(report, 'strategies-content').tests).toMatchObject({ value: null, label: 'unavailable' });
 
     const md = (await readFile(path.join(env.OPT2_REPORTS_DIR, 'speed.md'), 'utf8')).split('\n');
     expect(md.slice(0, 2)).toEqual(['# Speed report', `Source SHA: ${pinnedSha()}`]);
-    for (const service of TEN_SERVICES) expect(md.filter((line) => line.startsWith(`| ${service} |`))).toHaveLength(1);
+    for (const service of SERVICES) expect(md.filter((line) => line.startsWith(`| ${service} |`))).toHaveLength(1);
 
     expect(logCalls(fake.calls)).toEqual([]);
     const archive = fake.calls.find((call) => call.file === 'git' && call.args[0] === 'archive');
@@ -788,7 +748,7 @@ describe('main and collectSpeedInputs over a temp checkout', () => {
       cwd: path.join(root, 'services', 'identity', 'src'),
     });
     const pinCalls = fake.calls.filter((call) => call.file === 'cloc' && call.cwd === extraction);
-    expect(pinCalls).toHaveLength(MIGRATED.length);
+    expect(pinCalls).toHaveLength(SERVICES.length);
     expect(pinCalls.every((call) => call.args.at(-1)?.startsWith('--list-file='))).toBe(true);
   });
 
@@ -800,12 +760,11 @@ describe('main and collectSpeedInputs over a temp checkout', () => {
     const collected = await speed.collectSpeedInputs({ pin: readPin(), env, runner: fake.run, extract });
     expect(extract).not.toHaveBeenCalled();
     expect(collected.inputs.cloc).toMatchObject({ present: true, sourceSha: other, matchesPin: false });
-    for (const service of MIGRATED) {
+    for (const service of SERVICES) {
       expect(measurementsOf(collected.services, service).cfmlLines).toEqual(
         unavailableMetric(`opt2/inventory/cloc.json sourceSha ${other} differs from the pin ${SHA}`),
       );
     }
-    expect(measurementsOf(collected.services, 'communications').cfmlLines).toMatchObject({ value: SAMPLE_CFML, label: 'measured' });
     expect(logCalls(fake.calls)).toEqual([]);
   });
 
@@ -834,7 +793,6 @@ describe('main and collectSpeedInputs over a temp checkout', () => {
     expect(identity).toMatchObject({ value: null, label: 'unavailable' });
     expect(identity.basis.startsWith(basis)).toBe(true);
     expect(identity.basis).not.toContain(work);
-    expect(measurementsOf(collected.services, 'finance').cfmlLines).toMatchObject({ value: SAMPLE_CFML, label: 'measured' });
   });
 
   it('records absent and unreadable inputs as unavailable without machine paths', async () => {
@@ -889,7 +847,6 @@ describe('main and collectSpeedInputs over a temp checkout', () => {
     expect(measurementsOf(collected.services, 'people').fixtureSqlLines).toEqual(
       unavailableMetric('cloc failed in legacy-fixtures/sql/people/: cloc crashed in legacy-fixtures/sql/people'),
     );
-    expect(measurementsOf(collected.services, 'surveys').cfmlLines).toEqual(unavailableMetric('cloc failed: cloc crashed in .'));
   });
 
   it('reads vitest results from --vitest-dir and writes nothing with --no-write', async () => {

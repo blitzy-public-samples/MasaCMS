@@ -14,11 +14,7 @@ import { cloginScreens } from '@/screens/clogin';
 import { homeRedirectScreen } from '@/screens/clogin/home-redirect';
 import {
   NOT_BUILT_VARIANTS,
-  allOpt2Actions,
-  allOpt2Screens,
   allScreens,
-  findOpt2Action,
-  findOpt2Screen,
   findScreen,
   routeKeyOf,
   shellHooks,
@@ -27,7 +23,6 @@ import {
   type ScreenDefinition,
   type UploadPart,
 } from '@/screens/registry';
-import { OPT2_NAV_MODULES } from '@/shell/nav';
 
 /** An inventoried admin action or variant. */
 interface AdminRecord {
@@ -559,69 +554,6 @@ describe('findScreen', () => {
     const def = DEFS.find((candidate) => candidate.circuit === circuit && candidate.action === action);
     expect(def?.mode).toBe('page');
     expect(findScreen(circuit, action, {})).toBe(def);
-  });
-});
-
-/** Screen and action slugs of a synthetic module. */
-interface ModuleSlugs {
-  readonly screens: readonly string[];
-  readonly actions: readonly string[];
-}
-
-const OPT2_SLUGS: Readonly<Record<string, ModuleSlugs>> = {
-  communications: { screens: ['templates', 'sends', 'delivery-status'], actions: ['save-template', 'send'] },
-  'e-signature': { screens: ['requests', 'request', 'audit', 'verify'], actions: ['create-request', 'sign', 'verify'] },
-  finance: {
-    screens: ['records', 'record'],
-    actions: ['submit', 'resubmit', 'approve', 'reject', 'edit', 'upload', 'download'],
-  },
-  reporting: { screens: ['exports'], actions: ['queue', 'download'] },
-  surveys: { screens: ['surveys', 'schedule', 'targets', 'responses'], actions: ['schedule', 'bulk-target'] },
-  timesheets: { screens: ['sheets', 'sheet'], actions: ['day-action'] },
-};
-
-/** Sorted slugs of `defs` per module. */
-function slugsByModule<T extends { readonly module: string }>(defs: readonly T[], slugOf: (def: T) => string) {
-  const table: Record<string, string[]> = {};
-  for (const def of defs) (table[def.module] ??= []).push(slugOf(def));
-  return Object.fromEntries(Object.entries(table).map(([module, slugs]) => [module, slugs.toSorted()]));
-}
-
-describe('OPT-2 lookups', () => {
-  it.each(OPT2_NAV_MODULES)('resolves the $module nav link', ({ module, screen }) => {
-    expect(findOpt2Screen(module, screen)).toMatchObject({ module, screen });
-  });
-
-  it('finds every synthetic screen and action by its slug', () => {
-    expect(allOpt2Screens().filter((def) => findOpt2Screen(def.module, def.screen) !== def)).toEqual([]);
-    expect(allOpt2Actions().filter((def) => findOpt2Action(def.module, def.action) !== def)).toEqual([]);
-  });
-
-  it('registers the six synthetic modules', () => {
-    const modules = new Set([...allOpt2Screens(), ...allOpt2Actions(), ...OPT2_NAV_MODULES].map((def) => def.module));
-    expect([...modules].toSorted()).toEqual([
-      'communications',
-      'e-signature',
-      'finance',
-      'reporting',
-      'surveys',
-      'timesheets',
-    ]);
-  });
-
-  it('registers each module screen and action slug', () => {
-    const sorted = (pick: 'screens' | 'actions') =>
-      Object.fromEntries(Object.entries(OPT2_SLUGS).map(([module, slugs]) => [module, slugs[pick].toSorted()]));
-    expect(slugsByModule(allOpt2Screens(), (def) => def.screen)).toEqual(sorted('screens'));
-    expect(slugsByModule(allOpt2Actions(), (def) => def.action)).toEqual(sorted('actions'));
-  });
-
-  it.each([
-    ['screen', () => findOpt2Screen('timesheets', 'nope')],
-    ['module', () => findOpt2Screen('payroll', 'sheets')],
-    ['action', () => findOpt2Action('finance', 'approve-all')],
-  ] as const)('finds nothing for an unknown %s', (_kind, lookup) => {
-    expect(lookup()).toBeUndefined();
   });
 });
 

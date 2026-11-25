@@ -42,7 +42,7 @@ export interface QueueDefinition {
 }
 
 /** Deployed services that publish through an outbox and own a sweep queue. */
-export const OUTBOX_PRODUCERS = ['identity', 'people', 'programs-sites', 'surveys', 'communications'] as const;
+export const OUTBOX_PRODUCERS = ['identity', 'people', 'programs-sites'] as const;
 
 /** Outbox producers that run only locally and are never deployed. */
 export const LOCAL_ONLY_PRODUCERS = ['stub'] as const;
@@ -101,21 +101,6 @@ function withNames<K extends string>(specs: Record<K, QueueSpec>): Readonly<Reco
 
 /** Every queue, keyed by name, in deterministic registry order. */
 export const QUEUES = withNames({
-  'surveys-launch': {
-    targetService: 'surveys',
-    // Under /internal/v1/tasks/ because task requests carry only the cloud-tasks transport credential.
-    targetPath: '/internal/v1/tasks/surveys/launch',
-    creators: ['communications'],
-    deadlineS: 60,
-    retry: DEFAULT_RETRY,
-  },
-  'communications-reminders': {
-    targetService: 'communications',
-    targetPath: '/internal/v1/tasks/reminders',
-    creators: ['communications'],
-    deadlineS: 60,
-    retry: DEFAULT_RETRY,
-  },
   'content-scheduled-publish': {
     targetService: 'strategies-content',
     targetPath: '/internal/v1/jobs/publish-scheduled-changesets',
@@ -128,13 +113,6 @@ export const QUEUES = withNames({
     targetPath: '/internal/v1/jobs/feed-auto-import',
     creators: ['programs-sites'],
     deadlineS: 600,
-    retry: DEFAULT_RETRY,
-  },
-  'reporting-export-run': {
-    targetService: 'reporting',
-    targetPath: '/internal/v1/tasks/exports/run',
-    creators: ['reporting'],
-    deadlineS: 1800,
     retry: DEFAULT_RETRY,
   },
   [SITEMONITOR_QUEUE]: {

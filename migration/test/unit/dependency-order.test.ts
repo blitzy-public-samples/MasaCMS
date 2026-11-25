@@ -109,16 +109,16 @@ const MAIN_TABLES: Readonly<Record<string, FakeTable>> = {
     tapprovalchains: ['chainID'],
     tapprovalrequests: ['requestID'],
   }),
-  tjobqueue: { owner: 'reporting', owners: ['reporting'], keyColumns: ['jobID'] },
-  'program_n.grant': { owner: 'finance', owners: ['finance'], keyColumns: ['grant_id'] },
-  'program_n.award': { owner: 'finance', owners: ['finance'], keyColumns: ['award_id'] },
+  tjobqueue: { owner: 'strategies-content', owners: ['strategies-content'], keyColumns: ['jobID'] },
+  'program_n.grant': { owner: 'programs-sites', owners: ['programs-sites'], keyColumns: ['grant_id'] },
+  'program_n.award': { owner: 'programs-sites', owners: ['programs-sites'], keyColumns: ['award_id'] },
   tplugins: { owner: 'decision-list' },
   tglobals: { owner: 'retired' },
 };
 
 const MAIN_UNITS: readonly Unit[] = [
   { id: 'content.category', owner: 'strategies-content', schema: 'content', legacyTables: ['tcontentcategories'] },
-  { id: 'finance.grant', owner: 'finance', schema: 'finance', legacyTables: ['Program_N.grant'] },
+  { id: 'programs_sites.grant', owner: 'programs-sites', schema: 'programs_sites', legacyTables: ['Program_N.grant'] },
 ];
 
 const MAIN_INVENTORY: OrderInventory = {
@@ -173,12 +173,12 @@ const MAIN_ENTRIES: readonly (readonly [string, string, string, TenantFrom, read
   ['tcontentcategoryassign', 'dbo', 'strategies-content', 'parent', ['tcontent', 'tcontentcategories']],
   ['tapprovalchains', 'dbo', 'strategies-content', 'siteID', ['tsettings']],
   ['tapprovalrequests', 'dbo', 'strategies-content', 'parent', ['tapprovalchains']],
-  ['tjobqueue', 'dbo', 'reporting', 'umbrella', []],
+  ['tjobqueue', 'dbo', 'strategies-content', 'umbrella', []],
   ['synthetic.program_site', 'synthetic', 'programs-sites', 'siteID', ['tsettings']],
-  ['Program_1.grant', 'Program_1', 'finance', 'parent', ['synthetic.program_site']],
-  ['Program_1.award', 'Program_1', 'finance', 'parent', ['Program_1.grant', 'synthetic.program_site']],
-  ['Program_2.grant', 'Program_2', 'finance', 'parent', ['synthetic.program_site']],
-  ['Program_2.award', 'Program_2', 'finance', 'parent', ['Program_2.grant', 'synthetic.program_site']],
+  ['Program_1.grant', 'Program_1', 'programs-sites', 'parent', ['synthetic.program_site']],
+  ['Program_1.award', 'Program_1', 'programs-sites', 'parent', ['Program_1.grant', 'synthetic.program_site']],
+  ['Program_2.grant', 'Program_2', 'programs-sites', 'parent', ['synthetic.program_site']],
+  ['Program_2.award', 'Program_2', 'programs-sites', 'parent', ['Program_2.grant', 'synthetic.program_site']],
 ];
 
 const PAIR_INVENTORY: OrderInventory = {
@@ -208,7 +208,7 @@ const CYCLES_KEYS: Readonly<Record<string, readonly string[]>> = {
   tdelta: ['LinkID'],
 };
 
-const CYCLES_CATALOG = fakeCatalog(ownedBy('surveys', CYCLES_KEYS));
+const CYCLES_CATALOG = fakeCatalog(ownedBy('strategies-content', CYCLES_KEYS));
 
 const PEOPLE_SPLIT: FakeTable = { owner: 'split', owners: ['identity', 'people'] };
 
@@ -226,10 +226,10 @@ const HEAD_TABLES: Readonly<Record<string, FakeTable>> = {
     tapprovalchains: ['chainID'],
     tchangesets: ['changesetID'],
   }),
-  temails: { owner: 'communications', owners: ['communications'], keyColumns: ['EmailID'] },
+  tcontentfeeds: { owner: 'strategies-content', owners: ['strategies-content'], keyColumns: ['feedID'] },
   'synthetic.program_site': { owner: 'programs-sites', keyColumns: ['program_id'] },
-  ...ownedBy('surveys', { 'synthetic.survey': ['survey_id'], 'synthetic.survey_reminder': ['reminder_id'] }),
-  'program_n.timesheet': { owner: 'timesheets', owners: ['timesheets'], keyColumns: ['timesheet_id'] },
+  ...ownedBy('people', { 'synthetic.person_archive': ['archive_id'], 'synthetic.archive_note': ['note_id'] }),
+  'program_n.enrolment': { owner: 'programs-sites', owners: ['programs-sites'], keyColumns: ['enrolment_id'] },
 };
 
 const HEAD_CATALOG = fakeCatalog(HEAD_TABLES);
@@ -238,8 +238,8 @@ const HEAD_CATALOG = fakeCatalog(HEAD_TABLES);
 const HEAD_INVENTORY: OrderInventory = {
   tables: [
     ...['tsettings', 'tusers', 'tpermissions', 'tuserstags', 'tclassextenddatauseractivity', 'tcontent', 'tfiles'].map((table) => ({ table, hasSiteId: true })),
-    ...['tcontentobjects', 'tcontentcategories', 'tapprovalchains', 'tchangesets', 'temails', 'synthetic.survey'].map((table) => ({ table, hasSiteId: true })),
-    ...unsited('tusersmemb', 'tuserremotesessions', 'tuserstrikes', 'synthetic.survey_reminder', 'Program_N.timesheet'),
+    ...['tcontentobjects', 'tcontentcategories', 'tapprovalchains', 'tchangesets', 'tcontentfeeds', 'synthetic.person_archive'].map((table) => ({ table, hasSiteId: true })),
+    ...unsited('tusersmemb', 'tuserremotesessions', 'tuserstrikes', 'synthetic.archive_note', 'Program_N.enrolment'),
   ],
   relations: [
     relation('orm:user.photo', 'beanORM', 'tusers.photoFileID', 'tfiles.fileID'),
@@ -254,7 +254,7 @@ const HEAD_INVENTORY: OrderInventory = {
     relation('tenant:strike.user', 'tenantParent', 'tuserstrikes.username', 'tusers.UserName'),
     relation('dao:object.version', 'daoJoin', 'tcontentobjects.ContentHistID', 'tcontent.ContentHistID'),
     relation('orm:chain.site', 'beanORM', 'tapprovalchains.siteID', 'tsettings.SiteID'),
-    relation('fixture:reminder.survey', 'programFk', 'synthetic.survey_reminder.survey_id', 'synthetic.survey.survey_id'),
+    relation('fixture:note.archive', 'programFk', 'synthetic.archive_note.archive_id', 'synthetic.person_archive.archive_id'),
   ],
 };
 
@@ -274,20 +274,20 @@ const HEAD_ORDER: readonly string[] = [
   'tcontentobjects',
   'tcontentcategories',
   'tapprovalchains',
-  'temails',
+  'tcontentfeeds',
   'synthetic.program_site',
-  'synthetic.survey',
-  'synthetic.survey_reminder',
-  'Program_1.timesheet',
-  'Program_2.timesheet',
+  'synthetic.person_archive',
+  'synthetic.archive_note',
+  'Program_1.enrolment',
+  'Program_2.enrolment',
 ];
 
 const LEGACY_FORM_TABLES: Readonly<Record<string, FakeTable>> = {
   tsettings: { owner: 'programs-sites', owners: ['programs-sites'], keyColumns: ['SiteID'] },
   tredirects: { owner: 'strategies-content', owners: ['strategies-content'], keyColumns: ['redirectID'] },
-  tjobqueue: { owner: 'reporting', owners: ['reporting'], keyColumns: ['jobID'] },
-  'program_n.grant': { owner: 'finance', owners: ['finance'], keyColumns: ['grant_id'] },
-  'program_n.award': { owner: 'finance', owners: ['finance'], keyColumns: ['award_id'] },
+  tjobqueue: { owner: 'strategies-content', owners: ['strategies-content'], keyColumns: ['jobID'] },
+  'program_n.grant': { owner: 'programs-sites', owners: ['programs-sites'], keyColumns: ['grant_id'] },
+  'program_n.award': { owner: 'programs-sites', owners: ['programs-sites'], keyColumns: ['award_id'] },
   'synthetic.program_site': { owner: 'programs-sites', keyColumns: ['program_id'] },
 };
 
@@ -306,7 +306,6 @@ const LEGACY_FORM = {
       kind: 'program-fold',
       child: { table: 'Program_N.*', columns: null },
       parent: { table: 'synthetic.program_site', columns: ['program_id'] },
-      source: { path: 'legacy-fixtures/sql/010_program_site.sql', lines: [8, 8] },
       tenantDerivation: true,
     },
     { id: 'rel:orm', kind: 'orm-fk', child: { table: 'tredirects', columns: ['siteID'] }, parent: { table: 'tsettings', columns: ['siteID'] } },
@@ -338,7 +337,6 @@ const LEGACY_FORM_PARSED: OrderInventory = {
       kind: 'programFold',
       child: { table: 'Program_N.*', column: 'legacy_program_id' },
       parent: { table: 'synthetic.program_site', column: 'program_id' },
-      source: { path: 'legacy-fixtures/sql/010_program_site.sql', lines: [8, 8] },
     },
     { id: 'rel:orm', kind: 'beanORM', child: { table: 'tredirects', column: 'siteID' }, parent: { table: 'tsettings', column: 'siteID' } },
     { id: 'rel:dao', kind: 'daoJoin', child: { table: 'tjobqueue', column: 'RedirectID' }, parent: { table: 'tredirects', column: 'redirectID' } },
@@ -358,12 +356,12 @@ const FIXTURE_ENTRIES: readonly (readonly [string, DataOwner | 'split', TenantFr
   ['tcontent', 'strategies-content', 'siteID'],
   ['tfiles', 'strategies-content', 'siteID'],
   ['timagesizes', 'programs-sites', 'siteID'],
-  ['tmailinglist', 'communications', 'siteID'],
-  ['tmailinglistmembers', 'communications', 'siteID'],
+  ['tmailinglist', 'programs-sites', 'siteID'],
+  ['tmailinglistmembers', 'programs-sites', 'siteID'],
   ['synthetic.program_site', 'programs-sites', 'siteID'],
   ['synthetic.person_archive', 'people', 'siteID'],
-  ['Program_1.blackout', 'timesheets', 'parent'],
-  ['Program_2.blackout', 'timesheets', 'parent'],
+  ['Program_1.enrolment', 'programs-sites', 'parent'],
+  ['Program_2.enrolment', 'programs-sites', 'parent'],
 ];
 
 /** Child and parent table pairs of a fixture relation; `Program_N` sides become one pair per fixture program. */
@@ -478,9 +476,9 @@ describe('buildDependencyOrder over the fixture inventory and catalog', () => {
     for (const table of planned.slice(1)) expect(order.order.indexOf(table), table).toBeGreaterThan(0);
   });
 
-  it('folds Program_N.blackout into one entry per fixture program, each behind synthetic.program_site', () => {
+  it('folds Program_N.enrolment into one entry per fixture program, each behind synthetic.program_site', () => {
     const programTables = order.order.filter((table) => parseProgramTable(table) !== null);
-    expect(programTables).toEqual(PROGRAM_SITES.map(({ program_id }) => `Program_${String(program_id)}.blackout`));
+    expect(programTables).toEqual(PROGRAM_SITES.map(({ program_id }) => `Program_${String(program_id)}.enrolment`));
     expect(order.order.filter((table) => table.startsWith('Program_N'))).toEqual([]);
     expect(new Set(order.order).size).toBe(order.order.length);
     for (const table of programTables) expect(order.order.indexOf(PROGRAM_SITE_TABLE)).toBeLessThan(order.order.indexOf(table));
@@ -506,7 +504,7 @@ describe('buildDependencyOrder over the fixture inventory and catalog', () => {
     expect(result.parentOf('tcontenteventreminders')).toBeNull();
   });
 
-  it.each(['Program_1.blackout', 'Program_2.blackout'])('inherits the tenant of %s through the program fold', (table) => {
+  it.each(['Program_1.enrolment', 'Program_2.enrolment'])('inherits the tenant of %s through the program fold', (table) => {
     expect(parentOf(order, table)).toStrictEqual({
       id: `implicit:programFold:${table}`,
       kind: 'programFold',
@@ -654,7 +652,7 @@ describe('buildDependencyOrder', () => {
 
   it.each<[string, OrderInventory, Readonly<Record<string, FakeTable>>, readonly Unit[]]>([
     ['the site and program inventory', MAIN_INVENTORY, MAIN_TABLES, MAIN_UNITS],
-    ['the cycle inventory', CYCLES_INVENTORY, ownedBy('surveys', CYCLES_KEYS), []],
+    ['the cycle inventory', CYCLES_INVENTORY, ownedBy('strategies-content', CYCLES_KEYS), []],
     ['the planned head inventory', HEAD_INVENTORY, HEAD_TABLES, []],
   ])('gives the same result for %s whatever the order of its tables, relations and units', (_, inventory, tables, units) => {
     const expected = summary(buildDependencyOrder({ inventory, catalog: fakeCatalog(tables, units) }));
@@ -768,10 +766,10 @@ describe('buildDependencyOrder head', () => {
     expect(order.entries.slice(0, -fixtures.length).every((entry) => entry.schema === 'dbo')).toBe(true);
     expect(fixtures).toEqual([
       [PROGRAM_SITE_TABLE, 'programs-sites'],
-      ['synthetic.survey', 'surveys'],
-      ['synthetic.survey_reminder', 'surveys'],
-      ['Program_1.timesheet', 'timesheets'],
-      ['Program_2.timesheet', 'timesheets'],
+      ['synthetic.person_archive', 'people'],
+      ['synthetic.archive_note', 'people'],
+      ['Program_1.enrolment', 'programs-sites'],
+      ['Program_2.enrolment', 'programs-sites'],
     ]);
   });
 
@@ -817,14 +815,12 @@ describe('computeDependencyOrder over the committed inventory and table ownershi
     expect(at.get(table)).toBeGreaterThan(at.get('tusers') ?? Infinity);
   });
 
-  it('leads with tsettings, places every Masa table before synthetic.program_site and every fixture table after it', () => {
-    const fold = at.get(PROGRAM_SITE_TABLE) ?? 0;
+  it('leads with tsettings and places every Masa table before every fixture table', () => {
+    const fixtures = order.entries.filter((entry) => entry.schema !== 'dbo');
+    const first = Math.min(...fixtures.map((entry) => entry.position));
     expect(order.order[0]).toBe(SITE_ROOT_TABLE);
-    expect(order.entries.filter((entry) => entry.schema === 'dbo' && entry.position > fold)).toEqual([]);
-    expect(order.entries.filter((entry) => entry.schema !== 'dbo' && entry.position < fold)).toEqual([]);
-    const programs = order.entries.filter((entry) => parseProgramTable(entry.table) !== null);
-    expect(programs.length).toBeGreaterThan(0);
-    for (const entry of programs) expect(entry.parents, entry.table).toContain(PROGRAM_SITE_TABLE);
+    expect(order.entries.filter((entry) => entry.schema === 'dbo' && entry.position > first)).toEqual([]);
+    expect(fixtures.map((entry) => entry.table)).toEqual(['synthetic.person_archive']);
   });
 });
 
@@ -843,7 +839,7 @@ describe('buildDependencyOrder cycles', () => {
       relation('dao:beta.alpha', 'daoJoin', 'tbeta.AlphaID', 'talpha.AlphaID'),
     ],
   ])('defers the one back-reference column of %s in a two-table cycle', (_, keyColumns, [first, second], broken) => {
-    const result = buildDependencyOrder({ inventory: PAIR_INVENTORY, catalog: fakeCatalog(ownedBy('surveys', keyColumns)) });
+    const result = buildDependencyOrder({ inventory: PAIR_INVENTORY, catalog: fakeCatalog(ownedBy('strategies-content', keyColumns)) });
     expect(result.order).toEqual([first, second]);
     expect(result.deferred).toStrictEqual([
       { table: broken.child.table, column: broken.child.column, references: broken.parent, relationId: broken.id },
@@ -883,13 +879,13 @@ describe('buildDependencyOrder cycles', () => {
     [
       'a three-table ring',
       ring,
-      fakeCatalog(ownedBy('surveys', { ta: ['id'], tb: ['id'], tc: ['id'] })),
+      fakeCatalog(ownedBy('strategies-content', { ta: ['id'], tb: ['id'], tc: ['id'] })),
       ['ta', 'tc', 'tb'],
       ['ta.b_id'],
       [['ta', 'tb', 'tc']],
     ],
     // A table's rows load in one pass, so a self-reference orders nothing and is dropped rather than deferred.
-    ['a self-reference', selfReference, fakeCatalog(ownedBy('surveys', { tnode: ['NodeID'] })), ['tnode'], [], []],
+    ['a self-reference', selfReference, fakeCatalog(ownedBy('strategies-content', { tnode: ['NodeID'] })), ['tnode'], [], []],
   ])('breaks %s by deferring at most one back-reference and orders every kept relation', (_, inventory, catalog, tables, deferred, cycles) => {
     const result = buildDependencyOrder({ inventory, catalog });
     expect(result.order).toEqual(tables);
@@ -906,7 +902,7 @@ describe('buildDependencyOrder cycles', () => {
   });
 
   it('throws when every back-reference of the cycle is a key column', () => {
-    const catalog = fakeCatalog(ownedBy('surveys', { talpha: ['AlphaID', 'BetaID'], tbeta: ['BetaID', 'AlphaID'] }));
+    const catalog = fakeCatalog(ownedBy('strategies-content', { talpha: ['AlphaID', 'BetaID'], tbeta: ['BetaID', 'AlphaID'] }));
     const build = (): DependencyOrder => buildDependencyOrder({ inventory: PAIR_INVENTORY, catalog });
     expect(build).toThrow(DependencyOrderError);
     expect(build).toThrow(new DependencyOrderError('cycle talpha, tbeta has no member whose back-references are all non-key or mirrored'));
@@ -934,7 +930,7 @@ describe('buildDependencyOrder cycles', () => {
         relation('r:c.b', 'daoJoin', 'tc.b_id', 'tb.id'),
       ],
     };
-    const result = buildDependencyOrder({ inventory, catalog: fakeCatalog(ownedBy('surveys', { ta: ['id'], tb: ['id'], tc: ['id'] })) });
+    const result = buildDependencyOrder({ inventory, catalog: fakeCatalog(ownedBy('strategies-content', { ta: ['id'], tb: ['id'], tc: ['id'] })) });
     expect(result.order).toEqual(['ta', 'tb', 'tc']);
     expect(result.deferred.map(({ table, column, relationId }) => [table, column, relationId])).toEqual([
       ['ta', 'b_id', 'r:a.b'],

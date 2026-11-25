@@ -85,13 +85,14 @@ vi.mock('@opt2/platform/events', async (importOriginal) => {
 const PROJECT = 'opt2-unit';
 const EMULATOR = 'localhost:8085';
 const ARCHIVED = 'people.person.archived.v1';
+const PERSON_CHANGED = 'people.person.changed.v1';
 const GROUP_CHANGED = 'identity.group.changed.v1';
-const LOGIN_MAIL = 'identity.login-mail.requested.v1';
-const TIMESHEETS_ARCHIVED = subscriptionName('timesheets', ARCHIVED);
+const SITE_CHANGED = 'programs-sites.site.changed.v1';
+const IDENTITY_PERSON = subscriptionName('identity', PERSON_CHANGED);
 const PEOPLE_GROUP = subscriptionName('people', GROUP_CHANGED);
 const CONTENT_GROUP = subscriptionName('strategies-content', GROUP_CHANGED);
-const COMMUNICATIONS_LOGIN_MAIL = subscriptionName('communications', LOGIN_MAIL);
-const LOCAL_PUSH_ENDPOINT = `http://127.0.0.1:20118${pushPath(TIMESHEETS_ARCHIVED)}?key=unit-push-key`;
+const PROGRAMS_SITES_SITE = subscriptionName('programs-sites', SITE_CHANGED);
+const LOCAL_PUSH_ENDPOINT = `http://127.0.0.1:20111${pushPath(IDENTITY_PERSON)}?key=unit-push-key`;
 const SAVED_LOCAL_PUSH: SavedPushConfig = {
   pushEndpoint: LOCAL_PUSH_ENDPOINT,
   attributes: {},
@@ -99,7 +100,7 @@ const SAVED_LOCAL_PUSH: SavedPushConfig = {
   wrapper: 'noWrapper',
 };
 
-const DLQ_REPLAY = dlqReplaySubscriptionName(TIMESHEETS_ARCHIVED);
+const DLQ_REPLAY = dlqReplaySubscriptionName(IDENTITY_PERSON);
 const EVENT_A = 'a0000000-0000-4000-8000-00000000000a';
 const EVENT_B = 'b0000000-0000-4000-8000-00000000000b';
 
@@ -145,8 +146,8 @@ function fakePubSub(
 
 describe('subscriptionId', () => {
   it.each([
-    [fullName(TIMESHEETS_ARCHIVED), TIMESHEETS_ARCHIVED],
-    [TIMESHEETS_ARCHIVED, TIMESHEETS_ARCHIVED],
+    [fullName(IDENTITY_PERSON), IDENTITY_PERSON],
+    [IDENTITY_PERSON, IDENTITY_PERSON],
   ])('maps %s to the short id %s', (name, expected) => {
     expect(subscriptionId(name)).toBe(expected);
   });
@@ -154,30 +155,30 @@ describe('subscriptionId', () => {
 
 describe('listOpt2Subscriptions', () => {
   it('returns only <consumer>.<topic> subscriptions, sorted by name, with consumer, topic and ordering from metadata', async () => {
-    const timesheets = fakeSubscription(fullName(TIMESHEETS_ARCHIVED), {
+    const identity = fakeSubscription(fullName(IDENTITY_PERSON), {
       enableMessageOrdering: true,
       pushConfig: { pushEndpoint: LOCAL_PUSH_ENDPOINT },
     });
     const content = fakeSubscription(fullName(CONTENT_GROUP), { enableMessageOrdering: null });
-    const communications = fakeSubscription(COMMUNICATIONS_LOGIN_MAIL, { enableMessageOrdering: false });
+    const programsSites = fakeSubscription(PROGRAMS_SITES_SITE, { enableMessageOrdering: false });
     const people = fakeSubscription(fullName(PEOPLE_GROUP));
-    const replay = fakeSubscription(fullName(dlqReplaySubscriptionName(TIMESHEETS_ARCHIVED)), { enableMessageOrdering: true });
+    const replay = fakeSubscription(fullName(dlqReplaySubscriptionName(IDENTITY_PERSON)), { enableMessageOrdering: true });
     const foreign = [
       'legacy-mail-queue',
-      'Timesheets.people.person.archived.v1',
-      'timesheets.people.person.archived',
-      'timesheets.people.person.archived.v0',
+      'Identity.people.person.changed.v1',
+      'identity.people.person.changed',
+      'identity.people.person.changed.v0',
       witnessName('pubsub-redelivery', '0badc0de', GROUP_CHANGED),
     ].map((name) => fakeSubscription(fullName(name), { enableMessageOrdering: true }));
     const excluded = [replay, ...foreign];
 
-    const found = await listOpt2Subscriptions(fakePubSub([timesheets, replay, content, ...foreign, communications, people]));
+    const found = await listOpt2Subscriptions(fakePubSub([identity, replay, content, ...foreign, programsSites, people]));
 
     expect(found).toStrictEqual([
-      { name: COMMUNICATIONS_LOGIN_MAIL, consumer: 'communications', topic: LOGIN_MAIL, ordered: false, subscription: communications },
+      { name: IDENTITY_PERSON, consumer: 'identity', topic: PERSON_CHANGED, ordered: true, subscription: identity },
       { name: PEOPLE_GROUP, consumer: 'people', topic: GROUP_CHANGED, ordered: false, subscription: people },
+      { name: PROGRAMS_SITES_SITE, consumer: 'programs-sites', topic: SITE_CHANGED, ordered: false, subscription: programsSites },
       { name: CONTENT_GROUP, consumer: 'strategies-content', topic: GROUP_CHANGED, ordered: false, subscription: content },
-      { name: TIMESHEETS_ARCHIVED, consumer: 'timesheets', topic: ARCHIVED, ordered: true, subscription: timesheets },
     ]);
     for (const subscription of excluded) {
       expect(subscription.getMetadata).not.toHaveBeenCalled();
@@ -190,21 +191,21 @@ describe('listOpt2Subscriptions', () => {
       throw failure;
     });
 
-    await expect(listOpt2Subscriptions(fakePubSub([fakeSubscription(fullName(TIMESHEETS_ARCHIVED))]))).rejects.toBe(failure);
+    await expect(listOpt2Subscriptions(fakePubSub([fakeSubscription(fullName(IDENTITY_PERSON))]))).rejects.toBe(failure);
   });
 
   it('passes each call a gax timeout within timeoutMs, and none without it', async () => {
-    const timesheets = fakeSubscription(fullName(TIMESHEETS_ARCHIVED));
-    const pubsub = fakePubSub([timesheets]);
+    const identity = fakeSubscription(fullName(IDENTITY_PERSON));
+    const pubsub = fakePubSub([identity]);
     const listed = vi.spyOn(pubsub, 'getSubscriptions');
 
     expect(await listOpt2Subscriptions(pubsub, { timeoutMs: 5000 })).toHaveLength(1);
     await listOpt2Subscriptions(pubsub);
 
-    const bounds = [listed.mock.calls[0]?.[0]?.gaxOpts?.timeout, timesheets.getMetadata.mock.calls[0]?.[0]?.timeout];
+    const bounds = [listed.mock.calls[0]?.[0]?.gaxOpts?.timeout, identity.getMetadata.mock.calls[0]?.[0]?.timeout];
     for (const bound of bounds) expect(bound).toBeGreaterThan(0);
     for (const bound of bounds) expect(bound).toBeLessThanOrEqual(5000);
-    expect([listed.mock.calls[1], timesheets.getMetadata.mock.calls[1]]).toStrictEqual([[], []]);
+    expect([listed.mock.calls[1], identity.getMetadata.mock.calls[1]]).toStrictEqual([[], []]);
   });
 
   it.each<[string, (pubsub: PubSubLike, subscription: ReturnType<typeof fakeSubscription>) => void]>([
@@ -215,7 +216,7 @@ describe('listOpt2Subscriptions', () => {
       (pubsub) => vi.spyOn(pubsub, 'getSubscriptions').mockRejectedValue(Object.assign(new Error('4 DEADLINE_EXCEEDED: Deadline exceeded'), { code: 4 })),
     ],
   ])('rejects with PubSubTimeoutError within timeoutMs when %s', async (_label, slow) => {
-    const subscription = fakeSubscription(fullName(TIMESHEETS_ARCHIVED));
+    const subscription = fakeSubscription(fullName(IDENTITY_PERSON));
     const pubsub = fakePubSub([subscription]);
     slow(pubsub, subscription);
     const started = Date.now();
@@ -252,7 +253,7 @@ describe('readPushConfig', () => {
     ['a null pushConfig', { pushConfig: null }],
     ['no pushConfig', {}],
   ])('returns null for a pull subscription with %s', async (_label, metadata: SubscriptionMetadata) => {
-    expect(await readPushConfig(fakeSubscription(fullName(TIMESHEETS_ARCHIVED), metadata))).toBeNull();
+    expect(await readPushConfig(fakeSubscription(fullName(IDENTITY_PERSON), metadata))).toBeNull();
   });
 
   it('returns a JSON-safe deep copy of a push config without its null oneof members', async () => {
@@ -265,7 +266,7 @@ describe('readPushConfig', () => {
       wrapper: 'noWrapper',
     };
 
-    const saved = await readPushConfig(fakeSubscription(fullName(TIMESHEETS_ARCHIVED), { pushConfig }));
+    const saved = await readPushConfig(fakeSubscription(fullName(IDENTITY_PERSON), { pushConfig }));
 
     expect(saved).toStrictEqual(SAVED_LOCAL_PUSH);
     expect(saved).not.toBe(pushConfig);
@@ -280,7 +281,7 @@ describe('setPushConfig', () => {
     ['{} (pull delivery)', {}],
   ])('hands %s to modifyPushConfig byte-identical after a JSON round-trip', async (_label, config: SavedPushConfig) => {
     const stored = JSON.stringify(config);
-    const subscription = fakeSubscription(fullName(TIMESHEETS_ARCHIVED));
+    const subscription = fakeSubscription(fullName(IDENTITY_PERSON));
 
     await setPushConfig(subscription, JSON.parse(stored) as SavedPushConfig);
 
@@ -290,7 +291,7 @@ describe('setPushConfig', () => {
 
   it('propagates a modifyPushConfig failure', async () => {
     const failure = new Error('5 NOT_FOUND: Subscription does not exist');
-    const subscription = fakeSubscription(fullName(TIMESHEETS_ARCHIVED));
+    const subscription = fakeSubscription(fullName(IDENTITY_PERSON));
     subscription.modifyPushConfig.mockRejectedValueOnce(failure);
 
     await expect(setPushConfig(subscription, {})).rejects.toBe(failure);
@@ -314,12 +315,12 @@ describe('peekBacklog with an injected client', () => {
   it.each([0, 1])('resolves to %i, the count pullOnce returns for the fully qualified subscription', async (count) => {
     const pullOnce = vi.fn<(fullName: string) => Promise<number>>(() => Promise.resolve(count));
 
-    expect(await peekBacklog(fakePubSub([], pullOnce), TIMESHEETS_ARCHIVED)).toBe(count);
-    expect(pullOnce).toHaveBeenCalledExactlyOnceWith(fullName(TIMESHEETS_ARCHIVED));
+    expect(await peekBacklog(fakePubSub([], pullOnce), IDENTITY_PERSON)).toBe(count);
+    expect(pullOnce).toHaveBeenCalledExactlyOnceWith(fullName(IDENTITY_PERSON));
   });
 
   it('rejects with a TypeError when the client has no pullOnce', async () => {
-    await expect(peekBacklog(fakePubSub([]), TIMESHEETS_ARCHIVED)).rejects.toThrow(TypeError);
+    await expect(peekBacklog(fakePubSub([]), IDENTITY_PERSON)).rejects.toThrow(TypeError);
   });
 });
 
@@ -330,12 +331,12 @@ describe('peekDeadLetterEventIds with an injected client', () => {
   ])('resolves to the event ids peekEventIds reads from the fully qualified DLQ replay subscription %s', async (_label, options) => {
     const peekEventIds = vi.fn<(fullName: string, options?: PeekOptions) => Promise<string[]>>(() => Promise.resolve([EVENT_A]));
 
-    expect(await peekDeadLetterEventIds(fakePubSub([], undefined, peekEventIds), TIMESHEETS_ARCHIVED, options)).toStrictEqual([EVENT_A]);
+    expect(await peekDeadLetterEventIds(fakePubSub([], undefined, peekEventIds), IDENTITY_PERSON, options)).toStrictEqual([EVENT_A]);
     expect(peekEventIds.mock.calls).toStrictEqual([[fullName(DLQ_REPLAY), options]]);
   });
 
   it('rejects with a TypeError when the client has no peekEventIds', async () => {
-    await expect(peekDeadLetterEventIds(fakePubSub([]), TIMESHEETS_ARCHIVED)).rejects.toThrow(TypeError);
+    await expect(peekDeadLetterEventIds(fakePubSub([]), IDENTITY_PERSON)).rejects.toThrow(TypeError);
   });
 });
 
@@ -404,12 +405,12 @@ describe('openMessageLease with an injected client', () => {
     const lease: MessageLease = { pull: vi.fn(), acknowledge: vi.fn(), release: vi.fn(), close: vi.fn() };
     const leaseMessages = vi.fn<(fullName: string) => Promise<MessageLease>>(() => Promise.resolve(lease));
 
-    expect(await openMessageLease(fakePubSub([], undefined, undefined, leaseMessages), TIMESHEETS_ARCHIVED)).toBe(lease);
-    expect(leaseMessages).toHaveBeenCalledExactlyOnceWith(fullName(TIMESHEETS_ARCHIVED));
+    expect(await openMessageLease(fakePubSub([], undefined, undefined, leaseMessages), IDENTITY_PERSON)).toBe(lease);
+    expect(leaseMessages).toHaveBeenCalledExactlyOnceWith(fullName(IDENTITY_PERSON));
   });
 
   it('rejects with a TypeError when the client has no leaseMessages', async () => {
-    await expect(openMessageLease(fakePubSub([]), TIMESHEETS_ARCHIVED)).rejects.toThrow(TypeError);
+    await expect(openMessageLease(fakePubSub([]), IDENTITY_PERSON)).rejects.toThrow(TypeError);
   });
 });
 
@@ -450,7 +451,7 @@ describe('createPubSub', () => {
     expect(typeof client.topicIds).toBe('function');
     expect(typeof client.createWitness).toBe('function');
     expect(typeof client.deleteSubscription).toBe('function');
-    expect(client.subscription(TIMESHEETS_ARCHIVED).name).toBe(fullName(TIMESHEETS_ARCHIVED));
+    expect(client.subscription(IDENTITY_PERSON).name).toBe(fullName(IDENTITY_PERSON));
   });
 
   it('topicIds lists the project topics as short ids, sorted', async () => {
@@ -518,11 +519,11 @@ describe('createPubSub', () => {
       const client = create({ GOOGLE_CLOUD_PROJECT: PROJECT, PUBSUB_EMULATOR_HOST: EMULATOR });
       subscriber.pull.mockResolvedValueOnce([response]);
 
-      expect(await peekBacklog(client, TIMESHEETS_ARCHIVED)).toBe(count);
+      expect(await peekBacklog(client, IDENTITY_PERSON)).toBe(count);
 
       expect(subscriber.created).toStrictEqual([client.options]);
       expect(subscriber.pull).toHaveBeenCalledExactlyOnceWith({
-        subscription: fullName(TIMESHEETS_ARCHIVED),
+        subscription: fullName(IDENTITY_PERSON),
         maxMessages: 1,
         returnImmediately: true,
       });
@@ -530,7 +531,7 @@ describe('createPubSub', () => {
         expect(subscriber.modifyAckDeadline).not.toHaveBeenCalled();
       } else {
         expect(subscriber.modifyAckDeadline).toHaveBeenCalledExactlyOnceWith({
-          subscription: fullName(TIMESHEETS_ARCHIVED),
+          subscription: fullName(IDENTITY_PERSON),
           ackIds: releasedAckIds,
           ackDeadlineSeconds: 0,
         });
@@ -544,7 +545,7 @@ describe('createPubSub', () => {
     const client = create({ GOOGLE_CLOUD_PROJECT: PROJECT, PUBSUB_EMULATOR_HOST: EMULATOR });
     subscriber.pull.mockRejectedValueOnce(failure);
 
-    await expect(peekBacklog(client, TIMESHEETS_ARCHIVED)).rejects.toBe(failure);
+    await expect(peekBacklog(client, IDENTITY_PERSON)).rejects.toBe(failure);
     expect(subscriber.modifyAckDeadline).not.toHaveBeenCalled();
     expect(subscriber.close).toHaveBeenCalledTimes(1);
   });
@@ -569,7 +570,7 @@ describe('createPubSub', () => {
         .mockResolvedValueOnce([{ receivedMessages: [pulled('ack-4', 'm-4', { attribute: EVENT_A }), pulled('ack-5', 'm-5', { data: '{}' })] }])
         .mockResolvedValueOnce([last]);
 
-      expect(await peekDeadLetterEventIds(client, TIMESHEETS_ARCHIVED)).toStrictEqual([EVENT_A, EVENT_B]);
+      expect(await peekDeadLetterEventIds(client, IDENTITY_PERSON)).toStrictEqual([EVENT_A, EVENT_B]);
 
       expect(subscriber.pull.mock.calls).toStrictEqual(
         Array.from({ length: 3 }, () => [{ subscription: fullName(DLQ_REPLAY), maxMessages: 1000, returnImmediately: true }]),
@@ -585,7 +586,7 @@ describe('createPubSub', () => {
     const client = create({ GOOGLE_CLOUD_PROJECT: PROJECT, PUBSUB_EMULATOR_HOST: EMULATOR });
     subscriber.pull.mockRejectedValueOnce(Object.assign(new Error('5 NOT_FOUND: Subscription does not exist'), { code: 5 }));
 
-    expect(await peekDeadLetterEventIds(client, TIMESHEETS_ARCHIVED)).toStrictEqual([]);
+    expect(await peekDeadLetterEventIds(client, IDENTITY_PERSON)).toStrictEqual([]);
     expect(subscriber.modifyAckDeadline).not.toHaveBeenCalled();
     expect(subscriber.close).toHaveBeenCalledTimes(1);
   });
@@ -615,7 +616,7 @@ describe('createPubSub', () => {
       },
     ]);
 
-    const lease = await openMessageLease(client, TIMESHEETS_ARCHIVED);
+    const lease = await openMessageLease(client, IDENTITY_PERSON);
     const messages = await lease.pull(10);
     await lease.acknowledge(['ack-1']);
     await lease.release(['ack-2', 'ack-3']);
@@ -636,10 +637,10 @@ describe('createPubSub', () => {
       { ackId: 'ack-3', messageId: 'm-3', data: Buffer.alloc(0), attributes: {} },
     ]);
     expect(subscriber.created).toStrictEqual([client.options]);
-    expect(subscriber.pull).toHaveBeenCalledExactlyOnceWith({ subscription: fullName(TIMESHEETS_ARCHIVED), maxMessages: 10, returnImmediately: true });
-    expect(subscriber.acknowledge).toHaveBeenCalledExactlyOnceWith({ subscription: fullName(TIMESHEETS_ARCHIVED), ackIds: ['ack-1'] });
+    expect(subscriber.pull).toHaveBeenCalledExactlyOnceWith({ subscription: fullName(IDENTITY_PERSON), maxMessages: 10, returnImmediately: true });
+    expect(subscriber.acknowledge).toHaveBeenCalledExactlyOnceWith({ subscription: fullName(IDENTITY_PERSON), ackIds: ['ack-1'] });
     expect(subscriber.modifyAckDeadline).toHaveBeenCalledExactlyOnceWith({
-      subscription: fullName(TIMESHEETS_ARCHIVED),
+      subscription: fullName(IDENTITY_PERSON),
       ackIds: ['ack-2', 'ack-3'],
       ackDeadlineSeconds: 0,
     });
@@ -650,7 +651,7 @@ describe('createPubSub', () => {
     const client = create({ GOOGLE_CLOUD_PROJECT: PROJECT, PUBSUB_EMULATOR_HOST: EMULATOR });
     subscriber.pull.mockResolvedValueOnce([{ receivedMessages: null }]);
 
-    const lease = await openMessageLease(client, TIMESHEETS_ARCHIVED);
+    const lease = await openMessageLease(client, IDENTITY_PERSON);
     expect(await lease.pull(10)).toStrictEqual([]);
     await lease.acknowledge([]);
     await lease.release([]);
@@ -666,7 +667,7 @@ describe('createPubSub', () => {
       .mockResolvedValueOnce([{ receivedMessages: [pulled('ack-1', 'm-1', { attribute: EVENT_B }), pulled('ack-2', 'm-2', { attribute: 'c0000000-0000-4000-8000-00000000000c' })] }])
       .mockResolvedValueOnce([{ receivedMessages: [pulled('ack-3', 'm-3', { data: JSON.stringify({ eventId: EVENT_A.toUpperCase() }) })] }]);
 
-    expect(await peekDeadLetterEventIds(client, TIMESHEETS_ARCHIVED, { eventIds: [EVENT_A, EVENT_B.toUpperCase()] })).toStrictEqual([EVENT_A.toUpperCase(), EVENT_B]);
+    expect(await peekDeadLetterEventIds(client, IDENTITY_PERSON, { eventIds: [EVENT_A, EVENT_B.toUpperCase()] })).toStrictEqual([EVENT_A.toUpperCase(), EVENT_B]);
 
     expect(subscriber.pull).toHaveBeenCalledTimes(2);
     expect(subscriber.modifyAckDeadline.mock.calls).toStrictEqual([
@@ -679,8 +680,8 @@ describe('createPubSub', () => {
   it('peekEventIds opens no subscriber and pulls nothing when no event id is sought or the budget is spent', async () => {
     const client = create({ GOOGLE_CLOUD_PROJECT: PROJECT, PUBSUB_EMULATOR_HOST: EMULATOR });
 
-    expect(await peekDeadLetterEventIds(client, TIMESHEETS_ARCHIVED, { eventIds: [] })).toStrictEqual([]);
-    expect(await peekDeadLetterEventIds(client, TIMESHEETS_ARCHIVED, { eventIds: [EVENT_A], timeoutMs: 0 })).toStrictEqual([]);
+    expect(await peekDeadLetterEventIds(client, IDENTITY_PERSON, { eventIds: [] })).toStrictEqual([]);
+    expect(await peekDeadLetterEventIds(client, IDENTITY_PERSON, { eventIds: [EVENT_A], timeoutMs: 0 })).toStrictEqual([]);
 
     expect(subscriber.created).toStrictEqual([]);
     expect(subscriber.pull).not.toHaveBeenCalled();
@@ -692,7 +693,7 @@ describe('createPubSub', () => {
     vi.spyOn(client, 'getClientConfig').mockImplementation(() => wait(200).then(() => client.options));
     const started = Date.now();
 
-    expect(await peekDeadLetterEventIds(client, TIMESHEETS_ARCHIVED, { eventIds: [EVENT_A], timeoutMs: 20 })).toStrictEqual([]);
+    expect(await peekDeadLetterEventIds(client, IDENTITY_PERSON, { eventIds: [EVENT_A], timeoutMs: 20 })).toStrictEqual([]);
 
     expect(Date.now() - started).toBeLessThan(200);
     expect(subscriber.created).toStrictEqual([]);
@@ -708,7 +709,7 @@ describe('createPubSub', () => {
     });
     subscriber.close.mockImplementation(() => new Promise<void>(() => undefined));
 
-    expect(await peekDeadLetterEventIds(client, TIMESHEETS_ARCHIVED, { eventIds: [EVENT_A, EVENT_B], timeoutMs: 2000 })).toStrictEqual([EVENT_A]);
+    expect(await peekDeadLetterEventIds(client, IDENTITY_PERSON, { eventIds: [EVENT_A, EVENT_B], timeoutMs: 2000 })).toStrictEqual([EVENT_A]);
 
     expect(subscriber.pull).toHaveBeenCalledTimes(1);
     expect(subscriber.modifyAckDeadline).not.toHaveBeenCalled();
@@ -726,7 +727,7 @@ describe('createPubSub', () => {
       return Promise.resolve([{ receivedMessages: received }]);
     });
 
-    const found = await peekDeadLetterEventIds(client, TIMESHEETS_ARCHIVED, { eventIds: [EVENT_A] });
+    const found = await peekDeadLetterEventIds(client, IDENTITY_PERSON, { eventIds: [EVENT_A] });
 
     expect(PEEK_MAX_MESSAGES).toBe(10_000);
     expect(found).toStrictEqual([]);
@@ -746,7 +747,7 @@ describe('createPubSub', () => {
       })
       .mockRejectedValueOnce(Object.assign(new Error('4 DEADLINE_EXCEEDED: Deadline exceeded'), { code: 4 }));
 
-    expect(await peekDeadLetterEventIds(client, TIMESHEETS_ARCHIVED, { eventIds: [EVENT_A, EVENT_B], timeoutMs: 2000 })).toStrictEqual([EVENT_A]);
+    expect(await peekDeadLetterEventIds(client, IDENTITY_PERSON, { eventIds: [EVENT_A, EVENT_B], timeoutMs: 2000 })).toStrictEqual([EVENT_A]);
 
     expect(subscriber.pullOptions).toStrictEqual([{ timeout: 1600 }, { timeout: 100 }]);
     expect(subscriber.modifyAckDeadline).toHaveBeenCalledExactlyOnceWith({ subscription: fullName(DLQ_REPLAY), ackIds: ['ack-1'], ackDeadlineSeconds: 0 });
@@ -762,7 +763,7 @@ describe('createPubSub', () => {
       .mockResolvedValueOnce([{ receivedMessages: [] }]);
     subscriber.modifyAckDeadline.mockRejectedValueOnce(Object.assign(new Error('4 DEADLINE_EXCEEDED: Deadline exceeded'), { code: 4 }));
 
-    expect(await peekDeadLetterEventIds(client, TIMESHEETS_ARCHIVED, { timeoutMs: 2000 })).toStrictEqual([EVENT_A, EVENT_B].sort());
+    expect(await peekDeadLetterEventIds(client, IDENTITY_PERSON, { timeoutMs: 2000 })).toStrictEqual([EVENT_A, EVENT_B].sort());
 
     expect(subscriber.modifyAckDeadline.mock.calls.map(([request]) => request.ackIds)).toStrictEqual([['ack-1'], ['ack-2']]);
     expect(subscriber.close).toHaveBeenCalledTimes(1);
@@ -777,7 +778,7 @@ describe('createPubSub', () => {
       .mockResolvedValueOnce([{ receivedMessages: [] }]);
     subscriber.modifyAckDeadline.mockRejectedValueOnce(failure);
 
-    await expect(peekDeadLetterEventIds(client, TIMESHEETS_ARCHIVED)).rejects.toBe(failure);
+    await expect(peekDeadLetterEventIds(client, IDENTITY_PERSON)).rejects.toBe(failure);
     expect(subscriber.modifyAckDeadline.mock.calls.map(([request]) => request.ackIds)).toStrictEqual([['ack-1'], ['ack-2']]);
     expect(subscriber.close).toHaveBeenCalledTimes(1);
   });
@@ -787,7 +788,7 @@ describe('createPubSub', () => {
     const client = create({ GOOGLE_CLOUD_PROJECT: PROJECT, PUBSUB_EMULATOR_HOST: EMULATOR });
     subscriber.pull.mockResolvedValueOnce([{ receivedMessages: [pulled('ack-1', 'm-1', { attribute: EVENT_A })] }]).mockRejectedValueOnce(failure);
 
-    await expect(peekDeadLetterEventIds(client, TIMESHEETS_ARCHIVED)).rejects.toBe(failure);
+    await expect(peekDeadLetterEventIds(client, IDENTITY_PERSON)).rejects.toBe(failure);
     expect(subscriber.modifyAckDeadline).toHaveBeenCalledExactlyOnceWith({
       subscription: fullName(DLQ_REPLAY),
       ackIds: ['ack-1'],

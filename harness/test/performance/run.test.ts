@@ -1,23 +1,24 @@
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 
 import { matchRouteKey, type RouteKeyResult } from '@opt2/platform/legacy-compat';
 
-import { FIXTURES_UNAVAILABLE, loadCatalogue, scenarioById, type Scenario, type Step } from '../../src/golden/catalogue.js';
+import type { Scenario, Step } from '../../src/golden/catalogue.js';
 import { coverageRouteResults, type StepRequest } from '../../src/golden/coverage.js';
 import { GoldenConfigError } from '../../src/golden/errors.js';
-import { formTokensFrom, loadSeedStore, SEED_CONFIG_PATH } from '../../src/golden/session.js';
+import { formTokensFrom, loadSeedStore } from '../../src/golden/session.js';
 import { runCli } from '../../src/lib/cli.js';
 import { createHttpSession, type FetchLike, type HttpSession } from '../../src/lib/http.js';
 import type { HarnessInvoker } from '../../src/lib/invocation.js';
 import { REPO_ROOT, type EnvLike } from '../../src/lib/paths.js';
 import { readPin } from '../../src/lib/pin.js';
 import {
-  CATALOGUE_SCENARIO,
   CLOUD_MEASUREMENT,
+  CONTENT_READS,
+  CONTENT_READS_LABEL,
   EXPECTED_MIN_INSTANCES,
   GATEWAY_PROBES,
   GENERATED_BY,
@@ -29,7 +30,6 @@ import {
   RESTART_SERVICES,
   STOP_KILL_AFTER_MS,
   STOP_POLL_MS,
-  TIMESHEETS_ROLE,
   buildPerformanceReport,
   checkMinInstanceCounts,
   chooseProbe,
@@ -50,7 +50,6 @@ import {
   restartAndMeasure,
   seededPageIds,
   servingSide,
-  skippedLatency,
   startProcess,
   stopProcess,
   summariseSamples,
@@ -96,14 +95,6 @@ const CUTOVER_STATUS = '/internal/v1/cutover/status';
 /** The admin login post, whose route key stands for identity's login probe. */
 const LOGIN_REQUEST: StepRequest = { method: 'POST', route: '/admin/index.cfm', form: { muraAction: 'cLogin.login' } };
 const USAGE = 'usage: tsx src/performance/run.ts';
-const SEED_ROLES = [
-  TIMESHEETS_ROLE,
-  'communications.sender',
-  'reporting.exporter',
-  'surveys.manager',
-  'finance.preparer',
-  'esignature.signer',
-];
 const LEGACY_MS = 4;
 const TARGET_MS = 5;
 const ESRCH = errno('ESRCH');
@@ -131,10 +122,6 @@ function errno(code: string): NodeJS.ErrnoException {
 /** Placeholder password for `label`, assembled at run time so no credential-shaped literal sits in the source. */
 function credential(label: string): string {
   return ['fixture', label, 'pw'].join('-');
-}
-
-function seedUsername(role: string): string {
-  return `fixture-${role}`;
 }
 
 interface FakeClock {
@@ -210,7 +197,7 @@ const IMAGE_ID = cfId('000IMAGE', 1);
 const LEFTOVER_FEED_ID = cfId('LEFTOVER', 1);
 const NEW_FEED_ID = cfId('0000FEED', 1);
 
-/** Seed dataset whose first tenant-a Pages, Folder and umbrella png are GS-CO-05's seed rows, among others. */
+/** Seed dataset whose first tenant-a Pages, Folder and umbrella png are the content reads' seed rows, among others. */
 function seedDataset(): unknown {
   return {
     businessDate: '2026-06-30',
@@ -234,19 +221,13 @@ async function writeFixtureFile(file: string, body: unknown): Promise<void> {
   await fs.writeFile(file, typeof body === 'string' ? body : JSON.stringify(body));
 }
 
-/** `route` with GS-CO-05's seed placeholders replaced by the seedDataset rows. */
+/** `route` with the content reads' seed placeholders replaced by the seedDataset rows. */
 function seededRoute(route: string): string {
   return route
     .replaceAll('${seed.page.contentID}', PAGE_IDS[0] ?? '')
     .replaceAll('${seed.image.fileID}', IMAGE_ID)
     .replaceAll('${seed.feed.contentID}', FOLDER_ID);
 }
-
-let gsCo05: Scenario;
-
-beforeAll(async () => {
-  gsCo05 = scenarioById(await loadCatalogue(), CATALOGUE_SCENARIO);
-});
 
 /** Invoker the cut-over status request uses; the fakes ignore its headers. */
 const INVOKER: HarnessInvoker = { headersFor: async () => ({}) };
@@ -275,23 +256,6 @@ function routing(tableVersion: string, targets: readonly TargetRoute[]): Routing
   };
 }
 
-function fixtureRead(fixtureModule: string, resource: string, owningService: RestartService): TargetRoute {
-  const prefix = `/legacy-fixtures/cfml/api.cfm/${fixtureModule}/${resource}?`;
-  return {
-    route: `fixture:${fixtureModule}/${resource}@get`,
-    owningService,
-    kind: 'read',
-    carries: (method, target) => method === 'GET' && target.startsWith(prefix),
-  };
-}
-
-/** The surveys, finance and e-signature fixture reads are target. */
-const FIXTURE_READS_TARGET = routing('v9101', [
-  fixtureRead('surveys', 'surveys', 'surveys'),
-  fixtureRead('finance', 'records', 'finance'),
-  fixtureRead('esignature', 'requests', 'e-signature'),
-]);
-
 /** The admin login post and the user list are target. */
 const LOGIN_AND_USERS_TARGET = routing('v9102', [
   {
@@ -307,6 +271,9 @@ const LOGIN_AND_USERS_TARGET = routing('v9102', [
 const SITE_TREE_TARGET = routing('v9103', [
   { route: 'admin:carch.list', owningService: 'strategies-content', kind: 'write', carries: (method, target) => method === 'GET' && target === SITE_TREE },
 ]);
+
+/** Every route is legacy. */
+const ALL_LEGACY_ROUTING = routing('v9104', []);
 
 interface FeedSiteOptions {
   /** cFeed.update redirects without creating, as a refused CSRF token does. */
@@ -447,19 +414,8 @@ function row(labels: ReadLabels, rest: Omit<LatencyRow, keyof ReadLabels>): Late
 }
 
 describe('fixed configuration', () => {
-  it('restarts the ten domain services and expects min_instance_count 0 for every deployed service but migration', () => {
-    expect(RESTART_SERVICES).toStrictEqual([
-      'identity',
-      'people',
-      'programs-sites',
-      'strategies-content',
-      'communications',
-      'reporting',
-      'surveys',
-      'timesheets',
-      'finance',
-      'e-signature',
-    ]);
+  it('restarts the domain services and expects min_instance_count 0 for every deployed service but migration', () => {
+    expect(RESTART_SERVICES).toStrictEqual(['identity', 'people', 'programs-sites', 'strategies-content']);
     expect(Object.keys(GATEWAY_PROBES)).toStrictEqual([...RESTART_SERVICES]);
     expect(EXPECTED_MIN_INSTANCES).toStrictEqual({
       gateway: 0,
@@ -469,24 +425,22 @@ describe('fixed configuration', () => {
     });
   });
 
-  it('reads findMany, the feed, cusers.listusers, csettings.list and the fixture-backed timesheet sheet list after the catalogue', () => {
-    expect(CATALOGUE_SCENARIO).toBe('GS-CO-05');
+  it('reads findMany, the feed, cusers.listusers and csettings.list after the catalogue', () => {
+    expect(CONTENT_READS_LABEL).toBe('content-reads');
     expect(READ_SET.map((entry) => entry.set)).toStrictEqual([
-      'gs-co-05.content.findMany',
-      'gs-co-05.feed',
+      'content-reads.content.findMany',
+      'content-reads.feed',
       'cusers.listusers',
       'csettings.list',
-      'timesheets.sheets',
     ]);
-    expect(READ_SET.filter((entry) => entry.fixtures === true).map((entry) => entry.set)).toStrictEqual(['timesheets.sheets']);
-    expect(READ_SET.filter((entry) => entry.needs === 'feedId').map((entry) => entry.set)).toStrictEqual(['gs-co-05.feed']);
+    expect(READ_SET.filter((entry) => entry.needs === 'feedId').map((entry) => entry.set)).toStrictEqual(['content-reads.feed']);
   });
 });
 
 describe('expandCatalogueReads', () => {
-  /** A GS-CO-05-shaped scenario: two sessions by three paths, one with a query string, substituted into the route. */
+  /** Content-reads-shaped steps: two sessions by three paths, one with a query string, substituted into the route. */
   const BUILT: Pick<Scenario, 'id' | 'sessions' | 'steps'> = {
-    id: CATALOGUE_SCENARIO,
+    id: CONTENT_READS_LABEL,
     sessions: { anon: { login: 'none', via: 'public' }, admin: { login: 'admin', via: 'admin' } },
     steps: [
       {
@@ -504,7 +458,7 @@ describe('expandCatalogueReads', () => {
   };
 
   type Reads = ReturnType<typeof expandCatalogueReads>;
-  const read = (session: string, route: string): Reads[number] => ({ set: `gs-co-05:${session} ${route}`, source: 'catalogue', session, route });
+  const read = (session: string, route: string): Reads[number] => ({ set: `content-reads:${session} ${route}`, source: 'catalogue', session, route });
 
   it.each<{ label: string; scenario: Pick<Scenario, 'id' | 'sessions' | 'steps'>; expected: Reads }>([
     {
@@ -532,9 +486,9 @@ describe('expandCatalogueReads', () => {
     expect(expandCatalogueReads(scenario)).toStrictEqual(expected);
   });
 
-  it('expands the committed GS-CO-05 into one catalogue read per combination of its matrix, each in a declared session', () => {
-    const reads = expandCatalogueReads(gsCo05);
-    const combinations = gsCo05.steps.reduce(
+  it('expands the content reads into one catalogue read per combination of their matrix, each in a declared session', () => {
+    const reads = expandCatalogueReads(CONTENT_READS);
+    const combinations = CONTENT_READS.steps.reduce(
       (sum, step) => sum + Object.values(step.matrix ?? {}).reduce((product, values) => product * values.length, 1),
       0,
     );
@@ -542,7 +496,7 @@ describe('expandCatalogueReads', () => {
     expect(reads).toHaveLength(combinations);
     for (const entry of reads) {
       expect(entry).toStrictEqual(read(entry.session, entry.route));
-      expect(Object.keys(gsCo05.sessions)).toContain(entry.session);
+      expect(Object.keys(CONTENT_READS.sessions)).toContain(entry.session);
     }
     expect(new Set(reads.map((entry) => entry.set)).size).toBe(reads.length);
   });
@@ -559,7 +513,7 @@ describe('expandCatalogueReads', () => {
   ])('throws GoldenConfigError for a step with %s', (_label, change) => {
     const step = { ...(BUILT.steps[0] as Step), ...change };
     expect(() => expandCatalogueReads({ ...BUILT, steps: [step] })).toThrow(
-      new GoldenConfigError('GS-CO-05 step reads is not a plain GET, so it cannot be timed as sent'),
+      new GoldenConfigError('content-reads step reads is not a plain GET, so it cannot be timed as sent'),
     );
   });
 });
@@ -598,7 +552,7 @@ describe('serving side', () => {
   it.each<[string, CutoverTable, Parameters<typeof servingSide>[1], ReturnType<typeof servingSide>]>([
     ['a content read a legacy entry holds', LEGACY_ENTRIES, { method: 'GET', route: `/_api/json/v1/tenant-a/content/${PAGE_IDS[0]}` }, { routeKey: 'api:content.findone', servedBy: 'legacy' }],
     ['the feed read a legacy entry holds', LEGACY_ENTRIES, { method: 'GET', route: feedReadPath(NEW_FEED_ID) }, { routeKey: 'feed:v1', servedBy: 'legacy' }],
-    ['a fixture read a target entry holds', FIXTURE_READS_TARGET.table, { method: 'GET', route: '/legacy-fixtures/cfml/api.cfm/surveys/surveys?siteid=tenant-a' }, { routeKey: 'fixture:surveys/surveys@get', servedBy: 'target' }],
+    ['the Site Manager tree a target entry holds', SITE_TREE_TARGET.table, { method: 'GET', route: SITE_TREE }, { routeKey: 'admin:carch.list', servedBy: 'target' }],
     ['the admin login form post a legacy entry holds', LEGACY_ENTRIES, LOGIN_REQUEST, { routeKey: 'admin:clogin.login', servedBy: 'legacy' }],
     ['a content read a table routes to target', TARGET_FIND_ONE, { method: 'GET', route: `/_api/json/v1/tenant-a/content/${PAGE_IDS[0]}` }, { routeKey: 'api:content.findone', servedBy: 'target' }],
     ['a key no entry matches', TARGET_FIND_ONE, { method: 'GET', route: CSETTINGS }, { routeKey: 'admin:csettings.list', servedBy: 'legacy' }],
@@ -608,7 +562,7 @@ describe('serving side', () => {
 
   it('loads the committed v0002, which holds an entry for the route key of every probe and read-set request', async () => {
     const routes = (await loadCutoverTable('v0002', {})).entries.map((entry) => entry.route);
-    const values = { asOf: '2026-06-30', ids: PAGE_IDS, feedId: NEW_FEED_ID };
+    const values = { ids: PAGE_IDS, feedId: NEW_FEED_ID };
     const requests: StepRequest[] = [
       ...READ_SET.map((entry): StepRequest => ({ method: 'GET', route: resolveReadPath(entry, values) })),
       ...Object.values(GATEWAY_PROBES)
@@ -651,8 +605,8 @@ describe('serving side', () => {
 
 describe('chooseProbe', () => {
   const ALL_LEGACY: CutoverTable = { tableVersion: 'v9999', entries: [] };
-  const FIXTURES = FIXTURE_READS_TARGET.table;
   const LOGIN = LOGIN_AND_USERS_TARGET.table;
+  const TREE = SITE_TREE_TARGET.table;
   const FIND_ONE_TARGET: CutoverTable = {
     tableVersion: 'v9999',
     entries: [
@@ -660,31 +614,21 @@ describe('chooseProbe', () => {
       { route: 'admin:carch.list', owningService: 'strategies-content', state: 'target', kind: 'write' },
     ],
   };
-  const SURVEYS_KEY = 'fixture:surveys/surveys@get';
   const FIND_ONE_KEY = 'api:content.findone';
   const TREE_KEY = 'admin:carch.list';
 
-  it.each<[RestartService, boolean, CutoverTable, ProbeChoice]>([
-    ['identity', true, FIXTURES, { kind: 'fresh-session', via: 'surveys', spec: sessionCandidate('surveys', 0), routeKey: SURVEYS_KEY }],
-    ['identity', false, FIXTURES, { kind: 'skipped', reason: FIXTURES_UNAVAILABLE }],
-    ['identity', true, LOGIN, { kind: 'own', spec: { login: true }, routeKey: 'admin:clogin.login' }],
-    ['identity', true, ALL_LEGACY, { kind: 'not-target', routeKeys: ['admin:clogin.login'] }],
-    ['identity', false, SITE_TREE_TARGET.table, { kind: 'fresh-session', via: 'strategies-content', spec: sessionCandidate('strategies-content', 1), routeKey: TREE_KEY }],
-    ['surveys', true, FIXTURES, { kind: 'own', spec: GATEWAY_PROBES.surveys[0], routeKey: SURVEYS_KEY }],
-    ['finance', true, FIXTURES, { kind: 'own', spec: GATEWAY_PROBES.finance[0], routeKey: 'fixture:finance/records@get' }],
-    ['e-signature', true, FIXTURES, { kind: 'own', spec: GATEWAY_PROBES['e-signature'][0], routeKey: 'fixture:esignature/requests@get' }],
-    ['surveys', false, FIXTURES, { kind: 'skipped', reason: FIXTURES_UNAVAILABLE }],
-    ['people', false, LOGIN, { kind: 'own', spec: GATEWAY_PROBES.people[0], routeKey: 'admin:cusers.listusers' }],
-    ['people', true, FIXTURES, { kind: 'not-target', routeKeys: ['admin:cusers.listusers'] }],
-    ['programs-sites', true, FIXTURES, { kind: 'not-target', routeKeys: ['admin:csettings.list'] }],
-    ['strategies-content', false, FIND_ONE_TARGET, { kind: 'own', spec: sessionCandidate('strategies-content', 0), routeKey: FIND_ONE_KEY }],
-    ['strategies-content', false, SITE_TREE_TARGET.table, { kind: 'own', spec: sessionCandidate('strategies-content', 1), routeKey: TREE_KEY }],
-    ['strategies-content', true, FIXTURES, { kind: 'not-target', routeKeys: [FIND_ONE_KEY, TREE_KEY] }],
-    ['communications', false, FIXTURES, { kind: 'not-target', routeKeys: ['fixture:communications/templates@get'] }],
-    ['reporting', true, FIXTURES, { kind: 'not-target', routeKeys: ['fixture:reporting/exports@get'] }],
-    ['timesheets', true, FIXTURES, { kind: 'not-target', routeKeys: ['fixture:timesheets/sheets@get'] }],
-  ])('chooses for %s with fixtures %s', (service, fixtures, table, expected) => {
-    expect(chooseProbe(service, table, fixtures)).toStrictEqual(expected);
+  it.each<[RestartService, string, CutoverTable, ProbeChoice]>([
+    ['identity', 'its login target', LOGIN, { kind: 'own', spec: { login: true }, routeKey: 'admin:clogin.login' }],
+    ['identity', 'every route legacy', ALL_LEGACY, { kind: 'not-target', routeKeys: ['admin:clogin.login'] }],
+    ['identity', 'only the Site Manager tree target', TREE, { kind: 'fresh-session', via: 'strategies-content', spec: sessionCandidate('strategies-content', 1), routeKey: TREE_KEY }],
+    ['people', 'its user list target', LOGIN, { kind: 'own', spec: GATEWAY_PROBES.people[0], routeKey: 'admin:cusers.listusers' }],
+    ['people', 'every route legacy', ALL_LEGACY, { kind: 'not-target', routeKeys: ['admin:cusers.listusers'] }],
+    ['programs-sites', 'every route legacy', ALL_LEGACY, { kind: 'not-target', routeKeys: ['admin:csettings.list'] }],
+    ['strategies-content', 'its content read target', FIND_ONE_TARGET, { kind: 'own', spec: sessionCandidate('strategies-content', 0), routeKey: FIND_ONE_KEY }],
+    ['strategies-content', 'only the Site Manager tree target', TREE, { kind: 'own', spec: sessionCandidate('strategies-content', 1), routeKey: TREE_KEY }],
+    ['strategies-content', 'every route legacy', ALL_LEGACY, { kind: 'not-target', routeKeys: [FIND_ONE_KEY, TREE_KEY] }],
+  ])('chooses for %s with %s', (service, _label, table, expected) => {
+    expect(chooseProbe(service, table)).toStrictEqual(expected);
   });
 
   it.each<[string, string, string[], string]>([
@@ -753,19 +697,18 @@ describe('ratioFinding', () => {
 });
 
 describe('resolveReadPath', () => {
-  const VALUES = { asOf: '2026-06-30', ids: ['c 1', 'c/2'], feedId: 'feed&1' };
+  const VALUES = { ids: ['c 1', 'c/2'], feedId: 'feed&1' };
 
   it.each([
-    ['gs-co-05.content.findMany', '/_api/json/v1/tenant-a/content/c%201,c%2F2'],
-    ['gs-co-05.feed', '/_api/feed/v1/?feedid=feed%261&siteid=tenant-a'],
+    ['content-reads.content.findMany', '/_api/json/v1/tenant-a/content/c%201,c%2F2'],
+    ['content-reads.feed', '/_api/feed/v1/?feedid=feed%261&siteid=tenant-a'],
     ['cusers.listusers', CUSERS],
     ['csettings.list', CSETTINGS],
-    ['timesheets.sheets', '/legacy-fixtures/cfml/api.cfm/timesheets/sheets?siteid=tenant-a&asOf=2026-06-30'],
   ])('fills the encoded placeholders of %s', (set, expected) => {
     expect(resolveReadPath(readEntry(set), VALUES)).toBe(expected);
   });
 
-  it('reads the feed of collection feedId as GS-CO-13 requests it', () => {
+  it('reads the RSS feed of collection feedId by id and site', () => {
     expect(feedReadPath('f 1')).toBe('/_api/feed/v1/?feedid=f%201&siteid=tenant-a');
   });
 });
@@ -793,7 +736,7 @@ describe('feed collection lifecycle', () => {
     return { site, clock, requests, deps };
   }
 
-  it('creates the collection through the gateway as GS-CO-13 save-local does, confirms it on both sides, and deletes it', async () => {
+  it('creates the collection through the gateway cFeed form, confirms it on both sides, and deletes it', async () => {
     const rig = feedRig();
     await expect(createFeedCollection(rig.deps, FOLDER_ID)).resolves.toBe(NEW_FEED_ID);
     expect(rig.site.posts).toStrictEqual([SAVE_LOCAL_POST]);
@@ -1050,23 +993,6 @@ describe('measureLatencySet', () => {
     expect(measured.findings.filter((finding) => finding.kind === 'status-mismatch')).toStrictEqual(
       mismatch === null ? [] : [{ kind: 'status-mismatch', subject: LABELS.set, detail: mismatch }],
     );
-  });
-});
-
-describe('skippedLatency', () => {
-  it('records zero requests with null sides, no statuses and its reason as both row finding and set-skipped finding', () => {
-    const labels: ReadLabels = { ...LABELS, set: 'timesheets.sheets', session: TIMESHEETS_ROLE, routeKey: 'fixture:timesheets/sheets@get' };
-    expect(skippedLatency({ ...labels, path: '/ignored' } as ReadLabels, FIXTURES_UNAVAILABLE)).toStrictEqual({
-      row: row(labels, {
-        requests: 0,
-        target: null,
-        legacy: null,
-        statuses: { legacy: [], target: [] },
-        ratioP95: null,
-        finding: FIXTURES_UNAVAILABLE,
-      }),
-      findings: [{ kind: 'set-skipped', subject: 'timesheets.sheets', detail: FIXTURES_UNAVAILABLE }],
-    });
   });
 });
 
@@ -1404,7 +1330,7 @@ describe('restartAndMeasure', () => {
   );
 
   it.each(['gateway', 'web', 'migration', 'stub', 'legacy'])('rejects %s, which is not a restartable target service', async (name) => {
-    await expect(restartAndMeasure(name, restartRig().deps, { skipped: FIXTURES_UNAVAILABLE })).rejects.toThrow(
+    await expect(restartAndMeasure(name, restartRig().deps, { notTarget: 'not restarted' })).rejects.toThrow(
       `${name} is not a restartable target service`,
     );
   });
@@ -1465,15 +1391,6 @@ describe('restartAndMeasure', () => {
       cold: null,
       unhealthy: true,
       findings: [{ kind: 'cold-start-timeout', subject: 'people', detail: `${HEALTH_URL} did not answer 200 within ${POLL_LIMIT_MS} ms` }],
-    },
-    {
-      label: 'scale-probe-skipped with the cold start measured when the probe is skipped',
-      rig: () => restartRig(),
-      probe: () => ({ skipped: FIXTURES_UNAVAILABLE }),
-      spawns: 1,
-      cold: 0.3,
-      unhealthy: false,
-      findings: [{ kind: 'scale-probe-skipped', subject: 'people', detail: FIXTURES_UNAVAILABLE }],
     },
     {
       label: 'probe-not-target with the cold start measured when no gateway read reaches the service',
@@ -1569,18 +1486,18 @@ describe('parseMinInstanceCounts', () => {
                 values: { template: [{ scaling: null }] },
               },
               {
-                address: 'module.services["finance"].google_cloud_run_v2_service.this',
+                address: 'module.services["identity"].google_cloud_run_v2_service.this',
                 type: CLOUD_RUN,
                 values: { name: 42, template: 'not-a-list', scaling: [{ min_instance_count: 'two' }] },
               },
-              { address: 'module.services["timesheets"].google_cloud_run_v2_service.this', type: CLOUD_RUN },
+              { address: 'module.services["programs-sites"].google_cloud_run_v2_service.this', type: CLOUD_RUN },
             ],
             child_modules: [
               {},
               {
                 resources: [
                   {
-                    address: 'module.services["surveys"].module.inner.google_cloud_run_v2_service.this',
+                    address: 'module.services["strategies-content"].module.inner.google_cloud_run_v2_service.this',
                     type: CLOUD_RUN,
                     values: { template: [{ scaling: [{ min_instance_count: 2 }] }] },
                   },
@@ -1592,7 +1509,7 @@ describe('parseMinInstanceCounts', () => {
       },
     },
   };
-  const FROM_PLAN = { gateway: 0, people: 0, migration: 1, web: 0, finance: 0, timesheets: 0, surveys: 2 };
+  const FROM_PLAN = { gateway: 0, people: 0, migration: 1, web: 0, identity: 0, 'programs-sites': 0, 'strategies-content': 2 };
 
   it.each([
     ['no report', undefined, { source: 'unavailable', values: {} }],
@@ -1679,15 +1596,24 @@ describe('windowsOverThreshold', () => {
 describe('buildPerformanceReport', () => {
   it('adds the min-instance and window findings and sorts all findings by kind, subject and detail', () => {
     const parts: PerformanceParts = {
-      latency: [skippedLatency({ ...LABELS, set: 'timesheets.sheets' }, FIXTURES_UNAVAILABLE).row],
+      latency: [
+        row(LABELS, {
+          requests: 200,
+          target: { p50Ms: 5, p95Ms: 5 },
+          legacy: { p50Ms: 4, p95Ms: 4 },
+          statuses: { legacy: [200], target: [200] },
+          ratioP95: 1.25,
+          finding: null,
+        }),
+      ],
       coldStart: [{ service: 'people', startToFirst200Ms: 12.5, label: 'measured' }],
       scaleToZero: [{ service: 'people', stopToFirstSuccessMs: 30.1, label: 'derived' }],
       minInstanceCount: { source: 'minInstanceCounts', values: { ...EXPECTED_MIN_INSTANCES, migration: 0 } },
       windowsOverThreshold: [{ windowId: 'w-1', routeKey: 'cusers.update', durationMs: 6000 }],
       findings: [
-        { kind: 'set-skipped', subject: 'timesheets.sheets', detail: 'b' },
+        { kind: 'non-ok-response', subject: 'csettings.list/target', detail: 'b' },
         { kind: 'latency-ratio', subject: 'cusers.listusers', detail: 'x' },
-        { kind: 'set-skipped', subject: 'timesheets.sheets', detail: 'a' },
+        { kind: 'non-ok-response', subject: 'csettings.list/target', detail: 'a' },
         { kind: 'latency-ratio', subject: 'csettings.list', detail: 'x' },
       ],
     };
@@ -1702,8 +1628,8 @@ describe('buildPerformanceReport', () => {
         { kind: 'latency-ratio', subject: 'csettings.list', detail: 'x' },
         { kind: 'latency-ratio', subject: 'cusers.listusers', detail: 'x' },
         { kind: 'min-instance-count', subject: 'migration', detail: 'expected 1, planned 0' },
-        { kind: 'set-skipped', subject: 'timesheets.sheets', detail: 'a' },
-        { kind: 'set-skipped', subject: 'timesheets.sheets', detail: 'b' },
+        { kind: 'non-ok-response', subject: 'csettings.list/target', detail: 'a' },
+        { kind: 'non-ok-response', subject: 'csettings.list/target', detail: 'b' },
         { kind: 'window-over-threshold', subject: 'w-1', detail: 'cusers.update 6000 ms' },
       ],
       cloudMeasurement: CLOUD_MEASUREMENT,
@@ -1716,7 +1642,7 @@ describe('renderPerformanceMarkdown', () => {
   const REPORT: PerformanceReport = {
     latency: [
       row(
-        { set: 'gs-co-05:anon /_api/json/v1/tenant-a/content/${seed.page.contentID}', source: 'catalogue', session: 'anon', routeKey: 'api:content.findone', servedBy: 'legacy' },
+        { set: 'content-reads:anon /_api/json/v1/tenant-a/content/${seed.page.contentID}', source: 'catalogue', session: 'anon', routeKey: 'api:content.findone', servedBy: 'legacy' },
         {
           requests: 200,
           target: { p50Ms: 5, p95Ms: 9.5 },
@@ -1727,14 +1653,14 @@ describe('renderPerformanceMarkdown', () => {
         },
       ),
       row(
-        { ...LABELS, set: 'surveys.list', routeKey: 'fixture:surveys/surveys@get', servedBy: 'target' },
+        { ...LABELS, set: 'cusers.listusers', routeKey: 'admin:cusers.listusers', servedBy: 'target' },
         { requests: 200, target: { p50Ms: 5, p95Ms: 5 }, legacy: { p50Ms: 4, p95Ms: 4 }, statuses: { legacy: [200], target: [200] }, ratioP95: 1.25, finding: null },
       ),
-      skippedLatency({ ...LABELS, set: 'timesheets.sheets' }, 'fixtures | none').row,
+      row(LABELS, { requests: 0, target: null, legacy: null, statuses: { legacy: [], target: [] }, ratioP95: null, finding: 'unread | none' }),
     ],
     coldStart: [
       { service: 'people', startToFirst200Ms: 12.5, label: 'measured' },
-      { service: 'finance', startToFirst200Ms: null, label: 'measured' },
+      { service: 'strategies-content', startToFirst200Ms: null, label: 'measured' },
     ],
     minInstanceCount: {
       source: 'plan.planned_values',
@@ -1743,7 +1669,7 @@ describe('renderPerformanceMarkdown', () => {
     },
     scaleToZero: [
       { service: 'people', stopToFirstSuccessMs: 30.1, label: 'derived' },
-      { service: 'finance', stopToFirstSuccessMs: null, label: 'unavailable' },
+      { service: 'strategies-content', stopToFirstSuccessMs: null, label: 'unavailable' },
     ],
     windowsOverThreshold: [{ windowId: 'w-1', routeKey: 'cusers.update', durationMs: 6000 }],
     findings: [{ kind: 'latency-ratio', subject: 'csettings.list', detail: 'a|b' }],
@@ -1757,28 +1683,28 @@ describe('renderPerformanceMarkdown', () => {
       '- 200 sequential requests per read set and side, interleaved: one legacy request, then one target request.',
       '- p50 and p95 by nearest rank, in ms rounded to 0.1.',
       '- Target is the gateway with the active cut-over version; legacy is the ColdFusion origin, requested directly.',
-      "- Source `catalogue` rows are the GS-CO-05 scenario's own requests, one per session and path of its matrix, named `<scenario>:<session> <route>` with seed placeholders kept; source `read-set` rows are the fixed findMany, feed, `cusers.listusers`, `csettings.list` and timesheet sheet reads. The feed row reads a Local collection the run creates through the gateway just before the set and deletes just after it.",
+      "- Source `catalogue` rows are the fixed JSON API content reads, written as catalogue steps: one per session and path of their matrix, named `content-reads:<session> <route>` with seed placeholders kept; source `read-set` rows are the fixed findMany, feed, `cusers.listusers` and `csettings.list` reads. The feed row reads a Local collection the run creates through the gateway just before the set and deletes just after it.",
       "- Served by is the side the active cut-over version routes the row's route key to. On a `legacy` row the target columns measure the gateway proxying to legacy, and a `legacy-served` finding says so.",
       '- The request sets no latency threshold: a target p95 above 1.5x legacy and a write window over 5 s are flags, not failures.',
-      "- The legacy-direct admin and timesheet sessions log in on legacy itself, which updates that user's `tusers.LastLogin` on the legacy side.",
+      "- The legacy-direct admin session logs in on legacy itself, which updates that user's `tusers.LastLogin` on the legacy side.",
       '- Cold start is measured locally (process start to the first `/healthz` 200); scale to zero and back is derived (stopped service, restart, first successful request through the gateway), and `unavailable` where no such request was timed. Each poll is bounded at 60000 ms.',
-      "- Each service is probed only by identity's admin login or by a request that leaves the compared state unchanged: a read, or a view whose writes are idempotent. A service none of whose probe candidates the active version routes to target has an `unavailable` row and a `probe-not-target` finding naming the candidates' route keys; one whose target-routed candidates all need the absent fixtures has an `unavailable` row and a `scale-probe-skipped` finding.",
+      "- Each service is probed only by identity's admin login or by a request that leaves the compared state unchanged: a read, or a view whose writes are idempotent. A service none of whose probe candidates the active version routes to target has an `unavailable` row and a `probe-not-target` finding naming the candidates' route keys.",
       '- Cloud measurement: not possible without apply.',
       '',
       '## Latency',
       '',
       '| Set | Source | Served by | Requests | Target p50 (ms) | Target p95 (ms) | Legacy p50 (ms) | Legacy p95 (ms) | Ratio p95 | Finding |',
       '|---|---|---|---|---|---|---|---|---|---|',
-      '| gs-co-05:anon /_api/json/v1/tenant-a/content/${seed.page.contentID} | catalogue | legacy | 200 | 5 | 9.5 | 4 | 4.5 | 2.11 | target p95 9.5 ms is 2.11x legacy p95 4.5 ms (above 1.5x) |',
-      '| surveys.list | read-set | target | 200 | 5 | 5 | 4 | 4 | 1.25 |  |',
-      '| timesheets.sheets | read-set | legacy | 0 | n/a | n/a | n/a | n/a | n/a | fixtures \\| none |',
+      '| content-reads:anon /_api/json/v1/tenant-a/content/${seed.page.contentID} | catalogue | legacy | 200 | 5 | 9.5 | 4 | 4.5 | 2.11 | target p95 9.5 ms is 2.11x legacy p95 4.5 ms (above 1.5x) |',
+      '| cusers.listusers | read-set | target | 200 | 5 | 5 | 4 | 4 | 1.25 |  |',
+      '| csettings.list | read-set | legacy | 0 | n/a | n/a | n/a | n/a | n/a | unread \\| none |',
       '',
       '## Cold start (measured)',
       '',
       '| Service | Start to first 200 (ms) |',
       '|---|---|',
       '| people | 12.5 |',
-      '| finance | n/a |',
+      '| strategies-content | n/a |',
       '',
       '## min_instance_count (measured from the Terraform plan)',
       '',
@@ -1792,12 +1718,6 @@ describe('renderPerformanceMarkdown', () => {
       '| people | absent | 0 |',
       '| programs-sites | absent | 0 |',
       '| strategies-content | absent | 0 |',
-      '| communications | absent | 0 |',
-      '| reporting | absent | 0 |',
-      '| surveys | absent | 0 |',
-      '| timesheets | absent | 0 |',
-      '| finance | absent | 0 |',
-      '| e-signature | absent | 0 |',
       '| migration | 1 | 1 |',
       '| alpha-extra | 3 | 0 |',
       '| zeta-extra | 0 | 0 |',
@@ -1807,7 +1727,7 @@ describe('renderPerformanceMarkdown', () => {
       '| Service | Stop to first success through the gateway (ms) | Label |',
       '|---|---|---|',
       '| people | 30.1 | derived |',
-      '| finance | n/a | unavailable |',
+      '| strategies-content | n/a | unavailable |',
       '',
       '## Windows over 5 s',
       '',
@@ -1846,26 +1766,18 @@ describe('main', () => {
   <input type="hidden" name="csrf_token" value="${CSRF_TOKEN}">
   <input type="hidden" name="csrf_token_expires" value="260630120000000">
 </form>`;
-  const BUSINESS_DATE = (JSON.parse(readFileSync(SEED_CONFIG_PATH, 'utf8')) as { businessDate: string }).businessDate;
-  const TIMESHEET_SHEETS = `/legacy-fixtures/cfml/api.cfm/timesheets/sheets?siteid=tenant-a&asOf=${BUSINESS_DATE}`;
   const FIND_MANY = `/_api/json/v1/tenant-a/content/${PAGE_IDS.join(',')}`;
   const FEED_READ = feedReadPath(NEW_FEED_ID);
   const FEED_SAVE = `POST ${GATEWAY}/admin/?muraAction=cFeed.update&siteid=tenant-a`;
   const SLOW_FINDING = 'target p95 9 ms is 2.25x legacy p95 4 ms (above 1.5x)';
-  // FIXTURE_READS_TARGET routes the surveys, finance and e-signature probes to target; identity's is a fresh-session
-  // surveys read.
-  const TARGET_PROBED: readonly RestartService[] = ['identity', 'surveys', 'finance', 'e-signature'];
+  // SITE_TREE_TARGET routes strategies-content's Site Manager tree probe to target; identity's is that tree in a fresh
+  // admin session.
+  const TARGET_PROBED: readonly RestartService[] = ['identity', 'strategies-content'];
   const PROBE_KEYS: Readonly<Record<RestartService, string[]>> = {
     identity: ['admin:clogin.login'],
     people: ['admin:cusers.listusers'],
     'programs-sites': ['admin:csettings.list'],
     'strategies-content': ['api:content.findone', 'admin:carch.list'],
-    communications: ['fixture:communications/templates@get'],
-    reporting: ['fixture:reporting/exports@get'],
-    surveys: ['fixture:surveys/surveys@get'],
-    timesheets: ['fixture:timesheets/sheets@get'],
-    finance: ['fixture:finance/records@get'],
-    'e-signature': ['fixture:esignature/requests@get'],
   };
 
   /** The probe-not-target findings, by subject, of every service outside `probed` under version `version`. */
@@ -1884,14 +1796,6 @@ describe('main', () => {
     return ms === null ? { service, stopToFirstSuccessMs: null, label: 'unavailable' } : { service, stopToFirstSuccessMs: ms, label: 'derived' };
   }
 
-  const TIMESHEETS_LABELS: ReadLabels = {
-    set: 'timesheets.sheets',
-    source: 'read-set',
-    session: TIMESHEETS_ROLE,
-    routeKey: 'fixture:timesheets/sheets@get',
-    servedBy: 'legacy',
-  };
-
   interface StackOptions {
     adminUser?: string;
     /** Gateway latency per path, else TARGET_MS. */
@@ -1902,7 +1806,7 @@ describe('main', () => {
     /** /healthz 503 answers after each start before the first 200 (default 2). */
     healthFailures?: number;
     refuse?: 'legacy' | 'gateway';
-    /** Cut-over version written to OPT2_CUTOVER_DIR and routed by the gateway (default FIXTURE_READS_TARGET). */
+    /** Cut-over version written to OPT2_CUTOVER_DIR and routed by the gateway (default SITE_TREE_TARGET). */
     routing?: Routing;
     /** Cut-over version the gateway reports active (default the routing's). */
     activeVersion?: string | null;
@@ -1923,12 +1827,12 @@ describe('main', () => {
   }
 
   /**
-   * Legacy origin, gateway and the ten local service processes. The gateway proxies every route its routing leaves
+   * Legacy origin, gateway and the local service processes. The gateway proxies every route its routing leaves
    * on legacy and answers 502 for a request the routing sends to target while its owner or identity, which resolves
    * its session, is stopped; each legacy request takes LEGACY_MS on the fake clock and each gateway request TARGET_MS.
    */
   function fakeStack(opts: StackOptions = {}): FakeStack {
-    const routing = opts.routing ?? FIXTURE_READS_TARGET;
+    const routing = opts.routing ?? SITE_TREE_TARGET;
     const clock = fakeClock();
     const requests: string[] = [];
     const running = new Map<string, number>();
@@ -1937,10 +1841,7 @@ describe('main', () => {
     const byPort = new Map<string, RestartService>();
     const entries: Record<string, UpProcessEntry> = {};
     const feeds = feedSite(opts.feed);
-    const accounts = new Map<string, string>([
-      [opts.adminUser ?? 'admin', credential('admin')],
-      ...SEED_ROLES.map((role): [string, string] => [seedUsername(role), credential(role)]),
-    ]);
+    const accounts = new Map<string, string>([[opts.adminUser ?? 'admin', credential('admin')]]);
     let nextPid = PID_BASE + 100;
     let loginPages = 0;
     RESTART_SERVICES.forEach((service, index) => {
@@ -2042,12 +1943,11 @@ describe('main', () => {
   }
 
   /**
-   * Writes up.json, the stack's cut-over version, fixtures.json, seed credentials, the seed dataset and the optional
-   * plan and window reports.
+   * Writes up.json, the stack's cut-over version, the seed dataset and the optional plan and window reports.
    */
   async function stageMain(
     stack: FakeStack,
-    stage: { fixtures: boolean; plan?: unknown; windows?: unknown; adminUser?: string },
+    stage: { plan?: unknown; windows?: unknown; adminUser?: string } = {},
   ): Promise<EnvLike> {
     const state = path.join(tmp, 'state');
     const cutoverDir = path.join(tmp, 'cutover');
@@ -2063,15 +1963,6 @@ describe('main', () => {
     writeUpState({ processes: stack.entries }, { env });
     const { table } = stack.routing;
     await writeFixtureFile(path.join(cutoverDir, 'versions', `${table.tableVersion}.json`), table);
-    await writeFixtureFile(path.join(state, 'fixtures.json'), {
-      available: stage.fixtures,
-      reason: stage.fixtures ? null : 'fixture load failed',
-      checkedAt: '2026-06-30T09:00:00.000Z',
-    });
-    await writeFixtureFile(path.join(state, 'secrets', 'seed-credentials.json'), {
-      roles: { 'tenant-a': Object.fromEntries(SEED_ROLES.map((role) => [role, seedUsername(role)])) },
-      users: { 'tenant-a': Object.fromEntries(SEED_ROLES.map((role) => [seedUsername(role), credential(role)])) },
-    });
     await writeFixtureFile(path.join(state, 'seed', 'dataset.json'), seedDataset());
     if (stage.plan !== undefined) await writeFixtureFile(reportsPath('terraform-plan.json'), stage.plan);
     if (stage.windows !== undefined) await writeFixtureFile(reportsPath('windows.json'), stage.windows);
@@ -2109,28 +2000,22 @@ describe('main', () => {
   }
 
   function allSets(): string[] {
-    return [...expandCatalogueReads(gsCo05).map((read) => read.set), ...READ_SET.map((entry) => entry.set)];
+    return [...expandCatalogueReads(CONTENT_READS).map((read) => read.set), ...READ_SET.map((entry) => entry.set)];
   }
 
-  /** Rows main measures: every catalogue read and read-set entry, less the fixture-backed entries without fixtures. */
-  function measuredSets(fixtures: boolean): number {
-    return expandCatalogueReads(gsCo05).length + READ_SET.filter((entry) => fixtures || entry.fixtures !== true).length;
-  }
-
-  /** Admin form logins main makes per side for GS-CO-05's own sessions. */
+  /** Admin form logins main makes per side for the content reads' own sessions. */
   function scenarioLogins(): number {
-    return Object.values(gsCo05.sessions).filter((spec) => spec.login !== 'none' && spec.via === 'admin').length;
+    return Object.values(CONTENT_READS.sessions).filter((spec) => spec.login !== 'none' && spec.via === 'admin').length;
   }
 
-  it('measures the catalogue reads and the read set, restarts all ten services and writes performance.json and .md', async () => {
-    const reads = expandCatalogueReads(gsCo05);
+  it('measures the catalogue reads and the read set, restarts all services and writes performance.json and .md', async () => {
+    const reads = expandCatalogueReads(CONTENT_READS);
     // The first catalogue read's path answers slower, and 403, through the gateway in every session that reads it.
     const slowPath = seededRoute(reads[0]?.route ?? '');
     const isSlow = (read: (typeof reads)[number]) => seededRoute(read.route) === slowPath;
     const slowSets = reads.filter(isSlow).map((read) => read.set).sort();
     const stack = fakeStack({ slowTarget: { [slowPath]: 9 }, targetStatus: { [slowPath]: 403 } });
     const env = await stageMain(stack, {
-      fixtures: true,
       plan: { minInstanceCounts: { ...EXPECTED_MIN_INSTANCES } },
       windows: { windows: [{ windowId: 'w-1', routeKey: 'cusers.update', durationMs: 6000 }] },
     });
@@ -2140,7 +2025,7 @@ describe('main', () => {
     const report = await readReport();
     expect(outcome).toStrictEqual({
       code: 0,
-      summary: { report: reportsPath('performance.json'), latencySets: measuredSets(true), findings: report.findings.length, unhealthy: false },
+      summary: { report: reportsPath('performance.json'), latencySets: allSets().length, findings: report.findings.length, unhealthy: false },
     });
     expect(report.generatedBy).toBe(GENERATED_BY);
     expect(report.sourceSha).toBe(readPin().sha);
@@ -2166,14 +2051,13 @@ describe('main', () => {
           finding: slow ? SLOW_FINDING : null,
         }) as LatencyRow;
       }),
-      readSetRow('gs-co-05.content.findMany', 'anonymous', 'api:content.findmany'),
-      readSetRow('gs-co-05.feed', 'anonymous', 'feed:v1'),
+      readSetRow('content-reads.content.findMany', 'anonymous', 'api:content.findmany'),
+      readSetRow('content-reads.feed', 'anonymous', 'feed:v1'),
       readSetRow('cusers.listusers', 'admin', 'admin:cusers.listusers'),
       readSetRow('csettings.list', 'admin', 'admin:csettings.list'),
-      readSetRow('timesheets.sheets', TIMESHEETS_ROLE, 'fixture:timesheets/sheets@get'),
     ]);
     expect(report.coldStart).toStrictEqual(RESTART_SERVICES.map((service) => ({ service, startToFirst200Ms: 100, label: 'measured' })));
-    // identity's probe logs a fresh gateway session in (three requests) before its surveys read.
+    // identity's probe logs a fresh gateway session in (three requests) before its tree read.
     expect(report.scaleToZero).toStrictEqual(
       RESTART_SERVICES.map((service) => scaleRow(service, service === 'identity' ? 120 : TARGET_PROBED.includes(service) ? 105 : null)),
     );
@@ -2182,7 +2066,7 @@ describe('main', () => {
     const served = findingsOf(report, 'legacy-served');
     expect(served.map((finding) => finding.subject)).toStrictEqual([...allSets()].sort());
     expect(served.find((finding) => finding.subject === 'csettings.list')?.detail).toBe(
-      'admin:csettings.list is legacy-routed in v9101: the target columns measure the gateway proxying to legacy',
+      'admin:csettings.list is legacy-routed in v9103: the target columns measure the gateway proxying to legacy',
     );
     expect(withoutKinds(report, 'legacy-served')).toStrictEqual([
       ...slowSets.map((subject) => ({ kind: 'latency-ratio', subject, detail: SLOW_FINDING })),
@@ -2190,7 +2074,7 @@ describe('main', () => {
         .map((set) => `${set}/target`)
         .sort()
         .map((subject) => ({ kind: 'non-ok-response', subject, detail: '200 of 200: 403' })),
-      ...notTargetFindings('v9101', TARGET_PROBED),
+      ...notTargetFindings('v9103', TARGET_PROBED),
       ...slowSets.map((subject) => ({ kind: 'status-mismatch', subject, detail: 'legacy answered 200; target answered 403' })),
       { kind: 'window-over-threshold', subject: 'w-1', detail: 'cusers.update 6000 ms' },
     ]);
@@ -2201,7 +2085,7 @@ describe('main', () => {
       const readers = reads.filter((other) => seededRoute(other.route) === target).length;
       for (const origin of [LEGACY, GATEWAY]) expect(count(stack.requests, `GET ${origin}${target}`), target).toBe(readers * REQUESTS_PER_SET);
     }
-    for (const target of [FIND_MANY, CUSERS, CSETTINGS, TIMESHEET_SHEETS]) {
+    for (const target of [FIND_MANY, CUSERS, CSETTINGS]) {
       expect(count(stack.requests, `GET ${LEGACY}${target}`)).toBe(REQUESTS_PER_SET);
       expect(count(stack.requests, `GET ${GATEWAY}${target}`)).toBe(REQUESTS_PER_SET);
     }
@@ -2218,10 +2102,10 @@ describe('main', () => {
     expect(stack.requests.indexOf(`GET ${LEGACY}${CUSERS}`)).toBeGreaterThan(deleted);
     expect(stack.requests.findIndex((request) => request.endsWith('/healthz'))).toBeGreaterThan(deleted);
     expect(count(stack.requests, `GET ${GATEWAY}${CUTOVER_STATUS}`)).toBe(1);
-    // Legacy: admin, the timesheet role and the scenario's sessions. Gateway: those, the three own-probe roles, and
-    // identity's fresh session while it is stopped and once restarted.
-    expect(count(stack.requests, `POST ${LEGACY}${LOGIN_POST}`)).toBe(2 + scenarioLogins());
-    expect(count(stack.requests, `POST ${GATEWAY}${LOGIN_POST}`)).toBe(7 + scenarioLogins());
+    // Legacy: admin and the scenario's sessions. Gateway: those, and identity's fresh session while it is stopped and
+    // once restarted.
+    expect(count(stack.requests, `POST ${LEGACY}${LOGIN_POST}`)).toBe(1 + scenarioLogins());
+    expect(count(stack.requests, `POST ${GATEWAY}${LOGIN_POST}`)).toBe(3 + scenarioLogins());
     expect(readUpState({ env }).processes).toStrictEqual(
       Object.fromEntries(RESTART_SERVICES.map((service) => [service, { ...stack.entries[service], pid: stack.spawned.get(service) }])),
     );
@@ -2230,21 +2114,20 @@ describe('main', () => {
     expect(markdown.startsWith(`# Performance report\nSource SHA: ${readPin().sha}\n\n## Method\n`)).toBe(true);
     const slowCell = (reads[0]?.set ?? '').replaceAll('|', '\\|');
     expect(markdown).toContain(`| ${slowCell} | catalogue | legacy | 200 | 9 | 9 | 4 | 4 | 2.25 | ${SLOW_FINDING} |`);
-    expect(markdown).toContain('| gs-co-05.feed | read-set | legacy | 200 | 5 | 5 | 4 | 4 | 1.25 |  |');
+    expect(markdown).toContain('| content-reads.feed | read-set | legacy | 200 | 5 | 5 | 4 | 4 | 1.25 |  |');
   });
 
-  it('skips the fixture-backed set and probes without fixtures and flags absent plan and window reports', async () => {
-    const stack = fakeStack({ adminUser: 'fixture-admin' });
-    const env = await stageMain(stack, { fixtures: false, adminUser: 'fixture-admin' });
+  it('times no scale to zero when every probe is legacy-routed and flags absent plan and window reports', async () => {
+    const stack = fakeStack({ adminUser: 'fixture-admin', routing: ALL_LEGACY_ROUTING });
+    const env = await stageMain(stack, { adminUser: 'fixture-admin' });
 
     const outcome = await main([], stack.deps(env));
 
     const report = await readReport();
     expect(outcome).toStrictEqual({
       code: 0,
-      summary: { report: reportsPath('performance.json'), latencySets: measuredSets(false), findings: report.findings.length, unhealthy: false },
+      summary: { report: reportsPath('performance.json'), latencySets: allSets().length, findings: report.findings.length, unhealthy: false },
     });
-    expect(report.latency.at(-1)).toStrictEqual(skippedLatency(TIMESHEETS_LABELS, FIXTURES_UNAVAILABLE).row);
     expect(report.coldStart.every((row) => row.startToFirst200Ms === 100)).toBe(true);
     expect(report.scaleToZero).toStrictEqual(RESTART_SERVICES.map((service) => scaleRow(service, null)));
     expect(report.minInstanceCount).toStrictEqual({ source: 'unavailable', values: {}, label: 'measured' });
@@ -2253,13 +2136,10 @@ describe('main', () => {
     );
     expect(findingsOf(report, 'legacy-served').map((finding) => finding.subject)).toStrictEqual([...allSets()].sort());
     expect(withoutKinds(report, 'min-instance-count-missing', 'legacy-served')).toStrictEqual([
-      ...notTargetFindings('v9101', TARGET_PROBED),
-      ...[...TARGET_PROBED].sort().map((subject) => ({ kind: 'scale-probe-skipped', subject, detail: FIXTURES_UNAVAILABLE })),
-      { kind: 'set-skipped', subject: 'timesheets.sheets', detail: FIXTURES_UNAVAILABLE },
+      ...notTargetFindings('v9104', []),
       { kind: 'terraform-plan-missing', subject: 'terraform-plan.json', detail: 'not in the reports directory' },
       { kind: 'windows-report-missing', subject: 'windows.json', detail: 'not in the reports directory' },
     ]);
-    expect(count(stack.requests, `GET ${LEGACY}${TIMESHEET_SHEETS}`)).toBe(0);
     expect(count(stack.requests, `POST ${LEGACY}${LOGIN_POST}`)).toBe(1 + scenarioLogins());
     expect(count(stack.requests, `POST ${GATEWAY}${LOGIN_POST}`)).toBe(1 + scenarioLogins());
   });
@@ -2267,7 +2147,6 @@ describe('main', () => {
   it('probes identity by its own login and people by the user list, a target-served row without a legacy-served finding', async () => {
     const stack = fakeStack({ routing: LOGIN_AND_USERS_TARGET });
     const env = await stageMain(stack, {
-      fixtures: true,
       plan: { minInstanceCounts: { ...EXPECTED_MIN_INSTANCES } },
       windows: { windows: [] },
     });
@@ -2299,14 +2178,13 @@ describe('main', () => {
       RESTART_SERVICES.map((service) => scaleRow(service, service === 'identity' ? 115 : service === 'people' ? 105 : null)),
     );
     expect(withoutKinds(report, 'legacy-served')).toStrictEqual(notTargetFindings('v9102', ['identity', 'people']));
-    // Admin, the timesheet role and the scenario's sessions, then identity's login while stopped (502) and restarted.
-    expect(count(stack.requests, `POST ${GATEWAY}${LOGIN_POST}`)).toBe(4 + scenarioLogins());
+    // Admin and the scenario's sessions, then identity's login while stopped (502) and restarted.
+    expect(count(stack.requests, `POST ${GATEWAY}${LOGIN_POST}`)).toBe(3 + scenarioLogins());
   });
 
   it('probes strategies-content by the Site Manager tree when its content read is legacy-routed, and identity by that tree in a fresh admin session', async () => {
     const stack = fakeStack({ routing: SITE_TREE_TARGET });
     const env = await stageMain(stack, {
-      fixtures: true,
       plan: { minInstanceCounts: { ...EXPECTED_MIN_INSTANCES } },
       windows: { windows: [] },
     });
@@ -2325,9 +2203,8 @@ describe('main', () => {
   });
 
   it('exits 1 through runCli when a restarted service never answers /healthz, measuring the others', async () => {
-    const stack = fakeStack({ neverHealthy: ['finance'] });
+    const stack = fakeStack({ neverHealthy: ['strategies-content'] });
     const env = await stageMain(stack, {
-      fixtures: true,
       plan: { minInstanceCounts: { ...EXPECTED_MIN_INSTANCES } },
       windows: { windows: [] },
     });
@@ -2343,27 +2220,26 @@ describe('main', () => {
       ok: false,
       code: 1,
       report: reportsPath('performance.json'),
-      latencySets: measuredSets(true),
+      latencySets: allSets().length,
       findings: report.findings.length,
       unhealthy: true,
     });
     expect(withoutKinds(report, 'legacy-served', 'probe-not-target')).toStrictEqual([
       {
         kind: 'cold-start-timeout',
-        subject: 'finance',
-        detail: `${healthUrlOf(stack, 'finance')} did not answer 200 within ${POLL_LIMIT_MS} ms`,
+        subject: 'strategies-content',
+        detail: `${healthUrlOf(stack, 'strategies-content')} did not answer 200 within ${POLL_LIMIT_MS} ms`,
       },
     ]);
     expect(report.coldStart.map((row) => [row.service, row.startToFirst200Ms])).toStrictEqual(
-      RESTART_SERVICES.map((service) => [service, service === 'finance' ? null : 100]),
+      RESTART_SERVICES.map((service) => [service, service === 'strategies-content' ? null : 100]),
     );
-    expect(report.scaleToZero.find((row) => row.service === 'finance')?.stopToFirstSuccessMs).toBeNull();
+    expect(report.scaleToZero.find((row) => row.service === 'strategies-content')?.stopToFirstSuccessMs).toBeNull();
   });
 
   it('records feed-cleanup-failed and exits 1 after writing the report when legacy still serves the deleted collection', async () => {
     const stack = fakeStack({ feed: { ignoreDelete: true } });
     const env = await stageMain(stack, {
-      fixtures: true,
       plan: { minInstanceCounts: { ...EXPECTED_MIN_INSTANCES } },
       windows: { windows: [] },
     });
@@ -2373,16 +2249,16 @@ describe('main', () => {
     const report = await readReport();
     expect(outcome).toStrictEqual({
       code: 1,
-      summary: { report: reportsPath('performance.json'), latencySets: measuredSets(true), findings: report.findings.length, unhealthy: true },
+      summary: { report: reportsPath('performance.json'), latencySets: allSets().length, findings: report.findings.length, unhealthy: true },
     });
     expect(withoutKinds(report, 'legacy-served', 'probe-not-target')).toStrictEqual([
       {
         kind: 'feed-cleanup-failed',
-        subject: 'gs-co-05.feed',
+        subject: 'content-reads.feed',
         detail: `GET ${FEED_READ} still answered 200 on legacy ${POLL_LIMIT_MS} ms after deleting collection ${NEW_FEED_ID}`,
       },
     ]);
-    expect(report.latency.find((row) => row.set === 'gs-co-05.feed')?.requests).toBe(REQUESTS_PER_SET);
+    expect(report.latency.find((row) => row.set === 'content-reads.feed')?.requests).toBe(REQUESTS_PER_SET);
     expect(stack.spawned.size).toBe(RESTART_SERVICES.length);
   });
 
@@ -2401,7 +2277,7 @@ describe('main', () => {
     },
   ])('fails without writing a report or restarting anything when $label', async ({ opts, message, feedPosts }) => {
     const stack = fakeStack(opts);
-    const env = await stageMain(stack, { fixtures: true });
+    const env = await stageMain(stack);
     await expect(main([], stack.deps(env))).rejects.toThrow(message);
     expect(stack.feeds.posts).toHaveLength(feedPosts);
     expect([...stack.feeds.feeds.keys()]).toStrictEqual([LEFTOVER_FEED_ID]);
@@ -2411,7 +2287,7 @@ describe('main', () => {
 
   it.each(['legacy', 'gateway'] as const)('fails before measuring when the %s admin login is refused', async (side) => {
     const stack = fakeStack({ refuse: side });
-    const env = await stageMain(stack, { fixtures: false });
+    const env = await stageMain(stack);
     await expect(main([], stack.deps(env))).rejects.toThrow(`${side} admin: admin login as admin was refused (status 200 at /admin/)`);
     expect(stack.spawned.size).toBe(0);
     expect(existsSync(reportsPath('performance.json'))).toBe(false);
@@ -2422,7 +2298,7 @@ describe('main', () => {
     ['does not match its schema', JSON.stringify({ minInstanceCounts: { gateway: 'zero' } }), 'terraform-plan.json: does not match its schema'],
   ])('fails without writing a report when terraform-plan.json %s', async (_label, text, message) => {
     const stack = fakeStack();
-    const env = await stageMain(stack, { fixtures: false, plan: text });
+    const env = await stageMain(stack, { plan: text });
     await expect(main([], stack.deps(env))).rejects.toThrow(message);
     expect(existsSync(reportsPath('performance.json'))).toBe(false);
   });
@@ -2457,7 +2333,7 @@ describe('main', () => {
 
   it('prints the help text naming its environment for --help, exits 0 and neither reads up.json nor sends a request', async () => {
     const stack = fakeStack();
-    const env = await stageMain(stack, { fixtures: false });
+    const env = await stageMain(stack);
     const readUp = vi.fn(readUpState);
     const lines: string[] = [];
     const exits: number[] = [];
@@ -2489,7 +2365,6 @@ describe('main', () => {
   it('falls back to the global fetch, process.kill, the system clock and timers, and up.json in OPT2_STATE_DIR', async () => {
     const stack = fakeStack({ healthFailures: 1 });
     const env = await stageMain(stack, {
-      fixtures: true,
       plan: { minInstanceCounts: { ...EXPECTED_MIN_INSTANCES } },
       windows: { windows: [] },
     });

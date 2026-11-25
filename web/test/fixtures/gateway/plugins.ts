@@ -2,11 +2,11 @@ import type { components } from '@/generated/clients/gateway';
 
 type LegacyPlugin = components['schemas']['LegacyPlugin'];
 
-/** `getLegacyPlugins` rows with the GS-PS-10 golden plugin deployed, and a second plugin escaping its texts. */
+/** `getLegacyPlugins` rows with a golden plugin deployed, and a second plugin escaping its texts. */
 export const LEGACY_PLUGINS: readonly Readonly<LegacyPlugin>[] = Object.freeze([
   Object.freeze({
     moduleId: '88C48C97-ADFA-018D-66EAB47267C52ED2',
-    name: 'GS-PS-10 Plugin',
+    name: 'OPT-2 Utility Plugin',
     directory: '1',
     category: 'Utility',
     version: '1.0.0',

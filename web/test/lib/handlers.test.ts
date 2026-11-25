@@ -1,15 +1,13 @@
 // Page-mode entry points over the real screen registry, with the in-memory gateway relay as the only data source.
 import * as cheerio from 'cheerio';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { CSRF_FIELD_EXPIRES, CSRF_FIELD_TOKEN, LEGACY_ERROR_PAGE_HTML, esapiUrlEncode } from '@opt2/platform/legacy-compat';
+import { CSRF_FIELD_EXPIRES, CSRF_FIELD_TOKEN, LEGACY_ERROR_PAGE_HTML } from '@opt2/platform/legacy-compat';
 import { LEGACY_VERSION_MENU_PATH, setServiceClientForTests } from '@/lib/gateway-client';
-import { handleAdminPage, handleOpt2Page } from '@/lib/handlers';
+import { handleAdminPage } from '@/lib/handlers';
 import { logRequest } from '@/lib/telemetry';
-import { OPT2_NAV_MODULES } from '@/shell/document';
 import { LEGACY_VERSION_MENU } from '../fixtures/gateway/version-menu';
 import { CSRF_BY_CONTEXT, CSRF_LOGIN } from '../fixtures/identity/csrf';
 import { loginPageDefault, loginSessionAnonymous } from '../fixtures/identity/session-login';
-import { timesheetsAnswersByRole } from '../fixtures/opt2/timesheets';
 import { siteById, type FixtureSiteId } from '../fixtures/programs-sites/sites';
 import { sessionPresets } from '../fixtures/session';
 import { domModel } from '../helpers/dom-model';
@@ -24,7 +22,7 @@ import {
   type FakeServiceClient,
 } from '../helpers/fake-gateway';
 import { adminRequest, type AdminRequestOptions } from '../helpers/requests';
-import { SUBJECTS, serviceInvocation, syntheticSubject, type WebTestSubject } from '../helpers/tokens';
+import { SUBJECTS, serviceInvocation, type WebTestSubject } from '../helpers/tokens';
 
 // Request log lines are recorded instead of written to stdout.
 vi.mock('@/lib/telemetry', async (importOriginal) => ({
@@ -39,7 +37,6 @@ const SAVE_ADMIN_STATE = routeKey('POST', 'identity', '/v1/sessions/current/admi
 const CSRF_TOKENS = routeKey('POST', 'identity', '/v1/csrf/tokens');
 const HREF_DOMAINS = routeKey('GET', 'programs-sites', '/v1/href-domains');
 const USER_SITES = routeKey('GET', 'programs-sites', '/v1/user-sites');
-const TIMESHEETS_SHEETS = routeKey('GET', 'timesheets', '/v1/timesheets/sheets');
 const VERSION_MENU = routeKey('GET', 'gateway', LEGACY_VERSION_MENU_PATH);
 const shellSiteRoute = (siteId: string): string => routeKey('GET', 'programs-sites', `/v1/sites/${siteId}/shell`);
 const headerPromptsRoute = (siteId: string): string =>
@@ -48,9 +45,6 @@ const headerPromptsRoute = (siteId: string): string =>
 const TENANT_A_ID: FixtureSiteId = 'tenant-a';
 const TENANT_A = siteById[TENANT_A_ID];
 const NO_PROMPTS = Object.freeze({ drafts: 0, submissions: 0, approvals: 0, expires: 0, pendingChangesets: 0 });
-
-const employee = syntheticSubject('timesheets.employee');
-const timesheetsNav = OPT2_NAV_MODULES.find((entry) => entry.module === 'timesheets');
 
 /** The admin set-up cookies of a browser that sends none, in the order legacy sets them. */
 const ADMIN_COOKIES: readonly SentCookie[] = [
@@ -150,19 +144,6 @@ function identityRoutes(subject: WebTestSubject, session: IdentitySession): Fake
   };
 }
 
-/** identity's session of a private (system) user of `tenant-a` who administers that site. */
-function tenantAUserRoutes(subject: WebTestSubject): FakeRouteTable {
-  return identityRoutes(subject, {
-    user: {
-      isLoggedIn: true,
-      userID: subject.sub,
-      siteID: subject.site,
-      memberships: `S2IsPrivate;${subject.site},S2IsPrivate`,
-    },
-    siteArray: [TENANT_A_ID],
-  });
-}
-
 let fake: FakeServiceClient;
 let restoreEnv: () => void;
 let restoreClient: () => void;
@@ -173,10 +154,6 @@ function install(routes: FakeRouteTable): void {
 
 async function adminPage(circuit: string, action: string, opts: AdminRequestOptions = {}): Promise<Response> {
   return handleAdminPage(await adminRequest(`/admin/${circuit}/${action}`, opts), { circuit, action });
-}
-
-async function opt2Page(module: string, screen: string, opts: AdminRequestOptions = {}): Promise<Response> {
-  return handleOpt2Page(await adminRequest(`/opt2/admin/${module}/${screen}`, opts), { module, screen });
 }
 
 /** One `Set-Cookie` as the browser stores it. */
@@ -411,67 +388,5 @@ describe('handleAdminPage', () => {
     expect(response.headers.getSetCookie()).toEqual([]);
     expect(fake.requests).toHaveLength(0);
     expectLogged('page:cusers.list', status);
-  });
-});
-
-describe('handleOpt2Page', () => {
-  const query = { siteid: TENANT_A.SiteID };
-
-  it('renders the timesheets sheet list inside the shell for an employee', async () => {
-    if (timesheetsNav === undefined) throw new Error('OPT2_NAV_MODULES has no timesheets entry');
-    install({ ...tenantAUserRoutes(employee), ...timesheetsAnswersByRole.employee });
-
-    const response = await opt2Page(timesheetsNav.module, timesheetsNav.screen, { user: employee, query });
-
-    expect(response.status).toBe(200);
-    const markup = await response.text();
-    expect(markup).toMatch(/^<!DOCTYPE html>\n/);
-    expect(markup).toContain('class="mura-header"');
-    expect(markup).toContain('mura-table-grid');
-    expect(gatewayCalls()).toContain(TIMESHEETS_SHEETS);
-    expectLogged(`opt2:timesheets.${timesheetsNav.screen}`, 200);
-  });
-
-  it.each([
-    ['an unknown screen', 'timesheets', 'nope'],
-    ['an unknown module', 'nope', 'sheets'],
-  ])('answers 404 for %s', async (_case, module, screen) => {
-    install(tenantAUserRoutes(employee));
-
-    expect((await opt2Page(module, screen, { user: employee, query })).status).toBe(404);
-    expectLogged(`opt2:${module}.${screen}`, 404);
-  });
-
-  it('sends a user without a timesheets role to cMessage.noaccess with the admin cookies', async () => {
-    install({ ...tenantAUserRoutes(SUBJECTS.systemUser), ...timesheetsAnswersByRole.employee });
-
-    const response = await opt2Page('timesheets', 'sheets', { user: SUBJECTS.systemUser, query });
-
-    expect(response.status).toBe(302);
-    expect(response.headers.get('location')).toBe('/admin/?muraAction=cMessage.noaccess');
-    expect(sentCookies(response)).toEqual(ADMIN_COOKIES);
-    expect(gatewayCalls().filter((call) => call.includes('/opt2/svc/timesheets/'))).toEqual([]);
-    expectLogged('opt2:timesheets.sheets', 302);
-  });
-
-  it('sends an anonymous browser to the admin login with the requested screen as its return URL', async () => {
-    const response = await opt2Page('timesheets', 'sheets', { query });
-
-    expect(response.status).toBe(302);
-    expect(response.headers.get('location')).toBe(
-      `/admin/?muraAction=cLogin.main&returnURL=${esapiUrlEncode('http://localhost/opt2/admin/timesheets/sheets?siteid=tenant-a')}&compactDisplay=false`,
-    );
-    expect(gatewayCalls().filter((call) => call.includes('/opt2/svc/timesheets/'))).toEqual([]);
-    expectLogged('opt2:timesheets.sheets', 302);
-  });
-
-  it('answers the legacy 503 when timesheets answers 503', async () => {
-    install({ ...tenantAUserRoutes(employee), [TIMESHEETS_SHEETS]: { status: 503, body: 'down' } });
-
-    const response = await opt2Page('timesheets', 'sheets', { user: employee, query });
-
-    expect(response.status).toBe(503);
-    expect(await response.text()).toBe(LEGACY_ERROR_PAGE_HTML);
-    expectLogged('opt2:timesheets.sheets', 503);
   });
 });

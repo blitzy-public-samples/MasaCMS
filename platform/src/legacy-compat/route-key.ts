@@ -6,7 +6,7 @@
  *              rest also `oauth`, `oauth2`, `tokeninfo`
  *   feed `v1` · render `small|medium|file|!server_error` · trackopen `open` · variation `js` · sitemonitor `run`
  *   widgets `redirect` · asset `upload|render|!server_error`
- *   apiother, cfm, static, opt2, bridge  `<normalised path>`; opt2 is `/opt2/**` and {@link SYNTHETIC_V1_PREFIXES}
+ *   apiother, cfm, static, opt2, bridge  `<normalised path>`; opt2 is `/opt2/**`
  *   cfc        `<path>?method=<method>` | `<path>`
  *   admin      `<section>.<item>` (subsystem `core:` dropped) | `<subsystem>:<section>.<item>` | `!actioncontainsslash`
  *   fixture    `<module>/<resource>[/{id}][/<seg>…]@<httpmethod>` | `!notfound@<httpmethod>` | `!server_error@<httpmethod>`
@@ -199,16 +199,6 @@ export const REST_CONSUMED_PARAMS_HEADER = 'X-Opt2-Consumed-Params';
 /** Gateway-set header marking a remote CFC proxy call whose `siteid` names no registered site, its user token minted for the request host's site. */
 export const UNREGISTERED_SITEID_HEADER = 'X-Opt2-Unregistered-Siteid';
 
-/** Each synthetic service's own `/v1/` resource prefixes (its contracts/openapi.yaml), keyed in the `opt2` family. */
-export const SYNTHETIC_V1_PREFIXES = Object.freeze({
-  communications: Object.freeze(['/v1/messages', '/v1/templates']),
-  'e-signature': Object.freeze(['/v1/esignature']),
-  finance: Object.freeze(['/v1/finance']),
-  reporting: Object.freeze(['/v1/reporting']),
-  surveys: Object.freeze(['/v1/surveys']),
-  timesheets: Object.freeze(['/v1/timesheets']),
-});
-
 /** Extra request facts any entry point may carry. */
 interface EntryPointExtras {
   params?: Record<string, string>;
@@ -318,9 +308,6 @@ const OPT2_FOLDERS: readonly string[] = [
 const SCRIPT_SEGMENT = /\.cf[cm]$/;
 /** The fixture folder, whose templates stay legacy-served and key by the fixture and template rules. */
 const FIXTURES_FOLDER = '/legacy-fixtures/';
-const SYNTHETIC_V1_SEGMENTS: ReadonlyArray<readonly string[]> = Object.values(SYNTHETIC_V1_PREFIXES).flatMap((prefixes) =>
-  prefixes.map((prefix) => listToArray(prefix, '/')),
-);
 const RFC_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DIGITS = /^\d+$/;
 const FILE_EXTENSION = /\.[A-Za-z0-9]+$/;
@@ -1102,11 +1089,6 @@ function opt2Route(req: RouteKeyRequest, path: string): BaseRoute {
   return route;
 }
 
-/** Whether path segments start with one of {@link SYNTHETIC_V1_PREFIXES}, in any case. */
-function isSyntheticV1Path(segments: readonly string[]): boolean {
-  return SYNTHETIC_V1_SEGMENTS.some((prefix) => prefix.every((segment, i) => nth(segments, i + 1).toLowerCase() === segment));
-}
-
 /**
  * A file the container serves from an OPT-2 folder, keyed on its `served` path whatever the query: a static file, or a
  * template or component without its path info. Undefined for a directory, a fixture template, an upper-case script name
@@ -1148,7 +1130,6 @@ function baseRoute(c: RouteContext, indexAt: number, rootPath: string, served: s
   if (folderFile !== undefined) return folderFile;
   const opt2 = !frontController && c.opts.opt2Namespaces;
   if (opt2 && first === 'opt2') return opt2Route(req, path);
-  if (opt2 && isSyntheticV1Path(segments)) return opt2Route(req, path);
   if (first === '_api' || first === 'tasks' || (frontController && rootApi)) return apiRoute(root);
   if (frontController) return pageRoute(c, false);
   const adminLength = adminPrefixLength(c, indexAt);

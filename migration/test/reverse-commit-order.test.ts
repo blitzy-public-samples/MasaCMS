@@ -239,8 +239,8 @@ describe.skipIf(!PG_AVAILABLE)(`reverse projection in per-row commit order${PG_A
     const only = (row: Row): Map<string, number> => new Map([[encodeRow(COLUMNS, row), 1]]);
 
     beforeAll(async () => {
-      const owner = await startPgOwner({ owner: 'communications', mappings: [MAILINGLIST_MEMBERS_MAPPING], tenants: [TENANT_A] });
-      scenario = await start(owner, ['tsettings', 'tmailinglistmembers'], { [MEMBERS.qualified]: [R] }, FIXTURE_GROUP_IDS.communications);
+      const owner = await startPgOwner({ owner: 'programs-sites', mappings: [MAILINGLIST_MEMBERS_MAPPING], tenants: [TENANT_A] });
+      scenario = await start(owner, ['tsettings', 'tmailinglistmembers'], { [MEMBERS.qualified]: [R] }, FIXTURE_GROUP_IDS.mailingLists);
       await owner.ownersClient.apply(owner.owner, {
         batchId: 'reverse-commit-order-backfill',
         origin: 'backfill',

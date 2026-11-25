@@ -8,13 +8,23 @@ import {
   TENANT_B,
   TENANT_UMBRELLA,
   assertResponseMatchesOpenApi,
+  contractOperations,
+  contractRouteKey,
+  declarationMismatches as routeDeclarationMismatches,
+  diffRoutes,
   findOperation,
   fixtureForSite,
+  injectedBody,
+  injectedResponse,
+  loadOpenApiDocument,
   mintServiceToken,
   mintTasksInvokerToken,
+  operationAuthProblems,
+  operationIdProblems,
   pushTo,
   registryPayloads,
   testEnvelope,
+  type ContractOperation,
   type InjectResponse,
   type TenantlessEnvelope,
 } from '@opt2/platform/testing';
@@ -45,20 +55,12 @@ import {
 type HttpMethod = 'GET' | 'HEAD' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'OPTIONS';
 type Row = Record<string, unknown>;
 type Headers = Record<string, string>;
-type Operation = Record<string, unknown> & { operationId?: string };
 
 interface OpenApiDoc {
   openapi: string;
   info: { version: string; 'x-source-sha'?: string };
   'x-opt2-calls'?: unknown;
   paths: Record<string, Record<string, unknown>>;
-}
-
-interface ContractOperation {
-  method: HttpMethod;
-  path: string;
-  operationId: string;
-  op: Operation;
 }
 
 interface Request {
@@ -83,13 +85,11 @@ interface Case {
   verify?: (answer: Answer, ctx: TestApp) => void;
 }
 
-const DOC = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as OpenApiDoc;
+const DOC = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as unknown as OpenApiDoc;
 const PIN = JSON.parse(readFileSync(new URL('../../../../opt2/source-pin.json', import.meta.url), 'utf8')) as { sha: string };
 
 const SERVICE = 'people';
 const METHODS = ['get', 'put', 'post', 'delete', 'patch', 'options', 'head'] as const;
-const TRANSPORTS: readonly string[] = ['service', 'pubsub-push', 'cloud-tasks'];
-const JSON_MEDIA_TYPE = /^application\/(?:[\w.+-]+\+)?json\b/i;
 const FORM: Headers = { 'content-type': 'application/x-www-form-urlencoded' };
 const TOKEN_FIELDS = 'csrf_token=CONTRACT-TOKEN&csrf_token_expires=260630130000000';
 const UPPERCASE_HEX = /^[0-9A-F]+$/;
@@ -296,68 +296,17 @@ function record(body: unknown): Record<string, unknown> {
   return body as Record<string, unknown>;
 }
 
-function contractOperations(doc: OpenApiDoc): ContractOperation[] {
-  return Object.entries(doc.paths).flatMap(([path, item]) =>
-    METHODS.flatMap((method) => {
-      const op = item[method] as Operation | undefined;
-      return op === undefined ? [] : [{ method: method.toUpperCase() as HttpMethod, path, operationId: op.operationId ?? '', op }];
-    }),
-  );
-}
+const OPERATIONS = contractOperations(DOC, { methods: METHODS });
 
-const OPERATIONS = contractOperations(DOC);
-
-/** A Fastify url as an OpenAPI template: `::` to `:`, `:name` to `{name}`, a trailing `*` to `{path}`. */
-function toTemplate(url: string): string {
-  const literalColon = '\u0000';
-  return url
-    .replaceAll('::', literalColon)
-    .replace(/:([A-Za-z_]\w*)(?:\([^)]*\))?/g, '{$1}')
-    .replace(/\*$/, '{path}')
-    .replaceAll(literalColon, ':');
-}
-
-function routeKey(route: Pick<RouteMatrixEntry, 'method' | 'url'>): string {
-  return `${route.method} ${toTemplate(route.url)}`;
-}
-
-/** `METHOD path` keys an operation is served under: its `x-opt2-fastify-path` patterns, one or a list, as templates, else its path. */
-function operationKeys({ method, path, op }: ContractOperation): string[] {
-  const fastifyPath = op['x-opt2-fastify-path'] as string | string[] | undefined;
-  const paths = fastifyPath === undefined ? [path] : [fastifyPath].flat().map(toTemplate);
-  return paths.map((served) => `${method} ${served}`);
-}
+/** Fastify urls in contract form: a trailing `*` becomes `{path}`. */
+const PATHS = { wildcard: { as: '{path}' } } as const;
 
 function diffRouteSets(routes: readonly RouteMatrixEntry[], operations: readonly ContractOperation[]): { missingInContract: string[]; missingInApp: string[] } {
-  const registered = new Set(routes.map(routeKey));
-  const declared = new Set(operations.flatMap(operationKeys));
-  return {
-    missingInContract: [...registered].filter((key) => !declared.has(key)).sort(),
-    missingInApp: operations
-      .flatMap((operation) => operationKeys(operation).filter((key) => !registered.has(key)).map((key) => `${operation.operationId} (${key})`))
-      .sort(),
-  };
+  const { undeclared, unregistered } = diffRoutes(routes, operations, PATHS);
+  return { missingInContract: undeclared, missingInApp: unregistered };
 }
 
-function declarationMismatches(routes: readonly RouteMatrixEntry[], operations: readonly ContractOperation[]): string[] {
-  return routes.flatMap((route) =>
-    operations
-      .filter((operation) => operationKeys(operation).includes(routeKey(route)))
-      .filter(({ op }) => {
-        const contracted = declaration(op['x-opt2-transport'], op['x-opt2-requires'], op['x-opt2-public']);
-        return JSON.stringify(contracted) !== JSON.stringify(declaration(route.transport, route.requires, route.public));
-      })
-      .map((operation) => `${operation.operationId} ${routeKey(route)}`),
-  );
-}
-
-function declaration(transport: unknown, requires: unknown, isPublic: unknown): Record<string, unknown> {
-  return {
-    transport,
-    requires: Array.isArray(requires) ? [...(requires as string[])].sort() : null,
-    public: isPublic === true,
-  };
-}
+const declarationMismatches = (routes: readonly RouteMatrixEntry[], operations: readonly ContractOperation[]): string[] => routeDeclarationMismatches(routes, operations, PATHS);
 
 const SA = asUser(SITE_ADMIN_A);
 const jsonApi = (family: (typeof LEGACY_FAMILIES)[number], rest: string): string => `/_api/${family}/v1${rest}`;
@@ -407,7 +356,6 @@ const ADVANCED_CRITERIA = 'param=1&paramField1=tusers.lname%5Evarchar&paramRelat
 const ADMIN_UPDATE = `userid=${MODULE_USER}&siteid=${SITE_A}&type=2&action=Update&fname=Morgan&lname=Modular&username=module_user_a&email=module_user_a@tenant-a.opt2.test&ispublic=0&${TOKEN_FIELDS}`;
 const ARCHIVE_FIELDS = `effectiveFrom=${ARCHIVE_EFFECTIVE_FROM}&${TOKEN_FIELDS}`;
 const archivePath = (userId: string, siteId: string): string => `/legacy-fixtures/cfml/api.cfm/people/persons/${userId}/archive?siteid=${siteId}`;
-const POOL_STRANGER = 'A0000000-0000-0000-00000000000000FF';
 const CURRENT_USER_QUERY = `siteid=${SITE_A}&endpoint=${encodeURIComponent(`http://localhost/index.cfm/_api/json/v1/${SITE_A}`)}&adminpath=${encodeURIComponent('http://localhost/admin')}`;
 const FAVORITE_COLUMNS = FAVORITE.columns.filter(({ name }) => name !== 'tenant_id').map(({ name, type }) => ({ name, type }));
 const UMBRELLA_MEMBERS = (DEFAULT_PEOPLE_SEED[TENANT_UMBRELLA.tenantId]?.groupNames ?? [])[0];
@@ -1042,19 +990,6 @@ const CASES: Record<string, Case[]> = {
       }),
     ),
   ],
-  readPoolUser: [
-    {
-      name: "reads a tenant-a pool user for e-signature's signer check",
-      inject: send('GET', `/internal/v1/users/pool-user?siteid=${SITE_A}&userid=${SYSTEM_USER}`, async () => ({ ...(await userHeaders(SYSTEM_USER_A)), ...(await asService('e-signature')()) })),
-      status: 200,
-      verify: ({ body }) => expect(record(body)).toEqual({ userid: SYSTEM_USER, siteid: SITE_A, type: 2 }),
-    },
-    {
-      name: 'answers the legacy 404 for an id no pool person holds',
-      inject: send('GET', `/internal/v1/users/pool-user?siteid=${SITE_A}&userid=${POOL_STRANGER}`, async () => ({ ...(await userHeaders(SYSTEM_USER_A)), ...(await asService('e-signature')()) })),
-      status: 404,
-    },
-  ],
   migrationApply: [
     {
       name: 'applies an empty tusersfavorites batch',
@@ -1193,17 +1128,15 @@ async function addressed(c: Case): Promise<{ request?: Request; method: HttpMeth
 async function sendCase(ctx: TestApp, c: Case): Promise<Answer> {
   const { request, method, path } = await addressed(c);
   const res = c.push === undefined ? await ctx.app.inject(request as Request) : await pushTo(ctx.app, c.push.subscription, c.push.envelope());
-  const contentType = res.headers['content-type'];
-  const json = typeof contentType === 'string' && JSON_MEDIA_TYPE.test(contentType) && res.body !== '';
-  const body: unknown = json ? JSON.parse(res.body) : res.body === '' ? undefined : res.body;
+  const body = injectedBody(res);
   expect(res.statusCode, res.body.slice(0, 400)).toBe(c.status);
   // A text body is validated as sent, so an empty one meets a schema of the empty string.
-  assertResponseMatchesOpenApi(DOC, { method, path, status: res.statusCode, contentType, body: json ? body : res.body });
+  assertResponseMatchesOpenApi(DOC, injectedResponse({ method, url: path }, res));
   return { res, body };
 }
 
 const WIRE_OPERATIONS = OPERATIONS.filter(({ path }) => path.startsWith('/_api/'));
-const routeKeysOf = ({ op }: ContractOperation): string[] => (op['x-opt2-route-keys'] as string[] | undefined) ?? [];
+const routeKeysOf = ({ operation }: ContractOperation): string[] => (operation['x-opt2-route-keys'] as string[] | undefined) ?? [];
 const familyOf = ({ path }: ContractOperation): (typeof LEGACY_FAMILIES)[number] => path.split('/')[2] as (typeof LEGACY_FAMILIES)[number];
 const READ_OPERATIONS = /^(?:find[a-z]+|validate|~[a-z0-9_]+|http-get)$/;
 
@@ -1278,19 +1211,8 @@ describe('contract document', () => {
   });
 
   it('gives every operation a unique operationId, a known transport and exactly one of x-opt2-requires and x-opt2-public', () => {
-    const ids = OPERATIONS.map(({ operationId }) => operationId);
-    expect(ids.filter((id) => id === '')).toEqual([]);
-    expect(ids.filter((id, index) => ids.indexOf(id) !== index)).toEqual([]);
-    const problems = OPERATIONS.flatMap(({ method, path, op }) => {
-      const requires = op['x-opt2-requires'];
-      const isPublic = op['x-opt2-public'] === true;
-      const found: string[] = [];
-      if (!TRANSPORTS.includes(String(op['x-opt2-transport']))) found.push(`${method} ${path}: transport ${String(op['x-opt2-transport'])}`);
-      if ((requires === undefined) === !isPublic) found.push(`${method} ${path}: requires and public`);
-      if (requires !== undefined && !(Array.isArray(requires) && requires.length > 0)) found.push(`${method} ${path}: empty requires`);
-      return found;
-    });
-    expect(problems).toEqual([]);
+    expect(operationIdProblems(OPERATIONS)).toEqual({ missing: [], duplicated: [] });
+    expect(operationAuthProblems(OPERATIONS)).toEqual([]);
   });
 });
 
@@ -1342,7 +1264,7 @@ describe('registered routes', () => {
     expect(diffRouteSets(routes, contractOperations(trimmed)).missingInContract).toEqual(['GET /healthz']);
     expect(diffRouteSets(routes.filter(({ url }) => url !== '/healthz'), OPERATIONS).missingInApp).toEqual(['healthz (GET /healthz)']);
 
-    const widened = routes.map((route) => (routeKey(route) === 'GET /v1/users' ? { ...route, requires: [...(route.requires ?? []), 'system-user'] } : route));
+    const widened = routes.map((route) => (contractRouteKey(route, PATHS) === 'GET /v1/users' ? { ...route, requires: [...(route.requires ?? []), 'system-user'] } : route));
     expect(declarationMismatches(widened, OPERATIONS)).toEqual(['listUsers GET /v1/users']);
   });
 
@@ -1354,7 +1276,7 @@ describe('registered routes', () => {
       ...['archivePerson', 'getPersonArchive'],
       ...['listUserGroups', 'listUsers', 'searchUsers', 'getAdvancedSearch', 'setAdvancedSearch', 'downloadAdvancedSearchCsv', 'downloadUsersCsv'],
       ...['getUserEdit', 'updateUser', 'getAddressEdit', 'updateAddress', 'routeUser', 'getProfile', 'updateProfile'],
-      ...['listUserGroupsV2', 'listUsersV2', 'searchUsersV2', 'getAdvancedSearchV2', 'setAdvancedSearchV2', 'readCurrentUser', 'readPoolUser', 'listHaltedRosterOperations', 'listHaltedRosterOperationsPage'],
+      ...['listUserGroupsV2', 'listUsersV2', 'searchUsersV2', 'getAdvancedSearchV2', 'setAdvancedSearchV2', 'readCurrentUser', 'listHaltedRosterOperations', 'listHaltedRosterOperationsPage'],
       ...['Apply', 'Export', 'Changes', 'Position', 'WatermarkGet', 'WatermarkPost', 'Gate'].map((name) => `migration${name}`),
       ...['pushSiteChanged', 'pushGroupChanged', 'outboxSweep', 'queuePause', 'queueResume', 'queueEnsure', 'healthz'],
     ];
@@ -1408,7 +1330,7 @@ describe('JSON API route keys', () => {
 
   it('list the withheld keys as excluded, never as served', () => {
     const problems = WIRE_OPERATIONS.flatMap((operation) => {
-      const excluded = ((operation.op['x-opt2-route-keys-excluded'] as Array<{ key: string }> | undefined) ?? []).map(({ key }) => key);
+      const excluded = ((operation.operation['x-opt2-route-keys-excluded'] as Array<{ key: string }> | undefined) ?? []).map(({ key }) => key);
       const prefix = routeKeysOf(operation)[0]?.split(':')[0] ?? '';
       const missing = ['user.save', 'user.save{photo}', 'user.delete', 'address.save', 'address.delete'].map((body) => `${prefix}:${body}`).filter((key) => !excluded.includes(key));
       const served = excluded.filter((key) => routeKeysOf(operation).includes(key));

@@ -1,5 +1,4 @@
 /** The `cperm` main, module and updatemodule routes and the reverse lookup over a throwaway `identity` schema: contract shape, s2 and site-admin access, request validation, node verdicts, module grants, the posted `moduleid` as CSRF context and redirect key, and the token-site lookup. */
-import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -16,6 +15,7 @@ import {
   assertResponseMatchesOpenApi,
   createThrowawaySchema,
   fixedClock,
+  loadOpenApiDocument,
   mintServiceToken,
   mintUserToken,
   pgAvailable,
@@ -34,7 +34,7 @@ import { registerAdminPermissionRoutes } from '../../src/routes/admin-permission
 type Method = 'GET' | 'PUT';
 type Payload = URLSearchParams | Record<string, unknown>;
 
-const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as {
+const OPENAPI = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as {
   paths: Record<string, Record<string, Record<string, unknown>>>;
 };
 const CONTRACT_PATHS = ['/v1/permissions/content/{contentId}', '/v1/permissions/modules', '/v1/permissions/modules/{moduleId}', '/v1/permissions/reverse-lookup'];

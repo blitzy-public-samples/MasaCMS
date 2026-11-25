@@ -6,7 +6,7 @@ The stub proves the shared platform on one minimal entity, a tenant-owned note, 
 
 It runs locally only and is never deployed: Terraform declares no instance of it, and the cloud Pub/Sub topology drops `stub.note.created.v1` and its subscription. It has no Masa equivalent and no legacy oracle.
 
-Contracts: [`contracts/openapi.yaml`](contracts/openapi.yaml), [`contracts/events/stub.note.created.v1.json`](contracts/events/stub.note.created.v1.json). Behaviour-to-code-to-test rows: [`TRACEABILITY.md`](TRACEABILITY.md). Shared components: [`platform/README.md`](../../platform/README.md).
+Contracts: [`contracts/openapi.yaml`](contracts/openapi.yaml), [`contracts/events/stub.note.created.v1.json`](contracts/events/stub.note.created.v1.json), [`contracts/events/stub.note.commented.v1.json`](contracts/events/stub.note.commented.v1.json). Behaviour-to-code-to-test rows: [`TRACEABILITY.md`](TRACEABILITY.md). Shared components: [`platform/README.md`](../../platform/README.md).
 
 ## Data
 
@@ -18,15 +18,17 @@ Schema `stub`, created by `opt2-db bootstrap` (`migration/src/db-bootstrap/`) wi
 | `stub_app` | Runtime DML only; the service's `PG_USER` |
 | `stub_migrator` | Applies `db/migrations/*.sql` after `SET ROLE stub_owner` |
 
-[`db/migrations/0001_stub.sql`](db/migrations/0001_stub.sql) creates:
+[`db/migrations/0001_stub.sql`](db/migrations/0001_stub.sql) and [`db/migrations/0004_note_comments.sql`](db/migrations/0004_note_comments.sql) create:
 
 | Table | Holds |
 |---|---|
 | `stub.note` | `tenant_id`, `note_id` (`char(35)` CF UUID), `title`, `body`, `created` (`timestamp(3)`), `row_version` (the event's `aggregateVersion`) |
 | `stub.note_projection` | The note as the stub's own `stub.note.created.v1` consumer applied it, with `aggregate_version`, `apply_count`, `last_event_id` and `projected_at` |
+| `stub.note_comment` | A comment in the note's tenant: `comment_id`, `note_id`, `author_site_id` (the commenter's token site), `body`, `created` |
+| `stub.note_activity` | One row per applied `stub.note.commented.v1`: `event_id`, `note_id`, `comment_id`, `aggregate_version`, `applied_at` |
 | Platform tables | `tenant_registry`, `tenant_grant`, `changelog`, `unit_gate`, `open_operation`, `migration_batch`, `migration_watermark`, `inbox`, `consumer_aggregate_version`, `outbox`, `scheduled_task_queue`, `scheduled_task_queue_state` |
 
-Every tenant-owned table has RLS enabled and forced under the `tenant_isolation` policy on `app.tenant_id`. `tenant_registry`, `tenant_grant`, `unit_gate`, `open_operation` and `migration_watermark` are non-tenant tables without RLS or a `tenant_isolation` policy: they hold tenant metadata, never tenant data. `tenant_registry` maps each site to its `tenant_id` and pool tenants; `tenant_grant` stores `grantor_tenant` and `grantee_tenant`. The migration seeds the gates of the units `stub.note` and `stub.note_projection` as `open`. The stub owns no legacy table, so its migration mappings (`src/migration/mappings/`) are empty.
+Every tenant-owned table has RLS enabled and forced under the `tenant_isolation` policy on `app.tenant_id`. `tenant_registry`, `tenant_grant`, `unit_gate`, `open_operation` and `migration_watermark` are non-tenant tables without RLS or a `tenant_isolation` policy: they hold tenant metadata, never tenant data. `tenant_registry` maps each site to its `tenant_id` and pool tenants; `tenant_grant` stores `grantor_tenant` and `grantee_tenant`. The migrations seed the gates of the units `stub.note`, `stub.note_projection`, `stub.note_comment` and `stub.note_activity` as `open`. The stub owns no legacy table, so its migration mappings (`src/migration/mappings/`) are empty; `stub.note_projection` and `stub.note_activity` are exported over their own columns, so the event checks read the consumers' effects through `/internal/v1/migration/export`.
 
 ## Routes
 
@@ -34,10 +36,13 @@ Every route declares its roles or `public`; an undeclared route fails start-up. 
 
 | Method | Path | Transport | Requires | Does |
 |---|---|---|---|---|
-| `POST` | `/opt2/stub/notes` | `service` | `system-user` | Creates a note and its `stub.note.created.v1` outbox row in one transaction |
+| `POST` | `/opt2/stub/notes` | `service` | `system-user` | Creates a note and its `stub.note.created.v1` outbox row in one transaction: in the token's tenant, or with `pool: public` in the tenant of the token site's registered public user pool (`invalidParameters` when the registry holds no such site) |
 | `GET` | `/opt2/stub/notes` | `service` | `member`, `system-user`, `site-admin`, `s2` | One page of the tenant's notes (`limit` 1–1000, default 50; `after` cursor) |
 | `GET` | `/opt2/stub/notes/{noteId}` | `service` | `member`, `system-user`, `site-admin`, `s2` | One note |
 | `GET` | `/opt2/stub/notes/{noteId}/projection` | `service` | `member`, `system-user`, `site-admin`, `s2` | The note's `stub.note_projection` row |
+| `POST` | `/opt2/stub/notes/{noteId}/grants` | `service` | `system-user` | Body `granteesiteid`: grants that site's tenant `note-comment` on the note, as a `tenant_grant` row in the grantor's transaction; answers `{noteid, granteesiteid}` |
+| `POST` | `/opt2/stub/notes/{noteId}/comments` | `service` | `member`, `system-user`, `site-admin`, `s2` | Body `grantorsiteid`, `body`: comments on the note of `grantorsiteid`'s tenant when it is the token's own or granted it `note-comment`, writing the comment, the note's next `row_version` and the `stub.note.commented.v1` outbox row in the note's tenant; otherwise the legacy 404 and no write |
+| `GET` | `/opt2/stub/notes/{noteId}/comments` | `service` | `member`, `system-user`, `site-admin`, `s2` | One page of the note's comments (`limit` 1–1000, default 50; `after` cursor) |
 | `DELETE` | `/opt2/stub/notes/{noteId}` | `service` | `s2` | Deletes a note; the deny case for every other role |
 | `GET` | `/healthz` | `service` | public | Liveness probe |
 | `POST` | `/internal/v1/migration/apply` | `service` | `platform.migration` | Applies one batch of canonical rows, once per batch id |
@@ -47,6 +52,7 @@ Every route declares its roles or `public`; an undeclared route fails start-up. 
 | `GET`, `POST` | `/internal/v1/migration/watermark` | `service` | `platform.migration` | Reads or records feed watermarks |
 | `POST` | `/internal/v1/migration/gate` | `service` | `platform.migration` | Closes, re-phases, opens or reads the unit gates |
 | `POST` | `/internal/v1/events/stub.stub.note.created.v1` | `pubsub-push` | `service:pubsub-invoker` (local push key locally) | Applies `stub.note.created.v1` to `stub.note_projection` |
+| `POST` | `/internal/v1/events/stub.stub.note.commented.v1` | `pubsub-push` | `service:pubsub-invoker` (local push key locally) | Applies `stub.note.commented.v1` to `stub.note_activity` |
 | `POST` | `/internal/v1/events/stub.programs-sites.site.changed.v1` | `pubsub-push` | `service:pubsub-invoker` (local push key locally) | Applies `programs-sites.site.changed.v1` to `stub.tenant_registry` |
 | `POST` | `/internal/v1/outbox/sweep` | `cloud-tasks` | `service:tasks-invoker` | Creates the next sweep task, then publishes every unpublished outbox row |
 | `POST` | `/internal/v1/task-queues/{queue}/pause`, `/resume`, `/ensure` | `service` | `platform.migration`, `platform.operator` | Controls `stub-outbox-sweep` |
@@ -55,11 +61,13 @@ Every route declares its roles or `public`; an undeclared route fails start-up. 
 
 | Topic | Direction | Effect |
 |---|---|---|
-| `stub.note.created.v1` | Produced by `POST /opt2/stub/notes`; consumed by the stub itself | `stub.note_projection` row. `x-opt2-kind: state`: the payload is the note's full state (`noteId`, `title`, `body`, `created`, `rowVersion`); `aggregateType` is `note`, `aggregateId` the note id, `aggregateVersion` its `row_version` |
+| `stub.note.created.v1` | Produced by `POST /opt2/stub/notes`; consumed by the stub itself | `stub.note_projection` row in each destination tenant. `x-opt2-kind: state`: the payload is the note's full state (`noteId`, `title`, `body`, `created`, `rowVersion`); `aggregateType` is `note`, `aggregateId` the note id, `aggregateVersion` its `row_version`. `x-opt2-tenant-fanout: userPool`: the destinations are the note's tenant and every registered site whose public or private user pool it is, so an umbrella note also reaches tenant-a |
+| `stub.note.commented.v1` | Produced by `POST /opt2/stub/notes/{noteId}/comments`; consumed by the stub itself | One `stub.note_activity` row per event. `x-opt2-kind: process` without fan-out: each event applies once in its tenant whatever its arrival order; `aggregateType` is `note`, `aggregateVersion` the note's `row_version` after the comment |
 | `programs-sites.site.changed.v1` | Consumed | `stub.tenant_registry` row |
 
 - A duplicate delivery has one effect, through the `inbox` receipt. A state version at or below the last applied one is acked and ignored.
-- A missing, invalid or unregistered tenant, a tenant mismatch or a schema failure is published to `<subscription>.dlq` (for notes, `stub.stub.note.created.v1.dlq`) with a `reason` attribute and acked. `opt2-events replay` republishes it. A note event whose aggregate type, id or version is not `note`, its `noteId` and its `rowVersion` is a schema failure; one whose note is not stored under the envelope tenant is a tenant mismatch.
+- A missing, invalid or unregistered tenant, a tenant mismatch or a schema failure is published to `<subscription>.dlq` (for notes, `stub.stub.note.created.v1.dlq`) with a `reason` attribute and acked. `opt2-events replay` republishes it. A note event whose aggregate type, id or version is not `note`, its `noteId` and its `rowVersion` is a schema failure; one whose note is not stored under the envelope tenant is a tenant mismatch, and so, at a fan-out destination, is one whose envelope tenant is not that destination's registered public or private user pool. A comment event is checked the same way, without the version.
+- A fan-out delivery applies the fan-out destinations first and the note's tenant last, each in its own gated transaction with its own `inbox` receipt. An attempt that fails part-way, such as one whose note read waits out a `stub.note` write window, answers 503; the redelivery applies only where no receipt exists, so each destination ends with one effect.
 - The sweep queue `stub-outbox-sweep` runs every 60 s and exists locally only; `opt2-tasks reconcile` includes it when `OPT2_ENV=local`.
 
 ## Platform-proof checks

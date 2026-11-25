@@ -9,7 +9,7 @@ import { LegacyServiceUnavailableError, cfUuid } from '@opt2/platform/legacy-com
 import { canonicalTypeForSqlServer, decodeRow, type ApplyRequest, type CanonicalColumn, type GateRequest } from '@opt2/platform/migration-kit';
 import type { FastifyInstance } from '@opt2/platform/service-kit';
 import { tenantIdForSite } from '@opt2/platform/tenancy';
-import { TENANT_A, assertResponseMatchesOpenApi, mintServiceToken, pgAvailable, testVerifier } from '@opt2/platform/testing';
+import { TENANT_A, assertResponseMatchesOpenApi, loadOpenApiDocument, mintServiceToken, pgAvailable, testVerifier } from '@opt2/platform/testing';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import { parse } from 'yaml';
 
@@ -50,7 +50,7 @@ type WindowOpenRequest = Schemas['WindowOpenRequest'];
 const PG = await pgAvailable();
 const CONFIG = loadConfig();
 const { openBudgetMs, importRetryMs, gatewayLeaseMs } = CONFIG.windows;
-const OPENAPI = parse(await readFile(new URL('../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
+const OPENAPI = loadOpenApiDocument(new URL('../contracts/openapi.yaml', import.meta.url), parse) as object;
 
 /** A withheld roster variant: a legacy-write entry whose window spans both roster participants. */
 const ROUTE = 'admin:cusers.update{type=2,action=delete}';
@@ -761,8 +761,8 @@ describe.skipIf(!PG)('write windows (skipped without PostgreSQL: PG_* unset)', (
 
   describe('the window routes of the composed service', () => {
     const REAL_CATALOG = loadUnitCatalog(CONFIG.paths.tableOwnership);
-    // Under the committed v0002 the finance record is target-authoritative; class-extension sets, with no carry writer, stay legacy-authoritative in every version.
-    const TARGET_UNIT = 'finance.record';
+    // Under the committed v0002 identity's redirects are target-authoritative; class-extension sets, with no carry writer, stay legacy-authoritative in every version.
+    const TARGET_UNIT = 'identity.redirect';
     const LEGACY_UNIT = 'content.extend_set';
 
     let app: FastifyInstance | undefined;
@@ -772,10 +772,10 @@ describe.skipIf(!PG)('write windows (skipped without PostgreSQL: PG_* unset)', (
       app = undefined;
     });
 
-    async function composed(h: Harness): Promise<{ app: FastifyInstance; finance: OwnerDoubleState }> {
-      const owners = createOwnerDoubles(REAL_CATALOG, { owners: ['finance'], log: h.t.log });
-      const finance = owners.owner('finance');
-      finance.setGate(TARGET_UNIT, { state: 'open', holderId: null, phase: 'quiet' });
+    async function composed(h: Harness): Promise<{ app: FastifyInstance; identity: OwnerDoubleState }> {
+      const owners = createOwnerDoubles(REAL_CATALOG, { owners: ['identity'], log: h.t.log });
+      const identity = owners.owner('identity');
+      identity.setGate(TARGET_UNIT, { state: 'open', holderId: null, phase: 'quiet' });
       app = await buildApp({
         env: h.t.ctx.env,
         clock: h.t.clock,
@@ -786,7 +786,7 @@ describe.skipIf(!PG)('write windows (skipped without PostgreSQL: PG_* unset)', (
         gateway: createGatewayDouble({ active: 'v0002' }),
         startBackground: false,
       });
-      return { app, finance };
+      return { app, identity };
     }
 
     async function call(target: FastifyInstance, caller: 'gateway' | 'operator', method: 'GET' | 'POST', url: string, payload?: unknown) {
@@ -826,11 +826,11 @@ describe.skipIf(!PG)('write windows (skipped without PostgreSQL: PG_* unset)', (
 
     it('answers a refused open with the legacy 503 before legacy executes anything', async () => {
       const h = await harness();
-      const { app: target, finance } = await composed(h);
-      finance.failNext('gate', 'down');
+      const { app: target, identity } = await composed(h);
+      identity.failNext('gate', 'down');
 
       const refused = await call(target, 'gateway', 'POST', '/internal/v1/windows', {
-        routeKey: 'fixture:finance/records/{id}/attachments@post',
+        routeKey: 'admin:cusers.update',
         units: [TARGET_UNIT],
         scope: { keys: { siteid: 'tenant-a' } },
         requestId: cfUuid(),
@@ -838,7 +838,7 @@ describe.skipIf(!PG)('write windows (skipped without PostgreSQL: PG_* unset)', (
 
       expect(refused.status).toBe(503);
       expect(refused.body).toEqual(expect.objectContaining({ error: expect.any(Object) }));
-      expect(finance.gates.get(TARGET_UNIT)).toEqual(expect.objectContaining({ state: 'open', holderId: null }));
+      expect(identity.gates.get(TARGET_UNIT)).toEqual(expect.objectContaining({ state: 'open', holderId: null }));
       expect(await allLeases()).toEqual([]);
       expect((await storedWindows()).map((row) => row.state)).toEqual(['failed']);
       expect(h.t.bridge?.calls).toEqual([]);

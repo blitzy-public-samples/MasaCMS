@@ -18,10 +18,8 @@ import {
   BROWSER_FINAL_STEP,
   DECISION_LIST_PATH,
   GENERATED_BY,
-  MIGRATED_SERVICES,
   PARITY_RESULTS,
   PARITY_TITLE,
-  UNMET_WITHOUT_FIXTURES,
   browserRecordSchema,
   browserResultPath,
   buildParityReport,
@@ -59,9 +57,7 @@ const SHA = pinnedSha();
 const CLOCK = (): Date => new Date('2026-01-02T03:04:05.000Z');
 const WITHHELD_KEY = 'admin:cusers.update{type=2,action=add}';
 const ACTION_REF = `opt2/decision-list.json#actionVariants/${WITHHELD_KEY}`;
-const TABLE_REF = 'opt2/decision-list.json#tables/tusers';
 const PROPOSAL = 'Carry the add variant.';
-const TABLE_PROPOSAL = 'Proposed owner: people. Shared by two services.';
 const STATE = '${OPT2_STATE_DIR}';
 const BROWSER = { flow: 'admin-login', console: 'no-new-errors' } as const;
 const DECISION_LINK = '[decision-list.md](../decision-list.md)';
@@ -79,17 +75,7 @@ const MASKED_DIFFERENCE = {
   classification: 'known-issue',
   maskId: 'date-mask',
 } as const;
-const DECISIONS: DecisionList = {
-  actionVariants: [{ routeKey: WITHHELD_KEY, proposal: PROPOSAL }],
-  tables: [
-    {
-      table: 'tusers',
-      proposedOwner: 'people',
-      reason: 'Shared by two services.',
-      withheldEntryPoints: [{ routeKey: WITHHELD_KEY }, { routeKey: null }],
-    },
-  ],
-};
+const DECISIONS: DecisionList = { actionVariants: [{ routeKey: WITHHELD_KEY, proposal: PROPOSAL }] };
 
 let catalogue: Catalogue;
 let rules: NormaliseRules;
@@ -101,7 +87,7 @@ beforeAll(async () => {
   catalogue = await loadCatalogue(CATALOGUE_FIXTURE);
   rules = loadRules(undefined, { PORT: '8500' });
   id01 = scenarioById(catalogue, 'GS-ID-01');
-  co05 = scenarioById(catalogue, 'GS-CO-05');
+  co05 = scenarioById(catalogue, 'GS-CO-75');
   pe01 = scenarioById(catalogue, 'GS-PE-01');
 });
 
@@ -128,7 +114,7 @@ function goldenOf(scenario: Scenario): GoldenSet {
     tableVersion: null,
     fixtures: FIXTURES,
     steps: scenario.steps.map((step, i) => exchange(step.name, i, scenario.covers[i] ?? fallback)),
-    sideEffects: { mail: [], rows: {}, tasks: [], files: [] },
+    sideEffects: { mail: [], rows: {}, files: [] },
   };
 }
 
@@ -157,13 +143,13 @@ function setStatus(step: GoldenStep | undefined, status: number): void {
 function entry(over: Partial<ExceptionEntry> = {}): ExceptionEntry {
   return {
     id: 'EX-CO-05',
-    scenario: 'GS-CO-05',
+    scenario: 'GS-CO-75',
     routeKey: 'api:content.findone',
     difference: 'status',
     decision: 'preserve',
     reason: 'legacy answers 200',
     status: 'accepted',
-    evidence: { golden: 'harness/golden/sets/GS-CO-05.json', replay: `${STATE}/golden/replay/GS-CO-05.json` },
+    evidence: { golden: 'harness/golden/sets/GS-CO-75.json', replay: `${STATE}/golden/replay/GS-CO-75.json` },
     sourceSha: SHA,
     ...over,
   };
@@ -183,7 +169,7 @@ function verdictOf(result: ParityResult, over: Partial<ScenarioVerdict> = {}): S
 
 /** `co05` as scenario `GS-CO-0<n>`. */
 function coScenario(n: number, over: Partial<Scenario> = {}): Scenario {
-  return { ...co05, id: `GS-CO-0${n}`, ...over };
+  return { ...co05, id: `GS-CO-7${n}`, ...over };
 }
 
 /** `pe01` with its create step withheld under {@link WITHHELD_KEY}. */
@@ -338,7 +324,7 @@ describe('classifyScenario', () => {
     const scenario = withheldScenario();
     const golden = goldenOf(scenario);
     expect(classify(golden, replayOf(golden), { scenario })).toEqual(
-      verdictOf('withheld', { decisionListRef: [ACTION_REF, TABLE_REF] }),
+      verdictOf('withheld', { decisionListRef: [ACTION_REF] }),
     );
   });
 
@@ -391,7 +377,7 @@ describe('classifyScenario', () => {
       const golden = goldenOf(scenario);
       goldenEdit(golden);
       const verdict = classify(golden, replayOf(golden, replayEdit), { scenario });
-      expect(verdict).toEqual(verdictOf('withheld', { reason, exceptionId, decisionListRef: [ACTION_REF, TABLE_REF] }));
+      expect(verdict).toEqual(verdictOf('withheld', { reason, exceptionId, decisionListRef: [ACTION_REF] }));
 
       const report = buildParityReport({
         catalogue: { scenarios: [scenario] },
@@ -401,15 +387,10 @@ describe('classifyScenario', () => {
         exceptions: [],
       });
       expect(report.summary).toMatchObject({ total: 1, halted: 0, withheld: 1 });
-      expect(report.unmetWithheld).toEqual([
-        { id: 'GS-PE-01', decisionListRef: ACTION_REF, proposal: PROPOSAL },
-        { id: 'GS-PE-01', decisionListRef: TABLE_REF, proposal: TABLE_PROPOSAL },
-      ]);
+      expect(report.unmetWithheld).toEqual([{ id: 'GS-PE-01', decisionListRef: ACTION_REF, proposal: PROPOSAL }]);
       const row = renderParityMarkdown(report).find((line) => line.startsWith('| <a id="GS-PE-01"></a>'));
       expect(row).toContain(`| \`withheld\`: ${reason} |`);
-      expect(row).toContain(
-        `${EXCEPTIONS_LINK}: \`${exceptionId}\`; ${DECISION_LINK}: \`${ACTION_REF}\`, \`${TABLE_REF}\``,
-      );
+      expect(row).toContain(`${EXCEPTIONS_LINK}: \`${exceptionId}\`; ${DECISION_LINK}: \`${ACTION_REF}\``);
     },
   );
 
@@ -471,9 +452,9 @@ describe('classifyScenario', () => {
       },
       'browser flow failed at login: timed out',
     ],
-    ['a missing golden set', () => [null, null, {}], 'no golden set at harness/golden/sets/GS-CO-05.json'],
+    ['a missing golden set', () => [null, null, {}], 'no golden set at harness/golden/sets/GS-CO-75.json'],
     ['an unreadable golden set', () => [null, null, { readErrors: { golden: 'off-schema' } }], 'off-schema'],
-    ['a missing replay', () => [goldenOf(co05), null, {}], `no replay output at ${STATE}/golden/replay/GS-CO-05.json`],
+    ['a missing replay', () => [goldenOf(co05), null, {}], `no replay output at ${STATE}/golden/replay/GS-CO-75.json`],
     [
       'a failed replay',
       () => {
@@ -522,7 +503,7 @@ describe('classifyScenario', () => {
 
 describe('toScenarioParity', () => {
   it.each([
-    ['GS-CO-05', undefined, `${STATE}/golden/replay/GS-CO-05.json`],
+    ['GS-CO-75', undefined, `${STATE}/golden/replay/GS-CO-75.json`],
     ['GS-ID-02', BROWSER, `${STATE}/golden/browser/GS-ID-02.json`],
   ] as const)('points %s evidence at its compared sides', (id, browser, replay) => {
     const verdict = verdictOf('pass');
@@ -547,7 +528,7 @@ function reportInputs(): { scenarios: Scenario[]; rows: ScenarioParity[] } {
   const rows = [
     row(skipped, FIXTURES_UNAVAILABLE, { reason: 'no CREATE SCHEMA' }),
     row(known, 'known-issue', { differences: [diff({ classification: 'known-issue', maskId: 'date-mask' })] }),
-    row(withheld, 'withheld', { decisionListRef: [ACTION_REF, TABLE_REF] }),
+    row(withheld, 'withheld', { decisionListRef: [ACTION_REF] }),
     row(co05, 'fail', {
       reason: 'status 200 | 500',
       differences: [
@@ -571,7 +552,7 @@ function fullReport(): ParityReport {
     scenarios: rows,
     fixtures: NO_FIXTURES,
     decisionList: DECISIONS,
-    exceptions: [entry({ id: 'EX-CO-06', scenario: 'GS-CO-06', status: 'halted', appliesTo: ['api:content.find'] })],
+    exceptions: [entry({ id: 'EX-CO-06', scenario: 'GS-CO-76', status: 'halted', appliesTo: ['api:content.find'] })],
     clock: CLOCK,
   });
 }
@@ -582,12 +563,12 @@ describe('buildParityReport', () => {
     expect(parityReportSchema.parse(report)).toEqual(report);
     expect(report.scenarios.map((s) => s.id)).toEqual([
       'GS-ID-01',
-      'GS-CO-05',
+      'GS-CO-75',
       'GS-PE-01',
-      'GS-CO-06',
-      'GS-CO-07',
-      'GS-CO-08',
-      'GS-CO-09',
+      'GS-CO-76',
+      'GS-CO-77',
+      'GS-CO-78',
+      'GS-CO-79',
     ]);
     expect(report.summary).toEqual({
       total: 7,
@@ -602,28 +583,20 @@ describe('buildParityReport', () => {
     expect(report).toMatchObject({ sourceSha: SHA, generatedBy: GENERATED_BY, generatedAt: CLOCK().toISOString() });
   });
 
-  it('lists withheld proposals, planned outcomes and the coverage left without fixtures', () => {
+  it('lists withheld proposals and planned outcomes', () => {
     const report = fullReport();
-    expect(report.unmetWithheld).toEqual([
-      { id: 'GS-PE-01', decisionListRef: ACTION_REF, proposal: PROPOSAL },
-      { id: 'GS-PE-01', decisionListRef: TABLE_REF, proposal: TABLE_PROPOSAL },
-    ]);
+    expect(report.unmetWithheld).toEqual([{ id: 'GS-PE-01', decisionListRef: ACTION_REF, proposal: PROPOSAL }]);
     expect(report.planned).toEqual({
       provenance: 'planning',
-      withheld: [{ scenario: 'GS-PE-01', routeKeys: [WITHHELD_KEY], decisionListRef: [ACTION_REF, TABLE_REF] }],
+      withheld: [{ scenario: 'GS-PE-01', routeKeys: [WITHHELD_KEY], decisionListRef: [ACTION_REF] }],
       halted: [
-        { scenario: 'GS-CO-06', exceptionId: 'EX-CO-06', routeKeys: ['api:content.findone', 'api:content.find'] },
-        { scenario: 'GS-CO-07', exceptionId: 'EX-CO-07', routeKeys: [] },
+        { scenario: 'GS-CO-76', exceptionId: 'EX-CO-06', routeKeys: ['api:content.findone', 'api:content.find'] },
+        { scenario: 'GS-CO-77', exceptionId: 'EX-CO-07', routeKeys: [] },
       ],
-    });
-    expect(report.coverage).toEqual({
-      servicesCovered: MIGRATED_SERVICES.length,
-      servicesTotal: 10,
-      unmet: [UNMET_WITHOUT_FIXTURES],
     });
   });
 
-  it('records withheld rows without a known reference, and omits coverage when fixtures are available', () => {
+  it('records withheld rows without a known reference', () => {
     const row = toScenarioParity(co05, verdictOf('withheld'));
     const otherRef = 'opt2/decision-list.json#tables/tother';
     const report = buildParityReport({
@@ -635,10 +608,9 @@ describe('buildParityReport', () => {
       sourceSha: 'a'.repeat(40),
     });
     expect(report.sourceSha).toBe('a'.repeat(40));
-    expect(report.coverage).toBeUndefined();
     expect(report.unmetWithheld).toEqual([
       { id: 'GS-ID-01', decisionListRef: otherRef, proposal: null },
-      { id: 'GS-CO-05', decisionListRef: null, proposal: null },
+      { id: 'GS-CO-75', decisionListRef: null, proposal: null },
     ]);
   });
 
@@ -663,28 +635,20 @@ describe('renderParityMarkdown', () => {
     expect(lines).toContain('| total | 7 |');
     for (const result of PARITY_RESULTS) expect(lines).toContain(`| \`${result}\` | 1 |`);
     expect(lines).toContain(
-      '| <a id="GS-CO-05"></a>GS-CO-05 | strategies-content | `fail`: status 200 \\| 500 | ' +
+      '| <a id="GS-CO-75"></a>GS-CO-75 | strategies-content | `fail`: status 200 \\| 500 | ' +
         '3 (1 unlisted, 1 excepted, 1 known-issue) | ' +
-        `golden \`harness/golden/sets/GS-CO-05.json\`, replay \`${STATE}/golden/replay/GS-CO-05.json\`; ` +
+        `golden \`harness/golden/sets/GS-CO-75.json\`, replay \`${STATE}/golden/replay/GS-CO-75.json\`; ` +
         `${EXCEPTIONS_LINK}: \`EX-CO-05\` |`,
     );
-    expect(lines.find((line) => line.includes('GS-CO-06'))).toContain('`halted`: renditions differ | 0 |');
-    expect(lines.find((line) => line.startsWith('| <a id="GS-PE-01">'))).toContain(
-      `${DECISION_LINK}: \`${ACTION_REF}\`, \`${TABLE_REF}\``,
-    );
+    expect(lines.find((line) => line.includes('GS-CO-76'))).toContain('`halted`: renditions differ | 0 |');
+    expect(lines.find((line) => line.startsWith('| <a id="GS-PE-01">'))).toContain(`${DECISION_LINK}: \`${ACTION_REF}\``);
   });
 
-  it('renders the unmet, planned and coverage sections', () => {
+  it('renders the unmet and planned sections', () => {
     const lines = renderParityMarkdown(fullReport());
-    expect(lines).toContain(`| GS-PE-01 | ${DECISION_LINK}: \`${TABLE_REF}\` | ${TABLE_PROPOSAL} |`);
-    expect(lines).toContain(
-      `| GS-PE-01 | \`withheld\` | \`${WITHHELD_KEY}\` | ${DECISION_LINK}: \`${ACTION_REF}\`, \`${TABLE_REF}\` |`,
-    );
-    expect(lines).toContain(`| GS-CO-07 | \`halted\` |  | ${EXCEPTIONS_LINK}: \`EX-CO-07\` |`);
-    expect(lines.at(-1)).toBe(
-      'The legacy fixtures are unavailable, so parity covers four of ten services, and ' +
-        `"${UNMET_WITHOUT_FIXTURES}" is unmet.`,
-    );
+    expect(lines).toContain(`| GS-PE-01 | ${DECISION_LINK}: \`${ACTION_REF}\` | ${PROPOSAL} |`);
+    expect(lines).toContain(`| GS-PE-01 | \`withheld\` | \`${WITHHELD_KEY}\` | ${DECISION_LINK}: \`${ACTION_REF}\` |`);
+    expect(lines.at(-1)).toBe(`| GS-CO-77 | \`halted\` |  | ${EXCEPTIONS_LINK}: \`EX-CO-07\` |`);
   });
 
   it('states when nothing was compared or withheld', () => {
@@ -700,9 +664,8 @@ describe('renderParityMarkdown', () => {
     expect(lines).toContain(`Fixtures: available (from \`${STATE}/fixtures.json\`)`);
     expect(lines).toContain('No scenario was compared.');
     expect(lines).toContain('None: no scenario is withheld.');
-    expect(lines.some((line) => line.startsWith('The legacy fixtures are unavailable'))).toBe(false);
-    const unreferenced = { ...report, unmetWithheld: [{ id: 'GS-CO-05', decisionListRef: null, proposal: null }] };
-    expect(renderParityMarkdown(unreferenced)).toContain('| GS-CO-05 | none recorded | none recorded |');
+    const unreferenced = { ...report, unmetWithheld: [{ id: 'GS-CO-75', decisionListRef: null, proposal: null }] };
+    expect(renderParityMarkdown(unreferenced)).toContain('| GS-CO-75 | none recorded | none recorded |');
   });
 
   it.each<[string, string | undefined, string]>([
@@ -716,8 +679,8 @@ describe('renderParityMarkdown', () => {
     const link = parityExceptionsLink(path.resolve(REPO_ROOT, from), { OPT2_REPORTS_DIR: reports });
     expect(link).toBe(`[exceptions-list.md](${href})`);
     const lines = renderParityMarkdown(fullReport(), link);
-    expect(lines.find((line) => line.startsWith('| <a id="GS-CO-05">'))).toContain(`; ${link}: \`EX-CO-05\` |`);
-    expect(lines).toContain(`| GS-CO-07 | \`halted\` |  | ${link}: \`EX-CO-07\` |`);
+    expect(lines.find((line) => line.startsWith('| <a id="GS-CO-75">'))).toContain(`; ${link}: \`EX-CO-05\` |`);
+    expect(lines).toContain(`| GS-CO-77 | \`halted\` |  | ${link}: \`EX-CO-07\` |`);
     const targets = lines.join('\n').split('[exceptions-list.md](').slice(1);
     expect(targets.length).toBeGreaterThan(1);
     for (const target of targets) expect(target.startsWith(`${href})`)).toBe(true);
@@ -767,10 +730,10 @@ describe('committed parity report', () => {
 });
 
 describe('renderExceptionsMarkdown', () => {
-  const parityEvidence = { golden: 'harness/golden/sets/GS-CO-15.json', replay: 'opt2/reports/parity.json#GS-CO-15' };
+  const parityEvidence = { golden: 'harness/golden/sets/GS-CO-85.json', replay: 'opt2/reports/parity.json#GS-CO-85' };
   const entries = [
     entry({ appliesTo: ['api:content.find'] }),
-    entry({ id: 'EX-CO-15', scenario: 'GS-CO-15', evidence: parityEvidence }),
+    entry({ id: 'EX-CO-15', scenario: 'GS-CO-85', evidence: parityEvidence }),
   ];
 
   it.each<[string, ExceptionsList]>([
@@ -781,21 +744,21 @@ describe('renderExceptionsMarkdown', () => {
     const lines = renderExceptionsMarkdown(list);
     expect(lines[0]).toBe('| Value | Field | Meaning |');
     expect(lines).toContain(
-      '| EX-CO-05 | GS-CO-05 | `api:content.findone`, `api:content.find` | status | `preserve` | `accepted` | ' +
-        'golden `harness/golden/sets/GS-CO-05.json` (pending-run), ' +
-        `replay \`${STATE}/golden/replay/GS-CO-05.json\` (pending-run) |`,
+      '| EX-CO-05 | GS-CO-75 | `api:content.findone`, `api:content.find` | status | `preserve` | `accepted` | ' +
+        'golden `harness/golden/sets/GS-CO-75.json` (pending-run), ' +
+        `replay \`${STATE}/golden/replay/GS-CO-75.json\` (pending-run) |`,
     );
     expect(lines.at(-1)).toContain('[pre-existing-defects.md](reports/pre-existing-defects.md)');
   });
 
   it('shows the run state and points parity evidence at parity.md', () => {
-    const run = { results: new Map<string, ParityResult>([['GS-CO-05', 'fail']]), captured: new Set(['GS-CO-05']) };
+    const run = { results: new Map<string, ParityResult>([['GS-CO-75', 'fail']]), captured: new Set(['GS-CO-75']) };
     const lines = renderExceptionsMarkdown(entries, run);
     expect(lines.find((line) => line.startsWith('| EX-CO-05 '))).toContain(
-      `(captured), replay \`${STATE}/golden/replay/GS-CO-05.json\` (fail) |`,
+      `(captured), replay \`${STATE}/golden/replay/GS-CO-75.json\` (fail) |`,
     );
     expect(lines.find((line) => line.startsWith('| EX-CO-15 '))).toContain(
-      '(not captured), parity `opt2/reports/parity.md#GS-CO-15` (not in this run) |',
+      '(not captured), parity `opt2/reports/parity.md#GS-CO-85` (not in this run) |',
     );
   });
 
@@ -821,10 +784,10 @@ describe('list loaders', () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  it('defaults a decision list without variants or tables', async () => {
+  it('defaults a decision list without action variants', async () => {
     const file = path.join(dir, 'decision-list.json');
     await writeFile(file, '{}', 'utf8');
-    await expect(loadDecisionList(file)).resolves.toEqual({ actionVariants: [], tables: [] });
+    await expect(loadDecisionList(file)).resolves.toEqual({ actionVariants: [] });
     expect(DECISION_LIST_PATH).toBe(path.join(REPO_ROOT, 'opt2', 'decision-list.json'));
   });
 
@@ -901,8 +864,8 @@ describe('main', () => {
       coScenario(8),
       coScenario(9),
       browserScenario('GS-ID-02'),
-      browserScenario('GS-ID-03'),
-      browserScenario('GS-ID-04'),
+      browserScenario('GS-ID-73'),
+      browserScenario('GS-ID-74'),
     ];
     const flags = await inputs(scenarios, [entry({ decision: 'fix', status: 'open' })]);
     const goldens = new Map(scenarios.map((s) => [s.id, s.browser === undefined ? goldenOf(s) : browserGolden(s.id)]));
@@ -912,21 +875,21 @@ describe('main', () => {
       if (set === undefined) throw new Error(`no golden ${id}`);
       return set;
     };
-    for (const id of ['GS-ID-01', 'GS-PE-01', 'GS-CO-07', 'GS-CO-08']) {
+    for (const id of ['GS-ID-01', 'GS-PE-01', 'GS-CO-77', 'GS-CO-78']) {
       await writeJson(stateFile('replay', `${id}.json`), replayOf(golden(id)));
     }
-    const failing = replayOf(golden('GS-CO-05'), (r) => setStatus(r.steps[0], 500));
-    await writeJson(stateFile('replay', 'GS-CO-05.json'), failing);
-    await writeFile(stateFile('replay', 'GS-CO-09.json'), '{', 'utf8');
+    const failing = replayOf(golden('GS-CO-75'), (r) => setStatus(r.steps[0], 500));
+    await writeJson(stateFile('replay', 'GS-CO-75.json'), failing);
+    await writeFile(stateFile('replay', 'GS-CO-79.json'), '{', 'utf8');
     await writeJson(stateFile('browser', 'GS-ID-02.json'), maskedBrowserRecord(golden('GS-ID-02')));
-    await writeJson(stateFile('browser', 'GS-ID-04.json'), { differences: 'none' });
+    await writeJson(stateFile('browser', 'GS-ID-74.json'), { differences: 'none' });
 
-    const brokenGolden = path.join(REPO_ROOT, 'harness', 'golden', 'sets', 'GS-CO-08.json');
+    const brokenGolden = path.join(REPO_ROOT, 'harness', 'golden', 'sets', 'GS-CO-78.json');
     const readGolden = async (id: string): Promise<GoldenSet> => {
-      if (id === 'GS-CO-07') {
-        throw new Error('golden set of GS-CO-07', { cause: Object.assign(new Error('absent'), { code: 'ENOENT' }) });
+      if (id === 'GS-CO-77') {
+        throw new Error('golden set of GS-CO-77', { cause: Object.assign(new Error('absent'), { code: 'ENOENT' }) });
       }
-      if (id === 'GS-CO-08') throw new Error(`${brokenGolden}: is not valid JSON`);
+      if (id === 'GS-CO-78') throw new Error(`${brokenGolden}: is not valid JSON`);
       return golden(id);
     };
     const logged: string[] = [];
@@ -961,7 +924,7 @@ describe('main', () => {
       expect.objectContaining({ severity: 'INFO', message: 'GS-PE-RH-01: not replayed yet; omitted' }),
     );
     expect(records).toContainEqual(
-      expect.objectContaining({ severity: 'WARNING', message: 'GS-CO-05: fail (1 unlisted difference)' }),
+      expect.objectContaining({ severity: 'WARNING', message: 'GS-CO-75: fail (1 unlisted difference)' }),
     );
 
     const report = parityReportSchema.parse(JSON.parse(await readFile(path.join(reports, 'parity.json'), 'utf8')));
@@ -969,17 +932,16 @@ describe('main', () => {
       new RegExp(`^\\$\\{OPT2_STATE_DIR\\}/golden/${file.replaceAll('.', '\\.')}: ${message}`);
     expect(Object.fromEntries(report.scenarios.map((s) => [s.id, [s.result, s.reason]]))).toEqual({
       'GS-ID-01': ['pass', null],
-      'GS-CO-05': ['fail', '1 unlisted difference'],
+      'GS-CO-75': ['fail', '1 unlisted difference'],
       'GS-PE-01': ['withheld', null],
-      'GS-CO-06': [FIXTURES_UNAVAILABLE, 'fixtures.json not found'],
-      'GS-CO-07': ['fail', 'no golden set at harness/golden/sets/GS-CO-07.json'],
-      'GS-CO-08': ['fail', 'harness/golden/sets/GS-CO-08.json: is not valid JSON'],
-      'GS-CO-09': ['fail', expect.stringMatching(stateReason('replay/GS-CO-09.json', 'is not valid JSON'))],
+      'GS-CO-76': [FIXTURES_UNAVAILABLE, 'fixtures.json not found'],
+      'GS-CO-77': ['fail', 'no golden set at harness/golden/sets/GS-CO-77.json'],
+      'GS-CO-78': ['fail', 'harness/golden/sets/GS-CO-78.json: is not valid JSON'],
+      'GS-CO-79': ['fail', expect.stringMatching(stateReason('replay/GS-CO-79.json', 'is not valid JSON'))],
       'GS-ID-02': ['known-issue', null],
-      'GS-ID-03': ['fail', 'browser flow not run'],
-      'GS-ID-04': ['fail', expect.stringMatching(stateReason('browser/GS-ID-04.json', 'does not match its schema'))],
+      'GS-ID-73': ['fail', 'browser flow not run'],
+      'GS-ID-74': ['fail', expect.stringMatching(stateReason('browser/GS-ID-74.json', 'does not match its schema'))],
     });
-    expect(report.coverage?.unmet).toEqual([UNMET_WITHOUT_FIXTURES]);
 
     const parityLines = (await readFile(path.join(reports, 'parity.md'), 'utf8')).split('\n');
     expect(parityLines.slice(0, 3)).toEqual(['# Parity report', `Source SHA: ${SHA}`, '']);
@@ -991,15 +953,15 @@ describe('main', () => {
 
   it('links parity.md to the exceptions-list Markdown it writes beside it under OPT2_REPORTS_DIR', async () => {
     const halted = coScenario(6, { expected: 'halted', exceptionId: 'EX-CO-06' });
-    const flags = await inputs([halted], [entry({ id: 'EX-CO-06', scenario: 'GS-CO-06', status: 'halted' })]);
-    await writeJson(stateFile('replay', 'GS-CO-06.json'), replayOf(goldenOf(halted)));
+    const flags = await inputs([halted], [entry({ id: 'EX-CO-06', scenario: 'GS-CO-76', status: 'halted' })]);
+    await writeJson(stateFile('replay', 'GS-CO-76.json'), replayOf(goldenOf(halted)));
     vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     const outcome = await main(flags, env, { readGolden: async () => goldenOf(halted), clock: CLOCK });
     expect(outcome.summary).toMatchObject({ exceptionsMarkdown: path.join(reports, 'exceptions-list.md') });
 
     const parity = await readFile(path.join(reports, 'parity.md'), 'utf8');
     expect(parity).toContain(
-      '| GS-CO-06 | `halted` | `api:content.findone` | [exceptions-list.md](exceptions-list.md): `EX-CO-06` |',
+      '| GS-CO-76 | `halted` | `api:content.findone` | [exceptions-list.md](exceptions-list.md): `EX-CO-06` |',
     );
     expect(parity).not.toContain('](../exceptions-list.md)');
     const exceptions = await readFile(path.join(reports, 'exceptions-list.md'), 'utf8');

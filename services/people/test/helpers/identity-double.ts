@@ -1,5 +1,4 @@
 /** Identity as its contract declares it: an in-process service client with identity's roster account-operation states. */
-import { readFileSync } from 'node:fs';
 import { parse } from 'yaml';
 import { Roles, moduleRole } from '@opt2/platform/auth';
 import {
@@ -32,6 +31,7 @@ import {
   assertResponseMatchesOpenApi,
   ContractAssertionError,
   findOperation,
+  loadOpenApiDocument,
   registryPayloads,
   type ContractViolation,
 } from '@opt2/platform/testing';
@@ -59,7 +59,7 @@ let contract: IdentityContract | undefined;
 
 /** Identity's contract, read and parsed once. */
 export function identityContract(): IdentityContract {
-  contract ??= parse(readFileSync(CONTRACT_URL, 'utf8')) as IdentityContract;
+  contract ??= loadOpenApiDocument(CONTRACT_URL, parse) as IdentityContract;
   return contract;
 }
 

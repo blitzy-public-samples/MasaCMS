@@ -13,7 +13,7 @@ import {
 } from '../../src/apply/batch.js';
 
 const PLAIN_TABLE = 'tusers';
-const FOLDED_TABLE = 'Program_N.blackout';
+const FOLDED_TABLE = 'Program_N.enrolment';
 const SNAPSHOT_SEQ = 7;
 
 /** One `add` call of a batcher. */
@@ -85,7 +85,7 @@ function runs(...parts: [string, number][]): Add[] {
 }
 
 const tableOf = (legacyProgramId: number | undefined): string =>
-  legacyProgramId === undefined ? PLAIN_TABLE : `Program_${String(legacyProgramId)}.blackout`;
+  legacyProgramId === undefined ? PLAIN_TABLE : `Program_${String(legacyProgramId)}.enrolment`;
 
 const idOf = (legacyTable: string, tenantId: string, ordinal: number): string =>
   batchIdFor({ direction: 'backfill', snapshotSeq: SNAPSHOT_SEQ, legacyTable, tenantId, ordinal });

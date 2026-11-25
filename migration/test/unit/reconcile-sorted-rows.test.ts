@@ -31,11 +31,11 @@ const KEYED: Shape = {
 };
 
 const FOLDED: Shape = {
-  legacyTable: 'Program_N.timesheet',
+  legacyTable: 'Program_N.enrolment',
   keyed: true,
-  keyColumns: ['timesheet_id', 'legacy_program_id'],
+  keyColumns: ['enrolment_id', 'legacy_program_id'],
   columns: [
-    { name: 'timesheet_id', type: 'i' },
+    { name: 'enrolment_id', type: 'i' },
     { name: 'status', type: 's' },
     { name: 'legacy_program_id', type: 'i' },
   ],
@@ -109,8 +109,8 @@ describe('UnitRowSorter', () => {
       'folded rows with legacy_program_id',
       FOLDED,
       [
-        { tenantId: A, values: { timesheet_id: '7', status: 'DRAFT', legacy_program_id: '2' }, legacyProgramId: 2 },
-        { tenantId: A, values: { timesheet_id: '7', status: 'SUBMITTED', legacy_program_id: '1' }, legacyProgramId: 1 },
+        { tenantId: A, values: { enrolment_id: '7', status: 'DRAFT', legacy_program_id: '2' }, legacyProgramId: 2 },
+        { tenantId: A, values: { enrolment_id: '7', status: 'SUBMITTED', legacy_program_id: '1' }, legacyProgramId: 1 },
       ],
     ],
     [
@@ -142,8 +142,8 @@ describe('UnitRowSorter', () => {
       'a folded key with its program',
       FOLDED,
       [
-        { values: { timesheet_id: '7', status: 'DRAFT', legacy_program_id: '2' }, legacyProgramId: 2 },
-        { values: { timesheet_id: '7', status: 'SUBMITTED', legacy_program_id: '1' }, legacyProgramId: 1 },
+        { values: { enrolment_id: '7', status: 'DRAFT', legacy_program_id: '2' }, legacyProgramId: 2 },
+        { values: { enrolment_id: '7', status: 'SUBMITTED', legacy_program_id: '1' }, legacyProgramId: 1 },
       ],
     ],
     ['a binary key', BINARY_KEY, [{ values: { hash: Buffer.from('ff00', 'hex'), name: 'b' } }, { values: { hash: Buffer.from('00ff', 'hex'), name: 'a' } }]],

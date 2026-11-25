@@ -1,5 +1,4 @@
-// Unit tests for the scheduler hand-off of Masa's siteMonitor task and the fixture survey tasks.
-import { encodeRow, type CanonicalColumn } from '@opt2/platform/migration-kit';
+// Unit tests for the scheduler hand-off of Masa's siteMonitor task.
 import { SITEMONITOR_QUEUE } from '@opt2/platform/tasks';
 import type { MetadataTx, QueryResult, QueryResultRow, TenantDb } from '@opt2/platform/tenancy';
 import { describe, expect, it } from 'vitest';
@@ -15,7 +14,6 @@ import {
   createSchedulerService,
   schedulerStateView,
   siteMonitorJobUnits,
-  surveysTouched,
   type SchedulerContext,
   type SchedulerScope,
   type SchedulerServiceOptions,
@@ -24,7 +22,6 @@ import { defaultSiteMonitorRecord, type SchedulerRecordMap, type SiteMonitorReco
 
 const NOW = new Date('2026-06-30T12:00:00.000Z');
 const MONITOR_NAME = '/srv/www/index.cfm/_api/sitemonitor/';
-const SURVEY_ID = '9C1D7E2F-3A4B-4C5D-8E9F0A1B2C3D4E5F';
 const LEGACY_CURSOR = '2026-06-30T11:45:00.000';
 const TARGET_CURSOR = '2026-06-30T13:00:00.000';
 const QUEUE_PATH = `/internal/v1/task-queues/${SITEMONITOR_QUEUE}`;
@@ -45,27 +42,15 @@ const MONITOR: ScheduledTaskDefinition = {
   paused: false,
 };
 
-function surveyTask(kind: string, paused: boolean, startTime = '09:15:00', surveyId = SURVEY_ID): ScheduledTaskDefinition {
-  return {
-    ...MONITOR,
-    task: `opt2-survey-${surveyId}-${kind}`,
-    url: `http://127.0.0.1:20000/legacy-fixtures/cfml/api.cfm/surveys/surveys/${surveyId}/launch?siteid=tenant-a&opt2TaskToken=t0ken`,
-    interval: 'once',
-    startDate: '07/01/2026',
-    startTime,
-    paused,
-  };
-}
-
-const LAUNCH = surveyTask('launch', false);
-const REMINDER_1 = surveyTask('reminder-1', true, '10:15:00');
-const REMINDER_2 = surveyTask('reminder-2', false, '11:15:00');
-
-const SCHEDULE_COLUMNS: CanonicalColumn[] = [
-  { name: 'schedule_id', type: 's' },
-  { name: 'survey_id', type: 's' },
-  { name: 'schedule_version', type: 'i' },
-];
+/** A task an operator scheduled beside the monitor, carrying a callback token the state view must not show. */
+const OTHER: ScheduledTaskDefinition = {
+  ...MONITOR,
+  task: 'ops-link-check',
+  url: 'http://127.0.0.1:20000/ops/link-check.cfm?siteid=tenant-a&opt2TaskToken=t0ken',
+  interval: 'once',
+  startDate: '07/01/2026',
+  startTime: '09:15:00',
+};
 
 /** In-memory migration.scheduler_state for the statements state.ts issues, rolled back when a transaction throws. */
 class SchedulerTable {
@@ -132,13 +117,10 @@ function harness(tasks: ScheduledTaskDefinition[], monitor?: Partial<SiteMonitor
     live: structuredClone(tasks),
     legacyCursor: LEGACY_CURSOR as string | null,
     targetCursor: TARGET_CURSOR as string | null,
-    pendingOnTarget: new Set<string>(),
-    adoptRequests: [] as unknown[],
     restoreBodies: [] as SchedulerRestoreRequest[],
     ensureStatus: 200,
     failNext: null as string | null,
     nowMs: NOW.getTime(),
-    onAdopt: (): void => undefined,
   };
   if (monitor !== undefined) h.table.rows.set('sitemonitor', { ...defaultSiteMonitorRecord(NOW), ...monitor });
 
@@ -199,28 +181,6 @@ function harness(tasks: ScheduledTaskDefinition[], monitor?: Partial<SiteMonitor
       h.calls.push('programs-sites.siteMonitorState');
       return Promise.resolve({ lastMonitored: h.targetCursor, updatedAt: null });
     },
-    adoptScheduledTasks: (req: { tasks: { name: string }[] }) => {
-      h.onAdopt();
-      h.calls.push(`communications.adopt ${req.tasks.map((task) => task.name).join(',')}`);
-      h.adoptRequests.push(req);
-      req.tasks.forEach((task) => h.pendingOnTarget.add(task.name));
-      return Promise.resolve({ adopted: req.tasks.length, existing: 0, scheduledImmediately: 0 });
-    },
-    cancelAdoptedScheduledTasks: (req: { names?: string[] }) => {
-      h.calls.push(`communications.cancel ${(req.names ?? []).join(',')}`);
-      return Promise.resolve({ cancelled: (req.names ?? []).filter((name) => h.pendingOnTarget.delete(name)).length });
-    },
-    async *exportPages(owner: string, params: { unit: string; tenantId: string }) {
-      h.calls.push(`${owner}.export ${params.unit}`);
-      await Promise.resolve();
-      const row = encodeRow(SCHEDULE_COLUMNS, { schedule_id: 'S1', survey_id: SURVEY_ID.toLowerCase(), schedule_version: '3' });
-      yield {
-        unit: params.unit,
-        tenantId: params.tenantId,
-        next: null,
-        tables: [{ unit: params.unit, legacyTable: 'synthetic.survey_schedule', targetTable: params.unit, keyless: false, columns: SCHEDULE_COLUMNS, rows: [{ key: 'k', hash: 'h', row }] }],
-      };
-    },
   };
 
   const client = {
@@ -238,7 +198,6 @@ function harness(tasks: ScheduledTaskDefinition[], monitor?: Partial<SiteMonitor
     bridge,
     owners,
     client,
-    catalog: { ownerOf: (unit: string) => unit.split('.')[0] },
     clock: { now: () => new Date(h.nowMs) },
     logger: { info: (message: string) => h.logs.push(message) },
   } as unknown as SchedulerContext;
@@ -257,7 +216,7 @@ function harness(tasks: ScheduledTaskDefinition[], monitor?: Partial<SiteMonitor
 const NATIVE: Partial<SiteMonitorRecord> = { nativeExisted: true, originalPing: true, definition: MONITOR };
 const NO_NATIVE: Partial<SiteMonitorRecord> = { nativeExisted: false, originalPing: false, definition: null };
 
-describe('siteMonitorJobUnits and surveysTouched', () => {
+describe('siteMonitorJobUnits', () => {
   it('returns the sorted, de-duplicated units of job entries only', () => {
     const entries = [
       { kind: 'job', units: ['b.x', 'a.y'] },
@@ -266,21 +225,14 @@ describe('siteMonitorJobUnits and surveysTouched', () => {
     ];
     expect(siteMonitorJobUnits({ entries } as never)).toEqual(['a.y', 'b.x']);
   });
-
-  it.each([
-    [['people.person', 'surveys.survey'], true],
-    [new Set(['people.person']), false],
-  ])('surveysTouched(%j) is %s', (units, expected) => {
-    expect(surveysTouched(units, { ownerOf: (unit) => unit.split('.')[0] as never })).toBe(expected);
-  });
 });
 
 describe('site monitor hand-off', () => {
   it('pauses before the freeze, then deletes, seeds the cursor and ensures the chain after activation', async () => {
-    const { h, service } = harness([MONITOR, LAUNCH], NATIVE);
+    const { h, service } = harness([MONITOR, OTHER], NATIVE);
     const svc = service();
 
-    expect(await svc.pauseFor([MONITOR_UNIT], STAYS)).toEqual({ siteMonitor: [MONITOR_NAME], surveys: [] });
+    expect(await svc.pauseFor([MONITOR_UNIT], STAYS)).toEqual({ siteMonitor: [MONITOR_NAME] });
     expect(h.table.stored('sitemonitor').nativePaused).toBe('transition');
     h.calls.push('gateway.activate');
 
@@ -347,7 +299,7 @@ describe('site monitor hand-off', () => {
 
   it('leaves the monitor alone when the units miss it and its entry does not move', async () => {
     const { h, service } = harness([MONITOR], NATIVE);
-    expect(await service().pauseFor(['people.person'], STAYS)).toEqual({ siteMonitor: [], surveys: [] });
+    expect(await service().pauseFor(['people.person'], STAYS)).toEqual({ siteMonitor: [] });
     expect(h.calls).toEqual(['bridge.describe']);
   });
 
@@ -359,7 +311,7 @@ describe('site monitor hand-off', () => {
     h.calls.length = 0;
     const pausedAt = h.nowMs;
 
-    expect(await svc.restoreToLegacy([MONITOR_UNIT], MOVES)).toEqual({ siteMonitor: [MONITOR_NAME], surveys: [] });
+    expect(await svc.restoreToLegacy(MOVES)).toEqual({ siteMonitor: [MONITOR_NAME] });
     expect(h.nowMs - pausedAt).toBe(600_000);
     expect(h.calls).toEqual([
       `programs-sites POST ${QUEUE_PATH}/pause`,
@@ -386,7 +338,7 @@ describe('site monitor hand-off', () => {
     });
     await svc.handOffSiteMonitorToTarget();
     h.targetCursor = null;
-    await svc.restoreToLegacy([], MOVES);
+    await svc.restoreToLegacy(MOVES);
     expect(slept).toBe(600_000);
     expect(h.calls.some((call) => call.startsWith('bridge.setCursor'))).toBe(false);
   });
@@ -402,151 +354,26 @@ describe('site monitor hand-off', () => {
   });
 });
 
-describe('survey task hand-off', () => {
-  it('pauses, captures, adopts with schedule versions, deletes, and restores only tasks still pending on the target', async () => {
-    const { h, service } = harness([MONITOR, LAUNCH, REMINDER_1, REMINDER_2], NATIVE);
-    const svc = service();
-    const names = [LAUNCH.task, REMINDER_1.task, REMINDER_2.task].sort();
-
-    expect((await svc.pauseFor(['surveys.survey_schedule'], STAYS)).surveys).toEqual(names);
-    expect(h.table.stored('surveyTasks').definitions.map((task) => [task.task, task.paused])).toEqual(
-      [LAUNCH, REMINDER_1, REMINDER_2].map((task) => [task.task, task.paused]).sort(),
-    );
-
-    h.calls.length = 0;
-    let storedAtAdopt = 0;
-    h.onAdopt = () => {
-      storedAtAdopt = h.table.stored('surveyTasks').definitions.length;
-    };
-    expect(await svc.handOffSurveysToTarget()).toEqual({ adopted: names, deleted: names });
-    expect(storedAtAdopt).toBe(3);
-    expect(h.calls).toEqual([
-      'bridge.pause {"prefix":"opt2-survey-"}',
-      'bridge.describe',
-      'surveys.export surveys.survey_schedule',
-      `communications.adopt ${names.join(',')}`,
-      'bridge.delete {"prefix":"opt2-survey-"}',
-    ]);
-    expect(h.adoptRequests).toEqual([
-      {
-        tasks: [
-          { name: LAUNCH.task, siteId: 'tenant-a', scheduleTime: '2026-07-01T09:15:00.000', scheduleVersion: 3 },
-          { name: REMINDER_1.task, siteId: 'tenant-a', scheduleTime: '2026-07-01T10:15:00.000', scheduleVersion: 3 },
-          { name: REMINDER_2.task, siteId: 'tenant-a', scheduleTime: '2026-07-01T11:15:00.000', scheduleVersion: 3 },
-        ],
-      },
-    ]);
-    expect(h.table.stored('surveyTasks')).toMatchObject({ state: 'adopted', paused: null, adoptedNames: names, adoptedAt: NOW.toISOString() });
-
-    h.calls.length = 0;
-    expect(await svc.handOffSurveysToTarget()).toEqual({ adopted: names, deleted: [] });
-    expect(h.calls).toEqual([]);
-
-    h.pendingOnTarget.delete(LAUNCH.task);
-    expect((await svc.restoreToLegacy(['surveys.survey_schedule'], STAYS)).surveys).toEqual([REMINDER_2.task, REMINDER_1.task]);
-    expect(h.calls.filter((call) => call.startsWith('bridge.restore'))).toEqual([
-      `bridge.restore {"tasks":["${REMINDER_2.task}"],"repoint":true,"paused":false}`,
-      `bridge.restore {"tasks":["${REMINDER_1.task}"],"repoint":true,"paused":true}`,
-    ]);
-    expect(h.calls.filter((call) => call.startsWith('communications.cancel'))).toEqual(names.map((name) => `communications.cancel ${name}`));
-    expect(h.table.stored('surveyTasks')).toMatchObject({ state: 'legacy', adoptedNames: [], paused: null });
-    expect(h.table.stored('surveyTasks').definitions.map((task) => task.task)).toEqual([REMINDER_1.task, REMINDER_2.task]);
-  });
-
-  it.each([
-    { label: 'listed expired', restarted: false },
-    { label: 'listed paused after a restart imported every task paused', restarted: true },
-  ])('keeps a survey task captured expired, then $label, from adoption and restores it expired', async ({ restarted }) => {
-    const expired = { ...REMINDER_2, expired: true };
-    const { h, service } = harness([MONITOR, LAUNCH, expired], NATIVE);
-    const svc = service();
-
-    expect((await svc.pauseFor(['surveys.survey_schedule'], STAYS)).surveys).toEqual([LAUNCH.task]);
-    expect(h.table.stored('surveyTasks').definitions.find((task) => task.task === expired.task)).toMatchObject({ paused: false, expired: true });
-    expect(h.logs).toContain(`scheduler hand-off pause survey tasks (transition): ${LAUNCH.task}; expired, left as they are: ${expired.task}`);
-    if (restarted) h.live.forEach((task) => Object.assign(task, { paused: true, expired: false }));
-
-    expect(await svc.handOffSurveysToTarget()).toEqual({ adopted: [LAUNCH.task], deleted: [LAUNCH.task, expired.task] });
-    expect(h.adoptRequests).toMatchObject([{ tasks: [{ name: LAUNCH.task }] }]);
-    expect(h.logs).toContain(`scheduler hand-off skip expired survey tasks: ${expired.task}`);
-    expect(h.table.stored('surveyTasks')).toMatchObject({ state: 'adopted', adoptedNames: [LAUNCH.task] });
-
-    expect((await svc.restoreToLegacy(['surveys.survey_schedule'], STAYS)).surveys).toEqual([LAUNCH.task, expired.task]);
-    expect(h.calls.filter((call) => call.startsWith('communications.cancel'))).toEqual([`communications.cancel ${LAUNCH.task}`]);
-    expect(h.restoreBodies.map((body) => body.tasks.map((task) => [task.task, task.expired === true]))).toEqual([
-      [
-        [LAUNCH.task, false],
-        [expired.task, true],
-      ],
-    ]);
-    expect(h.logs).toContain(`scheduler hand-off restore survey tasks: ${LAUNCH.task}, ${expired.task}; expired: ${expired.task}`);
-  });
-
-  it.each([
-    { label: 'listed expired', restarted: false },
-    { label: 'listed paused after a restart imported every task paused', restarted: true },
-  ])('resumes after an aborted transition no survey task captured expired, then $label', async ({ restarted }) => {
-    const expired = { ...REMINDER_2, expired: true };
-    const { h, service } = harness([LAUNCH, REMINDER_1, expired]);
-    const svc = service();
-    await svc.pauseFor(['surveys.survey'], STAYS);
-    if (restarted) h.live.forEach((task) => Object.assign(task, { paused: true, expired: false }));
-
-    expect(await svc.resumePaused()).toEqual({ siteMonitor: [], surveys: [LAUNCH.task] });
-    expect(h.calls.filter((call) => call.startsWith('bridge.resume'))).toEqual([`bridge.resume {"tasks":["${LAUNCH.task}"]}`]);
-    expect(h.live.find((task) => task.task === expired.task)?.paused).toBe(restarted);
-    expect(h.table.stored('surveyTasks').paused).toBeNull();
-  });
-
-  it('resumes after an aborted transition only what was running before the pause', async () => {
-    const { h, service } = harness([MONITOR, LAUNCH, REMINDER_1], NATIVE);
-    const svc = service();
-    await svc.pauseFor(['surveys.survey', 'x.y'], { siteMonitorUnits: ['x.y'], siteMonitorEntryMoves: false });
-
-    expect(await svc.resumePaused()).toEqual({ siteMonitor: [MONITOR_NAME], surveys: [LAUNCH.task] });
-    expect(h.live.find((task) => task.task === REMINDER_1.task)?.paused).toBe(true);
-    expect(h.table.stored('surveyTasks').paused).toBeNull();
-    expect(h.table.stored('sitemonitor').nativePaused).toBeNull();
-  });
-
-  it.each([
-    ['an unknown survey', surveyTask('launch', false, '09:15:00', 'AAAAAAAA-AAAA-AAAA-AAAAAAAAAAAAAAAA')],
-    ['an unparsable start time', { ...LAUNCH, startTime: '9:15 AM' }],
-  ])('refuses to adopt a task of %s and keeps its captured definition', async (_title, task) => {
-    const { h, service } = harness([task]);
-    await expect(service().handOffSurveysToTarget()).rejects.toMatchObject({ step: 'adopt' });
-    expect(h.table.stored('surveyTasks')).toMatchObject({ state: 'legacy', paused: 'transition' });
-    expect(h.table.stored('surveyTasks').definitions).toHaveLength(1);
-    expect(h.calls.some((call) => call.startsWith('bridge.delete'))).toBe(false);
-  });
-});
-
 describe('suspend and resume', () => {
   it('restoreAll on an empty state makes no bridge call and writes nothing', async () => {
     const { h, service } = harness([]);
-    expect(await service().restoreAll()).toEqual({ siteMonitor: [], surveys: [] });
+    expect(await service().restoreAll()).toEqual({ siteMonitor: [] });
     expect(h.calls).toEqual([]);
     expect(h.table.rows.size).toBe(0);
   });
 
-  it('pauseAll is idempotent and restoreAll recreates every captured task with its pre-pause flag', async () => {
-    const { h, service } = harness([MONITOR, LAUNCH, REMINDER_1], NATIVE);
+  it('pauseAll is idempotent and restoreAll recreates the captured monitor', async () => {
+    const { h, service } = harness([MONITOR, OTHER], NATIVE);
     const svc = service();
-    expect(await svc.pauseAll()).toEqual({ siteMonitor: [MONITOR_NAME], surveys: [LAUNCH.task, REMINDER_1.task].sort() });
+    expect(await svc.pauseAll()).toEqual({ siteMonitor: [MONITOR_NAME] });
     await svc.pauseAll();
     expect(h.table.stored('sitemonitor').nativePaused).toBe('suspend');
-    expect(h.table.stored('surveyTasks')).toMatchObject({ paused: 'suspend' });
-    expect(h.table.stored('surveyTasks').definitions.find((task) => task.task === LAUNCH.task)?.paused).toBe(false);
+    expect(h.live.find((task) => task.task === OTHER.task)?.paused).toBe(false);
 
     h.calls.length = 0;
-    expect(await svc.restoreAll()).toEqual({ siteMonitor: [MONITOR_NAME], surveys: [LAUNCH.task, REMINDER_1.task] });
-    expect(h.calls).toEqual([
-      `bridge.restore {"tasks":["${MONITOR_NAME}"],"repoint":true,"paused":false}`,
-      `bridge.restore {"tasks":["${LAUNCH.task}"],"repoint":true,"paused":false}`,
-      `bridge.restore {"tasks":["${REMINDER_1.task}"],"repoint":true,"paused":true}`,
-    ]);
+    expect(await svc.restoreAll()).toEqual({ siteMonitor: [MONITOR_NAME] });
+    expect(h.calls).toEqual([`bridge.restore {"tasks":["${MONITOR_NAME}"],"repoint":true,"paused":false}`]);
     expect(h.table.stored('sitemonitor').nativePaused).toBeNull();
-    expect(h.table.stored('surveyTasks').paused).toBeNull();
   });
 });
 
@@ -559,15 +386,15 @@ describe('scheduler status', () => {
   });
 
   it.each([
-    ['live tasks', { ...NATIVE, originalPing: 'Yes' }, [MONITOR, { ...LAUNCH, paused: true }], 'active', true, ['paused']],
-    ['a handed-off monitor', { ...NATIVE, state: 'target', originalPing: 'off', cursorHandedOff: LEGACY_CURSOR, handedOffAt: NOW.toISOString() }, [], 'handed-off', null, []],
-    ['a captured, paused monitor', { ...NATIVE, originalPing: 'false' }, [{ ...MONITOR, paused: true }], 'paused', false, []],
-    ['nothing captured', NO_NATIVE, [], 'none', false, []],
-  ] as const)('maps %s to the SchedulerState contract', async (_title, monitor, live, state, ping, fixtureStatuses) => {
+    ['live tasks', { ...NATIVE, originalPing: 'Yes' }, [MONITOR, { ...OTHER, paused: true }], 'active', true],
+    ['a handed-off monitor', { ...NATIVE, state: 'target', originalPing: 'off', cursorHandedOff: LEGACY_CURSOR, handedOffAt: NOW.toISOString() }, [], 'handed-off', null],
+    ['a captured, paused monitor', { ...NATIVE, originalPing: 'false' }, [{ ...MONITOR, paused: true }], 'paused', false],
+    ['nothing captured', NO_NATIVE, [], 'none', false],
+  ] as const)('maps %s to the SchedulerState contract', async (_title, monitor, live, state, ping) => {
     const { service } = harness([...live], monitor as Partial<SiteMonitorRecord>);
     const view = schedulerStateView(await service().state(), { suspended: false });
     expect(view).toMatchObject({ ping, nativeTaskExisted: monitor.nativeExisted, siteMonitor: { state }, background: { suspended: false } });
-    expect(view.fixtureTasks.map((task) => task.status)).toEqual(fixtureStatuses);
+    expect(view.tasks.map((task) => task.name)).toEqual(state === 'none' ? [] : [MONITOR_NAME]);
     expect(JSON.stringify(view)).not.toContain('t0ken');
     if (state === 'handed-off') {
       expect(view.siteMonitor).toEqual({ state, handedOffAt: NOW.toISOString(), lastMonitored: LEGACY_CURSOR });
@@ -575,12 +402,9 @@ describe('scheduler status', () => {
     }
   });
 
-  it('marks stored survey definitions absent from ColdFusion as captured or deleted', async () => {
-    const { h, service } = harness([], NATIVE);
-    h.table.rows.set('surveyTasks', { state: 'adopted', definitions: [LAUNCH], paused: null, adoptedNames: [LAUNCH.task], updatedAt: NOW.toISOString() });
+  it('marks a stored monitor definition absent from ColdFusion as captured', async () => {
+    const { service } = harness([], NATIVE);
     const view = schedulerStateView(await service().state(), { suspended: true });
-    expect(view.fixtureTasks).toMatchObject([{ name: LAUNCH.task, status: 'deleted' }]);
     expect(view.tasks).toMatchObject([{ name: MONITOR_NAME, status: 'captured' }]);
-    expect(view.fixtureTasks[0]?.url).toBe('http://127.0.0.1:20000/legacy-fixtures/cfml/api.cfm/surveys/surveys/9C1D7E2F-3A4B-4C5D-8E9F0A1B2C3D4E5F/launch?siteid=tenant-a');
   });
 });

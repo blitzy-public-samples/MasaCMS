@@ -18,7 +18,6 @@ import { createResponseModes } from '../src/admin/response-modes.js';
 import { buildRoutingIndex } from '../src/cutover/loader.js';
 import type { CutoverEntry, EntryKind, InventoryFacts, OwningService, RoutingIndex } from '../src/cutover/types.js';
 import { registerEdgeRoute, type DispatcherDeps } from '../src/dispatcher/dispatch.js';
-import { FIXTURE_AUTHORIZATION_HEADER } from '../src/dispatcher/headers.js';
 import { createMatcher } from '../src/dispatcher/match.js';
 import { replyFromOptions } from '../src/dispatcher/response-head.js';
 import { createSiteRegistry, type SiteRegistry } from '../src/dispatcher/site-registry.js';
@@ -33,7 +32,6 @@ const SESSION_ID = 'S1';
 const EPOCH = 3;
 const URLENCODED = 'application/x-www-form-urlencoded';
 const ARCHIVE = '/legacy-fixtures/cfml/api.cfm/people/persons/00532E14-B51F-226C-36938FA3E4A6396C/archive';
-const SURVEY = '/legacy-fixtures/cfml/api.cfm/surveys/surveys/7A1B2C3D-4E5F-6071-8293A4B5C6D7E8F9';
 const RATER = '/core/modules/v1/rater/ajax/saveRate.cfm';
 const FAVORITES = '/core/modules/v1/favorites/ajax';
 const SILENT = createLogger({ service: 'gateway', version: '1.0.0', env: 'local', destination: { write: () => undefined } });
@@ -65,12 +63,10 @@ const INDEX: RoutingIndex = buildRoutingIndex(
     groupAuthority: {},
     rollbackRefs: [],
     entries: [
-      entry('opt2:/opt2/admin/reporting/**', 'web', 'read'),
-      entry('opt2:/opt2/admin-actions/reporting/**', 'web', 'write'),
+      entry('opt2:/opt2/web-sample/**', 'web', 'read'),
+      entry('opt2:/opt2/web-sample-actions/**', 'web', 'write'),
       entry('opt2:/opt2/stub/**', 'stub', 'read'),
       entry('fixture:people/persons/{id}/archive@post', 'people', 'write'),
-      entry('fixture:surveys/surveys/{id}/launch@get', 'surveys', 'write'),
-      entry('fixture:surveys/surveys/{id}/launch@post', 'surveys', 'write'),
       entry('cfm:/core/modules/v1/rater/ajax/saverate.cfm', 'strategies-content', 'write'),
       entry('cfm:/core/modules/v1/favorites/ajax/savefavorite.cfm', 'people', 'write'),
       entry('cfm:/core/modules/v1/favorites/ajax/deletefavorite.cfm', 'people', 'write'),
@@ -94,7 +90,6 @@ interface Harness {
   stub: HttpDouble;
   people: HttpDouble;
   content: HttpDouble;
-  surveys: HttpDouble;
   identity: HttpDouble;
   legacy: HttpDouble;
   deps: DispatcherDeps;
@@ -112,10 +107,9 @@ async function harness(sites?: DispatcherDeps['sites']): Promise<Harness> {
   const stub = await startHttpDouble((_req, res) => sendBytes(res, 200, 'stub-body', { 'content-type': 'text/plain' }));
   const people = await startHttpDouble((_req, res) => sendBytes(res, 200, '{}', { 'content-type': 'application/json' }));
   const content = await startHttpDouble((_req, res) => sendBytes(res, 200, '{}', { 'content-type': 'text/html' }));
-  const surveys = await startHttpDouble((_req, res) => sendBytes(res, 200, '{}', { 'content-type': 'application/json' }));
   const identity = await startHttpDouble((_req, res) => sendBytes(res, 200, '{}', { 'content-type': 'application/json' }));
   const legacy = await startHttpDouble((_req, res) => sendBytes(res, 200, '{}', { 'content-type': 'application/json' }));
-  const urls = { web: web.url, stub: stub.url, people: people.url, 'strategies-content': content.url, surveys: surveys.url, identity: identity.url };
+  const urls = { web: web.url, stub: stub.url, people: people.url, 'strategies-content': content.url, identity: identity.url };
   const app = await createService({
     name: 'gateway',
     version: '1.0.0',
@@ -222,9 +216,9 @@ async function harness(sites?: DispatcherDeps['sites']): Promise<Harness> {
   await app.ready();
   closers.push(async () => {
     await app.opt2.shutdown();
-    await Promise.all([web.close(), stub.close(), people.close(), content.close(), surveys.close(), identity.close(), legacy.close()]);
+    await Promise.all([web.close(), stub.close(), people.close(), content.close(), identity.close(), legacy.close()]);
   });
-  return { app, web, stub, people, content, surveys, identity, legacy, deps };
+  return { app, web, stub, people, content, identity, legacy, deps };
 }
 
 /** Identity's snapshot of the session, its user's `siteID` as given. */
@@ -233,7 +227,7 @@ function snapshotOf(siteID: string): SessionSnapshot {
 }
 
 describe('OPT-2 user token site', () => {
-  const EXPORTS = '/opt2/admin/reporting/exports';
+  const EXPORTS = '/opt2/web-sample/exports';
   it.each<[string, string, string | undefined, string, string, boolean, 'web' | 'stub']>([
     ['a screen naming its site, over the stored one', `${EXPORTS}?siteid=tenant-b`, undefined, 'tenant-a', 'tenant-b', false, 'web'],
     ['a screen without a site, for the stored site', EXPORTS, undefined, 'tenant-a', 'tenant-a', true, 'web'],
@@ -242,7 +236,7 @@ describe('OPT-2 user token site', () => {
     ['a screen spelling siteid in any case, for the site as sent', `${EXPORTS}?SiteID=Tenant-B`, undefined, 'tenant-a', 'Tenant-B', false, 'web'],
     [
       'a post action whose form siteid overwrites the query one',
-      '/opt2/admin-actions/reporting/create?siteid=tenant-a',
+      '/opt2/web-sample-actions/create?siteid=tenant-a',
       'siteid=tenant-b',
       'tenant-a',
       'tenant-b',
@@ -271,7 +265,7 @@ describe('OPT-2 user token site', () => {
     const forged = {
       authorization: 'Bearer forged-tenant-b',
       'x-serverless-authorization': 'Bearer forged',
-      'x-opt2-original-url': '/opt2/admin/reporting/exports?siteid=tenant-b',
+      'x-opt2-original-url': '/opt2/web-sample/exports?siteid=tenant-b',
       'x-opt2-site-id': 'tenant-b',
       'x-opt2-tenant-id': '00000000-0000-4000-8000-00000000000b',
       'x-opt2-roles': 's2',
@@ -353,66 +347,6 @@ describe('fixture user token site', () => {
     expect(res.body).toBe('{"apiversion":"v1","method":"people.persons.archive","error":{"code":"server_error","message":"Unhandled Exception"}}');
     expect(h.deps.tokenCache.get).not.toHaveBeenCalled();
     expect(h.people.requests).toHaveLength(0);
-  });
-});
-
-describe('fixture Authorization relay', () => {
-  const CREDENTIAL = `Basic ${Buffer.from('opt2-task:task-secret', 'utf8').toString('base64')}`;
-  const SPOOFED = `Basic ${Buffer.from('opt2-task:spoofed', 'utf8').toString('base64')}`;
-  const RELAYED = FIXTURE_AUTHORIZATION_HEADER.toLowerCase();
-  const LAUNCH = `${SURVEY}/launch?siteid=tenant-a`;
-
-  it.each<[string, 'GET' | 'POST', string]>([
-    ['a GET task run Basic credential', 'GET', CREDENTIAL],
-    ['a POST task run Basic credential', 'POST', CREDENTIAL],
-    ['a scheme in another case with inner padding', 'GET', 'bAsIc   b3B0Mi10YXNrOnRhc2stc2VjcmV0'],
-    ['a value of another scheme', 'GET', 'Bearer client-token'],
-  ])('relays %s verbatim to a target fixture route of a request without a session', async (_label, method, authorization) => {
-    const h = await harness();
-    vi.mocked(h.deps.resolver.resolveSession).mockResolvedValueOnce({ kind: 'none', setCookies: [] });
-    const res = await h.app.inject({ method, url: LAUNCH, headers: { authorization } });
-    expect(res.statusCode).toBe(200);
-    expect(h.surveys.requests.map((r) => [r.headers[RELAYED], r.headers.authorization])).toEqual([[authorization, undefined]]);
-    expect(h.legacy.requests).toHaveLength(0);
-  });
-
-  it('relays the credential beside the session user token, which alone travels in Authorization', async () => {
-    const h = await harness();
-    const res = await h.app.inject({ method: 'GET', url: LAUNCH, headers: { authorization: CREDENTIAL } });
-    expect(res.statusCode).toBe(200);
-    expect(h.surveys.requests.map((r) => [r.headers[RELAYED], r.headers.authorization])).toEqual([[CREDENTIAL, 'Bearer tok:tenant-a']]);
-  });
-
-  it.each<[string, Record<string, string>, string | undefined]>([
-    ['alone', { [FIXTURE_AUTHORIZATION_HEADER]: CREDENTIAL }, undefined],
-    ['beside an Authorization, relaying only that', { [FIXTURE_AUTHORIZATION_HEADER]: SPOOFED, authorization: CREDENTIAL }, CREDENTIAL],
-  ])('strips a client-sent fixture Authorization header %s', async (_label, headers, relayed) => {
-    const h = await harness();
-    const res = await h.app.inject({ method: 'GET', url: LAUNCH, headers });
-    expect(res.statusCode).toBe(200);
-    expect(h.surveys.requests.map((r) => r.headers[RELAYED])).toEqual([relayed]);
-  });
-
-  it.each<[string, string, 'stub' | 'content']>([
-    ['an OPT-2 service request', '/opt2/stub/notes', 'stub'],
-    ['a remote CFC proxy call', '/core/modules/v1/comments/ajax/commentsProxy.cfc?method=flag&commentID=C', 'content'],
-  ])('relays no Authorization for %s, which is no fixture route', async (_label, url, served) => {
-    const h = await harness();
-    const res = await h.app.inject({ method: 'GET', url, headers: { authorization: CREDENTIAL } });
-    expect(res.statusCode).toBe(200);
-    const target = served === 'stub' ? h.stub : h.content;
-    expect(target.requests.map((r) => [r.headers[RELAYED], r.headers.authorization])).toEqual([[undefined, 'Bearer tok:default']]);
-  });
-
-  it.each<[string, Record<string, string>]>([
-    ['a task run credential', { authorization: CREDENTIAL }],
-    ['a task run credential beside a client-sent fixture Authorization header', { authorization: CREDENTIAL, [FIXTURE_AUTHORIZATION_HEADER]: SPOOFED }],
-  ])('forwards %s of a legacy-bound fixture route to legacy in Authorization alone', async (_label, headers) => {
-    const h = await harness();
-    const res = await h.app.inject({ method: 'GET', url: `${SURVEY}/remind?siteid=tenant-a&reminder=1`, headers });
-    expect(res.statusCode).toBe(200);
-    expect(h.legacy.requests.map((r) => [r.headers.authorization, r.headers[RELAYED]])).toEqual([[CREDENTIAL, undefined]]);
-    expect(h.surveys.requests).toHaveLength(0);
   });
 });
 

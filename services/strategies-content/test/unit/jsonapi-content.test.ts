@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { parse } from 'yaml';
 import { buildEnvelope, isCfUuid, serializeResponse } from '@opt2/platform/legacy-compat';
-import { TENANT_A, TENANT_UMBRELLA, assertResponseMatchesOpenApi, pgAvailable, seedRegistry } from '@opt2/platform/testing';
+import { TENANT_A, TENANT_UMBRELLA, assertResponseMatchesOpenApi, loadOpenApiDocument, pgAvailable, seedRegistry } from '@opt2/platform/testing';
 import { saveContent, type ContentSaveSite } from '../../src/domain/content.js';
 import { actorFromClaims, type Actor } from '../../src/domain/context.js';
 import { CONTENT_ENTITIES } from '../../src/legacy/jsonapi-entities.js';
@@ -21,7 +21,7 @@ type Op = 'findOne' | 'findMany' | 'findAll' | 'findQuery' | 'findNew' | 'findPr
 const FX = JSON.parse(readFileSync(new URL('../fixtures/legacy-jsonapi-recorded.json', import.meta.url), 'utf8')) as {
   oracle: { home: { data: Struct } };
 };
-const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
+const OPENAPI = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as object;
 const ANONYMOUS = actorFromClaims(undefined, '');
 /** A tenant-a system user with Site Manager module access only. */
 const SITE_MANAGER: Actor = { ...NOBODY, roles: ['system-user', 'm:000'] };

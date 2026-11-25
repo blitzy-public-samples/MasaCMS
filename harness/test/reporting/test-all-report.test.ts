@@ -8,7 +8,7 @@ import { FIXTURES_UNAVAILABLE, readFixtureStatus } from '../../src/golden/catalo
 import { runCli } from '../../src/lib/cli.js';
 import { isInsideRepo, opt2Path } from '../../src/lib/paths.js';
 import { pinnedSha } from '../../src/lib/pin.js';
-import { SYNTHETIC_SERVICES, TEN_SERVICES, type ServiceName } from '../../src/reporting/check-reviewability.js';
+import { SERVICES, type ServiceName } from '../../src/reporting/check-reviewability.js';
 import { vitestResultPath } from '../../src/reporting/speed.js';
 import {
   BASELINE_UNMET_ITEM,
@@ -58,29 +58,19 @@ const EVIDENCE: TestAllInputs['evidence'] = {
   baseline: 'opt2/reports/baseline.json',
 };
 const WITHHELD_REF = 'opt2/decision-list.json#actionVariants/admin:cusers.update{type=2,action=delete}';
-const MIGRATED = TEN_SERVICES.filter((service) => !(SYNTHETIC_SERVICES as readonly string[]).includes(service));
 const SCENARIO: Readonly<Record<ServiceName, string>> = {
   identity: 'GS-ID-01',
   people: 'GS-PE-01',
-  'programs-sites': 'GS-PS-02',
-  'strategies-content': 'GS-CO-05',
-  communications: 'GS-CM-01',
-  reporting: 'GS-RE-01',
-  surveys: 'GS-SU-01',
-  timesheets: 'GS-TS-01',
-  finance: 'GS-FI-01',
-  'e-signature': 'GS-ES-01',
+  'programs-sites': 'GS-PS-72',
+  'strategies-content': 'GS-CO-75',
 };
 const SCHEMA: Partial<Record<ServiceName, string>> = {
   'programs-sites': 'programs_sites',
   'strategies-content': 'content',
-  'e-signature': 'esignature',
 };
 
 type ScenarioResult = 'pass' | 'fail' | 'withheld' | typeof FIXTURES_UNAVAILABLE;
-const FIXTURES_OFF = Object.fromEntries(SYNTHETIC_SERVICES.map((service) => [service, FIXTURES_UNAVAILABLE])) as Partial<
-  Record<ServiceName, ScenarioResult>
->;
+const FIXTURES_OFF: Partial<Record<ServiceName, ScenarioResult>> = { people: FIXTURES_UNAVAILABLE };
 
 function stageFixture(n: number): string {
   return path.join(FIXTURE_DIR, 'stage-records', `stage-${n}.json`);
@@ -111,7 +101,7 @@ function withResult(stages: readonly StageRecord[], n: number, result: StageResu
 
 /** A `parity.json` body in the shape golden/compare.ts writes; services not in `results` pass. */
 function parityBody(results: Partial<Record<ServiceName, ScenarioResult>> = {}) {
-  const scenarios = TEN_SERVICES.map((service) => {
+  const scenarios = SERVICES.map((service) => {
     const id = SCENARIO[service];
     const result = results[service] ?? 'pass';
     return {
@@ -153,7 +143,7 @@ function isolationBody() {
     generatedBy: 'harness/src/isolation/report.ts',
     generatedAt: AT,
     status: 'generated',
-    services: TEN_SERVICES.map((service) => ({
+    services: SERVICES.map((service) => ({
       service,
       schema: SCHEMA[service] ?? service,
       crossTenantReads: 0,
@@ -176,8 +166,8 @@ function eventsBody() {
     generatedAt: AT,
     status: 'generated',
     topics: [
-      { topic: 'people.person.archived.v1', producer: 'people', consumers: ['timesheets'] },
-      { topic: 'surveys.survey.scheduled.v1', producer: 'surveys', consumers: ['communications'] },
+      { topic: 'people.person.archived.v1', producer: 'people', consumers: [] },
+      { topic: 'programs-sites.site.changed.v1', producer: 'programs-sites', consumers: ['identity'] },
     ],
     result: 'pass',
   };
@@ -206,7 +196,7 @@ type Sources = Omit<MatrixInputs, 'packages'>;
 /** Every matrix source present and passing, with `over` replacing whole sources. */
 function matrixSources(over: Partial<Sources> = {}): Sources {
   const vitest = Object.fromEntries(
-    TEN_SERVICES.map((service) => [
+    SERVICES.map((service) => [
       service,
       { path: `\${OPT2_STATE_DIR}/test-all/vitest/services-${service}.json`, data: vitestInputSchema.parse(vitestBody(service)) },
     ]),
@@ -389,7 +379,7 @@ describe('deriveExitCode', () => {
 describe('buildServiceMatrix', () => {
   it('has one row per service with the parity, contract, isolation, events and security columns', () => {
     const matrix = buildServiceMatrix({ ...matrixSources(), packages: [] });
-    expect(matrix.map((entry) => entry.service)).toEqual([...TEN_SERVICES]);
+    expect(matrix.map((entry) => entry.service)).toEqual([...SERVICES]);
     for (const entry of matrix) {
       expect(Object.keys(entry)).toEqual(['service', 'parity', 'contract', 'isolation', 'events', 'security']);
       for (const column of MATRIX_COLUMNS) expect(entry[column].state).toBe('pass');
@@ -402,13 +392,12 @@ describe('buildServiceMatrix', () => {
     expect(row(matrix, 'identity').parity.state).toBe('pass');
   });
 
-  it('marks the parity cell of every synthetic service unmet when the fixtures are unavailable', () => {
+  it('marks the parity cell of the fixture-dependent service unmet when the fixtures are unavailable', () => {
     const matrix = buildServiceMatrix({ ...matrixSources({ parity: parity(FIXTURES_OFF) }), packages: [] });
-    expect(MIGRATED).toHaveLength(4);
-    for (const service of SYNTHETIC_SERVICES) {
-      expect(row(matrix, service).parity).toEqual({ state: 'unmet', reason: `${FIXTURES_UNAVAILABLE}: ${SCENARIO[service]}` });
+    expect(row(matrix, 'people').parity).toEqual({ state: 'unmet', reason: `${FIXTURES_UNAVAILABLE}: ${SCENARIO.people}` });
+    for (const service of SERVICES.filter((name) => name !== 'people')) {
+      expect(row(matrix, service).parity).toEqual({ state: 'pass', reason: '1 scenarios: 1 pass' });
     }
-    for (const service of MIGRATED) expect(row(matrix, service).parity).toEqual({ state: 'pass', reason: '1 scenarios: 1 pass' });
   });
 
   it('reads every cell as pending-run when the state and reports directories hold no evidence', async () => {
@@ -445,7 +434,7 @@ describe('buildServiceMatrix', () => {
     expect(people.events).toEqual({ state: 'fail', reason: '1 of 1 events files failed: test/events/archive-events.test.ts' });
     expect(people.isolation.state).toBe('pass');
     expect(people.contract).toEqual({ state: 'unmet', reason: 'no contract suites' });
-    expect(row(matrix, 'timesheets').events.state).toBe('pass');
+    expect(row(matrix, 'identity').events.state).toBe('pass');
     expect(deriveExitCode(resolveStages(allPass()), matrix, [])).toBe(1);
   });
 
@@ -456,9 +445,9 @@ describe('buildServiceMatrix', () => {
     const report = buildTestAllReport(reportInputs(allPass(), AVAILABLE, { vitest }));
     expect(report.exitCode).toBe(1);
     expect(report.unmet).toEqual([
-      { item: 'Done: ten services: people contract', reason: 'unmet: no contract suites', evidence: ['vitest-results.sample.json'] },
+      { item: 'Done: services: people contract', reason: 'unmet: no contract suites', evidence: ['vitest-results.sample.json'] },
       {
-        item: 'Done: ten services: people security',
+        item: 'Done: services: people security',
         reason: 'unmet: no security suites',
         evidence: ['vitest-results.sample.json', '${OPT2_STATE_DIR}/security/summary.json'],
       },
@@ -471,7 +460,7 @@ describe('buildTestAllReport and renderTestAllMarkdown', () => {
     return buildTestAllReport(reportInputs(loadStages(), await unavailableFixtures(), { parity: parity(FIXTURES_OFF) }));
   }
 
-  it('reports the committed run as exit code 2 with parity covering four of ten services', async () => {
+  it('reports the committed run as exit code 2 with the fixture-dependent parity unmet', async () => {
     const report = await committedReport();
     expect(report).toMatchObject({ exitCode: 2, result: 'unmet', fixtures: { available: false, reason: UNAVAILABLE_REASON } });
     expect(report.stages.map((stage) => stage.result)).toEqual(loadStages().map((record) => record.result));
@@ -482,15 +471,15 @@ describe('buildTestAllReport and renderTestAllMarkdown', () => {
       ...own(3),
       ...own(7),
       ...own(8),
-      ...SYNTHETIC_SERVICES.map((service) => `Done: ten services: ${service} parity`),
-      'all ten services pass parity',
+      'Done: services: people parity',
+      'all services pass parity',
       FIXTURE_UNMET_ITEMS[1],
     ]);
-    const parityItem = report.unmet.find((entry) => entry.item === 'all ten services pass parity');
-    expect(parityItem?.reason).toMatch(/four of ten/i);
+    const parityItem = report.unmet.find((entry) => entry.item === 'all services pass parity');
+    expect(parityItem?.reason).toMatch(/fixture-dependent/i);
     expect(parityItem?.reason).toContain(UNAVAILABLE_REASON);
-    expect(report.unmet.find((entry) => entry.item === 'rollback:archive-to-blackout')).toEqual({
-      item: 'rollback:archive-to-blackout',
+    expect(report.unmet.find((entry) => entry.item === 'rollback:archive')).toEqual({
+      item: 'rollback:archive',
       reason: 'fixtures unavailable',
       evidence: ['opt2/reports/rollback-rehearsal.md'],
     });
@@ -502,8 +491,8 @@ describe('buildTestAllReport and renderTestAllMarkdown', () => {
     const report = await committedReport();
     const lines = renderTestAllMarkdown(report);
     expect(lines).toContain('Exit code: 2 (unmet: completed with acceptance items unmet)');
-    expect(lines.some((line) => /four of ten/i.test(line))).toBe(true);
-    for (const service of TEN_SERVICES) expect(lines.some((line) => line.startsWith(`| ${service} | `))).toBe(true);
+    expect(lines.some((line) => /fixture-dependent/i.test(line))).toBe(true);
+    for (const service of SERVICES) expect(lines.some((line) => line.startsWith(`| ${service} | `))).toBe(true);
     for (const entry of report.unmet) expect(lines.some((line) => line.startsWith(`- **${entry.item}**: `))).toBe(true);
     const cloud = lines.slice(lines.indexOf('## Cloud paths')).join('\n');
     for (const cloudPath of CLOUD_PATHS_UNTESTED) expect(cloud).toContain(cloudPath);
@@ -528,7 +517,7 @@ describe('main', () => {
     await copyFile(UNAVAILABLE_FIXTURE, path.join(stateDirectory, 'fixtures.json'));
     await mkdir(path.join(stateDirectory, 'security'), { recursive: true });
     await writeFile(path.join(stateDirectory, 'security', 'summary.json'), JSON.stringify(SECURITY_BODY));
-    for (const service of TEN_SERVICES) {
+    for (const service of SERVICES) {
       const file = vitestResultPath(`services/${service}`, env);
       await mkdir(path.dirname(file), { recursive: true });
       await writeFile(file, JSON.stringify(vitestBody(service)));
@@ -558,13 +547,11 @@ describe('main', () => {
     expect(json.sourceSha).toBe(pinnedSha());
     expect(json.exitCode).toBe(2);
     expect(json.fixtures).toEqual({ available: false, reason: UNAVAILABLE_REASON, source: '${OPT2_STATE_DIR}/fixtures.json' });
-    expect(json.serviceMatrix.filter((entry) => entry.parity.state === 'unmet').map((entry) => entry.service)).toEqual([
-      ...SYNTHETIC_SERVICES,
-    ]);
-    expect(json.unmet.map((entry) => entry.item)).toEqual(expect.arrayContaining([...FIXTURE_UNMET_ITEMS, 'rollback:archive-to-blackout']));
+    expect(json.serviceMatrix.filter((entry) => entry.parity.state === 'unmet').map((entry) => entry.service)).toEqual(['people']);
+    expect(json.unmet.map((entry) => entry.item)).toEqual(expect.arrayContaining([...FIXTURE_UNMET_ITEMS, 'rollback:archive']));
     const md = (await readFile(mdFile, 'utf8')).split('\n');
     expect(md.slice(0, 2)).toEqual(['# Test-all report', `Source SHA: ${pinnedSha()}`]);
-    expect(md.some((line) => /four of ten/i.test(line))).toBe(true);
+    expect(md.some((line) => /fixture-dependent/i.test(line))).toBe(true);
     expect((await readdir(reportsDirectory)).sort()).toEqual(['events.json', 'isolation.json', 'parity.json', 'test-all.json', 'test-all.md']);
     expect(await snapshot()).toEqual(before);
   });

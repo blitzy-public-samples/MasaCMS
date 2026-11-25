@@ -63,17 +63,15 @@ describe('writeDataset', () => {
   });
 
   it('counts every array in MasaData then fixture order, zero counts included', () => {
-    expect(Object.keys(manifest.counts)).toEqual([...MASA_ARRAYS.map((k) => `masa.${k}`), ...fixtureKeys(config).map((k) => `fixtures.${k}`)]);
-    expect(manifest.counts['masa.users']).toBe(3200);
-    for (const empty of ['fixtures.synthetic.person_archive', 'fixtures.Program_1.blackout', 'fixtures.Program_2.blackout']) {
-      expect(manifest.counts[empty]).toBe(0);
-      expect(manifest.parts.some((p) => p.array === empty)).toBe(false);
-    }
+    expect(Object.keys(manifest.counts)).toEqual([...MASA_ARRAYS.map((k) => `masa.${k}`), ...fixtureKeys().map((k) => `fixtures.${k}`)]);
+    expect(manifest.counts['masa.users']).toBe(3180);
+    expect(manifest.counts['fixtures.synthetic.person_archive']).toBe(0);
+    expect(manifest.parts.some((p) => p.array === 'fixtures.synthetic.person_archive')).toBe(false);
   });
 
   it('splits masa.users into chunkRows parts', () => {
     const users = manifest.parts.filter((p) => p.array === 'masa.users');
-    expect(users.map((p) => [p.offset, p.count])).toEqual([[0, 1000], [1000, 1000], [2000, 1000], [3000, 200]]);
+    expect(users.map((p) => [p.offset, p.count])).toEqual([[0, 1000], [1000, 1000], [2000, 1000], [3000, 180]]);
   });
 
   it('numbers parts globally in write order and gives every non-empty array at least one part', async () => {
@@ -179,8 +177,8 @@ describe('writeDataset', () => {
 
   it('rejects more than 9999 parts before writing anything', async () => {
     const dir = join(root, 'too-many');
-    await expect(writeDataset(dir, dataset, 2)).rejects.toThrow(RangeError);
-    await expect(writeDataset(dir, dataset, 2)).rejects.toThrow(/parts exceed 9999; raise chunkRows above 2$/);
+    await expect(writeDataset(dir, dataset, 1)).rejects.toThrow(RangeError);
+    await expect(writeDataset(dir, dataset, 1)).rejects.toThrow(/parts exceed 9999; raise chunkRows above 1$/);
     await expect(readdir(dir)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 });

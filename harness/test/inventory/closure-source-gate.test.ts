@@ -1095,13 +1095,13 @@ describe('extractSqlWrites', () => {
   it('accepts DELETE with or without FROM and keeps a schema-qualified program table', () => {
     const unit = component(
       'm/x.cfc',
-      'component { function f() { queryExecute("DELETE tz WHERE a = :a"); queryExecute("DELETE tq"); queryExecute("delete from tr"); queryExecute("UPDATE [Program_1].[timesheet] SET a = 1"); } }',
+      'component { function f() { queryExecute("DELETE tz WHERE a = :a"); queryExecute("DELETE tq"); queryExecute("delete from tr"); queryExecute("UPDATE [Program_1].[item] SET a = 1"); } }',
     );
     expect(extractSqlWrites(fn(unit, 'f'), unit).map((w) => [w.op, w.table, w.whereParams])).toEqual([
       ['delete', 'tz', ['a']],
       ['delete', 'tq', []],
       ['delete', 'tr', []],
-      ['update', 'program_1.timesheet', []],
+      ['update', 'program_1.item', []],
     ]);
   });
 

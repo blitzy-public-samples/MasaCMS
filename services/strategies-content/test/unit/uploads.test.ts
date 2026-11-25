@@ -1,11 +1,10 @@
 /** EX-FILE-RENDITION upload rules: image uploads halted, restricted files refused, non-image uploads stored under the file pool tenant, in the domain and through the JSON API file save. */
-import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { parse } from 'yaml';
 import { isCfUuid } from '@opt2/platform/legacy-compat';
 import { sha256Hex } from '@opt2/platform/migration-kit';
 import { contentFileKey } from '@opt2/platform/storage';
-import { TENANT_A, TENANT_B, TENANT_UMBRELLA, assertResponseMatchesOpenApi, type TenantFixture } from '@opt2/platform/testing';
+import { TENANT_A, TENANT_B, TENANT_UMBRELLA, assertResponseMatchesOpenApi, loadOpenApiDocument, type TenantFixture } from '@opt2/platform/testing';
 import { CONTENT_CONFIG_DEFAULTS, actorFromClaims, type Actor } from '../../src/domain/context.js';
 import {
   IMAGE_UPLOAD_EXTS,
@@ -25,7 +24,7 @@ import { uploadedFile } from '../helpers/uploads.js';
 
 type Json = Record<string, unknown>;
 
-const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
+const OPENAPI = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as object;
 const SITE = TENANT_A.siteId;
 const FILE_SAVE_URL = `/_api/json/v1/${SITE}/file`;
 const TOKEN = { csrf_token: 'T0KEN', csrf_token_expires: '260630235959000' } as const;

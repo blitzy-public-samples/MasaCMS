@@ -6,7 +6,7 @@ import { LEGACY_HTML_CONTENT_TYPE } from '@opt2/platform/legacy-compat';
 import { subscriptionName } from '@opt2/platform/events';
 import { fixedClock } from '@opt2/platform/service-kit';
 import { tenantIdForSite } from '@opt2/platform/tenancy';
-import { TENANT_A, assertResponseMatchesOpenApi, pushTo, testEnvelope } from '@opt2/platform/testing';
+import { TENANT_A, assertResponseMatchesOpenApi, loadOpenApiDocument, pushTo, testEnvelope } from '@opt2/platform/testing';
 import { SITE_CHANGED_TOPIC } from '../../src/events/consumers.js';
 import type { LegacySiteUrlConfig } from '../../src/legacy/content-urls.js';
 import {
@@ -34,7 +34,7 @@ import { SERVICE, buildTestApp, createRecordingDb, userHeaders, type ClientHandl
 import { IDS, contentRow, feedRow, seedRecordingDb, type ContentSeedRow } from '../helpers/seed.js';
 import { contentHeaders } from '../helpers/tokens.js';
 
-const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
+const OPENAPI = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as object;
 
 const MOZILLA = 'Mozilla/5.0 (X11; Linux x86_64)';
 const CURL = 'curl/8.5.0';

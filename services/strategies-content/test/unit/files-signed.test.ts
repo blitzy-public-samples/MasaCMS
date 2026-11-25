@@ -1,5 +1,4 @@
 /** Signed `content-files` downloads: 900 s issuance through the service, and local HMAC URLs served or refused exactly as `verifySignedUrl` decides. */
-import { readFileSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { parse } from 'yaml';
@@ -15,7 +14,7 @@ import {
   type LocalStorageAdapter,
   type LocalUrlVerification,
 } from '@opt2/platform/storage';
-import { TENANT_A, TENANT_B, assertResponseMatchesOpenApi, createCapturingPublisher, poolTenantExpectation, testVerifier } from '@opt2/platform/testing';
+import { TENANT_A, TENANT_B, assertResponseMatchesOpenApi, createCapturingPublisher, loadOpenApiDocument, poolTenantExpectation, testVerifier } from '@opt2/platform/testing';
 import { buildApp, contentEnvSchema } from '../../src/app.js';
 import { CONTENT_FILES_BUCKET } from '../../src/migration/objects.js';
 import { signContentDownload } from '../../src/routes/files.js';
@@ -34,7 +33,7 @@ import {
 import { FILE_BYTES, IDS, seedMemoryStorage, umbrellaSeed, type SeedObject } from '../helpers/seed.js';
 import { contentHeaders, type ContentSubject } from '../helpers/tokens.js';
 
-const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
+const OPENAPI = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as object;
 const NOW_MS = TEST_CLOCK.now().getTime();
 const NOW_S = Math.floor(NOW_MS / 1000);
 // tenant-a reads its files in the umbrella pool, where the seed stores them.
@@ -184,7 +183,7 @@ describe('getLocalContentFile over the local disk adapter', () => {
   const ok = (key: string, expires: number, bucket: BucketName = CONTENT_FILES_BUCKET): LocalUrlVerification => ({ ok: true, bucket, key, expires });
   const refused = (reason: Extract<LocalUrlVerification, { ok: false }>['reason']): LocalUrlVerification => ({ ok: false, reason });
 
-  // Only content-files is routed here: the gateway sends every other bucket's URLs to that bucket's owner.
+  // content-files is the only bucket.
   it.each<[string, number, string, LocalUrlVerification]>([
     ['a URL expiring this second', 200, signed(PDF_KEY, NOW_S), ok(PDF_KEY, NOW_S)],
     ['an expired URL', 403, signed(PDF_KEY, NOW_S - 1), refused('expired')],
@@ -194,8 +193,7 @@ describe('getLocalContentFile over the local disk adapter', () => {
     ['a URL without expires', 403, valid.replace(/expires=\d+&/, ''), refused('malformed')],
     ['a URL without sig', 403, valid.replace(/&sig=[0-9a-f]+/, ''), refused('malformed')],
     ['a key escaping its bucket', 403, valid.replace(PDF_KEY, `${FILE_POOL}/..%2F..%2Fsecrets%2Fstorage-hmac-key`), refused('malformed')],
-    ['a bucket name outside the four', 404, valid.replace(`/${CONTENT_FILES_BUCKET}/`, '/content-archive/'), refused('unknown-bucket')],
-    ['a validly signed URL of another bucket', 404, signed(PDF_KEY, NOW_S + SIGNED_URL_TTL_S, 'finance-attachments'), ok(PDF_KEY, NOW_S + SIGNED_URL_TTL_S, 'finance-attachments')],
+    ['a bucket name outside BUCKETS', 404, valid.replace(`/${CONTENT_FILES_BUCKET}/`, '/content-archive/'), refused('unknown-bucket')],
     ['a validly signed key outside the stored set', 404, signed(MISSING_KEY), ok(MISSING_KEY, NOW_S + SIGNED_URL_TTL_S)],
   ])('answers %s with %i, as verifySignedUrl decides', async (_label, status, url, verification) => {
     const res = await app.inject({ method: 'GET', url, headers: await forwarded() });

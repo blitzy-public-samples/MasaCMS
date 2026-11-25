@@ -1,4 +1,4 @@
-// Browser interaction parity (GS-UI-01 … GS-UI-05): the legacy admin scripts driven in headless chromium, legacy
+// Browser interaction parity (GS-UI-04): the legacy admin scripts driven in headless chromium, legacy
 // direct and through the gateway.
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
@@ -10,7 +10,6 @@ import {
   type Browser,
   type BrowserContext,
   type CDPSession,
-  type Locator,
   type Page,
   type Request as PwRequest,
   type Response as PwResponse,
@@ -89,24 +88,18 @@ type Phase = 'capture' | 'replay' | 'unset';
 const PHASE_VARIABLE = 'OPT2_UI_PHASE';
 const GENERATED_BY = 'harness/e2e/ui/interactions.e2e.ts';
 
-const SCENARIO_IDS = ['GS-UI-01', 'GS-UI-02', 'GS-UI-03', 'GS-UI-04', 'GS-UI-05'] as const;
+const SCENARIO_IDS = ['GS-UI-04'] as const;
 type ScenarioId = (typeof SCENARIO_IDS)[number];
 
 /** The `browser.flow` each scenario's catalogue entry must name. */
-const FLOW_NAMES: Readonly<Record<ScenarioId, string>> = {
-  'GS-UI-01': 'site-manager-tree',
-  'GS-UI-02': 'edit-modal-tabs-status-approval',
-  'GS-UI-03': 'multi-file-upload',
-  'GS-UI-04': 'version-diff',
-  'GS-UI-05': 'inline-save',
-};
+const FLOW_NAMES: Readonly<Record<ScenarioId, string>> = { 'GS-UI-04': 'version-diff' };
 
 /** Cut-over table each phase needs: legacy-direct runs write legacy-authoritative units only under v0001. */
 const REQUIRED_VERSION: Readonly<Record<Phase, string>> = { capture: 'v0001', replay: 'v0002', unset: 'v0001' };
 
 /**
- * Verdicts that hold no unlisted difference. `withheld` (GS-UI-01's copy is a decision-list variant served by legacy)
- * compared clean too; the parity report lists it as unmet pending the user's decision, so it does not fail here.
+ * Verdicts that hold no unlisted difference. `withheld` (a decision-list variant served by legacy) compared clean too;
+ * the parity report lists it as unmet pending the user's decision, so it does not fail here.
  */
 const ACCEPTED_RESULTS: ReadonlySet<ParityResult> = new Set<ParityResult>([
   'pass',
@@ -116,38 +109,10 @@ const ACCEPTED_RESULTS: ReadonlySet<ParityResult> = new Set<ParityResult>([
   'withheld',
 ]);
 
-/** Masa's Site Manager module id (the site tree), not a content id. */
-const SITE_TREE_MODULE_ID = '00000000000000000000000000000000000';
-/** The chain's approving group: the site's Admin group, whose members legacy offers the approval. */
-const APPROVER_GROUP = 'Admin';
-/** GS-UI-02 session whose save of the page goes to approval. */
-const REQUESTER_SESSION = 'requester';
-const TREE = '#gridContainer';
-const TREE_NEXT_PAGE = `${TREE} > .mura-results-wrapper ul.pagination a:has(i.mi-angle-right)`;
-const UPLOAD_INPUT = 'form#fileupload input[type="file"][name="files"]';
-const UPLOAD_ROW_READY = 'form#fileupload tbody.files tr.template-upload:not(.processing) button.start:not([disabled])';
-const UPLOAD_ROW = 'form#fileupload tbody.files tr.template-upload';
-const UPLOADED_ROW = 'form#fileupload tbody.files tr.template-download';
-/** True once every CKEditor instance on the page has loaded and set its element's markup. */
-const EDITORS_READY = "Object.values(window.CKEDITOR?.instances ?? {}).every((editor) => editor.status === 'ready')";
 const XHR_TYPES: ReadonlySet<string> = new Set(['xhr', 'fetch']);
 
-/** Base route keys of the admin actions the flows wait for. */
-const KEY = {
-  loadSiteManager: 'admin:carch.loadsitemanager',
-  loadSiteSection: 'admin:carch.loadsitesection',
-  refreshSiteSection: 'admin:carch.refreshsitesection',
-  saveCopyInfo: 'admin:carch.savecopyinfo',
-  copy: 'admin:carch.copy',
-  draftPromptData: 'admin:carch.draftpromptdata',
-  edit: 'admin:carch.edit',
-  statusModal: 'admin:carch.statusmodal',
-  approvalAction: 'admin:carch.approvalaction',
-  update: 'admin:carch.update',
-  loadDiff: 'admin:carch.loaddiff',
-  loadQuickEdit: 'admin:carch.loadquickedit',
-  saveQuickEdit: 'admin:carch.savequickedit',
-} as const;
+/** Base route keys of the admin actions the flow waits for. */
+const KEY = { loadDiff: 'admin:carch.loaddiff' } as const;
 
 /** Fixed so the final DOM pairs across sides whatever their XHR counts. */
 const FINAL_DOM_INDEX = 1_000_000;
@@ -161,33 +126,7 @@ const SETTLE_TIMEOUT_MS = 60_000;
 const QUIET_MS = 500;
 const DIFFERENCES_SHOWN = 25;
 
-/** Bytes of the catalogue file fixtures `image-png-8x8` and `pdf-one-page`, so both sides upload identical files. */
-const PNG_8X8 = Buffer.from(
-  'iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAA00lEQVR4AQHIADf/AAAAgCAAgEAAgGAAgIAAgKAAgMAAgOAAgAAAIIAgIIBAIIBg' +
-    'IICAIICgIIDAIIDgIIAAAECAIECAQECAYECAgECAoECAwECA4ECAAABggCBggEBggGBggIBggKBggMBggOBggAAAgIAggIBAgIBggICAgICggIDA' +
-    'gIDggIAAAKCAIKCAQKCAYKCAgKCAoKCAwKCA4KCAAADAgCDAgEDAgGDAgIDAgKDAgMDAgODAgAAA4IAg4IBA4IBg4ICA4ICg4IDA4IDg4IDGe1gB' +
-    '0ieB3QAAAABJRU5ErkJggg==',
-  'base64',
-);
-const PDF_ONE_PAGE = Buffer.from(
-  'JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9L' +
-    'aWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA2' +
-    'MTIgNzkyXSAvUmVzb3VyY2VzIDw8IC9Gb250IDw8IC9GMSA0IDAgUiA+PiA+PiAvQ29udGVudHMgNSAwIFIgPj4KZW5kb2JqCjQgMCBvYmoKPDwg' +
-    'L1R5cGUgL0ZvbnQgL1N1YnR5cGUgL1R5cGUxIC9CYXNlRm9udCAvSGVsdmV0aWNhID4+CmVuZG9iago1IDAgb2JqCjw8IC9MZW5ndGggNTEgPj4K' +
-    'c3RyZWFtCkJUIC9GMSAxMiBUZiA3MiA3MjAgVGQgKE9QVC0yIGdvbGRlbiBmaXh0dXJlKSBUaiBFVAplbmRzdHJlYW0KZW5kb2JqCnhyZWYKMCA2' +
-    'CjAwMDAwMDAwMDAgNjU1MzUgZiAKMDAwMDAwMDAwOSAwMDAwMCBuIAowMDAwMDAwMDU4IDAwMDAwIG4gCjAwMDAwMDAxMTUgMDAwMDAgbiAKMDAw' +
-    'MDAwMDI0MSAwMDAwMCBuIAowMDAwMDAwMzExIDAwMDAwIG4gCnRyYWlsZXIKPDwgL1NpemUgNiAvUm9vdCAxIDAgUiA+PgpzdGFydHhyZWYKNDEy' +
-    'CiUlRU9GCg==',
-  'base64',
-);
-
-/** One image (an `{upload=image}` legacy-write) and one document. */
-const UPLOAD_FILES: ReadonlyArray<{ name: string; mimeType: string; buffer: Buffer }> = [
-  { name: 'gs-ui-03.png', mimeType: 'image/png', buffer: PNG_8X8 },
-  { name: 'gs-ui-03.pdf', mimeType: 'application/pdf', buffer: PDF_ONE_PAGE },
-];
-
-const EMPTY_SIDE_EFFECTS: GoldenSideEffects = { mail: [], rows: {}, tasks: [], files: [] };
+const EMPTY_SIDE_EFFECTS: GoldenSideEffects = { mail: [], rows: {}, files: [] };
 
 type StepRecord = Parameters<GoldenStepBuilder['step']>[0];
 type RecordedBody = StepRecord['request']['body'];
@@ -691,11 +630,6 @@ async function xhrStep(
   return { ...step, response: { status, headers, body: null, rawSha256 }, normalised };
 }
 
-/** A predicate matching XHRs whose base route key is one of `keys`. */
-function keyIs(...keys: string[]): (record: XhrRecord) => boolean {
-  return (record) => keys.includes(record.baseKey);
-}
-
 /** Runs `action`, waits for `count` XHRs it issued that `match`, then for the page to settle. */
 async function act(
   run: FlowRun,
@@ -727,411 +661,10 @@ function catalogueRoute(run: FlowRun, name: string): string {
   return resolvePlaceholders(catalogueStep(run, name).route, run.ctx);
 }
 
-/** Single-valued form field of catalogue step `stepName` whose key resolves to `field`, its placeholders resolved. */
-function catalogueField(run: FlowRun, stepName: string, field: string): string {
-  const fields = Object.entries(catalogueStep(run, stepName).form ?? {});
-  const value = fields.find(([key]) => resolvePlaceholders(key, run.ctx) === field)?.[1];
-  if (typeof value !== 'string') {
-    throw new GoldenConfigError(`${run.scenario.id}: step ${stepName} has no single form field ${field}`, {
-      path: `scenario ${run.scenario.id}`,
-    });
-  }
-  return resolvePlaceholders(value, run.ctx);
-}
-
-/** Field `field` of the seed row the scenario binds as `as`. */
-function seedValue(run: FlowRun, as: string, field: string): string {
-  const value: unknown = resolvePlaceholders(`\${seed.${as}.${field}}`, run.ctx);
-  if (typeof value !== 'string' || value === '') {
-    throw new GoldenConfigError(`${run.scenario.id}: seed row ${as} has no ${field}`, {
-      path: `scenario ${run.scenario.id}`,
-    });
-  }
-  return value;
-}
-
-/** Site Manager tree of `site` with `topId` as its top node. */
-function treeRoute(site: string, topId: string): string {
-  const query = new URLSearchParams({
-    muraAction: 'cArch.list',
-    siteid: site,
-    moduleid: SITE_TREE_MODULE_ID,
-    topid: topId,
-  });
-  return `/admin/?${query.toString()}`;
-}
-
-/** Opens the tree at `route` and waits for the tree XHR and its grid. */
-async function openTree(page: Page, run: FlowRun, route: string): Promise<void> {
-  await act(run, () => page.goto(`${run.baseUrl}${route}`), keyIs(KEY.loadSiteManager), 'the Site Manager tree');
-  await page.locator(`${TREE} .mura-grid`).first().waitFor({ state: 'visible' });
-}
-
 /** Opens a page at `route` and waits for it and its XHRs to settle. */
 async function openPage(page: Page, run: FlowRun, route: string): Promise<void> {
   await page.goto(`${run.baseUrl}${route}`);
   await run.xhr.settle();
-}
-
-/** The tree's breadcrumb link to `contentId`, which reloads the tree in-page from its first page. */
-function breadcrumbLink(page: Page, contentId: string): Locator {
-  return page.locator(`${TREE} ul.breadcrumb a[onclick*="'${contentId}'"]`).first();
-}
-
-/**
- * The node of `contentId` in the tree topped by `topId`: pages forward until it is shown, restarting once from the
- * first page through the breadcrumb when the tree stood past it.
- */
-async function revealNode(page: Page, run: FlowRun, contentId: string, topId: string): Promise<Locator> {
-  const node = page.locator(`${TREE} li.mura-node-data[data-contentid="${contentId}"]`).first();
-  let restarted = false;
-  for (;;) {
-    if ((await node.count()) > 0) return node;
-    const next = page.locator(TREE_NEXT_PAGE).first();
-    if ((await next.count()) > 0) {
-      await act(run, () => next.click(), keyIs(KEY.loadSiteManager), 'the next tree page');
-    } else if (!restarted && (await page.locator(`${TREE} > .mura-results-wrapper ul.pagination`).count()) > 0) {
-      restarted = true;
-      await act(run, () => breadcrumbLink(page, topId).click(), keyIs(KEY.loadSiteManager), 'the first tree page');
-    } else {
-      throw new Error(`content ${contentId} is not on any page of the Site Manager tree`);
-    }
-  }
-}
-
-/**
- * The tree's numbered pagination link (dsp_nextN.cfm) to show next: the following page, else the nearest earlier one
- * past the first, so its start row is above 1 wherever the tree stands.
- */
-async function otherTreePage(page: Page): Promise<Locator> {
-  const pagination = `${TREE} > .mura-results-wrapper ul.pagination`;
-  const links = page.locator(`${pagination} li a`);
-  const numbers = (await links.allTextContents()).map((text) => Number(text.trim()));
-  const current = Number((await page.locator(`${pagination} li.active a`).first().textContent())?.trim());
-  const candidates = numbers.filter((n) => Number.isInteger(n) && n > 1 && n !== current);
-  const target = candidates.includes(current + 1) ? current + 1 : Math.max(...candidates.filter((n) => n < current));
-  const index = numbers.indexOf(target);
-  if (!Number.isFinite(target) || index < 0) throw new Error('the Site Manager tree has no other page past the first');
-  return links.nth(index);
-}
-
-/** Opens a node's menu (zoom, add, copy, paste and its action links). */
-async function openNodeMenu(page: Page, node: Locator): Promise<void> {
-  await node.locator(':scope > dl a.add').first().click();
-  await page.locator('#newContentMenu').waitFor({ state: 'visible' });
-}
-
-/** `topid` of an admin route. */
-function topIdOf(run: FlowRun, route: string): string {
-  const topId = new URL(route, 'http://route.invalid').searchParams.get('topid');
-  if (topId === null || topId === '') {
-    throw new GoldenConfigError(`${run.scenario.id}: route ${route} names no topid`, {
-      path: `scenario ${run.scenario.id}`,
-    });
-  }
-  return topId;
-}
-
-/**
- * GS-UI-01: expand a folder, page the tree, copy a page and paste it under the folder. Copy and paste stay in one
- * page load, as legacy only offers paste there: list.cfm restores `copymoduleid`, which showMenu never reads.
- */
-async function siteManagerTree(page: Page, run: FlowRun): Promise<void> {
-  const folderId = seedValue(run, 'folder', 'contentID');
-  const pageId = seedValue(run, 'page', 'contentID');
-  const pageParent = seedValue(run, 'page', 'parentID');
-  const openRoute = catalogueRoute(run, 'open');
-  const topId = topIdOf(run, openRoute);
-
-  run.step = 'open';
-  await openTree(page, run, openRoute);
-  await run.shot();
-
-  run.step = 'expand';
-  const folder = await revealNode(page, run, folderId, topId);
-  const toggle = folder.locator(':scope > dl span.hasChildren.closed').first();
-  if ((await toggle.count()) === 0) throw new Error(`folder ${folderId} shows no collapsed section to expand`);
-  await act(run, () => toggle.click(), keyIs(KEY.loadSiteSection), 'the expanded folder section');
-  await run.shot();
-
-  run.step = 'page';
-  const pageLink = await otherTreePage(page);
-  const laterPage = (record: XhrRecord): boolean =>
-    record.baseKey === KEY.loadSiteManager && Number(record.params.startrow ?? '1') > 1;
-  await act(run, () => pageLink.click(), laterPage, 'another tree page');
-  await run.shot();
-
-  run.step = 'copy';
-  if (pageParent !== topId) {
-    await openNodeMenu(page, await revealNode(page, run, pageParent, topId));
-    await act(run, () => page.locator('#newZoomLink').click(), keyIs(KEY.loadSiteManager), 'the zoomed tree');
-  }
-  await openNodeMenu(page, await revealNode(page, run, pageId, pageParent));
-  await act(run, () => page.locator('#newCopyLink').click(), keyIs(KEY.saveCopyInfo), 'the copy record');
-  await run.shot();
-
-  run.step = 'paste';
-  if (pageParent !== topId) {
-    await act(run, () => breadcrumbLink(page, topId).click(), keyIs(KEY.loadSiteManager), 'the top of the tree');
-  }
-  await openNodeMenu(page, await revealNode(page, run, folderId, topId));
-  const paste = page.locator('#newPasteLink');
-  if (!(await paste.isVisible())) throw new Error(`the menu of folder ${folderId} offers no paste`);
-  const from = run.xhr.mark();
-  await paste.click();
-  const [copied] = await run.xhr.waitFor(from, keyIs(KEY.copy), 'the paste');
-  await run.xhr.waitFor((copied?.index ?? from) + 1, keyIs(KEY.loadSiteManager), 'the reloaded tree');
-  await run.xhr.settle();
-  await run.shot();
-}
-
-/** Clicks `button` and waits for the page to leave admin action `baseKey` and load. */
-async function submitLeaving(page: Page, button: Locator, baseKey: string): Promise<void> {
-  const left = (url: URL): boolean => routeKeyOf('GET', url, {}, { kind: 'none' }).baseKey !== baseKey;
-  await Promise.all([page.waitForURL(left), button.click()]);
-}
-
-/** Credentials of admin session `name` of the run's scenario. */
-function sessionCredentials(run: FlowRun, name: string): Credentials {
-  const login = run.scenario.sessions[name]?.login;
-  const seeded = /^seed:([^:]+):(.+)$/.exec(login ?? '');
-  if (seeded !== null) return credentialsFor(`\${user:${seeded[1] ?? ''}:${seeded[2] ?? ''}}`);
-  if (login === 'admin' || login === 'qa_editor') return credentialsFor(`\${secret:${login}}`);
-  throw new GoldenConfigError(`${run.scenario.id}: session ${name} names no admin login`, {
-    path: `scenario ${run.scenario.id}`,
-  });
-}
-
-/** Runs `work` on a page of a fresh, unrecorded context logged in at the run's origin as `credentials`. */
-async function asUser(
-  suite: Suite,
-  run: FlowRun,
-  credentials: Credentials,
-  work: (page: Page) => Promise<void>,
-): Promise<void> {
-  const context = await suite.browser.newContext(contextOptions());
-  try {
-    const page = await context.newPage();
-    await loginAdmin(page, run.baseUrl, credentials);
-    await work(page);
-  } finally {
-    await context.close();
-  }
-}
-
-/**
- * GS-UI-02's unrecorded prerequisite, its catalogue `setup-*` steps: a page version the requester sent for Admin
- * approval, its grants reverted.
- */
-async function pendingApproval(suite: Suite, run: FlowRun): Promise<void> {
-  const pageId = seedValue(run, 'page', 'contentID');
-  const groupId = seedValue(run, 'requesterGroup', 'groupID');
-  const at = (route: string): string => `${run.baseUrl}${route}`;
-  const admin = credentialsFor('${secret:admin}');
-  const accessBox = `input[name="groupid"][value="${catalogueField(run, 'setup-module', 'groupid')}"]`;
-  const roleField = `p${groupId.replaceAll('-', '')}`;
-  const prior: { moduleAccess?: boolean; role?: string } = {};
-  let failure: { error: unknown; step: string } | undefined;
-
-  try {
-    await asUser(suite, run, admin, async (page) => {
-      run.step = 'setup-chain';
-      await page.goto(at(catalogueRoute(run, 'setup-chain-form')));
-      const chainForm = page.locator('form[name="form1"]');
-      const chainId = await chainForm.locator('input[name="chainID"]').inputValue();
-      if (chainId === '') throw new Error('the approval chain form carries no chainID');
-      run.ctx.bindings.set('setup-chain-form.chainID', chainId);
-      await chainForm.locator('input[name="name"]').fill(catalogueField(run, 'setup-chain', 'name'));
-      const approver = page
-        .locator('#groupAvailableListSort li')
-        .filter({ hasText: new RegExp(`^\\s*${APPROVER_GROUP}\\s*$`) });
-      if ((await approver.count()) !== 1) throw new Error(`the approval chain form lists no group ${APPROVER_GROUP}`);
-      await approver.dragTo(page.locator('#groupAssignmentListSort'));
-      if ((await page.locator('#groupAssignmentListSort input[name="groupID"]').count()) !== 1) {
-        throw new Error(`the approval chain did not take group ${APPROVER_GROUP}`);
-      }
-      await submitLeaving(page, chainForm.locator('.form-actions button.mura-primary'), 'admin:cchain.edit');
-
-      run.step = 'setup-module';
-      await page.goto(at(catalogueRoute(run, 'setup-module-form')));
-      const moduleForm = page.locator('form[name="form1"]');
-      const access = moduleForm.locator(accessBox);
-      if ((await access.count()) === 0) throw new Error(`the Site Manager permission form lists no group ${groupId}`);
-      prior.moduleAccess = await access.isChecked();
-      await access.check();
-      await submitLeaving(page, moduleForm.locator('.form-actions button'), 'admin:cperm.module');
-
-      run.step = 'setup-perm';
-      await page.goto(at(catalogueRoute(run, 'setup-perm-form')));
-      const permForm = page.locator('form[name="form1"]');
-      const granted = catalogueField(run, 'setup-perm', roleField);
-      const grant = permForm.locator(`input[name="${roleField}"][value="${granted}"]`);
-      if ((await grant.count()) === 0) {
-        throw new Error(`the permission form of ${pageId} offers group ${groupId} no ${granted} role`);
-      }
-      const current = permForm.locator(`input[name="${roleField}"]:checked`);
-      const role = (await current.count()) === 1 ? await current.getAttribute('value') : null;
-      if (role === null) throw new Error(`the permission form of ${pageId} shows no role for group ${groupId}`);
-      prior.role = role;
-      await grant.check();
-      await permForm.locator('select[name="chainID"]').selectOption(catalogueField(run, 'setup-perm', 'chainID'));
-      await submitLeaving(page, permForm.locator('.form-actions button'), 'admin:cperm.main');
-    });
-
-    run.step = 'setup-submit';
-    await asUser(suite, run, sessionCredentials(run, REQUESTER_SESSION), async (page) => {
-      const found = await page.request.get(at(catalogueRoute(run, 'find')));
-      const { data } = (await found.json()) as { data?: { contenthistid?: unknown } };
-      const active = data?.contenthistid;
-      if (typeof active !== 'string' || active === '') throw new Error(`content ${pageId} has no active version`);
-      run.ctx.bindings.set('find.contenthistid', active);
-      await page.goto(at(catalogueRoute(run, 'setup-submit-form')));
-      const send = page.locator('.mura-actions .form-actions button:has(i.mi-share-alt)');
-      if ((await send.count()) === 0) {
-        throw new Error(`the edit screen of ${pageId} offers session ${REQUESTER_SESSION} no Send for Approval`);
-      }
-      // Send posts a loading editor's raw textarea instead of its serialised data, so the stored body hangs on timing.
-      await page.waitForFunction(`window.CKEDITOR?.instances.body !== undefined && ${EDITORS_READY}`);
-      await submitLeaving(page, send.first(), KEY.edit);
-    });
-  } catch (err) {
-    failure = { error: err, step: run.step };
-  }
-
-  run.step = 'setup-restore';
-  try {
-    if (prior.role !== undefined || prior.moduleAccess === false) {
-      await asUser(suite, run, admin, async (page) => {
-        if (prior.role !== undefined) {
-          run.step = 'setup-restore-perm';
-          await page.goto(at(catalogueRoute(run, 'setup-restore-perm-form')));
-          const permForm = page.locator('form[name="form1"]');
-          await permForm.locator(`input[name="${roleField}"][value="${prior.role}"]`).check();
-          await submitLeaving(page, permForm.locator('.form-actions button'), 'admin:cperm.main');
-        }
-        if (prior.moduleAccess === false) {
-          run.step = 'setup-restore-module';
-          await page.goto(at(catalogueRoute(run, 'setup-restore-module-form')));
-          const moduleForm = page.locator('form[name="form1"]');
-          await moduleForm.locator(accessBox).uncheck();
-          await submitLeaving(page, moduleForm.locator('.form-actions button'), 'admin:cperm.module');
-        }
-      });
-    }
-  } catch (err) {
-    if (failure === undefined) throw err;
-    run.notes.push(`setup-restore failed: ${redactSecrets(messageOf(err))}`);
-  }
-  if (failure !== undefined) {
-    run.step = failure.step;
-    throw failure.error;
-  }
-}
-
-/** History id of the pending draft a draftpromptdata body names, its keys read in any case; throws when none. */
-function pendingDraftId(run: FlowRun, body: string | null): string {
-  const parsed: unknown = body === null ? null : JSON.parse(body);
-  const entries = typeof parsed === 'object' && parsed !== null ? Object.entries(parsed) : [];
-  const fields = new Map(entries.map(([name, value]) => [name.toLowerCase(), value as unknown]));
-  const flag = fields.get('hasdraftpending');
-  const historyId = fields.get('historyid');
-  if ((flag === true || String(flag).toLowerCase() === 'true') && typeof historyId === 'string' && historyId !== '') {
-    return historyId;
-  }
-  // Legacy opens the edit screen at once when it has no prompt to show, which leaves the body unreadable.
-  const reported =
-    body === null
-      ? 'no readable body'
-      : `hasdraftpending=${JSON.stringify(flag)}, historyid=${JSON.stringify(historyId)}`;
-  throw new Error(`${run.scenario.id} needs a version pending approval; the draft prompt reports ${reported}`);
-}
-
-/** GS-UI-02: open the page's pending version from the tree, expand every panel, and approve it in the status modal. */
-async function editPanelsAndStatus(page: Page, run: FlowRun): Promise<void> {
-  const pageId = seedValue(run, 'page', 'contentID');
-  const comment = catalogueField(run, 'approve', 'comment');
-
-  run.step = 'edit';
-  const parentId = seedValue(run, 'page', 'parentID');
-  await openTree(page, run, treeRoute(seedValue(run, 'page', 'siteID'), parentId));
-  await openNodeMenu(page, await revealNode(page, run, pageId, parentId));
-  const from = run.xhr.mark();
-  await page.locator('#newContentOptions li.li-action.edit a').first().click();
-  const [prompt] = await run.xhr.waitFor(from, keyIs(KEY.draftPromptData), 'the draft prompt');
-  const pending = pendingDraftId(run, prompt?.response?.text ?? null);
-  const option = page.locator(`.draft-prompt-option[data-contenthistid="${pending}"]`).first();
-  try {
-    await option.waitFor({ state: 'visible' });
-  } catch (err) {
-    throw new Error(`the draft prompt offers no option for pending version ${pending}`, { cause: err });
-  }
-  await option.click();
-  await page.waitForURL((url) => routeKeyOf('GET', url, {}, { kind: 'none' }).baseKey === KEY.edit);
-  await run.xhr.settle();
-  await run.shot();
-
-  run.step = 'panels';
-  const headings = page.locator('.mura-panel-heading a[data-toggle="collapse"]');
-  const total = await headings.count();
-  for (let i = 0; i < total; i += 1) {
-    const heading = headings.nth(i);
-    const collapsed = ((await heading.getAttribute('class')) ?? '').split(/\s+/).includes('collapsed');
-    if (!collapsed || !(await heading.isVisible())) continue;
-    await heading.click();
-    await run.xhr.settle();
-  }
-  await run.shot();
-
-  run.step = 'status';
-  const link = page.locator('a[onclick*="viewStatusInfo"]:visible').first();
-  if ((await link.count()) === 0) throw new Error(`the edit screen of version ${pending} renders no status link`);
-  const opened = run.xhr.mark();
-  await link.click();
-  await run.xhr.waitFor(opened, keyIs(KEY.statusModal), 'the status modal');
-  await page.locator('#approvalModalContainer').waitFor({ state: 'visible' });
-  await run.xhr.settle();
-  await run.shot();
-
-  run.step = 'approve';
-  const apply = page.locator('#mura-approval-apply');
-  if (!(await apply.isVisible())) throw new Error(`the status modal offers no approval action for version ${pending}`);
-  await page.locator('#approval-approve').check();
-  await page.locator('#approval-comments').fill(comment);
-  await act(run, () => apply.click(), keyIs(KEY.approvalAction), 'the approval action');
-  await run.shot();
-}
-
-/** GS-UI-03: upload an image and a document through the multi-file uploader. */
-async function multiFileUpload(page: Page, run: FlowRun): Promise<void> {
-  run.step = 'uploader';
-  await openPage(page, run, catalogueRoute(run, 'uploader'));
-  await run.shot();
-
-  run.step = 'upload';
-  await page.setInputFiles(
-    UPLOAD_INPUT,
-    UPLOAD_FILES.map((file) => ({ name: file.name, mimeType: file.mimeType, buffer: file.buffer })),
-  );
-  // A row is ready once its `added` handler ran, which creates the inline editors the next wait covers.
-  await page.waitForFunction(
-    `document.querySelectorAll(${JSON.stringify(UPLOAD_ROW_READY)}).length >= ${UPLOAD_FILES.length}`,
-  );
-  // Submit reads each row's summary; its inline editor, still loading when the rows are ready, rewrites it once loaded.
-  await page.waitForFunction(EDITORS_READY);
-  // Legacy puts each new file first among its siblings, so their nav order is their save order. The global start sends
-  // every row at once, racing that order; each row's own start, which the global start presses, goes in turn instead.
-  for (const file of UPLOAD_FILES) {
-    const named = { has: page.locator(`div.name:text-is(${JSON.stringify(file.name)})`) };
-    const upload = (record: XhrRecord): boolean =>
-      record.baseKey === KEY.update &&
-      record.method === 'POST' &&
-      record.body.kind === 'multipart' &&
-      record.body.value.files.some((part) => part.filename === file.name);
-    const start = page.locator(UPLOAD_ROW).filter(named).locator('button.start');
-    await act(run, () => start.click(), upload, `the upload of ${file.name}`);
-    await page.locator(UPLOADED_ROW).filter(named).waitFor();
-  }
-  await run.shot();
 }
 
 /** GS-UI-04: compare the two newest versions from the history screen. */
@@ -1164,50 +697,7 @@ async function versionDiff(page: Page, run: FlowRun): Promise<void> {
   await run.shot();
 }
 
-/** GS-UI-05: change one attribute through the tree's quick editor and save it. */
-async function inlineSave(page: Page, run: FlowRun): Promise<void> {
-  const pageId = seedValue(run, 'page', 'contentID');
-  const attribute = catalogueField(run, 'save', 'attribute');
-  const value = catalogueField(run, 'save', attribute);
-
-  run.step = 'quick-edit';
-  const parentId = seedValue(run, 'page', 'parentID');
-  await openTree(page, run, treeRoute(seedValue(run, 'page', 'siteID'), parentId));
-  const node = await revealNode(page, run, pageId, parentId);
-  const item = node.locator(`:scope > dl a.mura-quickEditItem[data-attribute="${attribute}"]`).first();
-  if ((await item.count()) === 0) throw new Error(`node ${pageId} offers no quick edit of ${attribute}`);
-  await act(run, () => item.click(), keyIs(KEY.loadQuickEdit), 'the quick editor');
-  // The editor's select is hidden behind a niceSelect widget (loadquickedit.cfm:81), which is what a user operates.
-  const widget = page.locator(`#mura-quickEditor #mura-quickEdit-${attribute.toLowerCase()} + .nice-select`);
-  await widget.click();
-  await widget.locator(`li.option[data-value="${value}"]`).click();
-  await run.shot();
-
-  run.step = 'save';
-  const from = run.xhr.mark();
-  await page.locator('#btn__quickedit__save').click();
-  const [saved] = await run.xhr.waitFor(from, keyIs(KEY.saveQuickEdit), 'the quick-edit save');
-  await run.xhr.waitFor(
-    (saved?.index ?? from) + 1,
-    keyIs(KEY.refreshSiteSection, KEY.loadSiteManager),
-    'the refreshed tree',
-  );
-  await run.xhr.settle();
-  await run.shot();
-}
-
-const FLOWS: Readonly<Record<ScenarioId, Flow>> = {
-  'GS-UI-01': siteManagerTree,
-  'GS-UI-02': editPanelsAndStatus,
-  'GS-UI-03': multiFileUpload,
-  'GS-UI-04': versionDiff,
-  'GS-UI-05': inlineSave,
-};
-
-/** Unrecorded setup a flow needs at its origin before the recorded run. */
-type Prepare = (suite: Suite, run: FlowRun) => Promise<void>;
-
-const PREPARE: Readonly<Partial<Record<ScenarioId, Prepare>>> = { 'GS-UI-02': pendingApproval };
+const FLOWS: Readonly<Record<ScenarioId, Flow>> = { 'GS-UI-04': versionDiff };
 
 
 /** What the tests share, resolved once in `beforeAll`. */
@@ -1284,8 +774,6 @@ async function runFlow(suite: Suite, scenario: Scenario, id: ScenarioId, origin:
     };
     let error: FlowError | undefined;
     try {
-      await PREPARE[id]?.(suite, run);
-      run.step = 'login';
       await loginAdmin(page, run.baseUrl);
       xhr.start();
       await FLOWS[id](page, run);
@@ -1653,10 +1141,6 @@ describe(DESCRIBE_TITLE, () => {
   }
 
   // Literal titles, so the static listing of `vitest list` shows each test.
-  it('GS-UI-01 Site Manager tree expand, page and move matches legacy', () => runScenario('GS-UI-01'));
-  it('GS-UI-02 edit panels and status-modal approval matches legacy', () => runScenario('GS-UI-02'));
-  it('GS-UI-03 multi-file upload matches legacy', () => runScenario('GS-UI-03'));
   it('GS-UI-04 version diff fragment matches legacy', () => runScenario('GS-UI-04'));
-  it('GS-UI-05 inline quick-edit save matches legacy', () => runScenario('GS-UI-05'));
 });
 

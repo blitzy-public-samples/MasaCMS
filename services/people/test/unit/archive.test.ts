@@ -1,4 +1,4 @@
-/** People's person archive, seam 1's producer: input parsing, the domain over in-memory collaborators, and the fixture route's check order and writes over the recording database. */
+/** People's person archive, the producer of people.person.archived.v1: input parsing, the domain over in-memory collaborators, and the fixture route's check order and writes over the recording database. */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { LEGACY_ERROR_MAP, LegacyApiError, isCfUuid, type LegacyErrorSpec } from '@opt2/platform/legacy-compat';
 import {

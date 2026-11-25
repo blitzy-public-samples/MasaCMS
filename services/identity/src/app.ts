@@ -92,7 +92,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   const env = options.env ?? loadEnv(identityEnvSchema);
   // Checked before createService acquires anything; an injected publisher needs no emulator.
   const emulatorHost = options.publisher === undefined ? publisherEmulatorHost(env) : undefined;
-  // An invalid role map refuses start-up rather than every signed-in token; minting reuses this parse.
+  // A role map that lists a group or is invalid refuses start-up.
   await loadRoleMap();
   // Read from the process environment like the route registry, which carries Masa's `MURA_<KEY>` configuration.
   const noCasePathPrefixes = legacyApiPrefixes(legacyApiSettings(process.env).context);

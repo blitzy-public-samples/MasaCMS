@@ -228,7 +228,7 @@ describe('isFileObjectChange', () => {
   it.each<[string, string, string, boolean]>([
     ['a file_object row of the content schema', 'file_object', 'content.file_object', true],
     ['another content table', 'file', 'content.file', false],
-    ['a file_object table of another schema', 'file_object', 'finance.file_object', false],
+    ['a file_object table of another schema', 'file_object', 'people.file_object', false],
     ['a mismatched unit', 'file_object', 'content.file', false],
   ])('answers %s', (_label, table, unit, expected) => {
     expect(isFileObjectChange({ table }, unit)).toBe(expected);

@@ -522,14 +522,14 @@ describe('opt2 inputs', () => {
     expect((error as CutoverSchemaError).detail).toContain(expected);
   });
 
-  const JOINER = { unit: 'communications.scheduled_task', owner: 'communications', legacyTables: [] as string[] };
+  const JOINER = { unit: 'content.sample_joiner', owner: 'strategies-content', legacyTables: [] as string[] };
   it.each([
-    ['an unknown unit', [{ ...JOINER, joinsUnit: 'surveys.ghost' }], '/units/5/joinsUnit unit surveys.ghost is not in /units'],
+    ['an unknown unit', [{ ...JOINER, joinsUnit: 'content.ghost' }], '/units/5/joinsUnit unit content.ghost is not in /units'],
     ['itself', [{ ...JOINER, joinsUnit: JOINER.unit }], `/units/5/joinsUnit unit ${JOINER.unit} joins itself`],
     [
       'a unit that joins another',
-      [{ ...JOINER, unit: 'communications.message', joinsUnit: 'people.person' }, { ...JOINER, joinsUnit: 'communications.message' }],
-      '/units/6/joinsUnit unit communications.message joins another unit itself',
+      [{ ...JOINER, unit: 'content.sample_joined', joinsUnit: 'people.person' }, { ...JOINER, joinsUnit: 'content.sample_joined' }],
+      '/units/6/joinsUnit unit content.sample_joined joins another unit itself',
     ],
     [
       'a unit while listing legacy tables',

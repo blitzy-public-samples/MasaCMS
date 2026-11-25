@@ -20,11 +20,23 @@ export const NOTE_CREATED_SUBSCRIPTION = subscriptionName('stub', NOTE_CREATED_T
 /** Dead-letter topic of the note subscription. */
 export const NOTE_CREATED_DLQ = dlqTopicName(NOTE_CREATED_SUBSCRIPTION);
 
+/** Process topic of accepted note comments, which the stub produces and consumes itself. */
+export const NOTE_COMMENTED_TOPIC = topicName('stub', 'note', 'commented', 1);
+
+/** Push subscription of the stub on its own comment topic, which fills `stub.note_activity`. */
+export const NOTE_COMMENTED_SUBSCRIPTION = subscriptionName('stub', NOTE_COMMENTED_TOPIC);
+
+/** Dead-letter topic of the comment subscription. */
+export const NOTE_COMMENTED_DLQ = dlqTopicName(NOTE_COMMENTED_SUBSCRIPTION);
+
 /** Push subscription that fills `stub.tenant_registry` from the site registry topic. */
 export const SITE_CHANGED_SUBSCRIPTION = subscriptionName('stub', SITE_CHANGED_TOPIC);
 
 /** Location of the stub's own note payload schema. */
 export const NOTE_CREATED_SCHEMA_URL = new URL('../../contracts/events/stub.note.created.v1.json', import.meta.url);
+
+/** Location of the stub's own comment payload schema. */
+export const NOTE_COMMENTED_SCHEMA_URL = new URL('../../contracts/events/stub.note.commented.v1.json', import.meta.url);
 
 /** Location of the producer-owned site payload schema in programs-sites. */
 export const SITE_CHANGED_SCHEMA_URL = new URL(
@@ -40,3 +52,9 @@ export const siteChangedSchema = readTopicSchema(SITE_CHANGED_SCHEMA_URL);
 
 /** Compiled note payload validator shared by the outbox and the publisher. */
 export const noteCreatedValidator: TopicValidator = compileTopicSchema(noteCreatedSchema);
+
+/** Payload schema of `stub.note.commented.v1`, read once at module load. */
+export const noteCommentedSchema = readTopicSchema(NOTE_COMMENTED_SCHEMA_URL);
+
+/** Compiled comment payload validator shared by the outbox and the publisher. */
+export const noteCommentedValidator: TopicValidator = compileTopicSchema(noteCommentedSchema);

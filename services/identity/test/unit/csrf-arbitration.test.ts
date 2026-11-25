@@ -469,8 +469,8 @@ describe('arbitration routes', () => {
 
   it.each([
     [CONSUME, 'stub'],
-    [CLAIMS, 'finance'],
-    [SETTLE, 'finance'],
+    [CLAIMS, 'stub'],
+    [SETTLE, 'stub'],
   ])('refuses %s to service:%s before any handler runs', async (url, caller) => {
     const body = url === SETTLE ? { sessionId: SESSION_ID, consumed: [], released: [] } : tokenBody();
 

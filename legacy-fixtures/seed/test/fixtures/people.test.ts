@@ -28,18 +28,11 @@ beforeAll(async () => {
 
 describe('buildPeopleFixtures', () => {
   it('maps each people key, in registry order, to an empty row list', () => {
-    const peopleKeys = fixtureKeys(config).filter((key) => specForKey(key).spec.module === 'people');
+    const peopleKeys = fixtureKeys().filter((key) => specForKey(key).module === 'people');
     const tables = buildPeopleFixtures(ctx);
     expect(peopleKeys).toEqual(['synthetic.person_archive']);
     expect(Object.keys(tables)).toEqual(peopleKeys);
     for (const rows of Object.values(tables)) expect(rows).toEqual([]);
-  });
-
-  it('returns no key of another module', () => {
-    const tables = buildPeopleFixtures(ctx);
-    const otherKeys = fixtureKeys(config).filter((key) => specForKey(key).spec.module !== 'people');
-    expect(otherKeys.length).toBeGreaterThan(0);
-    expect(otherKeys.filter((key) => Object.hasOwn(tables, key))).toEqual([]);
   });
 
   it('is deterministic and independent of the seed', () => {

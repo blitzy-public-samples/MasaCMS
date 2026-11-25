@@ -1,5 +1,4 @@
 /** GET /v1/user-sites and its keyset page GET /v2/user-sites against legacy getUserSites and bindToDomain(isAdmin=true), over a stub identity and registry fakes. */
-import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { createServer, request, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -19,7 +18,7 @@ import {
   type TenantTx,
   type TransactionCallOptions,
 } from '@opt2/platform/tenancy';
-import { ROLE_SET, assertResponseMatchesOpenApi, authHeadersFor, testVerifier, writeTestSecrets } from '@opt2/platform/testing';
+import { ROLE_SET, assertResponseMatchesOpenApi, authHeadersFor, loadOpenApiDocument, testVerifier, writeTestSecrets } from '@opt2/platform/testing';
 import { bindToAdminDomain } from '../../src/domain/user-sites.js';
 import type { KeysetPage, ProgramsSitesRepository, SiteSelectorRow } from '../../src/repo/repository.js';
 import type { SiteRow } from '../../src/repo/tables.js';
@@ -30,7 +29,7 @@ vi.mock('@opt2/platform/tenancy', async (importOriginal) => {
   return { ...actual, registeredTenants: vi.fn(), tenantForRegisteredSite: vi.fn() };
 });
 
-const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as object;
+const OPENAPI = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as object;
 const SESSION_SITES_PATH = '/v1/sessions/current/sites';
 const UNREACHABLE = 'http://127.0.0.1:9';
 

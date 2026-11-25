@@ -16,7 +16,7 @@ import type { Authority, CutoverEntry, CutoverGroup, CutoverVersion, GroupsFile,
 import { parseStoredName, storePath } from '../../src/files/names.js';
 import type { FileListing, LegacyFileEntry, ScheduledTaskDefinition } from '../../src/legacy/bridge.js';
 import type { OrderInventory, OrderRelation } from '../../src/order/dependency-order.js';
-import { loadUnitCatalog } from '../../src/owners/units.js';
+import { UnknownLegacyTableError, loadUnitCatalog } from '../../src/owners/units.js';
 import type { UnitCatalog } from '../../src/owners/units.js';
 import type { NativeTasksFile } from '../../src/scheduler/import.js';
 
@@ -243,7 +243,7 @@ export const TABLES = deepFreeze({
     ],
     options: {},
   },
-  // legacy-fixtures/sql/010_program_site.sql.
+  // The program-to-site map the `Program_<id>` fold reads (`PROGRAM_SITE_TABLE`).
   'synthetic.program_site': {
     qualified: 'synthetic.program_site',
     columns: [col('program_id', 'int', { nullable: false }), nvarchar('siteID', 25, false)],
@@ -263,8 +263,8 @@ export const TABLES = deepFreeze({
     ],
     options: { primaryKey: ['archive_id'] },
   },
-  'Program_1.blackout': programBlackout(1),
-  'Program_2.blackout': programBlackout(2),
+  'Program_1.enrolment': programEnrolment(1),
+  'Program_2.enrolment': programEnrolment(2),
 }) satisfies Readonly<Record<string, FixtureTable>>;
 
 /** Key of one of {@link TABLES}. */
@@ -273,19 +273,19 @@ export type FixtureTableName = keyof typeof TABLES;
 /** Every {@link TABLES} key, in definition order. */
 export const TABLE_NAMES = deepFreeze(Object.keys(TABLES) as FixtureTableName[]);
 
-/** `[Program_<id>].[blackout]` of legacy-fixtures/sql/timesheets/110_tables.program.sql:59-70. */
-function programBlackout(programId: number): FixtureTable {
+/** `[Program_<id>].[enrolment]`: the fixture's per-program table, folded across the program schemas. */
+function programEnrolment(programId: number): FixtureTable {
   return {
-    qualified: `Program_${String(programId)}.blackout`,
+    qualified: `Program_${String(programId)}.enrolment`,
     columns: [
-      char35('blackout_id', false),
-      char35('day_id', false),
+      char35('enrolment_id', false),
+      char35('cohort_id', false),
       char35('person_id', false),
       char35('archive_id'),
-      nvarchar('reason', 50, false),
+      nvarchar('status', 50, false),
       col('created', 'datetime', { nullable: false }),
     ],
-    options: { primaryKey: ['blackout_id'] },
+    options: { primaryKey: ['enrolment_id'] },
   };
 }
 
@@ -572,21 +572,21 @@ export function personArchiveRow(overrides: Row = {}): Row {
   };
 }
 
-/** A `Program_<id>.blackout` row of a timesheet day. */
-export function blackoutRow(overrides: Row = {}): Row {
-  const dayId = text(overrides.day_id, fixtureId('timesheet_day:fixture'));
+/** A `Program_<id>.enrolment` row of a cohort. */
+export function enrolmentRow(overrides: Row = {}): Row {
+  const cohortId = text(overrides.cohort_id, fixtureId('cohort:fixture'));
   return {
-    blackout_id: fixtureId(`blackout:${dayId}`),
-    day_id: dayId,
+    enrolment_id: fixtureId(`enrolment:${cohortId}`),
+    cohort_id: cohortId,
     person_id: userRow().UserID,
     archive_id: null,
-    reason: 'person-archived',
+    status: 'enrolled',
     created: SEED_TIME,
     ...overrides,
   };
 }
 
-/** `synthetic.program_site`: program 1 is `tenant-a`, program 2 `tenant-b` (legacy-fixtures/sql/010_program_site.sql). */
+/** `synthetic.program_site`: program 1 is `tenant-a`, program 2 `tenant-b`. */
 export const PROGRAM_SITES = deepFreeze([
   { program_id: 1, siteID: 'tenant-a' },
   { program_id: 2, siteID: 'tenant-b' },
@@ -660,11 +660,11 @@ export const UNITS = deepFreeze({
   file: 'content.file',
   /** The file-store unit, which `fileUnitIds` of the migration config names; it is not a catalog unit. */
   fileObject: 'content.file_object',
-  blackout: 'timesheets.blackout',
+  enrolment: 'programs_sites.enrolment',
   site: 'programs_sites.site',
   imageSize: 'programs_sites.image_size',
-  mailingList: 'communications.mailing_list',
-  mailingListMember: 'communications.mailing_list_member',
+  mailingList: 'programs_sites.mailing_list',
+  mailingListMember: 'programs_sites.mailing_list_member',
 } as const);
 
 /** One of the {@link UNITS} ids. */
@@ -829,8 +829,6 @@ export const FIXTURE_OWNERSHIP: OwnershipDoc = deepFreeze({
   schemaVersion: 1,
   description: 'Fixture ownership of the migration suites: the opt2/table-ownership.json entries of the fixture tables.',
   units: [
-    unitDoc(UNITS.mailingList, 'communications', ['tmailinglist']),
-    unitDoc(UNITS.mailingListMember, 'communications', ['tmailinglistmembers']),
     unitDoc(UNITS.content, 'strategies-content', ['tcontent']),
     unitDoc(UNITS.file, 'strategies-content', ['tfiles']),
     unitDoc(UNITS.credential, 'identity', ['tusers']),
@@ -839,9 +837,11 @@ export const FIXTURE_OWNERSHIP: OwnershipDoc = deepFreeze({
     unitDoc(UNITS.userAccount, 'identity', ['tusers']),
     unitDoc(UNITS.person, 'people', ['tusers']),
     unitDoc(UNITS.personArchive, 'people', ['synthetic.person_archive']),
+    unitDoc(UNITS.enrolment, 'programs-sites', ['Program_N.enrolment']),
     unitDoc(UNITS.imageSize, 'programs-sites', ['timagesizes']),
+    unitDoc(UNITS.mailingList, 'programs-sites', ['tmailinglist']),
+    unitDoc(UNITS.mailingListMember, 'programs-sites', ['tmailinglistmembers']),
     unitDoc(UNITS.site, 'programs-sites', ['tsettings']),
-    unitDoc(UNITS.blackout, 'timesheets', ['Program_N.blackout']),
   ],
   tables: [
     TUSERS_ENTRY,
@@ -849,11 +849,11 @@ export const FIXTURE_OWNERSHIP: OwnershipDoc = deepFreeze({
     ownershipEntry({ fixture: 'tfiles', origin: 'bootstrap', owner: 'strategies-content', siteIdColumn: 'siteID', tenantResolution: 'siteID-or-umbrella', unit: UNITS.file }),
     ownershipEntry({ fixture: 'tsettings', origin: 'bootstrap', owner: 'programs-sites', siteIdColumn: 'SiteID', tenantResolution: 'siteID', unit: UNITS.site }),
     ownershipEntry({ fixture: 'timagesizes', origin: 'migration', owner: 'programs-sites', siteIdColumn: 'siteID', tenantResolution: 'siteID-or-umbrella', unit: UNITS.imageSize }),
-    ownershipEntry({ fixture: 'tmailinglist', origin: 'bootstrap', owner: 'communications', siteIdColumn: 'SiteID', tenantResolution: 'siteID-or-umbrella', unit: UNITS.mailingList }),
+    ownershipEntry({ fixture: 'tmailinglist', origin: 'bootstrap', owner: 'programs-sites', siteIdColumn: 'SiteID', tenantResolution: 'siteID-or-umbrella', unit: UNITS.mailingList }),
     ownershipEntry({
       fixture: 'tmailinglistmembers',
       origin: 'bootstrap',
-      owner: 'communications',
+      owner: 'programs-sites',
       siteIdColumn: 'SiteID',
       tenantResolution: 'siteID-or-umbrella',
       unit: UNITS.mailingListMember,
@@ -868,13 +868,13 @@ export const FIXTURE_OWNERSHIP: OwnershipDoc = deepFreeze({
       extra: { migrated: true },
     }),
     ownershipEntry({
-      fixture: 'Program_1.blackout',
-      table: 'Program_N.blackout',
+      fixture: 'Program_1.enrolment',
+      table: 'Program_N.enrolment',
       origin: 'fixture',
-      owner: 'timesheets',
+      owner: 'programs-sites',
       siteIdColumn: null,
       tenantResolution: 'program_site',
-      unit: UNITS.blackout,
+      unit: UNITS.enrolment,
       extra: { migrated: true, programFold: true, programSchemas: ['Program_1', 'Program_2'] },
     }),
     // Not migrated: the fold mapping each Program_<id> schema resolves its site through.
@@ -957,12 +957,14 @@ export const FIXTURE_GROUP_IDS = deepFreeze({
   login: `grp:${UNITS.groupAccount}`,
   /** The people roster create and edit, over the person and its identity account and credential. */
   roster: `grp:${UNITS.credential}`,
-  /** The fixture archive route and the blackouts its seam writes. */
+  /** The fixture archive route. */
   archive: `grp:${UNITS.personArchive}`,
   content: `grp:${UNITS.content}`,
   programsSites: `grp:${UNITS.imageSize}`,
   /** No carry write entry, so it stays `legacy` in every version. */
-  communications: `grp:${UNITS.mailingList}`,
+  mailingLists: `grp:${UNITS.mailingList}`,
+  /** The folded program table; no write entry, so it stays `legacy` in every version. */
+  enrolment: `grp:${UNITS.enrolment}`,
 } as const);
 
 /** Route keys of the fixture cut-over entries, canonical lower case. */
@@ -998,10 +1000,11 @@ const GROUP_DEFINITIONS: readonly CutoverGroup[] = deepFreeze([
     writeEntries: [FIXTURE_ROUTES.rosterAdd, FIXTURE_ROUTES.rosterUpdate],
     hasCarryWrite: true,
   },
-  { id: FIXTURE_GROUP_IDS.archive, units: [UNITS.personArchive, UNITS.blackout], writeEntries: [FIXTURE_ROUTES.archive], hasCarryWrite: true },
+  { id: FIXTURE_GROUP_IDS.archive, units: [UNITS.personArchive], writeEntries: [FIXTURE_ROUTES.archive], hasCarryWrite: true },
   { id: FIXTURE_GROUP_IDS.content, units: [UNITS.content, UNITS.file], writeEntries: [FIXTURE_ROUTES.contentUpdate], hasCarryWrite: true },
   { id: FIXTURE_GROUP_IDS.programsSites, units: [UNITS.imageSize, UNITS.site], writeEntries: [FIXTURE_ROUTES.siteUpdate], hasCarryWrite: true },
-  { id: FIXTURE_GROUP_IDS.communications, units: [UNITS.mailingList, UNITS.mailingListMember], writeEntries: [], hasCarryWrite: false },
+  { id: FIXTURE_GROUP_IDS.mailingLists, units: [UNITS.mailingList, UNITS.mailingListMember], writeEntries: [], hasCarryWrite: false },
+  { id: FIXTURE_GROUP_IDS.enrolment, units: [UNITS.enrolment], writeEntries: [], hasCarryWrite: false },
 ]);
 
 /** The fixture `groups.json`: every catalog unit in exactly one group, sorted as `build-groups.ts` sorts it. */
@@ -1048,14 +1051,14 @@ const TEMPLATES: EntryTemplate[] = [
   writeEntry(FIXTURE_ROUTES.groupUpdate, 'identity', FIXTURE_GROUP_IDS.login, [UNITS.groupAccount]),
   writeEntry(FIXTURE_ROUTES.rosterAdd, 'people', FIXTURE_GROUP_IDS.roster, [UNITS.credential, UNITS.userAccount, UNITS.person]),
   writeEntry(FIXTURE_ROUTES.rosterUpdate, 'people', FIXTURE_GROUP_IDS.roster, [UNITS.credential, UNITS.userAccount, UNITS.person]),
-  writeEntry(FIXTURE_ROUTES.archive, 'people', FIXTURE_GROUP_IDS.archive, [UNITS.personArchive, UNITS.blackout]),
+  writeEntry(FIXTURE_ROUTES.archive, 'people', FIXTURE_GROUP_IDS.archive, [UNITS.personArchive]),
   writeEntry(FIXTURE_ROUTES.contentUpdate, 'strategies-content', FIXTURE_GROUP_IDS.content, [UNITS.content, UNITS.file]),
   writeEntry(FIXTURE_ROUTES.siteUpdate, 'programs-sites', FIXTURE_GROUP_IDS.programsSites, [UNITS.imageSize, UNITS.site]),
   readEntry(FIXTURE_ROUTES.listUsers, 'people', [UNITS.userAccount, UNITS.person]),
   readEntry(FIXTURE_ROUTES.archiveRead, 'people', [UNITS.person, UNITS.personArchive]),
   readEntry(FIXTURE_ROUTES.contentRead, 'strategies-content', [UNITS.content]),
   readEntry(FIXTURE_ROUTES.siteEdit, 'programs-sites', [UNITS.imageSize, UNITS.site]),
-  readEntry(FIXTURE_ROUTES.mailingLists, 'communications', [UNITS.mailingList, UNITS.mailingListMember], 'legacy-served'),
+  readEntry(FIXTURE_ROUTES.mailingLists, 'programs-sites', [UNITS.mailingList, UNITS.mailingListMember], 'legacy-served'),
   { route: FIXTURE_ROUTES.imageUpload, owningService: 'none', kind: 'legacy-write', group: null, units: [UNITS.content, UNITS.file], disposition: 'decision' },
   {
     route: FIXTURE_ROUTES.siteDelete,
@@ -1235,16 +1238,14 @@ export async function writeCutoverDir(opts: WriteCutoverDirOptions = {}): Promis
 /** Webroot of the fixture ColdFusion server, which names Masa's ACF monitor task. */
 const LEGACY_WEBROOT = '/srv/masa';
 
-/** Gateway origin the fixture survey tasks call, as `OPT2_GATEWAY_ORIGIN` sets it. */
+/** Gateway origin the bridge double re-points restored tasks at, as `OPT2_GATEWAY_ORIGIN` sets it. */
 export const FIXTURE_GATEWAY_ORIGIN = 'http://127.0.0.1:8100';
 
 /** Masa's monitor task name on ACF (onApplicationStart_include.cfm:556-560). */
 export const SITE_MONITOR_TASK = `${LEGACY_WEBROOT}/index.cfm/_api/sitemonitor/`;
 
-/** Survey whose launch and first reminder the capture holds as fixture tasks. */
-export const FIXTURE_SURVEY_ID = fixtureId('survey:tenant-a/annual');
-
-const SURVEY_CALLBACK = `${FIXTURE_GATEWAY_ORIGIN}/legacy-fixtures/cfml/api.cfm/surveys/surveys/${FIXTURE_SURVEY_ID}`;
+/** Names of the capture's two tasks beside the monitor, which an operator scheduled and the hand-off leaves alone. */
+export const OPERATOR_TASKS = deepFreeze(['ops-cache-warm', 'ops-link-check'] as const);
 
 /** Captured ACF tasks in the bridge wire shape, sorted by name as `normaliseNativeTasksFile` sorts them. */
 const CAPTURED_TASKS: readonly ScheduledTaskDefinition[] = [
@@ -1261,12 +1262,11 @@ const CAPTURED_TASKS: readonly ScheduledTaskDefinition[] = [
     operation: 'HTTPRequest',
     paused: false,
   },
-  // legacy-fixtures/cfml/modules/surveys.cfc:129-189: one-off HTTP tasks addressed to the gateway origin.
   {
-    task: `opt2-survey-${FIXTURE_SURVEY_ID}-launch`,
+    task: OPERATOR_TASKS[0],
     group: 'default',
-    url: `${SURVEY_CALLBACK}/launch?siteid=tenant-a`,
-    port: '8100',
+    url: 'http://127.0.0.1/ops/cache-warm.cfm?siteid=tenant-a',
+    port: '8080',
     interval: 'once',
     startDate: '07/01/2026',
     startTime: '09:00:00',
@@ -1275,11 +1275,11 @@ const CAPTURED_TASKS: readonly ScheduledTaskDefinition[] = [
     paused: false,
   },
   {
-    task: `opt2-survey-${FIXTURE_SURVEY_ID}-reminder-1`,
+    task: OPERATOR_TASKS[1],
     group: 'default',
-    url: `${SURVEY_CALLBACK}/remind?siteid=tenant-a&reminder=1`,
-    port: '8100',
-    interval: 'once',
+    url: 'http://127.0.0.1/ops/link-check.cfm',
+    port: '8080',
+    interval: 'daily',
     startDate: '07/02/2026',
     startTime: '09:00:00',
     requestTimeOut: '600',
@@ -1288,7 +1288,7 @@ const CAPTURED_TASKS: readonly ScheduledTaskDefinition[] = [
   },
 ];
 
-/** The first-run capture in the `native-tasks.json` form: Masa's monitor task with `ping` on, plus two fixture survey tasks. */
+/** The first-run capture in the `native-tasks.json` form: Masa's monitor task with `ping` on, plus the two operator tasks. */
 export const NATIVE_TASKS_SAMPLE: NativeTasksFile = deepFreeze({
   capturedAt: FIXTURE_CREATED_AT,
   originalPing: true,
@@ -1351,7 +1351,7 @@ export const FIXTURE_INVENTORY: OrderInventory = deepFreeze({
     { table: 'tmailinglistmembers', hasSiteId: true },
     { table: 'synthetic.program_site', hasSiteId: true },
     { table: 'synthetic.person_archive', hasSiteId: true },
-    { table: 'Program_N.blackout', hasSiteId: false },
+    { table: 'Program_N.enrolment', hasSiteId: false },
   ],
   relations: [
     relation('daoJoin', 'tusers.SiteID', 'tsettings.SiteID', { path: 'core/mura/user/userGateway.cfc', lines: [599, 599] }),
@@ -1360,10 +1360,7 @@ export const FIXTURE_INVENTORY: OrderInventory = deepFreeze({
     // The back-reference of the cycle; FileID is not part of the tcontent key, so the order defers it.
     relation('daoJoin', 'tcontent.FileID', 'tfiles.fileID', { path: 'core/mura/category/categoryGateway.cfc', lines: [193, 193] }),
     relation('daoJoin', 'tmailinglistmembers.MLID', 'tmailinglist.MLID', { path: 'core/mura/email/emailUtility.cfc', lines: [639, 639] }),
-    relation('programFk', 'Program_N.blackout.archive_id', 'synthetic.person_archive.archive_id', {
-      path: 'legacy-fixtures/sql/timesheets/110_tables.program.sql',
-      lines: [65, 65],
-    }),
+    relation('programFk', 'Program_N.enrolment.archive_id', 'synthetic.person_archive.archive_id', undefined),
   ],
 });
 
@@ -1384,11 +1381,28 @@ export const FIXTURE_SCHEDULED_JOBS = deepFreeze([
   },
 ]);
 
-/** Writes {@link FIXTURE_INVENTORY} with {@link FIXTURE_SCHEDULED_JOBS} as `legacy-inventory.json` under `dir` and returns its path. */
-export async function writeInventoryFile(dir: string): Promise<string> {
+/** {@link FIXTURE_INVENTORY} without the tables `catalog` does not record, such as the fold tables for the committed ownership, and their relations. */
+export function fixtureInventoryFor(catalog: Pick<UnitCatalog, 'isMigratable'>): OrderInventory {
+  const recorded = (table: string): boolean => {
+    try {
+      catalog.isMigratable(table);
+      return true;
+    } catch (error) {
+      if (error instanceof UnknownLegacyTableError) return false;
+      throw error;
+    }
+  };
+  return {
+    tables: FIXTURE_INVENTORY.tables.filter(({ table }) => recorded(table)),
+    relations: FIXTURE_INVENTORY.relations.filter(({ child, parent }) => recorded(child.table) && recorded(parent.table)),
+  };
+}
+
+/** Writes `inventory`, {@link FIXTURE_INVENTORY} by default, with {@link FIXTURE_SCHEDULED_JOBS} as `legacy-inventory.json` under `dir` and returns its path. */
+export async function writeInventoryFile(dir: string, inventory: OrderInventory = FIXTURE_INVENTORY): Promise<string> {
   await mkdir(dir, { recursive: true });
   const file = path.join(path.resolve(dir), 'legacy-inventory.json');
-  await writeJson(file, { sourceSha: TEST_SOURCE_SHA, ...FIXTURE_INVENTORY, scheduledJobs: FIXTURE_SCHEDULED_JOBS });
+  await writeJson(file, { sourceSha: TEST_SOURCE_SHA, ...inventory, scheduledJobs: FIXTURE_SCHEDULED_JOBS });
   return file;
 }
 
@@ -1450,7 +1464,7 @@ export const TIMAGESIZES_MAPPING: MappingSpec = deepFreeze({
   tenant: { kind: 'site', column: 'siteID' },
 });
 
-/** `tmailinglistmembers` ↔ `communications.mailing_list_member`, keyless, tenant from the row's `SiteID`. */
+/** `tmailinglistmembers` ↔ `programs_sites.mailing_list_member`, keyless, tenant from the row's `SiteID`. */
 export const MAILINGLIST_MEMBERS_MAPPING: MappingSpec = deepFreeze({
   legacyTable: 'tmailinglistmembers',
   targetTable: UNITS.mailingListMember,

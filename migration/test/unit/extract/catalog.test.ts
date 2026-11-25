@@ -153,19 +153,19 @@ function newScript(overrides: Partial<Script> = {}): Script {
         primaryKey: ['contentid', 'contentHistID', 'siteID', 'userID'],
       },
       'dbo.tsettings': { columns: [{ name: 'SiteID', type: 'varchar', maxLength: 25 }] },
-      'program_1.timesheet': { columns: [{ name: 'timesheetID', type: 'char', maxLength: 35 }], primaryKey: ['timesheetID'] },
-      'synthetic.survey': { columns: [{ name: 'surveyID', type: 'char', maxLength: 35 }], primaryKey: ['surveyID'] },
+      'program_1.enrolment': { columns: [{ name: 'enrolmentID', type: 'char', maxLength: 35 }], primaryKey: ['enrolmentID'] },
+      'synthetic.person_archive': { columns: [{ name: 'archive_id', type: 'char', maxLength: 35 }], primaryKey: ['archive_id'] },
       'dbo.tvariant': { columns: [{ name: 'id', type: 'int' }, { name: 'payload', type: 'sql_variant' }] },
       'dbo.tbroken': { columns: [{ name: 'id', type: 'int' }], primaryKey: ['missing'] },
     },
     liveTables: [
       { schema_name: 'dbo', table_name: 'tusers' },
-      { schema_name: 'Program_2', table_name: 'timesheet' },
+      { schema_name: 'Program_2', table_name: 'enrolment' },
       { schema_name: OPT2_SYNC_SCHEMA, table_name: 'projector_checkpoint' },
-      { schema_name: 'synthetic', table_name: 'survey' },
+      { schema_name: 'synthetic', table_name: 'person_archive' },
       { schema_name: 'guest', table_name: 'x' },
       { schema_name: 'dbo', table_name: 'tcontent' },
-      { schema_name: 'Program_1', table_name: 'timesheet' },
+      { schema_name: 'Program_1', table_name: 'enrolment' },
       { schema_name: 'dbo', table_name: 'fb_contactus' },
     ],
     ...overrides,
@@ -181,7 +181,7 @@ describe('table names', () => {
     ['dbo', 'tcontent', 'tcontent'],
     ['DBO', 'tusers', 'tusers'],
     ['synthetic', 'person_archive', 'synthetic.person_archive'],
-    ['Program_1', 'timesheet', 'Program_1.timesheet'],
+    ['Program_1', 'enrolment', 'Program_1.enrolment'],
   ])('qualifies %s.%s as %s', (schema, table, expected) => {
     expect(qualifiedName(schema, table)).toBe(expected);
   });
@@ -189,9 +189,9 @@ describe('table names', () => {
   it.each([
     ['tcontent', { schema: 'dbo', table: 'tcontent' }],
     ['dbo.tcontent', { schema: 'dbo', table: 'tcontent' }],
-    ['[Program_1].[timesheet]', { schema: 'Program_1', table: 'timesheet' }],
+    ['[Program_1].[enrolment]', { schema: 'Program_1', table: 'enrolment' }],
     ['[tusers]', { schema: 'dbo', table: 'tusers' }],
-    ['synthetic.survey.extra', { schema: 'synthetic', table: 'survey.extra' }],
+    ['synthetic.person_archive.extra', { schema: 'synthetic', table: 'person_archive.extra' }],
   ])('parses %s', (name, expected) => {
     expect(parseQualifiedName(name)).toEqual(expected);
   });
@@ -284,8 +284,8 @@ describe('readTableCatalog', () => {
   });
 
   it.each([
-    [{ schema: 'Program_1', table: 'timesheet', qualified: 'ignored' }, 'Program_1', 'timesheet', 'Program_1.timesheet'],
-    ['[synthetic].[survey]', 'synthetic', 'survey', 'synthetic.survey'],
+    [{ schema: 'Program_1', table: 'enrolment', qualified: 'ignored' }, 'Program_1', 'enrolment', 'Program_1.enrolment'],
+    ['[synthetic].[person_archive]', 'synthetic', 'person_archive', 'synthetic.person_archive'],
   ])('binds schema and table of %j', async (table, schema, name, qualified) => {
     const { pool, calls } = fakePool(newScript());
     const catalog = await readTableCatalog(pool, table);
@@ -322,10 +322,10 @@ describe('listLegacyTables', () => {
     const { pool, calls } = fakePool(newScript());
     const tables = await listLegacyTables(pool);
     expect(tables.map((ref) => ref.qualified)).toEqual([
-      'Program_1.timesheet',
-      'Program_2.timesheet',
+      'Program_1.enrolment',
+      'Program_2.enrolment',
       'fb_contactus',
-      'synthetic.survey',
+      'synthetic.person_archive',
       'tcontent',
       'tusers',
     ]);

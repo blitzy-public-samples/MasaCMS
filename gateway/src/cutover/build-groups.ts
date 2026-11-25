@@ -124,7 +124,7 @@ export function createWriteClosure(inventory: InventoryDoc, ownership: Ownership
   const unitsOfWrite = (unit: string, item: ClosureItem): readonly string[] => {
     if (units.has(unit)) return [unit];
     if (unit === FILE_STORE && fileStoreUnits.length > 0) return fileStoreUnits;
-    // Decision-list and retired tables have no target units.
+    // Decision-list, retired and legacy-only tables have no target units.
     if (unit.startsWith(DECISION_TABLE_PREFIX)) return [];
     throw new Error(`${item.id ?? item.routeKey ?? 'item'}: write ${unit} maps to no unit of opt2/table-ownership.json`);
   };

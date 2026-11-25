@@ -1,7 +1,7 @@
 /** Logged-in sessions per authorisation-matrix subject, through the gateway or legacy directly, over HTTP only. */
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { Roles, SYNTHETIC_ROLES, createLocalInvocationMinter, loadLocalSigningKeys } from '@opt2/platform/auth';
+import { Roles, createLocalInvocationMinter, loadLocalSigningKeys } from '@opt2/platform/auth';
 import {
   ROLE_SET,
   TENANT_A,
@@ -296,11 +296,10 @@ function publicUserPoolOf(site: string): string {
   return registryPayloads().find((payload) => payload.siteId === wanted)?.publicUserPoolId ?? site;
 }
 
-/** Login of a `user` subject: a fixed subject's entry, else the tenant-a user in the synthetic role's group. */
+/** Login of a `user` subject: its fixed subject's entry. */
 function userLogin(subject: RoleSubject): UserLogin {
   const { name } = subject;
   if (Object.hasOwn(FIXED_USER_LOGINS, name)) return FIXED_USER_LOGINS[name as FixedUserSubject];
-  if (SYNTHETIC_ROLES.includes(name)) return { kind: 'admin', ref: userRef(TENANT_A.siteId, name) };
   // ROLE_SET names are typed string, so a user subject this file does not know can only fail here, at runtime.
   throw new Error(`no login is defined for user subject ${name}`);
 }

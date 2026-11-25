@@ -35,9 +35,6 @@ export const E2E_RESULT_RELATIVE = 'results/e2e-isolation.json';
 /** How state-directory paths are shown in the report, so no host path reaches the committed file. */
 const STATE_LABEL = '${OPT2_STATE_DIR}';
 
-/** Reason the gateway matrix gives a case it skipped because the legacy fixtures are unavailable (`golden/catalogue.ts`). */
-const FIXTURES_UNAVAILABLE = 'skipped: fixtures unavailable';
-
 /** Reason prefix the gateway matrix gives a case whose route the active cut-over version serves from legacy (`gateway-matrix.ts`). */
 const LEGACY_SERVED = 'skipped: legacy-served';
 
@@ -49,7 +46,7 @@ export interface IsolationPackage {
   pkg: string;
 }
 
-/** The ten services and the stub, in report order. */
+/** One package per {@link SERVICE_SCHEMAS} entry, in that order (the report order). */
 export const ISOLATION_PACKAGES: readonly IsolationPackage[] = Object.freeze(
   SERVICE_SCHEMAS.map(({ service, schema }) => Object.freeze({ service, schema, pkg: `services/${service}` })),
 );
@@ -170,7 +167,7 @@ export const endToEndResultSchema = z.looseObject({
   gateway: z.object({
     crossTenantReads: count,
     crossTenantWrites: count,
-    surveyGrantOnly: z.boolean(),
+    grantOnly: z.boolean(),
     cases: z.array(
       z.object({
         id: z.string(),
@@ -311,7 +308,7 @@ export type EndToEndIsolation = {
   via: string;
   crossTenantReads: number | null;
   crossTenantWrites: number | null;
-  surveyGrantOnly: boolean | null;
+  grantOnly: boolean | null;
   fanoutRegistryOnly: boolean | null;
   source: string | null;
 };
@@ -378,7 +375,7 @@ export const PASS_CONDITION =
   'Zero cross-tenant reads and writes for every service, every event consumer and end to end through the gateway; ' +
   'RLS enabled and forced with USING and WITH CHECK on every tenant table; no service role with rolsuper or ' +
   'rolbypassrls, or a member of such a role directly or transitively; tenantless events dead-lettered; fan-out only to ' +
-  'registry-derived tenants; survey responses only for granted tenants; and no finding.';
+  'registry-derived tenants; grant-checked writes only from granted tenants; and no finding.';
 
 const TENANT_ID_RULE = `tenantIdForSite(siteID): UUIDv5 of the lower-cased siteID; ${[TENANT_A, TENANT_B, TENANT_UMBRELLA]
   .map((tenant) => `${tenant.siteId} = ${tenant.tenantId}`)
@@ -510,29 +507,29 @@ function serviceOfCatalogObject(object: string): string | undefined {
   )?.service;
 }
 
-/** The end-to-end figures and their findings; fixture-unavailable and legacy-served skips are collected into `skipped` instead. */
+/** The end-to-end figures and their findings; legacy-served skips are collected into `skipped` instead. */
 function endToEndOf(result: EndToEndResult | null, findings: IsolationFinding[], skipped: string[]): EndToEndIsolation {
   const found = (detail: string): void => {
     findings.push({ scope: 'endToEnd', detail });
   };
   if (result === null) {
     found(`no end-to-end result at ${STATE_LABEL}/${E2E_RESULT_RELATIVE}; harness/e2e/isolation writes it after the gateway matrix`);
-    return { via: 'gateway', crossTenantReads: null, crossTenantWrites: null, surveyGrantOnly: null, fanoutRegistryOnly: null, source: null };
+    return { via: 'gateway', crossTenantReads: null, crossTenantWrites: null, grantOnly: null, fanoutRegistryOnly: null, source: null };
   }
   const { gateway } = result;
   for (const c of gateway.cases) {
-    const allowed = c.reason === FIXTURES_UNAVAILABLE || c.reason?.startsWith(`${LEGACY_SERVED} `) === true;
+    const allowed = c.reason?.startsWith(`${LEGACY_SERVED} `) === true;
     if (c.result === 'skipped' && allowed) skipped.push(c.id);
     else if (c.result !== 'pass') found(`case ${c.id} ${c.result}${c.reason === undefined ? '' : `: ${c.reason}`}`);
   }
   if (gateway.crossTenantReads > 0) found(`${gateway.crossTenantReads} cross-tenant reads through the gateway`);
   if (gateway.crossTenantWrites > 0) found(`${gateway.crossTenantWrites} cross-tenant writes through the gateway`);
-  if (!gateway.surveyGrantOnly) found('surveyGrantOnly is false: no survey-grant case showed responses admitted for granted sites only');
+  if (!gateway.grantOnly) found('grantOnly is false: no tenant-grant case showed writes admitted for granted sites only');
   return {
     via: result.baseUrl === undefined ? 'gateway' : `gateway ${result.baseUrl}`,
     crossTenantReads: gateway.crossTenantReads,
     crossTenantWrites: gateway.crossTenantWrites,
-    surveyGrantOnly: gateway.surveyGrantOnly,
+    grantOnly: gateway.grantOnly,
     // The gateway matrix has no fan-out case; registry-only fan-out is shown on the consumer rows.
     fanoutRegistryOnly: null,
     source: `${STATE_LABEL}/${E2E_RESULT_RELATIVE}`,

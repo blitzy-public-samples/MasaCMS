@@ -1,6 +1,5 @@
 /** `lookupFileExtensions` over a throwaway `content` schema: pool reach, id matching, auth denials, body validation and window read gates. */
 import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -18,6 +17,7 @@ import {
   TENANT_UMBRELLA,
   assertResponseMatchesOpenApi,
   createThrowawaySchema,
+  loadOpenApiDocument,
   mintServiceToken,
   mintUserToken,
   pgAvailable,
@@ -36,7 +36,7 @@ vi.mock('node:timers/promises', async (importOriginal) =>
 
 type ContractOperation = Record<string, unknown>;
 
-const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as {
+const OPENAPI = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as {
   paths: Record<string, Record<string, ContractOperation>>;
 };
 const SERVICE = 'strategies-content';
@@ -233,7 +233,7 @@ describe.skipIf(!(await pgAvailable()))('lookupFileExtensions', () => {
       LOOKUP_URL,
       401,
     ],
-    ['another service', () => peopleHeaders(SITE_C, 'communications'), LOOKUP_URL, 403],
+    ['another service', () => peopleHeaders(SITE_C, 'stub'), LOOKUP_URL, 403],
     [
       'the gateway',
       async () => ({

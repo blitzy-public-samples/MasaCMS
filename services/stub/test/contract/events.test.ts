@@ -14,14 +14,16 @@ import {
   type JsonType,
 } from '@opt2/platform/testing';
 import { describe, expect, it } from 'vitest';
+import { newComment, noteCommentedPayload } from '../../src/domain/comment.js';
 import { newNote, noteCreatedPayload, type Note } from '../../src/domain/note.js';
-import { NOTE_CREATED_TOPIC, noteCreatedSchema, siteChangedSchema } from '../../src/events/topics.js';
+import { NOTE_COMMENTED_TOPIC, NOTE_CREATED_TOPIC, noteCommentedSchema, noteCreatedSchema, siteChangedSchema } from '../../src/events/topics.js';
 import { TEST_CLOCK } from '../helpers/app.js';
 
 const pin = JSON.parse(readFileSync(new URL('../../../../opt2/source-pin.json', import.meta.url), 'utf8')) as {
   sha: string;
 };
 const noteSchema = readTopicSchema(new URL('../../contracts/events/stub.note.created.v1.json', import.meta.url));
+const commentSchema = readTopicSchema(new URL('../../contracts/events/stub.note.commented.v1.json', import.meta.url));
 const producerSiteSchema = readTopicSchema(
   new URL('../../../programs-sites/contracts/events/programs-sites.site.changed.v1.json', import.meta.url),
 );
@@ -75,11 +77,11 @@ describe('stub.note.created.v1 schema', () => {
     expect(validator.validatePayload(noteCreatedPayload(note)).ok).toBe(true);
   });
 
-  it('is a state topic without tenant fan-out', () => {
+  it('is a state topic with a user-pool tenant fan-out', () => {
     const meta = topicMeta(noteSchema);
 
     expect(meta.kind).toBe('state');
-    expect(meta.fanout).toBeUndefined();
+    expect(meta.fanout).toBe('userPool');
   });
 
   it('records the pinned source SHA', () => {
@@ -116,6 +118,44 @@ describe('stub.note.created.v1 envelope', () => {
     expect(errors).toContainEqual(
       expect.objectContaining({ instancePath: 'payload', message: expect.stringContaining('(extra)') }),
     );
+  });
+});
+
+describe('stub.note.commented.v1 schema', () => {
+  const comment = newComment(note.noteId, TENANT_A.siteId, 'Contract comment', TEST_CLOCK);
+
+  it('compiles with the platform topic validator and accepts a new comment payload', () => {
+    const validator = compileTopicSchema(commentSchema);
+
+    expect(validator.schemaId).toBe(commentSchema.$id);
+    expect(validator.validatePayload(noteCommentedPayload(comment)).ok).toBe(true);
+  });
+
+  it('is a process topic without tenant fan-out or supersedes', () => {
+    expect(topicMeta(commentSchema)).toEqual({ kind: 'process' });
+  });
+
+  it('records the pinned source SHA', () => {
+    expect(commentSchema.$comment).toBe(`source-sha: ${pin.sha}`);
+  });
+
+  it('is the contract the service validates comments against', () => {
+    expect(NOTE_COMMENTED_TOPIC).toBe('stub.note.commented.v1');
+    expect(noteCommentedSchema).toStrictEqual(commentSchema);
+  });
+
+  it('accepts the envelope of a comment keyed by its note and rejects one without a tenant', () => {
+    const envelope = testEnvelope({
+      topic: NOTE_COMMENTED_TOPIC,
+      tenantId: TENANT_A.tenantId,
+      aggregateId: note.noteId,
+      aggregateVersion: 2,
+      payload: noteCommentedPayload(comment),
+    });
+
+    expect(assertEventMatches(undefined, commentSchema, envelope).payload).toStrictEqual(envelope.payload);
+    expect(envelope.payload.noteId).toBe(envelope.aggregateId);
+    expect(() => assertEventMatches(undefined, commentSchema, withoutTenant(envelope))).toThrow(ContractAssertionError);
   });
 });
 

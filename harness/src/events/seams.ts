@@ -1,39 +1,45 @@
-// Event-seam checks: person archive -> timesheet blackouts (seam 1) and survey schedule -> scheduled tasks (seam 2).
+// Event-seam check: a stub note created through the gateway is projected in each registry-derived destination tenant of
+// its topic and nowhere else; owner-export, registry and polling helpers shared by the event checks.
 import { readFileSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
 
 import {
+  pushPath,
+  readTopicSchema,
+  subscriptionName,
+  topicMeta,
+  topicSchemaRelativePath,
+  type TenantFanout,
+} from '@opt2/platform/events';
+import {
+  GATE_WAIT_MS,
   MAX_EXPORT_LIMIT,
   MIGRATION_PATH_PREFIX,
   decodeRow,
-  formatCanonicalTimestamp,
   type CanonicalColumn,
   type ExportResponse,
   type ExportRow,
+  type GateRequest,
+  type GateResponse,
+  type UnitGate,
 } from '@opt2/platform/migration-kit';
-import { QUEUES } from '@opt2/platform/tasks';
 import { tenantIdForSite } from '@opt2/platform/tenancy';
 
-import { FIXTURES_UNAVAILABLE, readFixtureStatus, type FixtureStatus } from '../golden/catalogue.js';
 import {
   DEFAULT_SITE,
   SEED_CONFIG_PATH,
   adminLogin,
-  jsonApiLogin,
-  jsonApiTokens,
   loadSecretStore,
-  loadSeedStore,
   originBaseUrl,
   type LoginCredentials,
   type LoginResult,
   type SecretStore,
-  type SeedStore,
 } from '../golden/session.js';
 import { createHttpSession, type FetchLike, type HttpResult, type HttpSession } from '../lib/http.js';
 import { createHarnessInvoker, type HarnessInvoker } from '../lib/invocation.js';
 import { repoPath, type EnvLike } from '../lib/paths.js';
 import { localUrl, type PackageName } from '../repro/ports.js';
-import { mintTraceparent } from './traces.js';
+import { capturedLogOffsets, mintTraceparent, readCapturedLogLines } from './traces.js';
 
 /** Default bound of {@link pollUntil}, in ms. */
 export const DEFAULT_POLL_TIMEOUT_MS = 60_000;
@@ -41,11 +47,14 @@ export const DEFAULT_POLL_TIMEOUT_MS = 60_000;
 /** Default wait between {@link pollUntil} calls, in ms. */
 export const DEFAULT_POLL_INTERVAL_MS = 1_000;
 
-/** Reminder offsets seam 2 schedules by default, in seconds after the launch. */
-export const DEFAULT_REMINDER_OFFSETS_S: readonly number[] = Object.freeze([86_400, 172_800]);
-
-/** Site whose person and survey the seams use by default. */
+/** Site whose seeded system user creates the seam's note by default. */
 export const DEFAULT_SEAM_SITE = 'tenant-a';
+
+/** Topic the note seam carries: the stub's note event, which the stub itself consumes. */
+export const NOTE_SEAM_TOPIC = 'stub.note.created.v1';
+
+/** Unit the note seam's consumer writes: one projection row per note in each destination tenant. */
+export const NOTE_PROJECTION_UNIT = 'stub.note_projection';
 
 /** Bounds of {@link pollUntil}; unset values take the defaults above. */
 export interface PollBounds {
@@ -60,7 +69,6 @@ export interface SeamDeps {
   /** Source of the `platform.migration` invocation credential; default a `migration` harness invoker. */
   invoker?: HarnessInvoker;
   secrets?: SecretStore;
-  seed?: SeedStore;
   /** Base URL per package, overriding the loopback ports of `ports.env`. */
   serviceUrls?: Partial<Record<PackageName, string>>;
   /** Sites whose programs-sites rows form the registry; default the seed config's sites plus `default`. */
@@ -68,18 +76,13 @@ export interface SeamDeps {
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
   poll?: PollBounds;
-  fixtures?: FixtureStatus;
-}
-
-/** Evidence of a seam skipped because the legacy fixtures are unavailable. */
-export interface SkippedEvidence {
-  reason: string | null;
 }
 
 /** Outcome of one seam check. */
-export type SeamResult<E = unknown> =
-  | { passed: boolean; skipped?: undefined; evidence: E }
-  | { passed: false; skipped: typeof FIXTURES_UNAVAILABLE; evidence: SkippedEvidence };
+export interface SeamResult<E = unknown> {
+  passed: boolean;
+  evidence: E;
+}
 
 /** Decoded rows of one unit's export, with each row's raw entry for checksums. */
 export interface OwnerExport {
@@ -113,15 +116,13 @@ interface ResolvedDeps extends SeamDeps {
   env: EnvLike;
   invoker: HarnessInvoker;
   secrets: SecretStore;
-  seed: SeedStore;
   now: () => number;
 }
 
 type Row = Record<string, unknown>;
 
-const DAY_MS = 86_400_000;
-const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
-const FIXTURE_API = '/legacy-fixtures/cfml/api.cfm';
+const NOTES_PATH = '/opt2/stub/notes';
+const POSITIVE_DIGITS = /^[1-9][0-9]*$/;
 
 let ownershipUnits: readonly OwnershipUnit[] | undefined;
 
@@ -161,15 +162,6 @@ function idKey(id: string): string {
   return id.trimEnd().toUpperCase();
 }
 
-/** Canonical `t` text of a `yyyy-mm-dd` date or a wall-clock time, so times compare as strings. */
-function wallClock(value: string): string {
-  return formatCanonicalTimestamp(DATE_ONLY.test(value) ? `${value}T00:00:00` : value);
-}
-
-function valueAt(value: unknown, path: readonly string[]): unknown {
-  return path.reduce<unknown>((current, key) => field(asRecord(current), key), value);
-}
-
 function isSuccess(status: number): boolean {
   return status >= 200 && status < 300;
 }
@@ -199,7 +191,6 @@ async function resolveDeps(deps: SeamDeps): Promise<ResolvedDeps> {
     ...(await withInvoker({ ...deps, env })),
     env,
     secrets: deps.secrets ?? loadSecretStore(env),
-    seed: deps.seed ?? loadSeedStore(env),
     now: deps.now ?? Date.now,
   };
 }
@@ -262,7 +253,7 @@ export async function siteRegistry(deps: SeamDeps = {}): Promise<RegistrySite[]>
     );
     for (const row of rows) {
       const siteId = text(row, 'SiteID');
-      // An empty or NULL user pool is the site's own id, as usp_person_archived_blackout and settingsBean read it.
+      // An empty or NULL user pool is the site's own id, as settingsBean reads it.
       const pool = (column: string): string => (text(row, column) || siteId).toLowerCase();
       sites.push({
         siteId,
@@ -295,20 +286,6 @@ export async function pollUntil<T>(
   }
 }
 
-/** Whether `day` is open under `usp_apply_blackout`: not `APPROVED`, case-folded as the collation compares, and dated on or after `effectiveFrom`. */
-export function isOpenDay(day: Row, effectiveFrom: string): boolean {
-  const state = field(day, 'state');
-  return (
-    typeof state === 'string' &&
-    state.trimEnd().toUpperCase() !== 'APPROVED' &&
-    wallClock(text(day, 'work_date')) >= wallClock(effectiveFrom)
-  );
-}
-
-function skippedResult(status: FixtureStatus): SeamResult<never> {
-  return { passed: false, skipped: FIXTURES_UNAVAILABLE, evidence: { reason: status.reason } };
-}
-
 /** Username and password of the seeded `role` account of `site`. */
 function seededCredentials(secrets: SecretStore, site: string, role: string): LoginCredentials {
   const username = secrets.username(site, role);
@@ -325,420 +302,520 @@ function gatewaySession(deps: ResolvedDeps): HttpSession {
   return createHttpSession({ baseUrl: originBaseUrl('gateway', deps.env), fetch: deps.fetch });
 }
 
-/** A person to archive: Masa `UserID` and the site whose user pools hold it. */
-export interface SeamPerson {
-  userId: string;
-  siteId: string;
-}
+/** Why a tenant receives an event: its own site's tenant, or a user-pool fan-out. */
+export type SeamReason = 'origin-tenant' | 'userPool';
 
-/** Options of {@link runSeam1}; unset subject fields take the seeded defaults. */
-export type Seam1Options = SeamDeps & {
-  person?: SeamPerson;
-  /** `yyyy-mm-dd`; default the seed business date. */
-  effectiveFrom?: string;
-  credentials?: LoginCredentials;
-};
-
-/** Why a tenant receives the archive's blackouts. */
-export type Seam1Reason = 'person-tenant' | 'userPool';
-
-/** Expected and observed blackouts of the person in one destination tenant. */
-export interface Seam1Destination {
+/** A destination tenant the consumer derives for an event from the site registry. */
+export interface SeamDestination {
   siteId: string;
   tenantId: string;
-  reason: Seam1Reason;
-  expectedDayIds: string[];
-  /** Blackout day ids the person held before the archive. */
-  preexistingDayIds: string[];
-  blackoutDayIds: string[];
-}
-
-/** A registered tenant outside the fan-out, with the person's blackout rows found there. */
-export interface Seam1OtherTenant {
-  siteId: string;
-  tenantId: string;
-  blackoutRows: number;
-}
-
-/** Evidence of seam 1; `traceId` selects the archive's trace in the collector export. */
-export interface Seam1Evidence {
-  personId: string;
-  siteId: string;
-  effectiveFrom: string;
-  traceId: string;
-  archive: { status: number; body: unknown };
-  destinations: Seam1Destination[];
-  otherTenants: Seam1OtherTenant[];
-  polls: number;
-  elapsedMs: number;
-  timedOut: boolean;
-}
-
-interface TenantTimesheets {
-  sheets: Row[];
-  days: Row[];
-}
-
-async function readTimesheets(tenantId: string, deps: SeamDeps): Promise<TenantTimesheets> {
-  const sheets = await readOwnerExport({ service: 'timesheets', unit: unitFor('timesheets', 'timesheet'), tenantId }, deps);
-  const days = await readOwnerExport({ service: 'timesheets', unit: unitFor('timesheets', 'timesheet_day'), tenantId }, deps);
-  return { sheets: sheets.rows, days: days.rows };
-}
-
-/** Person id of every sheet in `data`, by sheet id. */
-function sheetOwners(data: TenantTimesheets): Map<string, string> {
-  return new Map(data.sheets.map((sheet) => [idKey(text(sheet, 'timesheet_id')), idKey(text(sheet, 'person_id'))]));
-}
-
-/** Ids of `personId`'s open days in `data`, sorted. */
-function openDayIds(data: TenantTimesheets, personId: string, effectiveFrom: string): string[] {
-  const owners = sheetOwners(data);
-  const person = idKey(personId);
-  return data.days
-    .filter((day) => owners.get(idKey(text(day, 'timesheet_id'))) === person && isOpenDay(day, effectiveFrom))
-    .map((day) => idKey(text(day, 'day_id')))
-    .sort();
-}
-
-/** Day ids of `personId`'s blackout rows in the tenant, sorted, one entry per row. */
-async function personBlackoutDayIds(tenantId: string, personId: string, deps: SeamDeps): Promise<string[]> {
-  const { rows } = await readOwnerExport({ service: 'timesheets', unit: unitFor('timesheets', 'blackout'), tenantId }, deps);
-  const person = idKey(personId);
-  return rows
-    .filter((row) => idKey(text(row, 'person_id')) === person)
-    .map((row) => idKey(text(row, 'day_id')))
-    .sort();
-}
-
-/** `matched` when `actual` holds each expected day once; `broken` on a duplicate or an unexpected day, which no later delivery removes. */
-function blackoutState(expected: readonly string[], actual: readonly string[]): 'matched' | 'pending' | 'broken' {
-  const want = new Set(expected);
-  if (new Set(actual).size !== actual.length || actual.some((id) => !want.has(id))) return 'broken';
-  return actual.length === want.size ? 'matched' : 'pending';
+  reason: SeamReason;
 }
 
 /**
- * First person, in sheet key order, with open days on or after `effectiveFrom` in the default site's timesheets, outside
- * `reserved.rehearsal` and without an archive record; the site is the seeded user's.
+ * Destinations of an event of `siteId` under the topic's `fanout`: the site's own tenant, then, for a `userPool` fan-out,
+ * every registered site whose public or private user pool is that site. Throws when the registry holds no `siteId`.
  */
-async function defaultPerson(
-  deps: ResolvedDeps,
-  effectiveFrom: string,
-  timesheetsOf: (tenantId: string) => Promise<TenantTimesheets>,
-): Promise<SeamPerson> {
-  const reserved = field(asRecord(deps.seed.select({ as: 'rehearsal', source: 'reserved', path: 'reserved.rehearsal' })), 'persons');
-  const excluded = new Set((Array.isArray(reserved) ? reserved : []).map((id) => idKey(String(id))));
-  const tenantId = tenantIdForSite(DEFAULT_SEAM_SITE);
-  // Archive records exist only on the target: GS-PE-03 and earlier seam runs write them, the seed writes none.
-  const archives = await readOwnerExport({ service: 'people', unit: unitFor('people', 'person_archive'), tenantId }, deps);
-  for (const row of archives.rows) excluded.add(idKey(text(row, 'person_id')));
-  const data = await timesheetsOf(tenantId);
-  const owners = sheetOwners(data);
-  const open = new Set<string>();
-  for (const day of data.days) {
-    const owner = owners.get(idKey(text(day, 'timesheet_id')));
-    if (owner !== undefined && isOpenDay(day, effectiveFrom)) open.add(owner);
-  }
-  const userId = data.sheets.map((sheet) => text(sheet, 'person_id')).find((id) => open.has(idKey(id)) && !excluded.has(idKey(id)));
-  if (userId === undefined) {
-    throw new Error(
-      `no ${DEFAULT_SEAM_SITE} person outside reserved.rehearsal and without an archive has open timesheet days on or after ${effectiveFrom}`,
-    );
-  }
-  const user = asRecord(deps.seed.select({ as: 'person', source: 'dataset', path: 'masa.users', where: { userID: userId } }));
-  return { userId, siteId: text(user, 'siteID') };
-}
-
-/** Seam 1 check: archives a person through the gateway and compares the blackouts of each registry-derived tenant. */
-export async function runSeam1(deps: Seam1Options = {}): Promise<SeamResult<Seam1Evidence>> {
-  const fixtures = deps.fixtures ?? readFixtureStatus(deps.env);
-  if (!fixtures.available) return skippedResult(fixtures);
-  const ctx = await resolveDeps(deps);
-  const effectiveFrom = deps.effectiveFrom ?? ctx.seed.businessDate();
-  // One read per tenant per run, shared by the default-person search and the destination expectations.
-  const timesheets = new Map<string, TenantTimesheets>();
-  const timesheetsOf = async (tenantId: string): Promise<TenantTimesheets> => {
-    const known = timesheets.get(tenantId);
-    if (known !== undefined) return known;
-    const read = await readTimesheets(tenantId, ctx);
-    timesheets.set(tenantId, read);
-    return read;
-  };
-
-  const registry = await siteRegistry(ctx);
-  const person = deps.person ?? (await defaultPerson(ctx, effectiveFrom, timesheetsOf));
-  const personSite = person.siteId.toLowerCase();
-  const reasons = new Map<string, { siteId: string; reason: Seam1Reason }>([
-    [tenantIdForSite(person.siteId), { siteId: person.siteId, reason: 'person-tenant' }],
-  ]);
-  for (const site of registry) {
-    if (!reasons.has(site.tenantId) && (site.publicUserPoolId === personSite || site.privateUserPoolId === personSite)) {
-      reasons.set(site.tenantId, { siteId: site.siteId, reason: 'userPool' });
+export function fanoutDestinations(
+  siteId: string,
+  registry: readonly RegistrySite[],
+  fanout: TenantFanout | null,
+): SeamDestination[] {
+  const site = siteId.toLowerCase();
+  const own = registry.find((entry) => entry.siteId.toLowerCase() === site);
+  if (own === undefined) throw new Error(`the site registry holds no ${siteId}`);
+  const destinations: SeamDestination[] = [{ siteId: own.siteId, tenantId: own.tenantId, reason: 'origin-tenant' }];
+  if (fanout !== 'userPool') return destinations;
+  for (const entry of registry) {
+    const known = destinations.some((destination) => destination.tenantId === entry.tenantId);
+    if (!known && (entry.publicUserPoolId === site || entry.privateUserPoolId === site)) {
+      destinations.push({ siteId: entry.siteId, tenantId: entry.tenantId, reason: 'userPool' });
     }
   }
-  const others = registry.filter((site) => !reasons.has(site.tenantId));
-
-  const destinations: Seam1Destination[] = [];
-  for (const [tenantId, { siteId, reason }] of reasons) {
-    const open = openDayIds(await timesheetsOf(tenantId), person.userId, effectiveFrom);
-    const preexistingDayIds = await personBlackoutDayIds(tenantId, person.userId, ctx);
-    // usp_apply_blackout adds rows only for days without one, so earlier blackouts stay beside the new ones.
-    const expectedDayIds = [...new Set([...open, ...preexistingDayIds])].sort();
-    destinations.push({ siteId, tenantId, reason, expectedDayIds, preexistingDayIds, blackoutDayIds: preexistingDayIds });
-  }
-
-  const credentials = deps.credentials ?? seededCredentials(ctx.secrets, person.siteId, 'site-admin');
-  const session = gatewaySession(ctx);
-  assertLoggedIn(await adminLogin(session, credentials), 'admin', credentials.username);
-  const { traceparent, traceId } = mintTraceparent();
-  const result = await session.post(`${FIXTURE_API}/people/persons/${encodeURIComponent(person.userId)}/archive`, {
-    query: { siteid: person.siteId },
-    headers: { ...(await jsonApiTokens(session, person.siteId, person.userId)), traceparent },
-    json: { effectiveFrom },
-  });
-  const evidence: Seam1Evidence = {
-    personId: person.userId,
-    siteId: person.siteId,
-    effectiveFrom,
-    traceId,
-    archive: { status: result.status, body: responseBody(result) },
-    destinations,
-    otherTenants: [],
-    polls: 0,
-    elapsedMs: 0,
-    timedOut: false,
-  };
-  if (!isSuccess(result.status)) return { passed: false, evidence };
-
-  const poll = await pollUntil(
-    () => Promise.all(destinations.map((destination) => personBlackoutDayIds(destination.tenantId, person.userId, ctx))),
-    (observed) => destinations.every((destination, i) => blackoutState(destination.expectedDayIds, observed[i] ?? []) !== 'pending'),
-    ctx,
-  );
-  evidence.destinations = destinations.map((destination, i) => ({ ...destination, blackoutDayIds: poll.value[i] ?? [] }));
-  for (const site of others) {
-    const rows = await personBlackoutDayIds(site.tenantId, person.userId, ctx);
-    evidence.otherTenants.push({ siteId: site.siteId, tenantId: site.tenantId, blackoutRows: rows.length });
-  }
-  Object.assign(evidence, { polls: poll.polls, elapsedMs: poll.elapsedMs, timedOut: poll.timedOut });
-  const passed =
-    !poll.timedOut &&
-    evidence.destinations.every((destination) => blackoutState(destination.expectedDayIds, destination.blackoutDayIds) === 'matched') &&
-    evidence.otherTenants.every((tenant) => tenant.blackoutRows === 0);
-  return { passed, evidence };
+  return destinations;
 }
 
-
-/** Options of {@link runSeam2}; unset subject fields take the seeded defaults. */
-export type Seam2Options = SeamDeps & {
-  surveyId?: string;
-  siteId?: string;
-  /** Wall-clock launch time `YYYY-MM-DDTHH:MM:SS` in the legacy server's zone. */
-  launchAt?: string;
-  /** Whole minutes, in seconds after the launch. */
-  reminderOffsetsS?: readonly number[];
-  credentials?: LoginCredentials;
-};
-
-/** One `communications.scheduled_task` row of the survey's schedule version, its time as an offset from the launch. */
-export interface Seam2Row {
-  name: string;
-  kind: string;
-  queue: string;
-  offsetS: number;
-  status: string;
+/** The `x-opt2-tenant-fanout` that {@link NOTE_SEAM_TOPIC}'s schema declares, null when it declares none. */
+export function noteSeamFanout(): TenantFanout | null {
+  return topicMeta(readTopicSchema(repoPath(topicSchemaRelativePath(NOTE_SEAM_TOPIC)))).fanout ?? null;
 }
 
-/** One task of the fixture task list; `listed` because the list holds only tasks whose ACF task exists. */
-export interface Seam2Task {
-  name: string;
-  queue: string;
-  status: 'listed';
+/** Idempotency columns of one `stub.note_projection` row. */
+export interface NoteProjection {
+  applyCount: number;
+  aggregateVersion: number;
+  lastEventId: string;
 }
 
-/** Evidence of seam 2. */
-export interface Seam2Evidence {
-  surveyId: string;
-  siteId: string;
-  tenantId: string;
-  launchAt: string;
-  scheduleVersion: number | null;
-  schedule: { status: number; body: unknown };
-  rows: Seam2Row[];
-  /** Row count per queue. */
-  queueCounts: Record<string, number>;
-  taskList: Seam2Task[];
-  mismatches: string[];
-  polls: number;
-  elapsedMs: number;
-  timedOut: boolean;
-}
-
-const LAUNCH_QUEUE = QUEUES['surveys-launch'].name;
-const REMINDER_QUEUE = QUEUES['communications-reminders'].name;
-
-/** Queue of each `scheduled_task.kind`. */
-const ROW_KIND_QUEUES: Readonly<Record<string, string>> = Object.freeze({
-  'survey-launch': LAUNCH_QUEUE,
-  'survey-reminder': REMINDER_QUEUE,
-});
-
-// The fixture task list names no queue: a launch task runs on surveys-launch and a reminder on communications-reminders.
-const FIXTURE_KIND_QUEUES: Readonly<Record<string, string>> = Object.freeze({
-  launch: LAUNCH_QUEUE,
-  reminder: REMINDER_QUEUE,
-});
-
-/** `survey_id` of the default site's first seeded DRAFT survey; the seed schedules every other status. */
-function defaultSurvey(seed: SeedStore, siteId: string): string {
-  const where = { siteID: siteId, status: 'DRAFT' };
-  return text(asRecord(seed.select({ as: 'survey', source: 'dataset', path: 'fixtures.synthetic.survey', where })), 'survey_id');
-}
-
-/**
- * Midnight after the business date while that is still ahead of the clock, else one day after now. Communications
- * moves a past schedule time to the moment it plans the task, which would erase the offsets this seam compares.
- */
-function defaultLaunchAt(businessDate: string, nowMs: number): string {
-  const nextDay = new Date(Date.parse(`${businessDate}T00:00:00Z`) + DAY_MS).toISOString().slice(0, 10);
-  const fromBusinessDate = `${nextDay}T00:00:00`;
-  if (wallClock(fromBusinessDate) > formatCanonicalTimestamp(new Date(nowMs))) return fromBusinessDate;
-  return formatCanonicalTimestamp(new Date(Math.floor(nowMs / 1000) * 1000 + DAY_MS)).slice(0, 19);
-}
-
-/** Seconds from `launchAt` to `time`, both zone-less wall-clock values. */
-function offsetSeconds(time: string, launchAt: string): number {
-  return (Date.parse(`${wallClock(time)}Z`) - Date.parse(`${wallClock(launchAt)}Z`)) / 1000;
-}
-
-/** The survey's rows of schedule version `version` (every version when it is unknown). */
-function surveyRows(exported: OwnerExport, surveyId: string, version: number | null, launchAt: string): Seam2Row[] {
-  const survey = idKey(surveyId);
-  return exported.rows
-    .filter(
-      (row) =>
-        text(row, 'source_type') === 'survey' &&
-        idKey(text(row, 'source_id')) === survey &&
-        (version === null || Number(field(row, 'schedule_version')) === version),
-    )
+/** `noteId`'s {@link NOTE_PROJECTION_UNIT} rows in the tenant, read from the stub's export, one entry per row. */
+export async function readNoteProjections(tenantId: string, noteId: string, deps: SeamDeps = {}): Promise<NoteProjection[]> {
+  const { rows } = await readOwnerExport({ service: 'stub', unit: NOTE_PROJECTION_UNIT, tenantId }, deps);
+  const note = idKey(noteId);
+  return rows
+    .filter((row) => idKey(text(row, 'note_id')) === note)
     .map((row) => ({
-      name: text(row, 'task_name'),
-      kind: text(row, 'kind'),
-      queue: text(row, 'queue'),
-      offsetS: offsetSeconds(text(row, 'schedule_time'), launchAt),
-      status: text(row, 'status'),
+      applyCount: Number(text(row, 'apply_count')),
+      aggregateVersion: Number(text(row, 'aggregate_version')),
+      lastEventId: text(row, 'last_event_id').toLowerCase(),
     }));
 }
 
-/** Differences of `rows` from one launch at offset 0 on its queue and one reminder per offset on its queue. */
-function taskMismatches(rows: readonly Seam2Row[], offsetsS: readonly number[]): string[] {
-  const mismatches: string[] = [];
-  const launches = rows.filter((row) => row.kind === 'survey-launch');
-  if (launches.length !== 1) mismatches.push(`expected 1 survey-launch task, found ${launches.length}`);
-  for (const row of rows) {
-    const queue = ROW_KIND_QUEUES[row.kind];
-    if (queue === undefined) mismatches.push(`${row.name}: unexpected kind ${row.kind}`);
-    else if (row.queue !== queue) mismatches.push(`${row.name}: ${row.kind} on queue ${row.queue}, expected ${queue}`);
-  }
-  for (const row of launches) {
-    if (row.offsetS !== 0) mismatches.push(`${row.name}: launch at offset ${row.offsetS} s, expected 0 s`);
-  }
-  const byNumber = (a: number, b: number): number => a - b;
-  const found = rows.filter((row) => row.kind === 'survey-reminder').map((row) => row.offsetS).sort(byNumber);
-  const expected = [...offsetsS].sort(byNumber);
-  if (found.join() !== expected.join()) {
-    mismatches.push(`survey-reminder offsets [${found.join(', ')}] s, expected [${expected.join(', ')}] s`);
-  }
-  return mismatches;
+/** `matched` once one projection of `rowVersion` was applied once, `pending` before any, else `broken`, which no later delivery repairs. */
+function projectionState(rows: readonly NoteProjection[], rowVersion: number): 'matched' | 'pending' | 'broken' {
+  const [row] = rows;
+  if (row === undefined) return 'pending';
+  return rows.length === 1 && row.applyCount === 1 && row.aggregateVersion === rowVersion ? 'matched' : 'broken';
 }
 
-/** Tasks of a fixture `…/tasks` envelope. */
-function fixtureTasks(body: unknown): Seam2Task[] {
-  const items = valueAt(body, ['data', 'items']);
-  return (Array.isArray(items) ? items : []).map((item) => {
-    const task = asRecord(item);
-    const kind = text(task, 'kind');
-    return { name: text(task, 'taskname'), queue: FIXTURE_KIND_QUEUES[kind] ?? `unknown kind ${kind}`, status: 'listed' };
-  });
+/** Pool a seam note is created in: the registered public user pool of the creator's site. */
+export type NotePool = 'public';
+
+/** Unit of the note rows only the envelope tenant's re-check reads; its gate interrupts a delivery between destinations. */
+export const NOTE_UNIT = 'stub.note';
+
+/** Default bounds of an interrupted seam's waits for the non-2xx push answer and for the redelivery. */
+export const DEFAULT_REDELIVERY_POLL: Required<PollBounds> = { timeoutMs: GATE_WAIT_MS + 90_000, intervalMs: 2_000 };
+
+const GATED_UNITS: readonly string[] = [NOTE_UNIT, NOTE_PROJECTION_UNIT];
+const GATE_PATH = `${MIGRATION_PATH_PREFIX}/gate`;
+const POSITION_PATH = `${MIGRATION_PATH_PREFIX}/position`;
+const NOTE_PUSH_ROUTE = pushPath(subscriptionName('stub', NOTE_SEAM_TOPIC));
+const COMPLETED_MESSAGE = 'request completed';
+
+/** Options of {@link runNoteSeam}; unset fields take the seeded defaults. */
+export type NoteSeamOptions = SeamDeps & {
+  /** Site whose user creates the note; default {@link DEFAULT_SEAM_SITE}. */
+  siteId?: string;
+  /** Default the seeded system user of `siteId`. */
+  credentials?: LoginCredentials;
+  /** `public` creates the note in the tenant of `siteId`'s registered public user pool, which fans it out to the sites sharing it. */
+  pool?: NotePool;
+  /** Interrupts the first delivery after the fan-out destinations applied it and before the note's tenant did; see {@link FanoutInterruption}. */
+  interrupt?: boolean;
+  /** Reader of the stub's push answers to an interrupted delivery; default {@link stubDeliveryLog}. */
+  deliveryLog?: DeliveryLog;
+  /** Bounds of the interrupted delivery's waits; default {@link DEFAULT_REDELIVERY_POLL}. */
+  redeliveryPoll?: PollBounds;
+};
+
+/** The note's projection rows in one destination tenant. */
+export interface NoteSeamDestination extends SeamDestination {
+  projections: NoteProjection[];
 }
 
-/** Task names and queues present on only one side of rows and task list. */
-function listMismatches(rows: readonly Seam2Row[], tasks: readonly Seam2Task[]): string[] {
-  const key = (task: { name: string; queue: string }): string => `${task.name} on ${task.queue}`;
-  const fromRows = new Set(rows.map(key));
-  const fromList = new Set(tasks.map(key));
-  return [
-    ...[...fromRows].filter((entry) => !fromList.has(entry)).map((entry) => `task list lacks ${entry}`),
-    ...[...fromList].filter((entry) => !fromRows.has(entry)).map((entry) => `task list holds ${entry}, absent from scheduled_task`),
-  ];
+/** A registered tenant outside the destinations, with the note's projection rows found there. */
+export interface NoteSeamOtherTenant {
+  siteId: string;
+  tenantId: string;
+  projectionRows: number;
 }
 
-/** Seam 2 check: schedules a survey through the gateway and compares communications' task rows and the fixture task list. */
-export async function runSeam2(deps: Seam2Options = {}): Promise<SeamResult<Seam2Evidence>> {
-  const fixtures = deps.fixtures ?? readFixtureStatus(deps.env);
-  if (!fixtures.available) return skippedResult(fixtures);
-  const offsetsS = deps.reminderOffsetsS ?? DEFAULT_REMINDER_OFFSETS_S;
-  if (!offsetsS.every((offset) => Number.isInteger(offset / 60) && offset >= 0)) {
-    throw new RangeError(`reminderOffsetsS must be non-negative whole minutes, got [${offsetsS.join(', ')}]`);
-  }
-  const ctx = await resolveDeps(deps);
-  const siteId = deps.siteId ?? DEFAULT_SEAM_SITE;
-  const surveyId = deps.surveyId ?? defaultSurvey(ctx.seed, siteId);
-  const launchAt = deps.launchAt ?? defaultLaunchAt(ctx.seed.businessDate(), ctx.now());
-  const tenantId = tenantIdForSite(siteId);
-  const credentials = deps.credentials ?? seededCredentials(ctx.secrets, siteId, 'surveys.manager');
+/** End position of each log a {@link DeliveryLog} reads. */
+export type LogMark = Readonly<Record<string, number>>;
 
-  const session = gatewaySession(ctx);
-  assertLoggedIn(await jsonApiLogin(session, { site: siteId, ...credentials }), 'JSON API', credentials.username);
-  const surveyPath = `${FIXTURE_API}/surveys/surveys/${encodeURIComponent(surveyId)}`;
-  const result = await session.post(`${surveyPath}/schedule`, {
-    query: { siteid: siteId },
-    headers: await jsonApiTokens(session, siteId, surveyId),
-    json: { launchAt, reminders: offsetsS.map((offset) => ({ offsetMinutes: offset / 60 })) },
-  });
-  const body = responseBody(result);
-  const version = valueAt(body, ['data', 'schedule', 'schedule_version']);
-  const evidence: Seam2Evidence = {
-    surveyId,
-    siteId,
-    tenantId,
-    launchAt,
-    scheduleVersion: typeof version === 'number' && Number.isInteger(version) ? version : null,
-    schedule: { status: result.status, body },
-    rows: [],
-    queueCounts: {},
-    taskList: [],
-    mismatches: [],
-    polls: 0,
-    elapsedMs: 0,
-    timedOut: false,
+/** One answer the stub logged to a push delivery on its note subscription. */
+export interface DeliveryAnswer {
+  statusCode: number;
+  latencyMs: number | null;
+}
+
+/** The stub's answers to push deliveries of one event, read from its process log. */
+export interface DeliveryLog {
+  /** The log's end now; a read from it sees only lines written later. */
+  mark(): LogMark;
+  /** Answers to deliveries of `eventId` logged after `from`, in log order. */
+  answers(eventId: string, from: LogMark): DeliveryAnswer[];
+}
+
+/** The note's projections per destination site, and the tenants holding an inbox receipt of its event, read once. */
+export interface NoteStateRead {
+  projections: Record<string, NoteProjection[]>;
+  receipts: string[];
+}
+
+/** Calls one wait made, the ms it took and whether its bound ran out. */
+export interface WaitSummary {
+  polls: number;
+  elapsedMs: number;
+  timedOut: boolean;
+}
+
+/**
+ * An interrupted note delivery. `stub.note_projection` is gated closed across the create, so no destination applies the first
+ * delivery yet. `stub.note` is then put in a write window's executing phase, which blocks the note read that only the envelope
+ * tenant's re-check makes, and `stub.note_projection` reopens: the fan-out destinations apply, the envelope tenant waits out its
+ * gate budget and the push is answered non-2xx. Once `stub.note` reopens, Pub/Sub redelivers the whole fan-out and only the
+ * envelope tenant, which holds no receipt, applies it.
+ */
+export interface FanoutInterruption {
+  holderId: string;
+  /** The two gates before the seam changed them, and after it reopened them. */
+  gatesBefore: UnitGate[];
+  gatesAfter: UnitGate[];
+  eventId: string | null;
+  /** The fan-out destinations applying the first delivery while the envelope tenant's note reads were blocked. */
+  fanoutApplied: WaitSummary & { state: NoteStateRead | null };
+  /** Answers logged after the fan-out destinations had applied, read until one is non-2xx. */
+  interruptedAnswers: WaitSummary & { answers: DeliveryAnswer[] };
+  /** State after that answer, before `stub.note` reopened. */
+  betweenAttempts: NoteStateRead | null;
+  /** The redelivery applying the event in every destination. */
+  recovered: (WaitSummary & { state: NoteStateRead }) | null;
+  /** Every answer logged for the event since the create. */
+  answers: DeliveryAnswer[];
+  /** Why the interruption or its recovery is not as required; empty when it is. */
+  problems: string[];
+}
+
+/** Evidence of the note seam; `traceId` selects the create's trace in the collector export. */
+export interface NoteSeamEvidence {
+  /** Site of the note's creator. */
+  siteId: string;
+  pool: NotePool | null;
+  /** Site whose tenant stores the note: `siteId`, or its public user-pool site. */
+  noteSiteId: string;
+  noteId: string | null;
+  rowVersion: number | null;
+  traceId: string;
+  create: { status: number; body: unknown };
+  fanout: TenantFanout | null;
+  destinations: NoteSeamDestination[];
+  otherTenants: NoteSeamOtherTenant[];
+  polls: number;
+  elapsedMs: number;
+  timedOut: boolean;
+  interruption?: FanoutInterruption;
+}
+
+/** {@link DeliveryLog} over the stub log `up.json` records: its `request completed` lines of the note push route. */
+export function stubDeliveryLog(env: EnvLike = process.env): DeliveryLog {
+  const packages = ['stub'];
+  return {
+    mark: () => capturedLogOffsets({ env, packages }),
+    answers(eventId, from) {
+      const wanted = eventId.toLowerCase();
+      const answers: DeliveryAnswer[] = [];
+      for (const { line } of readCapturedLogLines({ env, packages, fromOffsets: from })) {
+        if (!line.includes(COMPLETED_MESSAGE)) continue;
+        let record: Row | undefined;
+        try {
+          record = asRecord(JSON.parse(line));
+        } catch {
+          // A process may write a line that is not JSON, such as a crash trace; it answers no delivery.
+          continue;
+        }
+        const logged = text(record, 'eventId').toLowerCase();
+        const statusCode = field(record, 'statusCode');
+        const latencyMs = field(record, 'latencyMs');
+        if (field(record, 'message') !== COMPLETED_MESSAGE || field(record, 'route') !== NOTE_PUSH_ROUTE) continue;
+        if (logged !== wanted || typeof statusCode !== 'number') continue;
+        answers.push({ statusCode, latencyMs: typeof latencyMs === 'number' ? latencyMs : null });
+      }
+      return answers;
+    },
   };
-  if (!isSuccess(result.status)) {
-    evidence.mismatches.push(`schedule answered ${result.status}`);
-    return { passed: false, evidence };
-  }
-  if (evidence.scheduleVersion === null) evidence.mismatches.push('schedule response carries no data.schedule.schedule_version');
+}
 
-  const unit = unitFor('communications', 'scheduled_task');
-  const expectedRows = offsetsS.length + 1;
-  // An export without a table for the unit cannot fill later, so it ends the wait at once.
+/** Calls the stub's `POST /internal/v1/migration/gate` as `platform.migration`; throws with the status and body on a non-2xx answer. */
+async function stubGate(request: GateRequest, deps: SeamDeps): Promise<UnitGate[]> {
+  const { invoker } = await withInvoker(deps);
+  const session = createHttpSession({ baseUrl: serviceUrl('stub', deps), fetch: deps.fetch });
+  const url = new URL(GATE_PATH, session.baseUrl).href;
+  const headers = await invoker.headersFor({ callee: 'stub', url });
+  const result = await session.post(url, { headers, json: request });
+  if (!isSuccess(result.status)) {
+    throw new Error(`stub gate ${request.op} of ${(request.units ?? []).join(', ')} answered ${result.status}: ${result.text}`);
+  }
+  return result.json<GateResponse>().units;
+}
+
+/** Tenants holding a stub inbox receipt of `eventId`, lower-cased and sorted, from the stub's migration position. */
+export async function readNoteReceipts(eventId: string, deps: SeamDeps = {}): Promise<string[]> {
+  const { invoker } = await withInvoker(deps);
+  const session = createHttpSession({ baseUrl: serviceUrl('stub', deps), fetch: deps.fetch });
+  const url = new URL(POSITION_PATH, session.baseUrl);
+  url.searchParams.set('eventIds', eventId);
+  const headers = await invoker.headersFor({ callee: 'stub', url: url.href });
+  const result = await session.get(url.href, { headers });
+  if (!isSuccess(result.status)) throw new Error(`stub migration position answered ${result.status}: ${result.text}`);
+  const { inbox } = result.json<{ inbox: { receipts?: Record<string, string[]> } | null }>();
+  if (inbox === null) throw new Error(`stub migration position lacks its inbox: ${result.text}`);
+  return (inbox.receipts?.[eventId.toLowerCase()] ?? []).map((tenantId) => tenantId.toLowerCase()).sort();
+}
+
+/** The site of `siteId`'s registered public user pool; throws when the registry holds no `siteId`. */
+function publicUserPoolSite(siteId: string, registry: readonly RegistrySite[]): string {
+  const own = registry.find((entry) => entry.siteId.toLowerCase() === siteId.toLowerCase());
+  if (own === undefined) throw new Error(`the site registry holds no ${siteId}`);
+  return own.publicUserPoolId;
+}
+
+/** `noteId`'s projections in each of `targets`, keyed by site. */
+async function destinationProjections(
+  targets: readonly SeamDestination[],
+  noteId: string,
+  deps: SeamDeps,
+): Promise<Record<string, NoteProjection[]>> {
+  const projections: Record<string, NoteProjection[]> = {};
+  for (const target of targets) projections[target.siteId] = await readNoteProjections(target.tenantId, noteId, deps);
+  return projections;
+}
+
+/** {@link destinationProjections} with the receipts of `eventId`. */
+async function readNoteState(targets: readonly SeamDestination[], noteId: string, eventId: string, deps: SeamDeps): Promise<NoteStateRead> {
+  return { projections: await destinationProjections(targets, noteId, deps), receipts: await readNoteReceipts(eventId, deps) };
+}
+
+function waitOf<T>(outcome: PollOutcome<T>): WaitSummary {
+  return { polls: outcome.polls, elapsedMs: outcome.elapsedMs, timedOut: outcome.timedOut };
+}
+
+/** What one run of the seam needs once the note's destinations are known. */
+interface SeamRun {
+  ctx: ResolvedDeps;
+  options: NoteSeamOptions;
+  targets: SeamDestination[];
+  others: RegistrySite[];
+  traceId: string;
+  create(): Promise<HttpResult>;
+  evidenceOf(result: HttpResult): NoteSeamEvidence;
+}
+
+/** Projections of the note in every registered tenant outside the destinations. */
+async function outsideTenants(run: SeamRun, noteId: string): Promise<NoteSeamOtherTenant[]> {
+  const out: NoteSeamOtherTenant[] = [];
+  for (const site of run.others) {
+    const rows = await readNoteProjections(site.tenantId, noteId, run.ctx);
+    out.push({ siteId: site.siteId, tenantId: site.tenantId, projectionRows: rows.length });
+  }
+  return out;
+}
+
+/** Creates the note and waits for its first delivery to reach every destination. */
+async function deliveredSeam(run: SeamRun): Promise<SeamResult<NoteSeamEvidence>> {
+  const { ctx, targets } = run;
+  const evidence = run.evidenceOf(await run.create());
+  const { noteId, rowVersion } = evidence;
+  if (!isSuccess(evidence.create.status) || noteId === null || rowVersion === null) return { passed: false, evidence };
+
   const poll = await pollUntil(
-    () => readOwnerExport({ service: 'communications', unit, tenantId }, ctx),
-    (exported) =>
-      exported.columns.length === 0 ||
-      surveyRows(exported, surveyId, evidence.scheduleVersion, launchAt).length >= expectedRows,
+    () => Promise.all(targets.map((target) => readNoteProjections(target.tenantId, noteId, ctx))),
+    (observed) => targets.every((_, i) => projectionState(observed[i] ?? [], rowVersion) !== 'pending'),
     ctx,
   );
-  if (poll.value.columns.length === 0) evidence.mismatches.push(`communications export carries no table for unit ${unit}`);
-  evidence.rows = surveyRows(poll.value, surveyId, evidence.scheduleVersion, launchAt);
-  for (const row of evidence.rows) evidence.queueCounts[row.queue] = (evidence.queueCounts[row.queue] ?? 0) + 1;
-  evidence.mismatches.push(...taskMismatches(evidence.rows, offsetsS));
-
-  const tasks = await session.get(`${surveyPath}/tasks`, { query: { siteid: siteId } });
-  if (isSuccess(tasks.status)) evidence.taskList = fixtureTasks(responseBody(tasks));
-  else evidence.mismatches.push(`task list answered ${tasks.status}`);
-  evidence.mismatches.push(...listMismatches(evidence.rows, evidence.taskList));
-  Object.assign(evidence, { polls: poll.polls, elapsedMs: poll.elapsedMs, timedOut: poll.timedOut });
-  return { passed: !poll.timedOut && evidence.mismatches.length === 0, evidence };
+  evidence.destinations = targets.map((target, i) => ({ ...target, projections: poll.value[i] ?? [] }));
+  evidence.otherTenants = await outsideTenants(run, noteId);
+  Object.assign(evidence, waitOf(poll));
+  const passed =
+    !poll.timedOut &&
+    evidence.destinations.every((destination) => projectionState(destination.projections, rowVersion) === 'matched') &&
+    evidence.otherTenants.every((tenant) => tenant.projectionRows === 0);
+  return { passed, evidence };
 }
 
+function isOpenUnheld(gate: UnitGate): boolean {
+  return gate.state === 'open' && gate.holderId === null && gate.phase === 'quiet';
+}
+
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/** The interrupted delivery's steps between the seam's gate check and its gate restore; each unmet step adds to `interruption.problems`. */
+async function interruptAndRecover(run: SeamRun, interruption: FanoutInterruption, log: DeliveryLog): Promise<NoteSeamEvidence> {
+  const { ctx, options, targets } = run;
+  const { holderId, problems } = interruption;
+  const redelivery = { ...ctx, poll: options.redeliveryPoll ?? DEFAULT_REDELIVERY_POLL };
+  const origin = targets[0] as SeamDestination;
+  const originTenant = origin.tenantId.toLowerCase();
+  const fanoutTargets = targets.filter((target) => target.reason === 'userPool');
+  const tenantIds = targets.map((target) => target.tenantId.toLowerCase()).sort();
+  const projectionsIn = (state: NoteStateRead, site: SeamDestination): NoteProjection[] => state.projections[site.siteId] ?? [];
+
+  await stubGate({ op: 'close', units: [NOTE_PROJECTION_UNIT], holderId }, ctx);
+  const evidence = run.evidenceOf(await run.create());
+  evidence.interruption = interruption;
+  const { noteId, rowVersion } = evidence;
+  if (!isSuccess(evidence.create.status) || noteId === null || rowVersion === null) {
+    problems.push(`the note create answered ${evidence.create.status} without a saved note`);
+    return evidence;
+  }
+  await stubGate({ op: 'close', units: [NOTE_UNIT], holderId, phase: 'executing' }, ctx);
+  await stubGate({ op: 'open', units: [NOTE_PROJECTION_UNIT], holderId, state: 'open' }, ctx);
+
+  const applied = await pollUntil(
+    () => destinationProjections(targets, noteId, ctx),
+    (projections) => fanoutTargets.every((site) => projectionState(projections[site.siteId] ?? [], rowVersion) !== 'pending'),
+    redelivery,
+  );
+  const eventId = fanoutTargets.map((site) => applied.value[site.siteId]?.[0]?.lastEventId).find((id) => id !== undefined) ?? null;
+  interruption.eventId = eventId;
+  const appliedState = { projections: applied.value, receipts: eventId === null ? [] : await readNoteReceipts(eventId, ctx) };
+  interruption.fanoutApplied = { ...waitOf(applied), state: appliedState };
+  if (applied.timedOut || eventId === null) {
+    problems.push(`no fan-out destination applied the first delivery within ${applied.elapsedMs} ms`);
+  }
+  for (const site of fanoutTargets) {
+    if (projectionState(projectionsIn(appliedState, site), rowVersion) !== 'matched') {
+      problems.push(`${site.siteId} did not apply the first delivery once`);
+    }
+  }
+  if (projectionsIn(appliedState, origin).length > 0 || appliedState.receipts.includes(originTenant)) {
+    problems.push(`${origin.siteId} applied the first delivery although its note reads were blocked`);
+  }
+  if (problems.length > 0 || eventId === null) return evidence;
+
+  const since = log.mark();
+  const answered = await pollUntil(
+    async () => log.answers(eventId, since),
+    (answers) => answers.some((answer) => !isSuccess(answer.statusCode)),
+    redelivery,
+  );
+  interruption.interruptedAnswers = { ...waitOf(answered), answers: answered.value };
+  if (answered.timedOut) {
+    problems.push(`the stub logged no non-2xx answer to the interrupted delivery within ${answered.elapsedMs} ms`);
+  }
+  const between = await readNoteState(targets, noteId, eventId, ctx);
+  interruption.betweenAttempts = between;
+  if (projectionsIn(between, origin).length > 0 || between.receipts.includes(originTenant)) {
+    problems.push(`${origin.siteId} applied the event before its note reads were unblocked`);
+  }
+  if (fanoutTargets.some((site) => projectionState(projectionsIn(between, site), rowVersion) !== 'matched')) {
+    problems.push('a fan-out destination changed its projection between the delivery attempts');
+  }
+  if (problems.length > 0) return evidence;
+
+  await stubGate({ op: 'open', units: [NOTE_UNIT], holderId, state: 'open' }, ctx);
+  const recovered = await pollUntil(
+    () => readNoteState(targets, noteId, eventId, ctx),
+    (state) =>
+      targets.every((site) => projectionState(projectionsIn(state, site), rowVersion) !== 'pending') &&
+      tenantIds.every((tenantId) => state.receipts.includes(tenantId)),
+    redelivery,
+  );
+  interruption.recovered = { ...waitOf(recovered), state: recovered.value };
+  if (recovered.timedOut) problems.push(`the redelivery did not reach every destination within ${recovered.elapsedMs} ms`);
+  for (const site of targets) {
+    const rows = projectionsIn(recovered.value, site);
+    if (projectionState(rows, rowVersion) !== 'matched' || rows[0]?.lastEventId !== eventId) {
+      problems.push(`${site.siteId} holds ${JSON.stringify(rows)}, not event ${eventId} applied once`);
+    }
+  }
+  if (JSON.stringify(recovered.value.receipts) !== JSON.stringify(tenantIds)) {
+    problems.push(`receipts of ${eventId} are in ${JSON.stringify(recovered.value.receipts)}, not exactly ${JSON.stringify(tenantIds)}`);
+  }
+  evidence.destinations = targets.map((target) => ({ ...target, projections: projectionsIn(recovered.value, target) }));
+  evidence.otherTenants = await outsideTenants(run, noteId);
+  Object.assign(evidence, waitOf(recovered));
+  for (const tenant of evidence.otherTenants.filter((other) => other.projectionRows > 0)) {
+    problems.push(`${tenant.siteId}, outside the destinations, holds ${tenant.projectionRows} projection rows`);
+  }
+  return evidence;
+}
+
+/**
+ * Creates the note with its first delivery interrupted between destinations, then waits for the redelivery; see
+ * {@link FanoutInterruption}. The gates it closed reopen whatever fails, and must end open, unheld and quiet.
+ */
+async function interruptedSeam(run: SeamRun): Promise<SeamResult<NoteSeamEvidence>> {
+  const { ctx, options, traceId } = run;
+  const log = options.deliveryLog ?? stubDeliveryLog(ctx.env);
+  const holderId = `note-seam-${traceId}`;
+  const gatesBefore = await stubGate({ op: 'status', units: [...GATED_UNITS] }, ctx);
+  if (gatesBefore.filter(isOpenUnheld).length !== GATED_UNITS.length) {
+    throw new Error(`the stub gates of ${GATED_UNITS.join(', ')} must be open, unheld and quiet before the seam; read ${JSON.stringify(gatesBefore)}`);
+  }
+  const interruption: FanoutInterruption = {
+    holderId,
+    gatesBefore,
+    gatesAfter: [],
+    eventId: null,
+    fanoutApplied: { polls: 0, elapsedMs: 0, timedOut: false, state: null },
+    interruptedAnswers: { polls: 0, elapsedMs: 0, timedOut: false, answers: [] },
+    betweenAttempts: null,
+    recovered: null,
+    answers: [],
+    problems: [],
+  };
+  const from = log.mark();
+  // Reopens only the gates this seam holds; null once every gated unit is open, unheld and quiet again.
+  const reopen = async (): Promise<string | null> => {
+    try {
+      interruption.gatesAfter = await stubGate({ op: 'open', units: [...GATED_UNITS], holderId, state: 'open' }, ctx);
+    } catch (err) {
+      return `the stub gates did not reopen: ${errorText(err)}`;
+    }
+    const restored = interruption.gatesAfter.filter(isOpenUnheld).length === GATED_UNITS.length;
+    return restored ? null : `the stub gates are ${JSON.stringify(interruption.gatesAfter)} after the seam, not open, unheld and quiet`;
+  };
+
+  let evidence: NoteSeamEvidence;
+  try {
+    evidence = await interruptAndRecover(run, interruption, log);
+  } catch (err) {
+    const unrestored = await reopen();
+    if (unrestored !== null) throw new Error(`${errorText(err)}; ${unrestored}`, { cause: err });
+    throw err;
+  }
+  const unrestored = await reopen();
+  if (unrestored !== null) interruption.problems.push(unrestored);
+  if (interruption.eventId !== null) interruption.answers = log.answers(interruption.eventId, from);
+  return { passed: interruption.problems.length === 0, evidence };
+}
+
+/**
+ * Note seam check: creates a note through the gateway, then requires its projection applied once in each registry-derived
+ * destination tenant and absent from every other registered tenant; with `interrupt`, through an interrupted first delivery.
+ */
+export async function runNoteSeam(deps: NoteSeamOptions = {}): Promise<SeamResult<NoteSeamEvidence>> {
+  const ctx = await resolveDeps(deps);
+  const siteId = deps.siteId ?? DEFAULT_SEAM_SITE;
+  const pool = deps.pool ?? null;
+  const fanout = noteSeamFanout();
+  const registry = await siteRegistry(ctx);
+  const noteSiteId = pool === null ? siteId : publicUserPoolSite(siteId, registry);
+  const targets = fanoutDestinations(noteSiteId, registry, fanout);
+  const others = registry.filter((site) => !targets.some((target) => target.tenantId === site.tenantId));
+  if (deps.interrupt === true && !targets.some((target) => target.reason === 'userPool')) {
+    throw new Error(`a note of ${noteSiteId} has no user-pool fan-out destination, so its delivery cannot be interrupted between destinations`);
+  }
+
+  const credentials = deps.credentials ?? seededCredentials(ctx.secrets, siteId, 'system-user');
+  const session = gatewaySession(ctx);
+  assertLoggedIn(await adminLogin(session, credentials), 'admin', credentials.username);
+  const { traceparent, traceId } = mintTraceparent();
+  const run: SeamRun = {
+    ctx,
+    options: deps,
+    targets,
+    others,
+    traceId,
+    create: () =>
+      session.post(NOTES_PATH, {
+        query: { siteid: siteId },
+        headers: { traceparent },
+        json: { title: `Note seam ${traceId}`, body: 'Event seam evidence.', ...(pool === null ? {} : { pool }) },
+      }),
+    evidenceOf(result) {
+      const body = responseBody(result);
+      const data = asRecord(field(asRecord(body), 'data'));
+      const rowVersionText = text(data, 'rowversion');
+      return {
+        siteId,
+        pool,
+        noteSiteId,
+        noteId: text(data, 'noteid') || null,
+        rowVersion: POSITIVE_DIGITS.test(rowVersionText) ? Number(rowVersionText) : null,
+        traceId,
+        create: { status: result.status, body },
+        fanout,
+        destinations: targets.map((target) => ({ ...target, projections: [] })),
+        otherTenants: [],
+        polls: 0,
+        elapsedMs: 0,
+        timedOut: false,
+      };
+    },
+  };
+  return deps.interrupt === true ? interruptedSeam(run) : deliveredSeam(run);
+}

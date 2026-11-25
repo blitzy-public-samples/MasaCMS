@@ -1,6 +1,6 @@
 /** Cut-over state against a throwaway `gateway` schema: activation chain and validation, epoch CAS, freezes, visibility and status. */
 import { randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { connect, createServer, type AddressInfo, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -27,6 +27,7 @@ import {
   assertResponseMatchesOpenApi,
   createThrowawaySchema,
   fixedClock,
+  loadOpenApiDocument,
   pgAvailable,
   testPgConfig,
   testVerifier,
@@ -162,7 +163,7 @@ describe.skipIf(!available)('cut-over state against PostgreSQL', () => {
     });
     paths = resolveGatewayPaths({});
     [variants, groups] = await Promise.all([loadVariants(paths), loadGroups(paths)]);
-    contract = parse(await readFile(join(paths.packageRoot, 'contracts', 'openapi.yaml'), 'utf8')) as object;
+    contract = loadOpenApiDocument(join(paths.packageRoot, 'contracts', 'openapi.yaml'), parse) as object;
   });
 
   afterAll(async () => {

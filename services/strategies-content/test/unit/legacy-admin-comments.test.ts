@@ -1,5 +1,5 @@
 // ccomments fragment and cnav.searchsitedata renderers against bodies captured from Masa 7.6.1 on ACF 2023.0.26
-// (GS-CO-11 comment grid and thread page, GS-CO-06 site search), seeded with the comments built below.
+// (comment grid and thread page, GS-CO-06 site search), seeded with the comments built below.
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { createAdminLabels, type AdminRenderContext } from '../../src/legacy/admin-markup.js';

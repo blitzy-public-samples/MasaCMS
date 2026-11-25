@@ -18,6 +18,9 @@ export const MIGRATED_SERVICES: readonly string[] = Object.freeze(['identity', '
 /** Area-owner value of an area no service owns. */
 export const NO_OWNER = 'none';
 
+/** Owner value of a live legacy table no target service owns; a write to it keeps the item on legacy. */
+export const LEGACY_OWNER = 'legacy';
+
 /** Legacy table that stands for the file store in owner derivation: `tfiles` and the stored objects share its owner. */
 export const FILE_STORE_TABLE = 'tfiles';
 
@@ -241,8 +244,8 @@ export const AREA_OWNERS: Readonly<Record<string, string>> = Object.freeze({
   'admin:ceditprofile': 'people',
   'admin:csettings': 'programs-sites',
   'admin:carch': 'strategies-content',
-  // emailTest checks the site's SMTP settings (admin/core/views/carch/emailTest.cfm:81-110).
-  'admin:carch.emailtest': 'communications',
+  // emailTest checks the site's SMTP settings (admin/core/views/carch/emailTest.cfm:81-110); no service owns mail.
+  'admin:carch.emailtest': NO_OWNER,
   'admin:cchangesets': 'strategies-content',
   'admin:ccomments': 'strategies-content',
   'admin:ccategory': 'strategies-content',
@@ -252,9 +255,9 @@ export const AREA_OWNERS: Readonly<Record<string, string>> = Object.freeze({
   'admin:cnav': 'strategies-content',
   'admin:cfilemanager': 'strategies-content',
   'admin:razuna': 'strategies-content',
-  'admin:cemail': 'communications',
-  'admin:cmailinglist': 'communications',
-  'admin:cdashboard': 'reporting',
+  'admin:cemail': NO_OWNER,
+  'admin:cmailinglist': NO_OWNER,
+  'admin:cdashboard': NO_OWNER,
   'admin:cplugins': NO_OWNER,
   'admin:scaffold': NO_OWNER,
   'admin:cextend': NO_OWNER,
@@ -300,21 +303,22 @@ export const AREA_OWNERS: Readonly<Record<string, string>> = Object.freeze({
   render: 'strategies-content',
   variation: 'strategies-content',
   asset: 'strategies-content',
-  trackopen: 'communications',
+  trackopen: NO_OWNER,
   sitemonitor: 'programs-sites',
   'api:oauth': 'identity',
   'api:oauth2': 'identity',
   'api:tokeninfo': 'identity',
   widgets: NO_OWNER,
   // AAP 0.3.2 public front end; doaction values take their write-set owners.
-  'page:render': 'reporting',
+  'page:render': NO_OWNER,
   'cfc:/core/modules/v1/comments/ajax/commentsproxy.cfc': 'strategies-content',
-  // AAP 0.3.2 site-monitor steps: email sends and bounce collection run in emailManager, which writes through its DAOs.
-  'service:emailmanager': 'communications',
+  // AAP 0.3.2 site-monitor steps: email sends and bounce collection run in emailManager, which writes through its DAOs
+  // into the legacy-only mail tables.
+  'service:emailmanager': NO_OWNER,
   // Owners the site-monitor job table gives its steps; the others write decision-list tables or run plugin events.
-  'job:sitemonitor.email-send': 'communications',
+  'job:sitemonitor.email-send': NO_OWNER,
   'job:sitemonitor.changeset-publish': 'strategies-content',
-  'job:sitemonitor.bounces': 'communications',
+  'job:sitemonitor.bounces': NO_OWNER,
   'job:sitemonitor.feed-import': 'strategies-content',
   'job:sitemonitor.cache-purge': 'strategies-content',
 });
@@ -500,25 +504,20 @@ export const PLAN_OWNERS: Readonly<Record<string, string>> = Object.freeze({
   'page:createprofile': 'people',
   'page:saverate': 'strategies-content',
   'page:saveform': 'strategies-content',
-  'page:return': 'communications',
-  'page:subscribe': 'communications',
-  'page:unsubscribe': 'communications',
-  'page:forwardemail': 'communications',
-  'page:contactsend': 'communications',
+  // Mail and subscription actions write the legacy-only mail tables.
+  'page:return': NO_OWNER,
+  'page:subscribe': NO_OWNER,
+  'page:unsubscribe': NO_OWNER,
+  'page:forwardemail': NO_OWNER,
+  'page:contactsend': NO_OWNER,
 });
 
 /** Service of each fixture module under `/legacy-fixtures/cfml/api.cfm/<module>/`. */
 export const FIXTURE_MODULE_SERVICES: Readonly<Record<string, string>> = Object.freeze({
   people: 'people',
-  timesheets: 'timesheets',
-  finance: 'finance',
-  surveys: 'surveys',
-  reporting: 'reporting',
-  communications: 'communications',
-  esignature: 'e-signature',
 });
 
-/** The ten target services, the only values an `owningService` takes besides null. */
+/** The target services, the only values an `owningService` takes besides null. */
 export const TARGET_SERVICES: ReadonlySet<string> = new Set([...MIGRATED_SERVICES, ...Object.values(FIXTURE_MODULE_SERVICES)]);
 
 // Keys and owners
@@ -684,8 +683,9 @@ export function selectedByClassOwner(targets: readonly OwnershipTarget[]): boole
 }
 
 // A baseTable or objectClass row belongs to the entity its branch also writes, so the co-written tables pick the
-// targets the request cannot. Every target counts when neither selects one, or when `coWrites` is null because the
-// rows are not those of an entity the branch writes.
+// targets the request cannot. When they pick none, a co-written legacy-only table makes the rows that entity's, so
+// no target takes them; otherwise every target counts, as it does when `coWrites` is null because the rows are not
+// those of an entity the branch writes.
 export function splitTargets(
   targets: readonly OwnershipTarget[],
   request: ReadonlyMap<string, string | boolean | null>,
@@ -695,7 +695,8 @@ export function splitTargets(
   const allowed = parsed.filter((p) => requestAllows(p.predicate, request));
   const pool = allowed.length > 0 ? allowed : parsed;
   const coWritten = coWrites === null ? [] : pool.filter((p) => coWritesAllow(p.predicate, coWrites));
-  return (coWritten.length > 0 ? coWritten : pool).map((p) => p.target);
+  if (coWritten.length > 0) return coWritten.map((p) => p.target);
+  return coWrites?.owners.has(LEGACY_OWNER) === true ? [] : pool.map((p) => p.target);
 }
 
 /**
@@ -779,7 +780,9 @@ function ownerChoice(
   planned: string | null,
 ): OwnerChoice {
   const [only] = owners;
-  if (owners.length === 1 && only !== undefined) return { owningService: only, ownerBasis: 'table-ownership' };
+  if (owners.length === 1 && only !== undefined) {
+    return { owningService: only === LEGACY_OWNER ? null : only, ownerBasis: 'table-ownership' };
+  }
   if (owners.length > 1) {
     return named === undefined ? { owningService: planned, ownerBasis: 'spanning' } : { owningService: named.owner, ownerBasis: 'named-input' };
   }
@@ -792,6 +795,7 @@ function legacyServedBasis(facts: DispositionFacts, r: Resolved): string | undef
   if (facts.webRootFilesystem) return 'depends on the legacy web-root filesystem';
   if (facts.runtimeCategory !== undefined) return `depends on the CFML runtime (${facts.runtimeCategory})`;
   if (r.servedTable !== undefined) return `serves decision-list table ${r.servedTable}, which the target never builds`;
+  if (r.written.owners.includes(LEGACY_OWNER)) return 'writes a legacy-only table, which no target service owns';
   const { owner, area } = r;
   const service = owner.owningService;
   if (service !== null && !MIGRATED_SERVICES.includes(service)) return `owner ${service} is not a migrated domain`;

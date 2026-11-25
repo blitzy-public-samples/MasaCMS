@@ -8,12 +8,6 @@ locals {
     "people",
     "programs-sites",
     "strategies-content",
-    "communications",
-    "reporting",
-    "surveys",
-    "timesheets",
-    "finance",
-    "e-signature",
     "migration",
   ]
   domain_services = [for n in local.runtime_services : n if !contains(["gateway", "web", "migration"], n)]
@@ -37,10 +31,7 @@ locals {
 
   # Bucket to the one service that writes it.
   buckets = {
-    "content-files"        = "strategies-content"
-    "reporting-exports"    = "reporting"
-    "finance-attachments"  = "finance"
-    "esignature-documents" = "e-signature"
+    "content-files" = "strategies-content"
   }
 }
 
@@ -48,7 +39,7 @@ locals {
 locals {
   pubsub_service_agent = "serviceAccount:service-${var.project_number}@gcp-sa-pubsub.iam.gserviceaccount.com"
   # Accounts that sign storage URLs or custom tokens through IAM rather than a key.
-  self_signers  = ["identity", "strategies-content", "reporting", "finance", "e-signature"]
+  self_signers  = ["identity", "strategies-content"]
   task_creators = sort(distinct(flatten([for q in var.queues : q.creators])))
 
   project_roles = { for n in local.accounts : n => concat(
@@ -102,7 +93,6 @@ module "cloud_sql" {
 
 locals {
   secrets = {
-    "communications-smtp"     = { data = null, accessors = ["communications"] }
     "legacy-bridge-hmac"      = { data = null, accessors = ["gateway", "migration"] }
     "cloudsql-admin-password" = { data = null, accessors = ["db-bootstrap"] }
     "otel-collector-config" = {
@@ -159,11 +149,6 @@ locals {
       MURA_DATABASE   = var.legacy_db_name
       MURA_DBUSERNAME = var.legacy_db_username
     }
-    communications = {
-      SMTP_HOST       = var.smtp_host
-      SMTP_PORT       = tostring(var.smtp_port)
-      MAILPIT_API_URL = var.mailpit_api_url
-    }
     # The database name alone, which the SQL Server messages of its legacy error pages qualify a table with.
     "strategies-content" = { MURA_DATABASE = var.legacy_db_name }
     identity             = { MURA_DATABASE = var.legacy_db_name }
@@ -196,9 +181,8 @@ locals {
   ) }
 
   secret_env_by_service = {
-    gateway        = { OPT2_BRIDGE_HMAC_KEY = module.secrets["legacy-bridge-hmac"].secret_id }
-    migration      = { OPT2_BRIDGE_HMAC_KEY = module.secrets["legacy-bridge-hmac"].secret_id }
-    communications = { SMTP_CREDENTIAL = module.secrets["communications-smtp"].secret_id }
+    gateway   = { OPT2_BRIDGE_HMAC_KEY = module.secrets["legacy-bridge-hmac"].secret_id }
+    migration = { OPT2_BRIDGE_HMAC_KEY = module.secrets["legacy-bridge-hmac"].secret_id }
   }
 
   # Env name to existing operator secret id, per reader; null ids are left out.
@@ -239,7 +223,7 @@ locals {
 check "topology" {
   assert {
     condition     = toset(var.cloud_run_services) == toset(local.runtime_services)
-    error_message = "cloud_run_services must list exactly the 13 runtime services."
+    error_message = "cloud_run_services must list exactly the 7 runtime services."
   }
 
   assert {
@@ -247,7 +231,7 @@ check "topology" {
       [for s in var.subscriptions : contains(local.domain_services, s.consumer)],
       [for q in var.queues : contains(local.domain_services, q.target_service)],
     ))
-    error_message = "Every push consumer and task target must be one of the ten domain services."
+    error_message = "Every push consumer and task target must be one of the four domain services."
   }
 
   assert {

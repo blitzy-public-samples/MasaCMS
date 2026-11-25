@@ -54,9 +54,9 @@ const SITE_D = 'tenant-d';
 const TENANT_D = tenantIdForSite(SITE_D);
 const SITE_E = 'tenant-e';
 const TENANT_E = tenantIdForSite(SITE_E);
-const SURVEY_RESPONSE = 'survey-response';
-const SURVEY_ID = '6E2C9A1B-4D7F-4A3E-8B5C0D1E2F3A4B5C';
-const OTHER_SURVEY_ID = '0F1E2D3C-4B5A-4968-8776A5B4C3D2E1F0';
+const SHARED_NOTE = 'shared-note';
+const NOTE_ID = '6E2C9A1B-4D7F-4A3E-8B5C0D1E2F3A4B5C';
+const OTHER_NOTE_ID = '0F1E2D3C-4B5A-4968-8776A5B4C3D2E1F0';
 
 const POOLS = [
   { kind: 'publicUser', id: 'publicUserPoolId', tenant: 'publicUserPoolTenant' },
@@ -210,12 +210,12 @@ describe('tenant registry and grants against PostgreSQL', () => {
     expect(resolved).toEqual({ pool: UMBRELLA, fanout: [UMBRELLA, A] });
   });
 
-  describe('survey-response grants', () => {
-    const granted: GrantKey = { grantor: A, grantee: B, kind: SURVEY_RESPONSE, resourceId: SURVEY_ID };
+  describe('shared-note grants', () => {
+    const granted: GrantKey = { grantor: A, grantee: B, kind: SHARED_NOTE, resourceId: NOTE_ID };
 
     beforeAll(async () => {
       for (let attempt = 0; attempt < 2; attempt += 1) {
-        await withTenant(handle.app, A, (tx) => writeGrant(tx, { grantee: B, kind: SURVEY_RESPONSE, resourceId: SURVEY_ID }));
+        await withTenant(handle.app, A, (tx) => writeGrant(tx, { grantee: B, kind: SHARED_NOTE, resourceId: NOTE_ID }));
       }
     });
 
@@ -223,13 +223,13 @@ describe('tenant registry and grants against PostgreSQL', () => {
       const { rows } = await withMetadata(handle.app, (tx) =>
         tx.query(`SELECT grantor_tenant, grantee_tenant, kind, resource_id FROM ${tx.schema}.tenant_grant`),
       );
-      expect(rows).toEqual([{ grantor_tenant: A, grantee_tenant: B, kind: SURVEY_RESPONSE, resource_id: SURVEY_ID }]);
+      expect(rows).toEqual([{ grantor_tenant: A, grantee_tenant: B, kind: SHARED_NOTE, resource_id: NOTE_ID }]);
     });
 
     it.each([
       { label: 'the granted kind and resource', key: granted, expected: true },
-      { label: 'another kind', key: { ...granted, kind: 'survey-admin' }, expected: false },
-      { label: 'another resource', key: { ...granted, resourceId: OTHER_SURVEY_ID }, expected: false },
+      { label: 'another kind', key: { ...granted, kind: 'note-admin' }, expected: false },
+      { label: 'another resource', key: { ...granted, resourceId: OTHER_NOTE_ID }, expected: false },
       { label: 'the swapped grantor and grantee', key: { ...granted, grantor: B, grantee: A }, expected: false },
       { label: 'the umbrella grantee', key: { ...granted, grantee: UMBRELLA }, expected: false },
     ])('hasGrant is $expected for $label', async ({ key, expected }) => {

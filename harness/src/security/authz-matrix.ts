@@ -36,19 +36,7 @@ function servicePackage(name: string): RoutedPackage {
 export const ROUTED_PACKAGES: readonly RoutedPackage[] = Object.freeze([
   Object.freeze({ name: 'gateway', dir: 'gateway', appModule: 'dist/app.js' }),
   Object.freeze({ name: 'migration', dir: 'migration', appModule: 'dist/server.js' }),
-  ...[
-    'identity',
-    'people',
-    'programs-sites',
-    'strategies-content',
-    'communications',
-    'reporting',
-    'surveys',
-    'timesheets',
-    'finance',
-    'e-signature',
-    'stub',
-  ].map(servicePackage),
+  ...['identity', 'people', 'programs-sites', 'strategies-content', 'stub'].map(servicePackage),
 ]);
 
 /** Directory the exported matrices are written to, `<state>/security/matrices`. */

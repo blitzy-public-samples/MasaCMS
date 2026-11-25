@@ -2,13 +2,11 @@
  * Shared scaffolding of the strategies-content suites: environment, clock, in-memory database, storage, task and
  * service-client fakes, the app builders for `app.inject`, and the throwaway PostgreSQL schema helpers.
  */
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import path from 'node:path';
+import { rm } from 'node:fs/promises';
 import { Readable } from 'node:stream';
 import { buffer } from 'node:stream/consumers';
 import { fileURLToPath } from 'node:url';
-import { INVOCATION_HEADER, LOCAL_USER_TOKEN } from '@opt2/platform/auth';
+import { INVOCATION_HEADER } from '@opt2/platform/auth';
 import { registerConsumers } from '@opt2/platform/events';
 import { createLogger } from '@opt2/platform/logging';
 import {
@@ -62,17 +60,26 @@ import {
   type TaskPageRequest,
   type TaskPort,
 } from '@opt2/platform/tasks';
-import { tenantDbFromPool, tenantIdForSite, type TenantDb } from '@opt2/platform/tenancy';
+import { tenantIdForSite, type QueryResult, type TenantDb } from '@opt2/platform/tenancy';
 import {
+  CLIENT_ROUTE_KEY,
   businessClock,
+  clientPathPattern,
+  closingParen,
+  collapseSql,
   createCapturingPublisher,
+  createTestStateDir as sharedCreateTestStateDir,
   createThrowawaySchema,
+  fakePoolTenantDb,
+  localTestEnv,
+  localTestUrl,
   mintServiceToken,
   mintUserToken,
   registryPayloads,
+  splitTopLevel,
   testVerifier,
-  writeTestSecrets,
   type CapturingPublisher,
+  type ClientHandler,
   type ThrowawaySchema,
   type ThrowawaySchemaOptions,
 } from '@opt2/platform/testing';
@@ -180,51 +187,9 @@ const FETCH_CURSOR = /^FETCH FORWARD (\d+) FROM (\w+)$/i;
 const CLOSE_CURSOR = /^CLOSE (\w+)$/i;
 const TRANSACTION_END = /^(COMMIT|ROLLBACK)\b/i;
 
-function collapse(sql: string): string {
-  return sql.replace(/\s+/g, ' ').trim();
-}
-
 /** The statement's leading keyword, upper-cased, which pg reports as its `command`. */
 function verbOf(sql: string): string {
   return (/^(\w+)/.exec(sql)?.[1] ?? '').toUpperCase();
-}
-
-/** Index of the `)` closing the `(` at `open`, skipping quoted text; -1 when unbalanced. */
-function closingParen(text: string, open: number): number {
-  let depth = 0;
-  let quoted = false;
-  for (let i = open; i < text.length; i += 1) {
-    const ch = text.charAt(i);
-    if (ch === "'") quoted = !quoted;
-    if (quoted) continue;
-    if (ch === '(') depth += 1;
-    if (ch === ')') {
-      depth -= 1;
-      if (depth === 0) return i;
-    }
-  }
-  return -1;
-}
-
-/** `text` split at commas outside parentheses and quotes, each part trimmed. */
-function splitTopLevel(text: string): string[] {
-  const parts: string[] = [];
-  let depth = 0;
-  let quoted = false;
-  let start = 0;
-  for (let i = 0; i < text.length; i += 1) {
-    const ch = text.charAt(i);
-    if (ch === "'") quoted = !quoted;
-    if (quoted) continue;
-    if (ch === '(') depth += 1;
-    if (ch === ')') depth -= 1;
-    if (ch === ',' && depth === 0) {
-      parts.push(text.slice(start, i).trim());
-      start = i + 1;
-    }
-  }
-  parts.push(text.slice(start).trim());
-  return parts.filter((part) => part !== '');
 }
 
 const unquote = (name: string): string => name.replace(/"/g, '');
@@ -327,7 +292,7 @@ function registryMatches(sql: string, params: readonly unknown[], rows: readonly
 
 /** Whether a responder `pattern` matches the collapsed `sql`. */
 function patternMatches(pattern: ResponderPattern, sql: string): boolean {
-  return typeof pattern === 'string' ? sql.toLowerCase().includes(collapse(pattern).toLowerCase()) : pattern.test(sql);
+  return typeof pattern === 'string' ? sql.toLowerCase().includes(collapseSql(pattern).toLowerCase()) : pattern.test(sql);
 }
 
 /** Creates a {@link RecordingDb} over schema `content`; nothing connects to PostgreSQL. */
@@ -353,10 +318,11 @@ export function createRecordingDb(seed: RecordingDbSeed = {}): RecordingDb {
     }
   };
   applySeed();
-  const answer = (rows: readonly Row[], rowCount: number | null = rows.length, command = 'SELECT') => ({
+  const answer = (rows: readonly Row[], rowCount: number | null = rows.length, command = 'SELECT'): QueryResult => ({
     command,
     rows: [...rows],
     rowCount,
+    oid: 0,
     fields: [],
   });
 
@@ -439,55 +405,45 @@ export function createRecordingDb(seed: RecordingDbSeed = {}): RecordingDb {
     return answer([], 0, verb);
   }
 
-  const pool = {
-    on: () => pool,
-    end: async (): Promise<void> => undefined,
-    async connect() {
-      const session = { tenantId: null as string | null };
-      // A cursor holds the rows its query's responder answers, matched on the DECLARE or on its query; a FETCH takes the next ones.
-      const cursors = new Map<string, Row[]>();
-      return {
-        async query(text: string | { text: string; values?: unknown[] }, values?: unknown[]) {
-          const sql = collapse(typeof text === 'string' ? text : text.text);
-          const params = (typeof text === 'string' ? values : (text.values ?? values)) ?? [];
-          statements.push({ sql, params, tenantId: session.tenantId });
-          const responderFor = (text: string) => responders.findLast((candidate) => patternMatches(candidate.pattern, text));
-          const rowsOf = (found: { rows: ResponderRows }, text: string): readonly Row[] =>
-            typeof found.rows === 'function' ? found.rows(params, text, { tenantId: session.tenantId }) : found.rows;
-          const declared = DECLARE_CURSOR.exec(sql);
-          if (declared !== null) {
-            const [, cursor = '', query = ''] = declared;
-            const text = responderFor(sql) === undefined ? query : sql;
-            const found = responderFor(text);
-            cursors.set(cursor, found === undefined ? [] : [...rowsOf(found, text)]);
-            return answer([], null, 'DECLARE');
-          }
-          if (TRANSACTION_END.test(sql)) cursors.clear();
-          const closed = CLOSE_CURSOR.exec(sql);
-          if (closed !== null) cursors.delete(closed[1] ?? '');
-          const responder = responderFor(sql);
-          const fetched = responder === undefined ? FETCH_CURSOR.exec(sql) : null;
-          if (fetched !== null) {
-            const rows = (cursors.get(fetched[2] ?? '') ?? []).splice(0, Number(fetched[1]));
-            return answer(rows, rows.length, 'FETCH');
-          }
-          if (responder !== undefined) {
-            const rows = rowsOf(responder, sql);
-            return answer(rows, rows.length, verbOf(sql));
-          }
-          return builtIn(sql, params, session);
-        },
-        release: (): void => undefined,
-      };
+  const db = fakePoolTenantDb({
+    schema: SCHEMA,
+    // A cursor holds the rows its query's responder answers, matched on the DECLARE or on its query; a FETCH takes the next ones.
+    session: () => ({ tenantId: null as string | null, cursors: new Map<string, Row[]>() }),
+    // Queries after end() keep answering.
+    refuseAfterEnd: false,
+    run: async (session, sqlText, params) => {
+      const sql = collapseSql(sqlText);
+      const { cursors } = session;
+      statements.push({ sql, params, tenantId: session.tenantId });
+      const responderFor = (text: string) => responders.findLast((candidate) => patternMatches(candidate.pattern, text));
+      const rowsOf = (found: { rows: ResponderRows }, text: string): readonly Row[] =>
+        typeof found.rows === 'function' ? found.rows(params, text, { tenantId: session.tenantId }) : found.rows;
+      const declared = DECLARE_CURSOR.exec(sql);
+      if (declared !== null) {
+        const [, cursor = '', query = ''] = declared;
+        const text = responderFor(sql) === undefined ? query : sql;
+        const found = responderFor(text);
+        cursors.set(cursor, found === undefined ? [] : [...rowsOf(found, text)]);
+        return answer([], null, 'DECLARE');
+      }
+      if (TRANSACTION_END.test(sql)) cursors.clear();
+      const closed = CLOSE_CURSOR.exec(sql);
+      if (closed !== null) cursors.delete(closed[1] ?? '');
+      const responder = responderFor(sql);
+      const fetched = responder === undefined ? FETCH_CURSOR.exec(sql) : null;
+      if (fetched !== null) {
+        const rows = (cursors.get(fetched[2] ?? '') ?? []).splice(0, Number(fetched[1]));
+        return answer(rows, rows.length, 'FETCH');
+      }
+      if (responder !== undefined) {
+        const rows = rowsOf(responder, sql);
+        return answer(rows, rows.length, verbOf(sql));
+      }
+      return builtIn(sql, params, session);
     },
-  };
-
-  const db = tenantDbFromPool(pool as never, { schema: SCHEMA });
+  });
   return Object.freeze({
-    schema: db.schema,
-    withTenant: db.withTenant.bind(db),
-    withMetadata: db.withMetadata.bind(db),
-    end: db.end.bind(db),
+    ...db,
     statements,
     writes: (): RecordedStatement[] => statements.filter((statement) => WRITE_STATEMENT.test(statement.sql) || CTE_WRITE.test(statement.sql)),
     gates: () =>
@@ -734,8 +690,7 @@ export function createMemoryStorage(opts: { clock?: Clock } = {}): MemoryStorage
   };
 }
 
-/** Answers one service call. */
-export type ClientHandler = (req: ServiceRequest) => ServiceResponse | Promise<ServiceResponse>;
+export type { ClientHandler };
 
 /** Handlers by callee, each keyed `'<METHOD> <path>'`; a `{name}` path segment matches any one segment. */
 export type ClientHandlers = Readonly<Record<string, Readonly<Record<string, ClientHandler>>>>;
@@ -776,7 +731,6 @@ interface ClientRoute {
   handler: ClientHandler;
 }
 
-const CLIENT_ROUTE_KEY = /^(GET|POST|PUT|PATCH|DELETE) (\/\S*)$/;
 const CURRENT_SESSION_PATH = '/v1/sessions/current';
 
 /** programs-sites' `lookupSiteConfigFlags` path. */
@@ -815,11 +769,7 @@ export function feedManagerFlagsAnswer(stored: StoredFeedManager): ClientHandler
 }
 
 function clientRoute(service: string, method: ServiceRequest['method'], routePath: string, handler: ClientHandler): ClientRoute {
-  const source = routePath
-    .split(/(\{[^}/]+\})/)
-    .map((part) => (/^\{[^}/]+\}$/.test(part) ? '[^/]+' : part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
-    .join('');
-  return { service, method, pattern: new RegExp(`^${source}$`), handler };
+  return { service, method, pattern: clientPathPattern(routePath), handler };
 }
 
 /** Creates a {@link ClientRecorder} with `handlers` above its defaults. */
@@ -896,60 +846,25 @@ export interface ContentTestAppOptions {
   declare?: (app: FastifyInstance) => unknown;
 }
 
-/** Local base URL of each service the suites address, at its `harness/repro/ports.env` port. */
-const LOCAL_SERVICE_URLS: Readonly<Record<string, string>> = Object.freeze({
-  identity: 'http://127.0.0.1:8111',
-  people: 'http://127.0.0.1:8112',
-  'programs-sites': 'http://127.0.0.1:8113',
-  [SERVICE]: 'http://127.0.0.1:8114',
-  gateway: 'http://127.0.0.1:8100',
-  migration: 'http://127.0.0.1:8102',
-});
-
 /** A fresh state directory under the OS temp directory holding the platform test key pair and push key. */
-export async function createTestStateDir(): Promise<string> {
-  const stateDir = await mkdtemp(path.join(tmpdir(), 'opt2-content-test-'));
-  try {
-    await writeTestSecrets(stateDir);
-  } catch (err) {
-    await rm(stateDir, { recursive: true, force: true });
-    throw err;
-  }
-  return stateDir;
-}
+export const createTestStateDir = (): Promise<string> => sharedCreateTestStateDir('opt2-content-test-');
 
 /**
  * Raw local environment over `stateDir` that `loadEnv(contentEnvSchema)` accepts; `overrides` merge last, an `undefined`
  * value removing the variable. The JWKS URL is never fetched and `PG_*` never connect, as suites inject the verifier and database.
  */
-export function testEnv(stateDir: string, overrides: Readonly<Record<string, string | undefined>> = {}): Record<string, string> {
-  const merged: Record<string, string | undefined> = {
-    PORT: '8114',
-    OPT2_SERVICE_NAME: SERVICE,
-    OPT2_ENV: 'local',
-    OPT2_DB_AUTH: 'password',
-    PG_HOST: process.env.PG_HOST || '127.0.0.1',
-    PG_PORT: process.env.PG_PORT || '5432',
-    PG_DATABASE: process.env.PG_DATABASE || 'opt2',
-    PG_USER: process.env.PG_USER || 'content_app',
-    // loadEnv reads a blank password as missing, which OPT2_DB_AUTH=password rejects.
-    PG_PASSWORD: process.env.PG_PASSWORD || 'unused',
-    OPT2_TOKEN_ISSUER: LOCAL_USER_TOKEN.issuer,
-    OPT2_TOKEN_AUDIENCE: LOCAL_USER_TOKEN.audience,
-    OPT2_JWKS_URL: 'http://127.0.0.1:8111/.well-known/jwks.json',
-    OPT2_GATEWAY_URL: 'http://127.0.0.1:8100',
-    OPT2_MIGRATION_URL: 'http://127.0.0.1:8102',
-    OPT2_SERVICE_URLS: JSON.stringify(LOCAL_SERVICE_URLS),
-    OPT2_STATE_DIR: stateDir,
-    OPT2_TASKS_ADAPTER: 'local',
-    OPT2_STORAGE_ADAPTER: 'local',
-    GOOGLE_CLOUD_PROJECT: 'opt2-local',
-    TZ: process.env.TZ || 'UTC',
-    MURA_VARIATIONS: 'false',
-    ...overrides,
-  };
-  return Object.fromEntries(Object.entries(merged).filter((entry): entry is [string, string] => entry[1] !== undefined));
-}
+export const testEnv = (stateDir: string, overrides: Readonly<Record<string, string | undefined>> = {}): Record<string, string> =>
+  localTestEnv(
+    {
+      service: SERVICE,
+      database: { name: 'opt2', user: 'content_app' },
+      pgFromProcessEnv: true,
+      callees: ['identity', 'people', 'programs-sites', SERVICE, 'gateway', 'migration'],
+      stateDir,
+      extra: { OPT2_GATEWAY_URL: localTestUrl('gateway'), OPT2_MIGRATION_URL: localTestUrl('migration'), OPT2_STORAGE_ADAPTER: 'local', GOOGLE_CLOUD_PROJECT: 'opt2-local', MURA_VARIATIONS: 'false' },
+    },
+    overrides,
+  );
 
 /**
  * Builds strategies-content with every route its source registers: the header prompts, the Edit Profile interest groups, the
@@ -958,10 +873,9 @@ export function testEnv(stateDir: string, overrides: Readonly<Record<string, str
  * routes and queue control.
  */
 export async function buildContentApp(options: ContentTestAppOptions = {}): Promise<ContentTestApp> {
-  const stateDir = await mkdtemp(path.join(tmpdir(), 'opt2-strategies-content-gates-'));
+  const stateDir = await sharedCreateTestStateDir('opt2-strategies-content-gates-');
   let app: FastifyInstance | undefined;
   try {
-    await writeTestSecrets(stateDir);
     const env = loadEnv(undefined, testEnv(stateDir));
     const db = createRecordingDb();
     const publisher = createCapturingPublisher();

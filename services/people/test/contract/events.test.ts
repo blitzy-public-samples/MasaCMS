@@ -194,12 +194,6 @@ describe('people.person.archived.v1 payloads personArchivedPayload builds', () =
     expect(Object.values(payload)).not.toContain(TENANT_UMBRELLA.tenantId);
   });
 
-  it('provides what the timesheets blackout consumer reads, as a user-pool fan-out process topic', () => {
-    expect(() =>
-      assertProducerConsumerCompatible(ARCHIVED, { required: ['personId', 'siteId', 'effectiveFrom'], kind: 'process', fanout: 'userPool' }),
-    ).not.toThrow();
-  });
-
   it('publishes with the mirrored attributes, ordered by the person id', async () => {
     await expectWireForm(PERSON_ARCHIVED_TOPIC, archivedEnvelope(payload));
   });

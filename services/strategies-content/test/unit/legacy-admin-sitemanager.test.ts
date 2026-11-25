@@ -1,4 +1,4 @@
-// Site Manager fragments against Masa 7.6.1 on ACF 2023.0.26 (GS-CO-08 Site Manager tree and tabs): each fixture in
+// Site Manager fragments against Masa 7.6.1 on ACF 2023.0.26 (GS-CO-16): each fixture in
 // test/fixtures/legacy-sitemanager holds the model read from a seeded legacy instance and the body that instance served
 // for carch.loadsiteflat, carch.siteparents or carch.loadnewcontentmenu, CSRF values replaced by `<token>`.
 import { readFileSync, readdirSync } from 'node:fs';

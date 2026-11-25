@@ -11,7 +11,7 @@ import { createLogger, serializeError } from '@opt2/platform/logging';
 import { withGatedTenant } from '@opt2/platform/migration-kit';
 import { ServiceUnavailableError, createService, fixedClock, loadEnv, type FastifyInstance, type FastifyRequest } from '@opt2/platform/service-kit';
 import { tenantIdForSite, type TenantDb, type TenantTx } from '@opt2/platform/tenancy';
-import { TENANT_A, TENANT_B, TENANT_UMBRELLA, assertResponseMatchesOpenApi, pgAvailable, testVerifier, writeTestSecrets, type InjectResponse } from '@opt2/platform/testing';
+import { TENANT_A, TENANT_B, TENANT_UMBRELLA, assertResponseMatchesOpenApi, loadOpenApiDocument, pgAvailable, testVerifier, writeTestSecrets, type InjectResponse } from '@opt2/platform/testing';
 import { saveContent } from '../../src/domain/content.js';
 import type { Actor } from '../../src/domain/context.js';
 import { createFeed } from '../../src/domain/feeds.js';
@@ -22,7 +22,7 @@ import { FEED_PATHS, registerFeedRoutes, type FeedRouteContext, type FeedSiteSou
 import { SERVICE, serviceHeaders, testEnv, userHeaders } from '../helpers/app.js';
 import { ADMIN, END, HOME, NOW, SITE, SITE_ID, cfId, createContentFixture, type ContentFixture } from '../helpers/content-fixture.js';
 
-const OPENAPI = parse(readFileSync(new URL('../../contracts/openapi.yaml', import.meta.url), 'utf8')) as {
+const OPENAPI = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as {
   paths: Record<string, Record<string, Record<string, unknown>>>;
 };
 const fixture = (name: string): string => readFileSync(new URL(`../fixtures/legacy-feed/${name}.xml`, import.meta.url), 'utf8');
