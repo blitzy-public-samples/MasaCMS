@@ -12,7 +12,7 @@ vi.mock('node:fs', async (importOriginal) => {
 });
 
 const STATE_DIR_PREFIX = 'opt2-programs-sites-';
-const READY_FAILURE = /^injected task creation failure: /;
+const READY_FAILURE = /^fake task port: injected create failure on /;
 
 /** State directories `testEnv` created that still exist. */
 function helperStateDirs(): string[] {

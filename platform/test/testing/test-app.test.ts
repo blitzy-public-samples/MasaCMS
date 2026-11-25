@@ -5,10 +5,11 @@ import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { INVOCATION_HEADER, LOCAL_SECRET_FILES, decodeJwt, localSecretPath } from '../../src/auth/index.js';
 import { loadEnv } from '../../src/service-kit/index.js';
 import { InvalidTaskNameError, outboxSweepQueue, type CreateTaskInput } from '../../src/tasks/index.js';
-import type { QueryResult } from '../../src/tenancy/index.js';
+import { SYSTEM_TENANT_ID, type QueryResult } from '../../src/tenancy/index.js';
 import {
   CLIENT_ROUTE_KEY, LOCAL_TEST_PORTS, POOL_ENDED_MESSAGE, TENANT_A, TENANT_B, clientPathPattern, closingParen, collapseSql, createFakeTaskPort,
-  createHeadersFor, createTestStateDir, fakePoolTenantDb, localTestEnv, localTestUrl, pathWithoutQuery, splitTopLevel, type LocalTestEnvOptions,
+  createHeadersFor, createTestStateDir, fakePoolTenantDb, localTestEnv, localTestUrl, pathWithoutQuery, splitTopLevel, type FakeTaskPortOptions,
+  type LocalTestEnvOptions,
 } from '../../src/testing/index.js';
 
 const fsFaults = vi.hoisted((): { writeFile?: Error } => ({}));
@@ -111,6 +112,117 @@ describe('test-app helpers', () => {
     expect(await port.create(task('b'))).toEqual({ name: 'b', created: true });
     expect([...port.tasks].map(([key, { deleted }]) => [key, deleted])).toEqual([[`${SWEEP}/a`, true], [`${other}/i`, false], [`${SWEEP}/b`, false]]);
     expect(port.created).toStrictEqual([...port.tasks.values()]);
+  });
+
+  it('createFakeTaskPort records every call with its arguments as passed, trailing undefined ones dropped, and a create before its input check', async () => {
+    const port = createFakeTaskPort();
+    const tenant = { tenantId: TENANT_A.tenantId };
+    await port.create(task('a'));
+    await expect(port.create(task('bad name'))).rejects.toThrow(InvalidTaskNameError);
+    await Promise.all([port.get(SWEEP, 'a', undefined), port.get(SWEEP, 'a', tenant), port.list(SWEEP), port.list(SWEEP, { pageSize: 5 }), port.delete(SWEEP, 'a')]);
+    await Promise.all([port.pauseQueue(SWEEP), port.resumeQueue(SWEEP), port.queueState(SWEEP), port.close()]);
+    expect(port.calls).toStrictEqual([
+      { op: 'create', args: [task('a')] }, { op: 'create', args: [task('bad name')] }, { op: 'get', args: [SWEEP, 'a'] }, { op: 'get', args: [SWEEP, 'a', tenant] },
+      { op: 'list', args: [SWEEP] }, { op: 'list', args: [SWEEP, { pageSize: 5 }] }, { op: 'delete', args: [SWEEP, 'a'] },
+      { op: 'pauseQueue', args: [SWEEP] }, { op: 'resumeQueue', args: [SWEEP] }, { op: 'queueState', args: [SWEEP] }, { op: 'close', args: [] },
+    ]);
+  });
+
+  it('createFakeTaskPort markDone marks the first created task of the name, queue and tenant given, in any state, so it leaves list, get and delete and keeps its name reserved', async () => {
+    const port = createFakeTaskPort();
+    const other = outboxSweepQueue('identity');
+    for (const input of [task('a', other), task('a'), { ...task('t'), tenantId: TENANT_A.tenantId }, task('gone')]) await port.create(input);
+    await port.delete(SWEEP, 'gone');
+    port.markDone('a', SWEEP);
+    port.markDone('t', undefined, TENANT_A.tenantId);
+    port.markDone('gone');
+    expect([(await port.list(SWEEP)).tasks, await port.get(SWEEP, 'a'), await port.delete(SWEEP, 'a'), await port.create(task('a'))]).toEqual([[], undefined, { name: 'a', deleted: false }, { name: 'a', created: false }]);
+    expect(await port.get(other, 'a')).toMatchObject({ queue: other, name: 'a' });
+    port.markDone('a');
+    expect([...port.done].map(({ input }) => `${input.queue}/${input.name}`)).toEqual([`${SWEEP}/a`, `${SWEEP}/t`, `${SWEEP}/gone`, `${other}/a`]);
+  });
+
+  it.each<[string, string | undefined, string | undefined, string]>([
+    ['b', undefined, undefined, 'b'],
+    ['a', 'elsewhere', undefined, 'elsewhere/a'],
+    ['a', SWEEP, TENANT_A.tenantId, `${TENANT_A.tenantId}:${SWEEP}/a`],
+  ])('createFakeTaskPort markDone of %s on queue %s for tenant %s throws when no created task matches', async (name, queue, tenantId, shown) => {
+    const port = createFakeTaskPort();
+    await port.create(task('a'));
+    expect(() => port.markDone(name, queue, tenantId)).toThrow(new Error(`fake task port holds no task ${shown}`));
+  });
+
+  it.each<[string, FakeTaskPortOptions['autoComplete'], string[]]>([
+    ['every task when true', true, ['a', 'b']],
+    ['the tasks a predicate matches', (input) => input.name === 'b', ['b']],
+    ['no task when false', false, []],
+  ])('createFakeTaskPort autoComplete marks done at creation %s, so they leave list', async (_label, autoComplete, doneNames) => {
+    const port = createFakeTaskPort({ autoComplete });
+    await port.create(task('a'));
+    await port.create(task('b'));
+    expect([[...port.done].map(({ input }) => input.name), (await port.list(SWEEP)).tasks.map(({ name }) => name)]).toEqual([doneNames, ['a', 'b'].filter((name) => !doneNames.includes(name))]);
+  });
+
+  it('createFakeTaskPort autoComplete on a paused queue waits for resumeQueue of that queue, and a task deleted or marked done meanwhile is not completed again', async () => {
+    const port = createFakeTaskPort({ autoComplete: true });
+    const other = outboxSweepQueue('identity');
+    await port.pauseQueue(SWEEP);
+    for (const input of [task('a'), task('b'), task('c'), task('d', other)]) await port.create(input);
+    await port.delete(SWEEP, 'b');
+    port.markDone('c');
+    const doneNames = (): string[] => [...port.done].map(({ input }) => input.name);
+    expect(doneNames()).toEqual(['d', 'c']);
+    await port.resumeQueue(other);
+    expect([doneNames(), (await port.list(SWEEP)).tasks.map(({ name }) => name)]).toEqual([['d', 'c'], ['a']]);
+    await port.resumeQueue(SWEEP);
+    expect([doneNames(), (await port.list(SWEEP)).tasks, port.created.map(({ deleted }) => deleted)]).toEqual([['d', 'c', 'a'], [], [false, true, false, false]]);
+  });
+
+  it('createFakeTaskPort tenantKeyed keys tasks by tenant, reads opts.tenantId in get and delete, and omits the system tenant from TaskInfo', async () => {
+    const port = createFakeTaskPort({ tenantKeyed: true });
+    const [a, b] = [TENANT_A.tenantId, TENANT_B.tenantId];
+    const results: Array<{ created: boolean }> = [];
+    for (const tenantId of [a, b, undefined, SYSTEM_TENANT_ID]) results.push(await port.create({ ...task('j'), ...(tenantId === undefined ? {} : { tenantId }) }));
+    expect(results.map(({ created }) => created)).toEqual([true, true, true, false]);
+    expect([...port.tasks.keys()]).toEqual([`${a}:${SWEEP}/j`, `${b}:${SWEEP}/j`, `${SYSTEM_TENANT_ID}:${SWEEP}/j`]);
+    expect((await port.list(SWEEP)).tasks.map((info) => info.tenantId)).toEqual([a, b, undefined]);
+    expect(await port.get(SWEEP, 'j')).not.toHaveProperty('tenantId');
+    expect(await port.get(SWEEP, 'j', { tenantId: b })).toMatchObject({ name: 'j', tenantId: b });
+    expect(await port.delete(SWEEP, 'j', { tenantId: b })).toEqual({ name: 'j', deleted: true });
+    expect(await port.get(SWEEP, 'j', { tenantId: b })).toBeUndefined();
+    const deletes = [await port.delete(SWEEP, 'j'), await port.get(SWEEP, 'j', { tenantId: a }), await port.delete(SWEEP, 'j'), await port.delete(SWEEP, 'j')];
+    expect(deletes).toEqual([{ name: 'j', deleted: true }, expect.objectContaining({ tenantId: a }), { name: 'j', deleted: true }, { name: 'j', deleted: false }]);
+    expect(port.created.map(({ deleted }) => deleted)).toEqual([true, true, true]);
+    const untenanted = createFakeTaskPort();
+    await untenanted.create({ ...task('j'), tenantId: SYSTEM_TENANT_ID });
+    expect(await untenanted.get(SWEEP, 'j', { tenantId: a })).toMatchObject({ tenantId: SYSTEM_TENANT_ID });
+  });
+
+  it('createFakeTaskPort failCreate takes a predicate and Infinity, and null drops every pending failure', async () => {
+    const port = createFakeTaskPort();
+    port.failCreate((input) => input.name.startsWith('x'), Infinity);
+    for (const name of ['x1', 'x2', 'x3']) await expect(port.create(task(name))).rejects.toThrow(`fake task port: injected create failure on ${SWEEP}/${name}`);
+    expect(await port.create(task('y'))).toEqual({ name: 'y', created: true });
+    port.failCreate(SWEEP);
+    port.failCreate(null);
+    expect([await port.create(task('x1')), await port.create(task('z'))]).toEqual([{ name: 'x1', created: true }, { name: 'z', created: true }]);
+  });
+
+  it('createFakeTaskPort clear forgets every call, task, tombstone, done mark, paused queue, awaiting task and pending failure in place', async () => {
+    const port = createFakeTaskPort({ autoComplete: (input) => input.name === 'w' });
+    const { calls, tasks, created, done } = port;
+    await port.create(task('a'));
+    await port.delete(SWEEP, 'a');
+    await port.create(task('m'));
+    port.markDone('m');
+    await port.pauseQueue(SWEEP);
+    await port.create(task('w'));
+    port.failCreate();
+    port.clear();
+    expect([calls, [...tasks], created, [...done]]).toStrictEqual([[], [], [], []]);
+    expect(await port.queueState(SWEEP)).toEqual({ queue: SWEEP, paused: false });
+    await port.resumeQueue(SWEEP);
+    expect([done.size, await port.create(task('a'))]).toEqual([0, { name: 'a', created: true }]);
   });
 
   it('fakePoolTenantDb runs each transaction through run on a connection of its own and refuses connections and statements after end unless told not to', async () => {

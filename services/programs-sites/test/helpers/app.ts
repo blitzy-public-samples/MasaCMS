@@ -9,6 +9,7 @@ import {
   closingParen,
   collapseSql,
   createCapturingPublisher,
+  createFakeTaskPort as createSharedFakeTaskPort,
   createHeadersFor,
   fakePoolTenantDb,
   fixedClock,
@@ -19,17 +20,11 @@ import {
   testVerifier,
   writeTestSecrets,
   type ClientHandler,
+  type FakeTaskPort as SharedFakeTaskPort,
+  type FakeTaskPortOptions as SharedFakeTaskPortOptions,
 } from '@opt2/platform/testing';
-import { SYSTEM_TENANT_ID, type QueryResult, type QueryResultRow, type TenantDb } from '@opt2/platform/tenancy';
-import {
-  resolvePageSize,
-  type CreateTaskInput,
-  type CreateTaskResult,
-  type DeleteTaskResult,
-  type QueueState,
-  type TaskInfo,
-  type TaskPort,
-} from '@opt2/platform/tasks';
+import type { QueryResult, QueryResultRow, TenantDb } from '@opt2/platform/tenancy';
+import type { CreateTaskInput, TaskPort } from '@opt2/platform/tasks';
 import {
   CSRF_CONSUME_PATH,
   loadEnv,
@@ -64,15 +59,6 @@ export function testEnv(overrides: Readonly<Record<string, string | undefined>> 
 /** Clock every suite shares: local `2026-06-30T12:00:00`, the seed's business date. */
 export const TEST_CLOCK: Clock = businessClock();
 
-/** Member names of the task port, as `FakeTaskPort.calls` records them. */
-export type TaskPortOp = 'create' | 'delete' | 'list' | 'get' | 'pauseQueue' | 'resumeQueue' | 'queueState' | 'close';
-
-/** One call the fake task port received, with the arguments as passed (trailing omitted arguments dropped). */
-export interface TaskPortCall {
-  readonly op: TaskPortOp;
-  readonly args: readonly unknown[];
-}
-
 /** A task the fake port holds; a `done` or `deleted` task is a tombstone whose name stays reserved. */
 export interface FakeTaskRecord {
   readonly input: CreateTaskInput;
@@ -81,162 +67,29 @@ export interface FakeTaskRecord {
 }
 
 /** Options of {@link createFakeTaskPort}. */
-export interface FakeTaskPortOptions {
-  /** Marks matching tasks done at creation, or on `resumeQueue` while their queue is paused; `true` matches every task. */
-  autoComplete?: boolean | ((input: CreateTaskInput) => boolean);
-}
+export type FakeTaskPortOptions = Omit<SharedFakeTaskPortOptions, 'tenantKeyed'>;
 
-/** In-memory `TaskPort` that records its calls and never dispatches. */
-export interface FakeTaskPort extends TaskPort {
-  readonly kind: 'local';
-  readonly calls: TaskPortCall[];
+/** The platform fake task port, tenant-keyed as the local adapter is, with a standing `failCreate` and `tasks` snapshots. */
+export interface FakeTaskPort extends Omit<SharedFakeTaskPort, 'tasks' | 'failCreate'> {
   /** Makes matching creates throw until cleared with `null`. */
   failCreate(predicate: ((input: CreateTaskInput) => boolean) | null): void;
-  /** Marks the first matching task done, so it leaves `list` and `get`; an omitted queue or tenant matches any; throws when none matches. */
-  markDone(name: string, queue?: string, tenantId?: string): void;
   /** Snapshot of every created task, tombstones included, in creation order. */
   tasks(queue?: string): FakeTaskRecord[];
 }
 
-type TaskPage = Awaited<ReturnType<TaskPort['list']>>;
-type TaskPageRequest = Parameters<TaskPort['list']>[1];
-
-interface MutableTask {
-  input: CreateTaskInput;
-  done: boolean;
-  deleted: boolean;
-}
-
-function passedArgs(...values: unknown[]): unknown[] {
-  let length = values.length;
-  while (length > 0 && values[length - 1] === undefined) length -= 1;
-  return values.slice(0, length);
-}
-
 /** Creates a {@link FakeTaskPort}; tasks are keyed by `(tenant, queue, name)` as in the local adapter, and a repeated key answers `created: false`. */
 export function createFakeTaskPort(options: FakeTaskPortOptions = {}): FakeTaskPort {
-  const records: MutableTask[] = [];
-  const awaitingResume = new Set<MutableTask>();
-  const paused = new Set<string>();
-  const calls: TaskPortCall[] = [];
-  let failing: ((input: CreateTaskInput) => boolean) | null = null;
-  const { autoComplete = false } = options;
-
-  const record = (op: TaskPortOp, args: unknown[]): void => {
-    calls.push({ op, args });
-  };
-  // A tenant-less task belongs to the system tenant, as in the local adapter.
-  const tenantOf = (input: CreateTaskInput): string => input.tenantId ?? SYSTEM_TENANT_ID;
-  const matches = (task: MutableTask, queue: string, name: string): boolean => task.input.queue === queue && task.input.name === name;
-  const find = (tenant: string, queue: string, name: string): MutableTask | undefined =>
-    records.find((task) => tenantOf(task.input) === tenant && matches(task, queue, name));
-  const isLive = (task: MutableTask): boolean => !task.done && !task.deleted;
-  const completesItself = (input: CreateTaskInput): boolean =>
-    typeof autoComplete === 'function' ? autoComplete(input) : autoComplete;
-  const complete = (task: MutableTask): void => {
-    task.done = true;
-    awaitingResume.delete(task);
-  };
-  const infoOf = (task: MutableTask): TaskInfo => ({
-    queue: task.input.queue,
-    name: task.input.name,
-    scheduleTime: new Date(task.input.scheduleTime.getTime()),
-    ...(tenantOf(task.input) === SYSTEM_TENANT_ID ? {} : { tenantId: tenantOf(task.input) }),
-    status: 'pending',
-    attempts: 0,
-  });
-
+  const port = createSharedFakeTaskPort({ ...options, tenantKeyed: true });
   return {
-    kind: 'local',
-    calls,
-
-    async create(input: CreateTaskInput): Promise<CreateTaskResult> {
-      record('create', [input]);
-      if (failing?.(input) === true) throw new Error(`injected task creation failure: ${input.queue}/${input.name}`);
-      if (find(tenantOf(input), input.queue, input.name) !== undefined) return { name: input.name, created: false };
-      const task: MutableTask = { input, done: false, deleted: false };
-      records.push(task);
-      if (completesItself(input)) {
-        if (paused.has(input.queue)) awaitingResume.add(task);
-        else complete(task);
-      }
-      return { name: input.name, created: true };
-    },
-
-    async delete(queue: string, name: string, opts?: { tenantId?: string }): Promise<DeleteTaskResult> {
-      record('delete', passedArgs(queue, name, opts));
-      // Without a tenant, the system tenant is searched first and then every other tenant, as in the local adapter.
-      const liveMatch = (task: MutableTask): boolean => isLive(task) && matches(task, queue, name);
-      const task =
-        opts?.tenantId === undefined
-          ? (records.find((candidate) => liveMatch(candidate) && tenantOf(candidate.input) === SYSTEM_TENANT_ID) ?? records.find(liveMatch))
-          : records.find((candidate) => liveMatch(candidate) && tenantOf(candidate.input) === opts.tenantId);
-      if (task === undefined) return { name, deleted: false };
-      task.deleted = true;
-      awaitingResume.delete(task);
-      return { name, deleted: true };
-    },
-
-    async list(queue: string, page?: TaskPageRequest): Promise<TaskPage> {
-      record('list', passedArgs(queue, page));
-      const pageSize = resolvePageSize(page?.pageSize);
-      const live = records.filter((task) => task.input.queue === queue && isLive(task));
-      const start = page?.pageToken === undefined ? 0 : Number(page.pageToken);
-      const end = start + pageSize;
-      const tasks = live.slice(start, end).map(infoOf);
-      return end < live.length ? { tasks, nextPageToken: String(end) } : { tasks };
-    },
-
-    async get(queue: string, name: string, opts?: { tenantId?: string }): Promise<TaskInfo | undefined> {
-      record('get', passedArgs(queue, name, opts));
-      const task = find(opts?.tenantId ?? SYSTEM_TENANT_ID, queue, name);
-      return task !== undefined && isLive(task) ? infoOf(task) : undefined;
-    },
-
-    async pauseQueue(queue: string): Promise<void> {
-      record('pauseQueue', [queue]);
-      paused.add(queue);
-    },
-
-    async resumeQueue(queue: string): Promise<void> {
-      record('resumeQueue', [queue]);
-      paused.delete(queue);
-      for (const task of [...awaitingResume]) {
-        if (task.input.queue === queue) complete(task);
-      }
-    },
-
-    async queueState(queue: string): Promise<QueueState> {
-      record('queueState', [queue]);
-      return { queue, paused: paused.has(queue) };
-    },
-
-    async close(): Promise<void> {
-      record('close', []);
-    },
-
+    ...port,
     failCreate(predicate) {
-      failing = predicate;
+      port.failCreate(null);
+      if (predicate !== null) port.failCreate(predicate, Infinity);
     },
-
-    markDone(name, queue, tenantId) {
-      const task = records.find(
-        (candidate) =>
-          candidate.input.name === name &&
-          (queue === undefined || candidate.input.queue === queue) &&
-          (tenantId === undefined || tenantOf(candidate.input) === tenantId),
-      );
-      if (task === undefined) {
-        throw new Error(`fake task port holds no task ${tenantId === undefined ? '' : `${tenantId}:`}${queue === undefined ? '' : `${queue}/`}${name}`);
-      }
-      complete(task);
-    },
-
-    tasks(queue) {
-      return records
+    tasks: (queue) =>
+      port.created
         .filter((task) => queue === undefined || task.input.queue === queue)
-        .map((task) => ({ input: task.input, done: task.done, deleted: task.deleted }));
-    },
+        .map((task) => ({ input: task.input, done: port.done.has(task), deleted: task.deleted })),
   };
 }
 

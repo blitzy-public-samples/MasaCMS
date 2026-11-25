@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { EventPublisher } from '@opt2/platform/events';
 import { loadEnv, type Clock, type FastifyInstance } from '@opt2/platform/service-kit';
-import type { CreateTaskInput, CreateTaskResult, DeleteTaskResult, QueueState, TaskInfo, TaskPage, TaskPort } from '@opt2/platform/tasks';
+import type { CreateTaskInput } from '@opt2/platform/tasks';
 import {
   isNonTenantTable,
   tenantIdForSite,
@@ -18,6 +18,7 @@ import {
   businessClock,
   closingParen,
   createCapturingPublisher,
+  createFakeTaskPort as createSharedFakeTaskPort,
   createHeadersFor,
   fakePoolTenantDb,
   localTestEnv,
@@ -27,6 +28,7 @@ import {
   testVerifier,
   writeTestSecrets,
   type CapturingPublisher,
+  type FakeTaskPort as SharedFakeTaskPort,
   type TenantFixture,
   type ThrowawaySchema,
 } from '@opt2/platform/testing';
@@ -96,67 +98,25 @@ export const FIXED_XID = '1000';
 // currentPosition() reports xmax - 1, so the snapshot bounds sit one past FIXED_XID.
 const NEXT_XID = String(Number(FIXED_XID) + 1);
 
-/** In-memory `TaskPort` that records created tasks and never dispatches them. */
-export interface FakeTaskPort extends TaskPort {
-  readonly kind: 'local';
+/** The platform fake task port with `tasks` as the input of every created task, deleted ones included, and a standing `failCreate`. */
+export interface FakeTaskPort extends Omit<SharedFakeTaskPort, 'tasks' | 'failCreate'> {
   /** Every task created, in creation order; a deleted task stays listed here. */
-  readonly tasks: CreateTaskInput[];
+  readonly tasks: readonly CreateTaskInput[];
   /** Makes every later `create` reject until called with `false`. */
   failCreate(on?: boolean): void;
 }
 
 /** Creates a {@link FakeTaskPort}; a name created once on a queue, live or deleted, answers `created: false` again, as Cloud Tasks tombstones do. */
 export function createFakeTaskPort(): FakeTaskPort {
-  const tasks: CreateTaskInput[] = [];
-  const reserved = new Set<string>();
-  const live = new Map<string, CreateTaskInput>();
-  const paused = new Set<string>();
-  let failing = false;
-  const keyOf = (queue: string, name: string): string => `${queue}/${name}`;
-  const infoOf = (input: CreateTaskInput): TaskInfo => ({
-    queue: input.queue,
-    name: input.name,
-    scheduleTime: new Date(input.scheduleTime.getTime()),
-    ...(input.tenantId === undefined ? {} : { tenantId: input.tenantId }),
-    status: 'pending',
-    attempts: 0,
-  });
-
+  const port = createSharedFakeTaskPort();
   return {
-    kind: 'local',
-    tasks,
-    async create(input: CreateTaskInput): Promise<CreateTaskResult> {
-      if (failing) throw new Error('fake task port: create failed');
-      const key = keyOf(input.queue, input.name);
-      if (reserved.has(key)) return { name: input.name, created: false };
-      reserved.add(key);
-      live.set(key, input);
-      tasks.push(input);
-      return { name: input.name, created: true };
+    ...port,
+    get tasks() {
+      return port.created.map((task) => task.input);
     },
-    async delete(queue: string, name: string): Promise<DeleteTaskResult> {
-      return { name, deleted: live.delete(keyOf(queue, name)) };
-    },
-    // One page holds every live task of the queue.
-    async list(queue: string): Promise<TaskPage> {
-      return { tasks: [...live.values()].filter((input) => input.queue === queue).map(infoOf) };
-    },
-    async get(queue: string, name: string): Promise<TaskInfo | undefined> {
-      const input = live.get(keyOf(queue, name));
-      return input === undefined ? undefined : infoOf(input);
-    },
-    async pauseQueue(queue: string): Promise<void> {
-      paused.add(queue);
-    },
-    async resumeQueue(queue: string): Promise<void> {
-      paused.delete(queue);
-    },
-    async queueState(queue: string): Promise<QueueState> {
-      return { queue, paused: paused.has(queue) };
-    },
-    close: (): Promise<void> => Promise.resolve(),
-    failCreate(on = true): void {
-      failing = on;
+    failCreate(on = true) {
+      if (on) port.failCreate(undefined, Infinity);
+      else port.failCreate(null);
     },
   };
 }

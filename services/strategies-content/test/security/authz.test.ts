@@ -1054,7 +1054,7 @@ function resultOf(res: InjectResponse): ProbeResult {
     writes: t.db.writes(),
     puts: t.storage.calls.filter((call) => call.op === 'put').length,
     objectReads: t.storage.calls.filter((call) => call.op === 'get' || call.op === 'stream' || call.op === 'open').length,
-    tasksCreated: t.taskPort.created.length,
+    tasksCreated: t.taskPort.calls.filter((call) => call.op === 'create').length,
     csrfConsumes: t.client.csrfConsumes.map(({ context }) => ({ context })),
     sessionLookups: t.client.requests.filter((req) => req.service === IDENTITY_SERVICE && req.method === 'GET' && req.path === '/v1/sessions/current').length,
   };

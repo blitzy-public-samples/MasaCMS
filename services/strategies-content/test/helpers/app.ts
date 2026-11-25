@@ -48,18 +48,6 @@ import {
   type PutBody,
   type PutResult,
 } from '@opt2/platform/storage';
-import {
-  assertCreateInput,
-  resolvePageSize,
-  type CreateTaskInput,
-  type CreateTaskResult,
-  type DeleteTaskResult,
-  type QueueState,
-  type TaskInfo,
-  type TaskPage,
-  type TaskPageRequest,
-  type TaskPort,
-} from '@opt2/platform/tasks';
 import { tenantIdForSite, type QueryResult, type TenantDb } from '@opt2/platform/tenancy';
 import {
   CLIENT_ROUTE_KEY,
@@ -68,6 +56,7 @@ import {
   closingParen,
   collapseSql,
   createCapturingPublisher,
+  createFakeTaskPort,
   createTestStateDir as sharedCreateTestStateDir,
   createThrowawaySchema,
   fakePoolTenantDb,
@@ -80,6 +69,7 @@ import {
   testVerifier,
   type CapturingPublisher,
   type ClientHandler,
+  type FakeTaskPort,
   type ThrowawaySchema,
   type ThrowawaySchemaOptions,
 } from '@opt2/platform/testing';
@@ -103,6 +93,8 @@ import { registerHeaderPromptRoutes } from '../../src/routes/v1/header-prompts.j
 import { registerInterestGroupRoutes } from '../../src/routes/v1/interest-groups.js';
 import { rawSurfaceOf } from '../../src/routes/v1/raw.js';
 import { registerContentQueueControl } from '../../src/tasks/port.js';
+
+export { createFakeTaskPort, type FakeTaskPort };
 
 /** Name of the service under test, the audience of every invocation credential sent to it. */
 export const SERVICE = OWNER;
@@ -463,122 +455,6 @@ export function createRecordingDb(seed: RecordingDbSeed = {}): RecordingDb {
       applySeed();
     },
   });
-}
-
-/** A TaskPort over in-memory queues that records each call and never dispatches. */
-export interface FakeTaskPort extends TaskPort {
-  readonly kind: 'local';
-  /** Every call, as `<op> <queue>`. */
-  readonly calls: string[];
-  /** Input of every `create` call, repeats and injected failures included. */
-  readonly created: CreateTaskInput[];
-  /** Live tasks, neither done nor deleted, in creation order. */
-  readonly tasks: readonly CreateTaskInput[];
-  /** Makes the next `times` creates reject, with `error` when given, after their input is checked. */
-  failCreate(times?: number, error?: Error): void;
-  /** Marks the live task `name`, on `queue` when given, done, so it leaves `list` and `get`; throws when none matches. */
-  markDone(name: string, queue?: string): void;
-  /** Forgets every call, task, tombstone, paused queue and pending failure. */
-  clear(): void;
-}
-
-/**
- * Creates a {@link FakeTaskPort}; inputs are checked as the adapters check them, and a name created once on a queue
- * answers `created: false` again, deleted or done, as Cloud Tasks tombstones do.
- */
-export function createFakeTaskPort(): FakeTaskPort {
-  const calls: string[] = [];
-  const created: CreateTaskInput[] = [];
-  const held = new Map<string, { input: CreateTaskInput; live: boolean }>();
-  const paused = new Set<string>();
-  let pendingFailures = 0;
-  let failure: Error | undefined;
-  const keyOf = (queue: string, name: string): string => `${queue}/${name}`;
-  const liveTask = (queue: string, name: string) => {
-    const task = held.get(keyOf(queue, name));
-    return task?.live === true ? task : undefined;
-  };
-  const infoOf = (input: CreateTaskInput): TaskInfo => ({
-    queue: input.queue,
-    name: input.name,
-    scheduleTime: new Date(input.scheduleTime.getTime()),
-    ...(input.tenantId === undefined ? {} : { tenantId: input.tenantId }),
-    status: 'pending',
-    attempts: 0,
-  });
-  return {
-    kind: 'local',
-    calls,
-    created,
-    get tasks(): CreateTaskInput[] {
-      return [...held.values()].filter((task) => task.live).map((task) => task.input);
-    },
-    async create(input: CreateTaskInput): Promise<CreateTaskResult> {
-      calls.push(`create ${input.queue}`);
-      created.push(input);
-      assertCreateInput(input);
-      if (pendingFailures > 0) {
-        pendingFailures -= 1;
-        throw failure ?? new Error(`fake task port: injected create failure on ${input.queue}/${input.name}`);
-      }
-      const key = keyOf(input.queue, input.name);
-      if (held.has(key)) return { name: input.name, created: false };
-      held.set(key, { input, live: true });
-      return { name: input.name, created: true };
-    },
-    async delete(queue: string, name: string): Promise<DeleteTaskResult> {
-      calls.push(`delete ${queue}`);
-      const task = liveTask(queue, name);
-      if (task !== undefined) task.live = false;
-      return { name, deleted: task !== undefined };
-    },
-    async list(queue: string, page?: TaskPageRequest): Promise<TaskPage> {
-      calls.push(`list ${queue}`);
-      const pageSize = resolvePageSize(page?.pageSize);
-      const live = [...held.values()].filter((task) => task.live && task.input.queue === queue);
-      const start = page?.pageToken === undefined ? 0 : Number(page.pageToken);
-      const end = start + pageSize;
-      const tasks = live.slice(start, end).map((task) => infoOf(task.input));
-      return end < live.length ? { tasks, nextPageToken: String(end) } : { tasks };
-    },
-    async get(queue: string, name: string): Promise<TaskInfo | undefined> {
-      calls.push(`get ${queue}`);
-      const task = liveTask(queue, name);
-      return task === undefined ? undefined : infoOf(task.input);
-    },
-    async pauseQueue(queue: string): Promise<void> {
-      calls.push(`pauseQueue ${queue}`);
-      paused.add(queue);
-    },
-    async resumeQueue(queue: string): Promise<void> {
-      calls.push(`resumeQueue ${queue}`);
-      paused.delete(queue);
-    },
-    async queueState(queue: string): Promise<QueueState> {
-      calls.push(`queueState ${queue}`);
-      return { queue, paused: paused.has(queue) };
-    },
-    close: async (): Promise<void> => undefined,
-    failCreate(times = 1, error?: Error): void {
-      pendingFailures = times;
-      failure = error;
-    },
-    markDone(name: string, queue?: string): void {
-      const task = [...held.values()].find(
-        (candidate) => candidate.live && candidate.input.name === name && (queue === undefined || candidate.input.queue === queue),
-      );
-      if (task === undefined) throw new Error(`fake task port holds no live task ${queue === undefined ? '' : `${queue}/`}${name}`);
-      task.live = false;
-    },
-    clear(): void {
-      calls.length = 0;
-      created.length = 0;
-      held.clear();
-      paused.clear();
-      pendingFailures = 0;
-      failure = undefined;
-    },
-  };
 }
 
 /** HMAC key of the memory storage's signed URLs; not a secret. */
