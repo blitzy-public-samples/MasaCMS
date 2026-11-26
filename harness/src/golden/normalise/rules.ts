@@ -113,7 +113,9 @@ const originsSchema = z.strictObject({
   defaults: z.record(z.string().regex(/^[A-Z_][A-Z0-9_]*$/, 'must be an environment variable name'), sessionOrigin),
   hostAliases: names,
   schemes: z.array(z.enum(['http', 'https'])).min(1),
-  match: z.array(z.enum(['scheme-origin', 'host-port', 'percent-encoded-host-port'])).min(1),
+  match: z
+    .array(z.enum(['scheme-origin', 'host-port', 'percent-encoded-host-port', 'javascript-escaped-host-port']))
+    .min(1),
 });
 /** Capture and replay origins, `values` resolved to concrete origins by {@link loadRules}. */
 export type OriginRules = z.infer<typeof originsSchema>;

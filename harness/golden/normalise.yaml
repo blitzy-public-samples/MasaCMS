@@ -13,7 +13,8 @@ origins:
   # Masa redirects 127.0.0.1 to localhost and renders absolute URLs with the request host.
   hostAliases: ["127.0.0.1", "localhost"]
   schemes: [http, https]
-  match: [scheme-origin, host-port, percent-encoded-host-port]
+  # javascript-escaped-host-port: host:port at an escaped URL authority (encodeForJavaScript in the admin JS config).
+  match: [scheme-origin, host-port, percent-encoded-host-port, javascript-escaped-host-port]
 
 # ACF error envelopes and rendered pages name the legacy webroot (this checkout) and OPT2_STATE_DIR, which differ per
 # run. Each root, as given and as its real path, becomes its placeholder in all text, before origins and ids.

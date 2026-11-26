@@ -97,11 +97,30 @@ function classKeys(rule: TimestampClassRule): readonly RegExp[] | undefined {
 
 // The `<label>.` of a subdomain of a host-name alias (a seeded site's `<siteID>.localhost`), captured to be kept.
 const SUBDOMAIN_LABELS = '((?:[0-9A-Za-z-]+\\.)+)';
+// The same labels with each `-` and `.` plain or JavaScript-escaped.
+const ESCAPED_SUBDOMAIN_LABELS = `((?:(?:[0-9A-Za-z]|${charForms('-')})+${charForms('.')})+)`;
+// `\xHH` or `\u00HH` of a letter or digit.
+const ESCAPED_ALNUM = '\\\\(?:x|u00)(?:3[0-9]|[46][1-9a-f]|[57][0-9a])';
+// An escaped host:port counts only at a URL authority, right after `//` with each slash plain or escaped.
+const ESCAPED_AUTHORITY_START = `(?<=${charForms('/')}${charForms('/')})`;
+// No host or port continuation, plain or escaped, follows an escaped host:port.
+const ESCAPED_ORIGIN_AFTER =
+  `(?![0-9A-Za-z_-]|${[ESCAPED_ALNUM, ...escapesOf('-'), ...escapesOf('_')].join('|')}` +
+  `|${charForms('.')}(?:[0-9A-Za-z]|${ESCAPED_ALNUM})|${charForms(':')}[0-9]|%3A[0-9])`;
 
-// Each configured origin under each host alias, as scheme origin, host:port and percent-encoded host:port, as
-// regular-expression sources; under a host-name alias also with its subdomain labels before the host.
-function originForms(origins: OriginRules): string[] {
+interface OriginForms {
+  readonly plain: readonly string[];
+  readonly escaped: readonly string[];
+}
+
+const longestSourceFirst = (forms: ReadonlyMap<string, number>): string[] =>
+  [...forms].sort(([, a], [, b]) => b - a).map(([source]) => source);
+
+// Each configured origin under each host alias, as scheme origin, host:port, percent-encoded host:port and escaped
+// URL-authority host:port, as regular-expression sources; under a host-name alias also with its subdomain labels.
+function originForms(origins: OriginRules): OriginForms {
   const forms = new Map<string, number>();
+  const escaped = new Map<string, number>();
   for (const value of origins.values) {
     const url = new URL(value);
     const aliased = origins.hostAliases.includes(url.hostname);
@@ -116,15 +135,25 @@ function originForms(origins: OriginRules): string[] {
       if (origins.match.includes('scheme-origin')) add(`${url.protocol}//`, hostPort);
       if (origins.match.includes('host-port')) add('', hostPort);
       if (origins.match.includes('percent-encoded-host-port')) add('', encodeURIComponent(hostPort));
+      if (origins.match.includes('javascript-escaped-host-port')) {
+        const source = hostPort.split('').map(charForms).join('');
+        escaped.set(source, hostPort.length);
+        if (subdomains) escaped.set(`${ESCAPED_SUBDOMAIN_LABELS}${source}`, hostPort.length + 1);
+      }
     }
   }
-  return [...forms].sort(([, a], [, b]) => b - a).map(([source]) => source);
+  return { plain: longestSourceFirst(forms), escaped: longestSourceFirst(escaped) };
 }
 
 function originsRegExp(origins: OriginRules): RegExp {
-  const forms = originForms(origins).join('|');
+  const { plain, escaped } = originForms(origins);
   // Not inside a longer host, port or encoded value; `%2F` may precede an encoded host (`http%3A%2F%2F…`).
-  return new RegExp(`(?<=^|[^0-9A-Za-z.-]|%2F)(?:${forms})(?![0-9A-Za-z_-]|\\.[0-9A-Za-z]|:[0-9]|%3A[0-9])`, 'gi');
+  const branches =
+    plain.length === 0
+      ? []
+      : [`(?<=^|[^0-9A-Za-z.-]|%2F)(?:${plain.join('|')})(?![0-9A-Za-z_-]|\\.[0-9A-Za-z]|:[0-9]|%3A[0-9])`];
+  if (escaped.length > 0) branches.push(`${ESCAPED_AUTHORITY_START}(?:${escaped.join('|')})${ESCAPED_ORIGIN_AFTER}`);
+  return new RegExp(branches.join('|'), 'gi');
 }
 
 // Hex digits of `code`, `width` wide, in either case.

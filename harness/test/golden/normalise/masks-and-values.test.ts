@@ -627,6 +627,51 @@ describe('normaliseText', () => {
       'r=http%3A%2F%2Ftenant-a.localhost%3A8100%2F a.b.localhost:8500 umbrella.localhost:85001 x.127.0.0.1:8500',
       'r=http%3A%2F%2Ftenant-a.<origin>%2F a.b.<origin> umbrella.localhost:85001 x.127.0.0.1:8500',
     ],
+    [
+      'replaces \\x-escaped subdomain origins in either hex case, keeping the scheme, labels and path',
+      String.raw`a:'http\x3A\x2F\x2Ftenant\x2Da.localhost\x3A8100\x2Fthemes' b:'http\x3a\x2f\x2ftenant\x2da.localhost\x3a8500'`,
+      String.raw`a:'http\x3A\x2F\x2Ftenant\x2Da.<origin>\x2Fthemes' b:'http\x3a\x2f\x2ftenant\x2da.<origin>'`,
+    ],
+    [
+      'replaces a \\u-escaped subdomain origin',
+      String.raw`http\u003A\u002F\u002Ftenant\u002Da.localhost\u003A8500\u002Fadmin`,
+      String.raw`http\u003A\u002F\u002Ftenant\u002Da.<origin>\u002Fadmin`,
+    ],
+    [
+      'replaces escaped 127.0.0.1 and localhost origins without a subdomain',
+      String.raw`'http\x3A\x2F\x2F127.0.0.1\x3A8500\x2F' 'http\x3A\x2F\x2Flocalhost\x3A8100'`,
+      String.raw`'http\x3A\x2F\x2F<origin>\x2F' 'http\x3A\x2F\x2F<origin>'`,
+    ],
+    [
+      'replaces an escaped origin after a network-path //',
+      String.raw`\x27\x2F\x2Flocalhost\x3A8100\x2Fx\x27`,
+      String.raw`\x27\x2F\x2F<origin>\x2Fx\x27`,
+    ],
+    [
+      'replaces an escaped origin after \\/\\/ and after mixed slash escapes',
+      String.raw`'http:\/\/tenant\x2Da.localhost\x3A8500\/x' '\/\u002Flocalhost\x3A8100'`,
+      String.raw`'http:\/\/tenant\x2Da.<origin>\/x' '\/\u002F<origin>'`,
+    ],
+    [
+      'keeps escaped hosts on other or longer ports, inside a longer host, or under an IP alias',
+      String.raw`//localhost\x3A9999 //localhost\x3A85001 //x\x2Dlocalhost\x3A8500 //localhost\x3A8500\x2Dx //x.127.0.0.1\x3A8500`,
+      String.raw`//localhost\x3A9999 //localhost\x3A85001 //x\x2Dlocalhost\x3A8500 //localhost\x3A8500\x2Dx //x.127.0.0.1\x3A8500`,
+    ],
+    [
+      'keeps an escaped host:port in the path of an escaped URL',
+      String.raw`http\x3A\x2F\x2Ftenant\x2Da.localhost\x3A8100\x2Fassets\x2Flocalhost\x3A8500`,
+      String.raw`http\x3A\x2F\x2Ftenant\x2Da.<origin>\x2Fassets\x2Flocalhost\x3A8500`,
+    ],
+    [
+      'keeps an escaped host:port after a plain or escaped underscore',
+      String.raw`http\x3A\x2F\x2Fnot_localhost\x3A8100 http\x3A\x2F\x2Fnot\x5Flocalhost\x3A8100`,
+      String.raw`http\x3A\x2F\x2Fnot_localhost\x3A8100 http\x3A\x2F\x2Fnot\x5Flocalhost\x3A8100`,
+    ],
+    [
+      'keeps an escaped host:port with no authority // before it',
+      String.raw`\x27localhost\x3A8100\x27`,
+      String.raw`\x27localhost\x3A8100\x27`,
+    ],
     ['keeps an unparseable URL in prose', 'go http://[bad now', 'go http://[bad now'],
     ['keeps the empty string', '', ''],
   ])('%s', (_label, text, expected) => {

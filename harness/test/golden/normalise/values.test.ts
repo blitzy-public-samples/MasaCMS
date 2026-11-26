@@ -64,10 +64,15 @@ interface TimestampSample {
   readonly within?: readonly [string, string];
 }
 
+interface GoldenSet {
+  steps: { name: string; normalised: { body: string } }[];
+}
+
 const FIXTURE_TEXT = readFileSync(
   fileURLToPath(new URL('../../fixtures/http/envelope-success.json', import.meta.url)),
   'utf8',
 );
+const GS_PE_05_SET = fileURLToPath(new URL('../../../golden/sets/GS-PE-05.json', import.meta.url));
 const LEGACY_ORIGIN = 'http://127.0.0.1:8500';
 const GATEWAY_ORIGIN = 'http://127.0.0.1:8100';
 const LEGACY_TOKEN = 'FIXTURE-TOKEN-1';
@@ -437,6 +442,24 @@ describe('legacy and gateway parity', () => {
       normaliseValue(legacy, createIdOrdinals(), rules),
     );
   });
+
+  it.each([22200, 26300])(
+    'normalises the committed GS-PE-05 advanced-search body, its escaped origins on gateway port %i, to itself',
+    (port) => {
+      const set = JSON.parse(readFileSync(GS_PE_05_SET, 'utf8')) as GoldenSet;
+      const step = at(set.steps, 0);
+      expect(step.name).toBe('advanced-search');
+      const { body } = step.normalised;
+      const escaped = String.raw`tenant\x2Da.<origin>`;
+      expect(body.split(escaped)).toHaveLength(9);
+      const replayed = body.replaceAll(escaped, String.raw`tenant\x2Da.localhost\x3A${port}`);
+      const portRules = loadRules(undefined, {
+        LEGACY_ORIGIN: `http://localhost:${port + 80}`,
+        OPT2_GATEWAY_URL: `http://127.0.0.1:${port}`,
+      });
+      expect(normaliseText(replayed, createIdOrdinals(), portRules)).toBe(body);
+    },
+  );
 });
 
 describe('normaliseText', () => {
