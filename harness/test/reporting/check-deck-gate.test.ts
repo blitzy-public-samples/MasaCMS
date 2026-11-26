@@ -543,7 +543,7 @@ const DELIVERY_CASES: Case[] = [
   },
   {
     name: 'reports a required class no inline rule selects as one theme-class finding',
-    html: edit(DECK, '.kpi-label {', '.kpi-labelled {'),
+    html: edit(DECK, STYLE_BLOCK, STYLE_BLOCK.replaceAll('.kpi-label', '.kpi-labelled')),
     expected: [{ check: 'theme-class', detail: 'no inline CSS rule selects .kpi-label' }],
   },
   {

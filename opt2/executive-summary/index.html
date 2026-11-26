@@ -88,7 +88,11 @@
     .eyebrow .sha { text-transform: none; }
     .title-layout { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 80px; }
     .title-layout .subtitle { font-family: var(--ff-display); font-size: 44px; font-weight: 500; margin-bottom: 36px; }
-    .title-layout .audience { font-size: 28px; opacity: 0.88; margin: 0; }
+    .title-layout .audience { font-size: 28px; margin: 0; }
+    /* Dark backing: the gradient's light stop gives teal and white text under 4.5:1. */
+    .slide-title .eyebrow, .title-layout .audience {
+      width: fit-content; padding: 8px 22px; border-radius: 999px; background: var(--blitzy-primary-dark);
+    }
 
     .hero-icon { display: block; width: 160px; height: 160px; color: var(--blitzy-accent-teal); stroke-width: 1.5; }
     .slide-title .hero-icon { width: 260px; height: 260px; color: var(--blitzy-text-invert); stroke-width: 1.25; }
@@ -186,6 +190,59 @@
     .chip svg, .chip i { width: 28px; height: 28px; color: var(--blitzy-primary); }
     .split { display: grid; grid-template-columns: 1fr 1.25fr; gap: 40px; align-items: start; }
     .flow-detail { display: grid; grid-template-columns: 560px 1fr; gap: 48px; align-items: center; margin-top: 32px; }
+
+    /* Scroll view (below scrollActivationWidth): unscaled screen-tall pages in reading sizes; tall pages scroll within, wide tables and diagrams sideways. */
+    .reveal-viewport.reveal-scroll .scroll-page section {
+      width: 100% !important; height: 100% !important; top: 0 !important; left: 0 !important; transform: none !important;
+      display: flex !important; flex-direction: column; justify-content: safe center; padding: 24px 20px; overflow-y: auto; overflow-wrap: break-word;
+    }
+    .reveal-scroll .scroll-page section > * { flex-shrink: 0; }
+    .reveal-scroll .reveal { font-size: 17px; }
+    .reveal-scroll .reveal h1 { font-size: 34px; }
+    .reveal-scroll .reveal h2 { font-size: 26px; margin-bottom: 16px; }
+    .reveal-scroll .reveal .slide-divider h2 { font-size: 30px; }
+    .reveal-scroll .reveal h3 { font-size: 18px; margin-bottom: 8px; }
+    .reveal-scroll .reveal p { margin-bottom: 12px; }
+    .reveal-scroll .reveal li { margin-bottom: 8px; }
+    .reveal-scroll .reveal .eyebrow { font-size: 12px; letter-spacing: 0.1em; margin-bottom: 12px; }
+    .reveal-scroll .eyebrow .sha { letter-spacing: 0; }
+    .reveal-scroll .title-layout { grid-template-columns: minmax(0, 1fr); gap: 24px; }
+    .reveal-scroll .title-layout .subtitle { font-size: 21px; margin-bottom: 16px; }
+    .reveal-scroll .title-layout .audience { font-size: 16px; }
+    .reveal-scroll .hero-icon { width: 72px; height: 72px; }
+    .reveal-scroll .slide-title .hero-icon { width: 96px; height: 96px; }
+    .reveal-scroll .slide-divider .hero-icon { margin-bottom: 20px; }
+    .reveal-scroll .kpi-grid { grid-template-columns: repeat(auto-fit, minmax(max(140px, 30%), 1fr)); gap: 12px; }
+    .reveal-scroll .kpi-card { gap: 6px; padding: 14px 16px; border-radius: 14px; }
+    .reveal-scroll .kpi-icon { width: 28px; height: 28px; }
+    .reveal-scroll .kpi-value { font-size: 28px; }
+    .reveal-scroll .kpi-label, .reveal-scroll .reveal .caption, .reveal-scroll .icon-row p { font-size: 15px; }
+    .reveal-scroll .kpi-note { font-size: 13px; }
+    .reveal-scroll .reveal .footnote { font-size: 14px; }
+    .reveal-scroll .reveal :is(.footnote, .caption) { margin-top: 16px; }
+    .reveal-scroll .closing-body { height: auto; }
+    .reveal-scroll .slide-closing ul { margin-bottom: 24px; }
+    .reveal-scroll .slide-closing .accent-bar { right: 0; border-radius: 0; }
+    .reveal-scroll .brand-lockup { flex-wrap: wrap; gap: 12px; }
+    .reveal-scroll .brand-lockup .brand-mark { width: 32px; height: 32px; }
+    .reveal-scroll .brand-lockup .brand-word { font-size: 28px; }
+    .reveal-scroll .brand-lockup .brand-desc { font-size: 12px; padding-left: 12px; }
+    .reveal-scroll .icon-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: 12px; margin: 4px 0 16px; }
+    .reveal-scroll .icon-row > div { padding: 16px; border-radius: 14px; }
+    .reveal-scroll .icon-row svg { width: 36px; height: 36px; margin-bottom: 8px; }
+    .reveal-scroll .icon-row h3 { font-size: 18px; margin-bottom: 6px; }
+    .reveal-scroll .mermaid-container { display: block; overflow-x: auto; max-height: none; padding: 12px; border-radius: 14px; }
+    .reveal-scroll .mermaid-container svg { width: auto; max-width: none !important; max-height: none; }
+    .reveal-scroll .deck-table { display: block; overflow-x: auto; font-size: 14px; }
+    .reveal-scroll .deck-table :is(th, td) { min-width: 8em; padding: 8px 10px; }
+    .reveal-scroll .pill, .reveal-scroll .reveal code { font-size: 13px; }
+    .reveal-scroll .chip-row { gap: 8px; margin-top: 16px; font-size: 14px; }
+    .reveal-scroll .chip { gap: 6px; padding: 4px 12px; }
+    .reveal-scroll .chip svg { width: 18px; height: 18px; }
+    .reveal-scroll .split, .reveal-scroll .flow-detail { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+    .reveal-scroll .flow-detail { margin-top: 16px; }
+    /* Touch targets of at least 44 px where reveal.js shows its controls. */
+    @media (pointer: coarse) { .reveal .controls { font-size: 12.5px; } }
   </style>
 </head>
 <body>
@@ -366,7 +423,7 @@ flowchart LR
             <tr><td><span class="pill pill-pending">Withheld</span></td><td>Awaits your decision; legacy still serves it</td><td class="count" data-source="opt2/reports/parity.json#summary.withheld">1</td><td>GS-ID-09, session continuity across the seam</td></tr>
           </tbody>
         </table>
-        <p class="caption">Every moved route replays outputs captured from legacy.</p>
+        <p class="caption">Passing scenarios match legacy on <span data-source="harness/golden/catalogue.yaml#scenarios.covers">11</span> of the <span data-source="gateway/cutover/versions/v0002.json#entries">74</span> routes moved at cut-over; one more is tested only by withheld GS-ID-09. The other <span data-source="harness/golden/relinquished-covers.json#relinquished.uncovered-target">62</span> had only withheld or halted scenarios, since removed, and are recorded as accepted coverage gaps.</p>
       </section>
 
       <section class="slide-divider" data-background-color="#2D1C77">
@@ -533,28 +590,37 @@ flowchart TB
         secondaryColor: '#F4EFF6'
       },
       // SVG labels: HTML labels are measured with getBoundingClientRect, which reveal.js's canvas scaling shrinks.
+      // Natural-size width and height attributes: the theme fits diagrams to the slide and keeps them full size in scroll view.
       htmlLabels: false,
-      flowchart: { htmlLabels: false }
+      flowchart: { htmlLabels: false, useMaxWidth: false }
     });
 
-    /** Renders the visible slide's Mermaid diagrams and Lucide icons, then re-centres it outside scroll view, whose layout() re-fires slidechanged; diagrams render only when visible to get real sizes. */
+    /** Renders the visible slide's Mermaid diagrams and Lucide icons, then re-centres it outside scroll view, whose layout() re-fires slidechanged; diagrams render only when visible to get real sizes. Scroll view never writes the URL, so it is pointed at the slide here in reveal.js's hash format. */
     function renderVisuals(slide) {
       const rendered = mermaid.run({ nodes: slide.querySelectorAll('pre.mermaid:not([data-processed])') }).then(() => { if (!Reveal.isScrollView()) Reveal.layout(); });
       lucide.createIcons();
+      const path = Reveal.getSlidePath(slide), hash = path === '/' ? '' : `#${path}`;
+      if (Reveal.isScrollView() && location.hash !== hash) history.replaceState(null, '', hash || location.pathname + location.search);
       return rendered;
     }
 
     Reveal.on('ready', event => renderVisuals(event.currentSlide));
     Reveal.on('slidechanged', event => renderVisuals(event.currentSlide));
 
-    // reveal.js 5.1.0 scroll view lands short of later slides, sends End to slide -1, and replaces a linked hash with slide 0 or its stored scroll position, so slide changes there scroll here.
-    let openingSlide = performance.getEntriesByType('navigation')[0]?.type === 'navigate' ? /^#\/?(\d+)/.exec(location.hash)?.[1] : undefined;
+    // Leaving scroll view restores the slide HTML from before it opened without firing slidechanged; redraw after reveal.js's resize handler has run.
+    window.addEventListener('resize', () => setTimeout(() => {
+      const slide = Reveal.getCurrentSlide();
+      if (!Reveal.isScrollView() && (slide.querySelector('pre.mermaid:not([data-processed])') || document.querySelector('.reveal i[data-lucide]'))) renderVisuals(slide);
+    }));
+
+    // reveal.js 5.1.0 scroll view lands short of later slides, sends End to slide -1, and replaces the loaded hash with slide 0, so slide changes there scroll here; its stored scroll position is cleared, as it would otherwise override the target.
+    let openingSlide = /^#\/?(\d+)/.exec(location.hash)?.[1];
     Reveal.on('beforeslidechange', event => {
       const target = openingSlide === undefined ? event.indexh : Number(openingSlide);
       const pages = document.querySelectorAll('.reveal .scroll-page');
       const page = Reveal.isScrollView() && pages[target < 0 ? pages.length - 1 : target];
       if (page) {
-        if (openingSlide !== undefined) sessionStorage.removeItem('reveal-scroll-top');
+        sessionStorage.removeItem('reveal-scroll-top');
         event.preventDefault();
         page.scrollIntoView();
       }
@@ -566,7 +632,8 @@ flowchart TB
       transition: 'slide',
       controlsTutorial: false,
       width: 1920,
-      height: 1080
+      height: 1080,
+      scrollActivationWidth: 1024
     });
   </script>
 </body>
