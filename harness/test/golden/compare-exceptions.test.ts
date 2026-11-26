@@ -1,0 +1,385 @@
+// Exceptions entries excuse only the differences their selectors describe.
+import { readFileSync } from 'node:fs';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { LEGACY_ERROR_PAGE_HTML, LEGACY_HTML_CONTENT_TYPE, LegacyFaultError, legacyDebugPageHtml } from '@opt2/platform/legacy-compat';
+import type { GoldenSet, GoldenStep } from '../../src/golden/capture.js';
+import { loadCatalogue, scenarioById, type Scenario } from '../../src/golden/catalogue.js';
+import {
+  classifyScenario,
+  exceptionEntries,
+  isExcepting,
+  loadExceptionsList,
+  selectorMatches,
+  type ParityResult,
+  type ScenarioVerdict,
+} from '../../src/golden/compare.js';
+import type { DifferenceSelector, ExceptionEntry } from '../../src/golden/errors.js';
+import { createNormaliseState, normaliseBody } from '../../src/golden/normalise/index.js';
+import type { Difference } from '../../src/golden/normalise/masks.js';
+import type { NormalisedTable } from '../../src/golden/normalise/rows.js';
+import { loadRules, type NormaliseRules } from '../../src/golden/normalise/rules.js';
+import type { ReplayOutput } from '../../src/golden/replay.js';
+import { pinnedSha } from '../../src/lib/pin.js';
+
+const CATALOGUE_FIXTURE = fileURLToPath(new URL('../fixtures/golden/catalogue.valid.yaml', import.meta.url));
+const SHA = pinnedSha();
+const ROUTE_KEY = 'api:content.findone';
+const STATUS_SELECTOR: DifferenceSelector = { step: 'findone', path: 'status', kind: ['status'], actual: 500 };
+const DECISIONS = { actionVariants: [], tables: [] };
+
+let rules: NormaliseRules;
+/** `GS-CO-75`, comparing stored rows as well. */
+let scenario: Scenario;
+
+beforeAll(async () => {
+  const catalogue = await loadCatalogue(CATALOGUE_FIXTURE);
+  rules = loadRules(undefined, { PORT: '8500' });
+  const co05 = scenarioById(catalogue, 'GS-CO-75');
+  scenario = { ...co05, compare: [...co05.compare, 'rows'] };
+});
+
+/** What the replay changes against a golden `findone` answering 200 with no stored rows. */
+interface Change {
+  status?: number;
+  /** Golden and replayed normalised body. */
+  body?: [unknown, unknown];
+  /** Units the replay stores one row in. */
+  rows?: string[];
+}
+
+function table(unit: string): NormalisedTable {
+  const entries = [{ encoding: `["${unit}"]`, count: 1 }];
+  return { unit, legacyTable: unit, columns: [], entries, checksum: '0'.repeat(64) };
+}
+
+/** Classifies the replay of `change` against its golden set under `exceptions`. */
+function classify(change: Change, exceptions: ExceptionEntry[]): ScenarioVerdict {
+  const [goldenBody, replayBody] = change.body ?? [undefined, undefined];
+  const golden: GoldenSet = {
+    sourceSha: SHA,
+    scenarioId: scenario.id,
+    capturedAt: '2026-01-01T00:00:00.000Z',
+    origin: 'legacy',
+    tableVersion: null,
+    fixtures: { available: true, reason: null },
+    steps: [
+      {
+        name: 'findone',
+        index: 0,
+        routeKey: ROUTE_KEY,
+        request: { method: 'GET', url: '/_api/json/v1/tenant-a/content/1', headers: {}, body: { kind: 'none' } },
+        response: { status: 200, headers: {}, body: '', rawSha256: '0'.repeat(64) },
+        normalised: { name: 'findone', index: 0, routeKey: ROUTE_KEY, status: 200, body: goldenBody, maskedPaths: {} },
+      },
+    ],
+    sideEffects: { mail: [], rows: {}, files: [] },
+  };
+  const steps = structuredClone(golden.steps);
+  for (const step of steps) {
+    step.response.status = change.status ?? 200;
+    step.normalised.status = change.status ?? 200;
+    step.normalised.body = replayBody;
+  }
+  const replay: ReplayOutput = {
+    sourceSha: SHA,
+    scenarioId: scenario.id,
+    replayedAt: '2026-01-01T00:00:01.000Z',
+    origin: 'gateway',
+    tableVersion: 'v0002',
+    steps,
+    sideEffects: {
+      ...structuredClone(golden.sideEffects),
+      rows: Object.fromEntries((change.rows ?? []).map((unit) => [unit, table(unit)])),
+    },
+    halted: [],
+  };
+  return classifyScenario(golden, replay, { scenario, exceptions, rules, decisionList: DECISIONS });
+}
+
+function entry(matches: DifferenceSelector[] | undefined, over: Partial<ExceptionEntry> = {}): ExceptionEntry {
+  return {
+    id: 'EX-CO-05',
+    scenario: 'GS-CO-75',
+    routeKey: ROUTE_KEY,
+    difference: 'status',
+    ...(matches === undefined ? {} : { matches }),
+    decision: 'preserve',
+    reason: 'legacy answers 200',
+    status: 'open',
+    evidence: { golden: 'harness/golden/sets/GS-CO-75.json', replay: 'opt2/reports/parity.json#GS-CO-75' },
+    sourceSha: SHA,
+    ...over,
+  };
+}
+
+/** Each difference's path and the entry excusing it, in report order. */
+function excuses(verdict: ScenarioVerdict): [string, string | undefined][] {
+  return verdict.differences.map((difference) => [difference.path, difference.exceptionId]);
+}
+
+describe('exceptions entry selectors', () => {
+  it('excuses the declared difference and fails an unrelated one on the same step', () => {
+    const verdict = classify({ status: 500, body: [{ title: 'a' }, { title: 'b' }] }, [entry([STATUS_SELECTOR])]);
+    expect(verdict).toMatchObject({ result: 'fail', reason: '1 unlisted difference', exceptionId: 'EX-CO-05' });
+    expect(excuses(verdict)).toStrictEqual([
+      ['body.title', undefined],
+      ['status', 'EX-CO-05'],
+    ]);
+  });
+
+  it('fails a side-effect difference under an entry selecting only a step difference', () => {
+    const verdict = classify({ status: 500, rows: ['tusers'] }, [entry([STATUS_SELECTOR])]);
+    expect(verdict).toMatchObject({ result: 'fail', reason: '1 unlisted difference' });
+    expect(excuses(verdict)).toStrictEqual([
+      ['status', 'EX-CO-05'],
+      ['sideEffects.rows.tusers', undefined],
+    ]);
+  });
+
+  it.each<[string, ParityResult, string[], [string, string | undefined][]]>([
+    ['its own unit', 'excepted', ['tusers'], [['sideEffects.rows.tusers', 'EX-CO-05']]],
+    [
+      'its own and another unit',
+      'fail',
+      ['tusers', 'tusers_history'],
+      [
+        ['sideEffects.rows.tusers', 'EX-CO-05'],
+        ['sideEffects.rows.tusers_history', undefined],
+      ],
+    ],
+  ])('under a stored-row selector an extra row in %s is %s', (_title, result, rows, expected) => {
+    const selector: DifferenceSelector = { step: 'sideEffects', path: 'sideEffects.rows.tusers', kind: ['extra'] };
+    const verdict = classify({ rows }, [entry([selector])]);
+    expect(verdict.result).toBe(result);
+    expect(excuses(verdict)).toStrictEqual(expected);
+  });
+
+  it.each<[string, Partial<ExceptionEntry>]>([
+    ['an open preserve entry', { decision: 'preserve', status: 'open' }],
+    ['an accepted entry', { decision: 'fix', status: 'accepted' }],
+  ])('%s without selectors excuses nothing', (_title, over) => {
+    const verdict = classify({ status: 500 }, [entry(undefined, over)]);
+    expect(verdict).toMatchObject({ result: 'fail', exceptionId: null });
+    expect(excuses(verdict)).toStrictEqual([['status', undefined]]);
+  });
+
+  it('takes each difference from the entry whose selector describes it', () => {
+    const exceptions = [
+      entry([STATUS_SELECTOR], { id: 'EX-CO-05-STATUS' }),
+      entry([{ step: 'findone', path: 'body.title' }], { id: 'EX-CO-05-BODY' }),
+    ];
+    const verdict = classify({ status: 500, body: [{ title: 'a' }, { title: 'b' }] }, exceptions);
+    expect(verdict).toMatchObject({ result: 'excepted', exceptionId: 'EX-CO-05-BODY' });
+    expect(excuses(verdict)).toStrictEqual([
+      ['body.title', 'EX-CO-05-BODY'],
+      ['status', 'EX-CO-05-STATUS'],
+    ]);
+  });
+
+  it.each<[string, ParityResult, [unknown, unknown], string, string]>([
+    ['its own path', 'excepted', [{ title: 'a' }, { title: 'b' }], 'body.title', 'body.title'],
+    ['a child key', 'excepted', [{ title: { x: 1 } }, { title: { x: 2 } }], 'body.title', 'body.title.x'],
+    ['an array element', 'excepted', [{ title: ['a'] }, { title: ['b'] }], 'body.title', 'body.title[0]'],
+    ['a sibling sharing its prefix', 'fail', [{ titles: 'a' }, { titles: 'b' }], 'body.title', 'body.titles'],
+    ['its parent', 'fail', [{ title: 'a' }, { title: 'b' }], 'body.title.x', 'body.title'],
+  ])('under a path selector a difference at %s is %s', (_title, result, body, selectorPath, differencePath) => {
+    const verdict = classify({ body }, [entry([{ step: 'findone', path: selectorPath }])]);
+    expect(verdict.result).toBe(result);
+    expect(verdict.differences.map((difference) => difference.path)).toStrictEqual([differencePath]);
+  });
+
+  it.each<[string, ParityResult, Partial<DifferenceSelector>]>([
+    ['a listed kind', 'excepted', { kind: ['changed', 'status'] }],
+    ['an unlisted kind', 'fail', { kind: ['changed'] }],
+    ['the golden value', 'excepted', { expected: 200 }],
+    ['another golden value', 'fail', { expected: 201 }],
+    ['the replayed value', 'excepted', { actual: 500 }],
+    ['another replayed value', 'fail', { actual: 503 }],
+    ['both values', 'excepted', { expected: 200, actual: 500 }],
+    ['another step', 'fail', { step: 'list' }],
+  ])('a status difference under a selector naming %s is %s', (_title, result, over) => {
+    const verdict = classify({ status: 500 }, [entry([{ step: 'findone', path: 'status', ...over }])]);
+    expect(verdict.result).toBe(result);
+  });
+
+  it.each<[string, ParityResult, unknown, unknown]>([
+    ['a subset of an object', 'excepted', { name: 'x', id: '1' }, { name: 'x' }],
+    ['another value of a key', 'fail', { name: 'x' }, { name: 'y' }],
+    ['a key the object lacks', 'fail', { name: 'x' }, { name: 'x', id: '1' }],
+    ['the same array', 'excepted', ['a', 'b'], ['a', 'b']],
+    ['a shorter array', 'fail', ['a', 'b'], ['a']],
+    ['array elements as subsets', 'excepted', [{ name: 'x', id: '1' }], [{ name: 'x' }]],
+    ['an object for a string', 'fail', 'x', { name: 'x' }],
+    ['a string for an object', 'fail', { name: 'x' }, 'x'],
+    ['an object for an array', 'fail', ['a'], { 0: 'a' }],
+  ])('an extra body matched against %s is %s', (_title, result, replayed, actual) => {
+    const selector: DifferenceSelector = { step: 'findone', path: 'body', kind: ['extra'], actual };
+    expect(classify({ body: [undefined, replayed] }, [entry([selector])]).result).toBe(result);
+  });
+});
+
+describe('exceptions list selectors', () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(path.join(os.tmpdir(), 'compare-exceptions-'));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it.each<[string, unknown]>([
+    ['an empty selector list', []],
+    ['an empty path', [{ step: 'findone', path: '' }]],
+    ['an empty step', [{ step: '', path: 'status' }]],
+    ['an empty kind list', [{ step: 'findone', path: 'status', kind: [] }]],
+    ['an unknown kind', [{ step: 'findone', path: 'status', kind: ['moved'] }]],
+    ['an unknown selector field', [{ step: 'findone', path: 'status', value: 500 }]],
+  ])('rejects an entry with %s', async (_title, matches) => {
+    const file = path.join(dir, 'exceptions-list.json');
+    await writeFile(file, JSON.stringify({ entries: [{ ...entry(undefined), matches }] }), 'utf8');
+    await expect(loadExceptionsList(file)).rejects.toThrow(/does not match its schema/);
+  });
+
+  it('loads the committed list with EX-ROSTER-POOLMOVE halted, so it excuses no difference', async () => {
+    const entries = exceptionEntries(await loadExceptionsList());
+    const poolMove = entries.find((candidate) => candidate.id === 'EX-ROSTER-POOLMOVE');
+    expect(poolMove).toMatchObject({ scenario: 'GS-PE-02', decision: 'preserve', status: 'halted' });
+    expect(poolMove?.matches).toBeUndefined();
+    expect(poolMove === undefined ? undefined : isExcepting(poolMove)).toBe(false);
+  });
+});
+
+describe("GS-PUB-04's rate-ajax step on legacy's debug page, under the committed list", () => {
+  const RATE_AJAX = 'rate-ajax';
+  const SAVE_RATE = 'cfm:/core/modules/v1/rater/ajax/saverate.cfm';
+  const CONTENT_ID_FAULT = new LegacyFaultError('Element CONTENTID is undefined in FORM.');
+  // Legacy's debugging-on onError page for the rate-ajax GET, trimmed to its style and errorBox headings.
+  const DEBUG_PAGE = readFileSync(new URL('../fixtures/golden/legacy-debug-page-saverate.html', import.meta.url), 'utf8');
+  // The fault's text holds nothing esapiEncode('html') changes.
+  const TARGET_PAGE = legacyDebugPageHtml(CONTENT_ID_FAULT, (text) => text);
+
+  let pub04: Scenario;
+  let committed: ExceptionEntry[];
+
+  beforeAll(async () => {
+    pub04 = scenarioById(await loadCatalogue(), 'GS-PUB-04');
+    committed = exceptionEntries(await loadExceptionsList());
+  });
+
+  /** The rate-ajax step answering `html` at `status`, normalised as capture and replay normalise an HTML step. */
+  function rateAjax(html: string, status: number): GoldenStep {
+    const { domModel, maskedPaths } = normaliseBody(
+      LEGACY_HTML_CONTENT_TYPE,
+      html,
+      { state: createNormaliseState(), rules, scenario: pub04 },
+      SAVE_RATE,
+    );
+    return {
+      name: RATE_AJAX,
+      index: 1,
+      routeKey: SAVE_RATE,
+      request: { method: 'GET', url: '/core/modules/v1/rater/ajax/saveRate.cfm?rate=5', headers: {}, body: { kind: 'none' } },
+      response: { status, headers: {}, body: html, rawSha256: '0'.repeat(64) },
+      normalised: { name: RATE_AJAX, index: 1, routeKey: SAVE_RATE, status, domModel, maskedPaths },
+    };
+  }
+
+  /** Classifies a replay answering `replayed` against a golden set answering `captured`, under the committed list. */
+  function classifyPub04(captured: [string, number], replayed: [string, number]): ScenarioVerdict {
+    const sideEffects = { mail: [], rows: {}, files: [] };
+    const golden: GoldenSet = {
+      sourceSha: SHA,
+      scenarioId: pub04.id,
+      capturedAt: '2026-01-01T00:00:00.000Z',
+      origin: 'legacy',
+      tableVersion: null,
+      fixtures: { available: true, reason: null },
+      steps: [rateAjax(...captured)],
+      sideEffects,
+    };
+    const replay: ReplayOutput = {
+      sourceSha: SHA,
+      scenarioId: pub04.id,
+      replayedAt: '2026-01-01T00:00:01.000Z',
+      origin: 'gateway',
+      tableVersion: pub04.tableVersion,
+      steps: [rateAjax(...replayed)],
+      sideEffects,
+      halted: [],
+    };
+    return classifyScenario(golden, replay, { scenario: pub04, exceptions: committed, rules, decisionList: DECISIONS });
+  }
+
+  it("passes the platform's debug page of the fault against legacy's, with no difference", () => {
+    const verdict = classifyPub04([DEBUG_PAGE, 500], [TARGET_PAGE, 500]);
+    expect(verdict).toMatchObject({ result: 'pass', exceptionId: null });
+    expect(verdict.differences).toStrictEqual([]);
+  });
+
+  it.each<[string, [string, number], [string, number], string[]]>([
+    [
+      'error.html in place of the debug page, which no entry excuses',
+      [DEBUG_PAGE, 500],
+      [LEGACY_ERROR_PAGE_HTML, 500],
+      ['domModel.headings[0].text', 'domModel.headings[1]', 'domModel.headings[2]', 'domModel.title'],
+    ],
+    ['the fail-closed 503 in place of the 500', [DEBUG_PAGE, 500], [TARGET_PAGE, 503], ['status']],
+    [
+      "the debug page of another field's fault",
+      [DEBUG_PAGE.replace('Element CONTENTID is undefined in FORM.', 'Element RATE is undefined in FORM.'), 500],
+      [TARGET_PAGE, 500],
+      ['domModel.headings[1].text'],
+    ],
+  ])('fails %s', (_title, captured, replayed, unexcused) => {
+    const verdict = classifyPub04(captured, replayed);
+    expect(verdict).toMatchObject({ result: 'fail' });
+    expect(excuses(verdict)).toStrictEqual(unexcused.map((path) => [path, undefined]));
+  });
+});
+
+describe("GS-ID-09's adoption cookies under the committed list", () => {
+  /** A cookie the gateway re-emits at adoption, as the comparison reads it. */
+  const reissued = (name: string, persistence: string) => ({
+    hop: 0,
+    httpOnly: true,
+    name,
+    path: '/',
+    persistence,
+    rotation: 'changed',
+    secure: false,
+    value: '<token>',
+  });
+  /** An `extra` cookie of `step`, which legacy's answer lacks. */
+  const extra = (step: string, index: number, actual: unknown): Difference => ({
+    step,
+    path: `auth.cookies[${String(index)}]`,
+    kind: 'extra',
+    expected: undefined,
+    actual,
+    classification: 'difference',
+  });
+
+  let adoption: ExceptionEntry | undefined;
+
+  beforeAll(async () => {
+    adoption = exceptionEntries(await loadExceptionsList()).find((candidate) => candidate.id === 'EX-ADOPT-SESSION-COOKIES');
+  });
+
+  it.each<[string, boolean, Difference]>([
+    ['the re-emitted CFID', true, extra('adopt-continue', 0, reissued('CFID', 'persistent'))],
+    ['the re-emitted CFTOKEN', true, extra('adopt-continue', 1, reissued('CFTOKEN', 'persistent'))],
+    ['a session-only CFID, which legacy never writes', false, extra('adopt-continue', 0, reissued('CFID', 'session'))],
+    ['a JSESSIONID legacy never set', false, extra('adopt-continue', 2, reissued('JSESSIONID', 'persistent'))],
+    ['the CFID on a later step', false, extra('seam-user-form', 0, reissued('CFID', 'persistent'))],
+  ])('%s is excused: %s', (_label, excused, difference) => {
+    expect(adoption).toMatchObject({ scenario: 'GS-ID-09', routeKey: 'admin:cusers.listusers', decision: 'fix', status: 'accepted' });
+    const matches = adoption?.matches ?? [];
+    expect(adoption !== undefined && isExcepting(adoption) && matches.some((s) => selectorMatches(s, difference))).toBe(excused);
+  });
+});

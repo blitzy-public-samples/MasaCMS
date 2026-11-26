@@ -1,0 +1,450 @@
+// Unit tests for the shared migration context: injected ports stay untouched, created ports close newest first.
+import { mkdtemp, rm } from 'node:fs/promises';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import os from 'node:os';
+import path from 'node:path';
+
+import {
+  INVOCATION_HEADER,
+  createCloudRunInvocationReader,
+  hasAnyRole,
+  rolesForService,
+  verifyLocalServiceToken,
+} from '@opt2/platform/auth';
+import { serializeError, type Logger } from '@opt2/platform/logging';
+import { EnvValidationError, fixedClock, systemClock, type ServiceClient } from '@opt2/platform/service-kit';
+import type { TenantDb } from '@opt2/platform/tenancy';
+import { testSigningKeys, writeTestSecrets } from '@opt2/platform/testing';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+
+import { loadConfig } from '../../src/config.js';
+import { createMigrationContext, type CreateContextOptions } from '../../src/context.js';
+import type { GatewayClient } from '../../src/cutover/gateway-client.js';
+import { UnsupportedLegacyDatabaseError, loadMigrationEnv, type MigrationEnv } from '../../src/env.js';
+import type { BridgeClient } from '../../src/legacy/bridge.js';
+import type { LegacyDb } from '../../src/legacy/legacy-db.js';
+import type { OwnersClient } from '../../src/owners/client.js';
+import type { UnitCatalog } from '../../src/owners/units.js';
+
+/** Close calls of the ports the context creates, in call order; a name in `failing` throws after its real close. */
+const closes = vi.hoisted(() => {
+  const order: string[] = [];
+  const failing = new Set<string>();
+  const record =
+    (name: string, close: () => Promise<void>) =>
+    async (): Promise<void> => {
+      order.push(name);
+      await close();
+      if (failing.has(name)) throw new Error(`${name} close failed`);
+    };
+  return { order, failing, record };
+});
+
+vi.mock('@opt2/platform/tenancy', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@opt2/platform/tenancy')>();
+  return {
+    ...actual,
+    createPool: async (opts: Parameters<typeof actual.createPool>[0]) => {
+      const db = await actual.createPool(opts);
+      return { ...db, end: closes.record('db', () => db.end()) };
+    },
+  };
+});
+
+vi.mock('@opt2/platform/service-kit', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@opt2/platform/service-kit')>();
+  return {
+    ...actual,
+    createServiceClient: (opts: Parameters<typeof actual.createServiceClient>[0]) => {
+      const client = actual.createServiceClient(opts);
+      return { request: client.request, close: closes.record(`client:${opts.self}`, () => client.close()) };
+    },
+  };
+});
+
+/** Options of every cloud minter the context creates, in creation order. */
+const cloudMinters = vi.hoisted(() => ({ options: [] as { serviceAccount?: string }[] }));
+
+// Each cloud minter answers with the Google ID token of its requested account in the shape Cloud Run forwards.
+vi.mock('@opt2/platform/auth', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@opt2/platform/auth')>();
+  const encode = (part: object): string => Buffer.from(JSON.stringify(part)).toString('base64url');
+  return {
+    ...actual,
+    createCloudInvocationMinter: (opts: Parameters<typeof actual.createCloudInvocationMinter>[0] = {}) => {
+      cloudMinters.options.push(opts);
+      return {
+        headersFor: async (target: { name: string; url?: string }) => {
+          const now = Math.floor(Date.now() / 1000);
+          const claims = {
+            iss: 'https://accounts.google.com',
+            aud: actual.invocationAudience(target.url ?? ''),
+            email: opts.serviceAccount,
+            email_verified: true,
+            iat: now,
+            exp: now + 3600,
+          };
+          const token = `${encode({ alg: 'RS256', typ: 'JWT' })}.${encode(claims)}.${actual.SIGNATURE_REMOVED_MARKER}`;
+          return { [actual.INVOCATION_HEADER]: `Bearer ${token}` };
+        },
+      };
+    },
+  };
+});
+
+/** Options of every legacy port the context creates, in creation order. */
+const legacyPorts = vi.hoisted(() => ({ options: [] as unknown[] }));
+
+vi.mock('../../src/legacy/legacy-db.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/legacy/legacy-db.js')>();
+  return {
+    ...actual,
+    createLegacyDb: (...args: Parameters<typeof actual.createLegacyDb>) => {
+      legacyPorts.options.push(args[1]);
+      const legacy = actual.createLegacyDb(...args);
+      return { ...legacy, close: closes.record('legacy', () => legacy.close()) };
+    },
+  };
+});
+
+/** Creation order is db, migration client, legacy, then the operator client the gateway client needs. */
+const CREATED_CLOSE_ORDER = ['client:operator', 'legacy', 'client:migration', 'db'];
+
+let stateDir: string;
+
+/** Placeholder environment of the migration service; no value is a real credential. */
+function envSource(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  return {
+    PORT: '8102',
+    OPT2_SERVICE_NAME: 'migration',
+    OPT2_ENV: 'local',
+    GOOGLE_CLOUD_PROJECT: 'opt2-unit',
+    PUBSUB_EMULATOR_HOST: '127.0.0.1:8085',
+    OPT2_JWKS_URL: 'http://127.0.0.1:8111/.well-known/jwks.json',
+    OPT2_TOKEN_ISSUER: 'http://127.0.0.1:8111',
+    OPT2_TOKEN_AUDIENCE: 'opt2',
+    TZ: 'UTC',
+    OPT2_DB_AUTH: 'password',
+    PG_HOST: '127.0.0.1',
+    PG_PORT: '5432',
+    PG_DATABASE: 'masa_services_unit',
+    PG_USER: 'migration_app',
+    PG_PASSWORD: 'not-a-secret',
+    OPT2_STATE_DIR: stateDir,
+    MURA_DBHOST: '127.0.0.1',
+    MURA_DATABASE: 'muradb_unit',
+    MURA_DBUSERNAME: 'unit-reader',
+    MURA_DBPASSWORD: 'not-a-secret',
+    LEGACY_ORIGIN: 'http://localhost:8080/',
+    OPT2_BRIDGE_HMAC_KEY: 'not-a-key',
+    ...overrides,
+  };
+}
+
+const envWith = (overrides: NodeJS.ProcessEnv = {}): MigrationEnv => loadMigrationEnv(envSource(overrides));
+
+/** Overrides turning `envSource` into a cloud environment with IAM database authentication. */
+const CLOUD_OVERRIDES: NodeJS.ProcessEnv = {
+  OPT2_ENV: 'cloud',
+  PUBSUB_EMULATOR_HOST: '',
+  OPT2_DB_AUTH: 'iam',
+  CLOUD_SQL_INSTANCE: 'opt2-unit:us-central1:opt2',
+  PG_PASSWORD: '',
+};
+
+const silentLogger = (): Logger => ({}) as Logger;
+
+function fakeDb(schema = 'migration'): TenantDb {
+  return { schema, withTenant: vi.fn(), withMetadata: vi.fn(), end: vi.fn(async () => undefined) };
+}
+
+function fakeClient(): ServiceClient {
+  return { request: vi.fn(), close: vi.fn(async () => undefined) };
+}
+
+/** Every port as a recording fake, so a context built from them can do no I/O of its own. */
+function injectedPorts() {
+  return {
+    clock: fixedClock('2026-06-30T12:00:00.000Z'),
+    logger: silentLogger(),
+    db: fakeDb(),
+    legacy: { close: vi.fn(async () => undefined) } as unknown as LegacyDb,
+    bridge: { schedulerDescribe: vi.fn() } as unknown as BridgeClient,
+    catalog: { units: vi.fn(() => []) } as unknown as UnitCatalog,
+    owners: { position: vi.fn() } as unknown as OwnersClient,
+    gateway: { status: vi.fn() } as unknown as GatewayClient,
+    client: fakeClient(),
+  } satisfies CreateContextOptions;
+}
+
+/** Loopback server answering `{}` that records each request's path and invocation credential into `seen`. */
+async function probeServer(seen: { path: string; credential: string }[]): Promise<{ base: string; close: () => Promise<void> }> {
+  const server = createServer((req, res) => {
+    seen.push({ path: req.url ?? '', credential: String(req.headers[INVOCATION_HEADER]) });
+    res.writeHead(200, { 'content-type': 'application/json' }).end('{}');
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  return {
+    base: `http://127.0.0.1:${String((server.address() as AddressInfo).port)}`,
+    close: () => new Promise<void>((resolve, reject) => server.close((error) => (error === undefined ? resolve() : reject(error)))),
+  };
+}
+
+beforeAll(async () => {
+  stateDir = await mkdtemp(path.join(os.tmpdir(), 'opt2-migration-context-'));
+  await writeTestSecrets(stateDir);
+});
+
+afterAll(async () => {
+  await rm(stateDir, { recursive: true, force: true });
+});
+
+afterEach(() => {
+  closes.order.length = 0;
+  closes.failing.clear();
+  cloudMinters.options.length = 0;
+  legacyPorts.options.length = 0;
+  vi.restoreAllMocks();
+});
+
+describe('createMigrationContext', () => {
+  it('uses every injected port without calling or closing it', async () => {
+    const ports = injectedPorts();
+    const fetch = vi.spyOn(globalThis, 'fetch');
+    const ctx = await createMigrationContext({ env: envWith(), ...ports });
+
+    expect(ctx).toMatchObject({ ...ports, config: loadConfig() });
+    await ctx.close();
+
+    expect(closes.order).toEqual([]);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(ports.client.request).not.toHaveBeenCalled();
+    expect(ports.client.close).not.toHaveBeenCalled();
+    expect(ports.db.end).not.toHaveBeenCalled();
+    expect(ports.legacy.close).not.toHaveBeenCalled();
+  });
+
+  it('reads the cut-over versions and groups.json from the OPT2_CUTOVER_DIR its environment sets', async () => {
+    const cutoverDir = path.join(stateDir, 'cutover');
+    const ctx = await createMigrationContext({ env: envWith({ OPT2_CUTOVER_DIR: cutoverDir }), ...injectedPorts() });
+
+    expect(ctx.config.paths).toEqual({ ...loadConfig().paths, cutoverDir, groupsFile: path.join(cutoverDir, 'groups.json') });
+    await ctx.close();
+  });
+
+  it('memoises clientAs per caller and answers the migration caller with the context client', async () => {
+    const ports = injectedPorts();
+    const ctx = await createMigrationContext({ env: envWith(), ...ports });
+
+    const operator = ctx.clientAs('operator');
+    expect(ctx.clientAs('operator')).toBe(operator);
+    expect(operator).not.toBe(ports.client);
+    expect(ctx.clientAs('migration')).toBe(ports.client);
+    await ctx.close();
+  });
+
+  it('creates the ports options omit, with the migration schema pool, the ownership catalog and a legacy port logging through the context logger', async () => {
+    const logger = silentLogger();
+    const ctx = await createMigrationContext({ env: envWith(), logger });
+
+    expect(legacyPorts.options).toHaveLength(1);
+    expect((legacyPorts.options[0] as { logger: unknown }).logger).toBe(logger);
+    expect(ctx.db.schema).toBe('migration');
+    expect(ctx.clock).toBe(systemClock);
+    expect(ctx.catalog.units().length).toBeGreaterThan(0);
+    expect(ctx.clientAs('migration')).toBe(ctx.client);
+    await ctx.close();
+  });
+
+  it.each([
+    { failing: [], messages: [] },
+    { failing: ['legacy'], messages: ['legacy close failed'] },
+    { failing: ['legacy', 'db'], messages: ['legacy close failed', 'db close failed'] },
+  ])('closes every created port newest first with $failing failing', async ({ failing, messages }) => {
+    const ctx = await createMigrationContext({ env: envWith(), logger: silentLogger() });
+    for (const name of failing) closes.failing.add(name);
+
+    const outcome: unknown = await ctx.close().then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+
+    expect(closes.order).toEqual(CREATED_CLOSE_ORDER);
+    expect(outcome instanceof AggregateError).toBe(messages.length > 1);
+    const errors = outcome instanceof AggregateError ? outcome.errors : outcome === undefined ? [] : [outcome];
+    expect(errors.map((error: Error) => error.message)).toEqual(messages);
+  });
+
+  it('shares one close across calls and refuses new clients afterwards', async () => {
+    const ctx = await createMigrationContext({ env: envWith(), logger: silentLogger() });
+
+    const first = ctx.close();
+    expect(ctx.close()).toBe(first);
+    await first;
+
+    expect(closes.order).toEqual(CREATED_CLOSE_ORDER);
+    expect(() => ctx.clientAs('operator')).toThrow('The migration context is closed');
+  });
+
+  it.each([
+    { name: 'the legacy database is MySQL', options: () => ({ env: envWith({ MURA_DBTYPE: 'mysql' }) }), error: UnsupportedLegacyDatabaseError },
+    {
+      name: 'the injected pool is not the migration schema',
+      options: () => ({ env: envWith(), db: fakeDb('people') }),
+      error: new TypeError('The migration context needs the migration schema pool, got people'),
+    },
+    {
+      name: 'a cloud environment names no project',
+      options: () => ({ env: { ...envWith(CLOUD_OVERRIDES), GOOGLE_CLOUD_PROJECT: undefined }, db: fakeDb() }),
+      error: new Error('GOOGLE_CLOUD_PROJECT is required when OPT2_ENV=cloud'),
+    },
+  ])('rejects without opening anything when $name', async ({ options, error }) => {
+    await expect(createMigrationContext({ logger: silentLogger(), ...options() })).rejects.toThrow(error);
+    expect(closes.order).toEqual([]);
+  });
+
+  it.each<[string, (keyof MigrationEnv)[], string]>([
+    ['OPT2_DB_AUTH', ['OPT2_DB_AUTH'], 'opt2-cli: invalid environment (OPT2_DB_AUTH: is required)'],
+    ['PG_DATABASE', ['PG_DATABASE'], 'opt2-cli: invalid environment (PG_DATABASE: is required)'],
+    ['both settings', ['OPT2_DB_AUTH', 'PG_DATABASE'], 'opt2-cli: invalid environment (OPT2_DB_AUTH: is required; PG_DATABASE: is required)'],
+  ])('refuses an environment without %s before opening the pool, naming each unset setting', async (_case, unset, text) => {
+    const env = { ...envWith({ OPT2_SERVICE_NAME: 'opt2-cli' }), ...Object.fromEntries(unset.map((key) => [key, undefined])) } as MigrationEnv;
+
+    const refused: unknown = await createMigrationContext({ env, logger: silentLogger() }).catch((error: unknown) => error);
+
+    expect(refused).toBeInstanceOf(EnvValidationError);
+    expect((refused as EnvValidationError).issues).toEqual(unset.map((key) => `${key}: is required`));
+    expect(serializeError(refused).message).toBe(text);
+    expect(closes.order).toEqual([]);
+  });
+
+  it.each([
+    { failing: [], aggregate: false },
+    { failing: ['db'], aggregate: true },
+  ])('closes what it opened when a later port fails, with $failing failing to close', async ({ failing, aggregate }) => {
+    const failure = new Error('gateway port unavailable');
+    for (const name of failing) closes.failing.add(name);
+    const options: CreateContextOptions = {
+      env: envWith(),
+      logger: silentLogger(),
+      get gateway(): GatewayClient {
+        throw failure;
+      },
+    };
+
+    const outcome: unknown = await createMigrationContext(options).catch((error: unknown) => error);
+
+    expect(closes.order).toEqual(['legacy', 'client:migration', 'db']);
+    if (aggregate) expect((outcome as AggregateError).errors).toEqual([failure, new Error('db close failed')]);
+    else expect(outcome).toBe(failure);
+  });
+
+  it.each(['opt2-cli', 'migration'])(
+    'writes default log lines as service %s to stderr, leaving stdout to the command summary',
+    async (service) => {
+      const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      const stdout = vi.spyOn(process.stdout, 'write');
+      const { logger: _injected, ...ports } = injectedPorts();
+      const ctx = await createMigrationContext({ env: envWith({ LOG_LEVEL: 'debug', OPT2_SERVICE_NAME: service }), ...ports });
+
+      ctx.logger.info('migration context ready');
+
+      expect(ctx.logger.level).toBe('debug');
+      const lines = stderr.mock.calls
+        .map(([chunk]) => String(chunk))
+        .filter((chunk) => chunk.includes('"message":"migration context ready"'))
+        .map((chunk): unknown => JSON.parse(chunk));
+      expect(lines).toEqual([expect.objectContaining({ service, version: '1.0.0', env: 'local' })]);
+      expect(stdout).not.toHaveBeenCalledWith(expect.stringContaining('migration context ready'));
+      await ctx.close();
+    },
+  );
+
+  it('loads the local signing keys at the first call and retries a failed load at the next', async () => {
+    const { base, close } = await probeServer([]);
+    const emptyStateDir = await mkdtemp(path.join(os.tmpdir(), 'opt2-migration-context-nokeys-'));
+    try {
+      const env = envWith({ OPT2_GATEWAY_URL: base, OPT2_STATE_DIR: emptyStateDir });
+      const ctx = await createMigrationContext({ env, logger: silentLogger() });
+      const probe = () => ctx.client.request({ service: 'gateway', method: 'GET', path: '/probe', userToken: null });
+
+      await expect(probe()).rejects.toThrow();
+      await writeTestSecrets(emptyStateDir);
+      await expect(probe()).resolves.toMatchObject({ status: 200 });
+      await ctx.close();
+    } finally {
+      await close();
+      await rm(emptyStateDir, { recursive: true, force: true });
+    }
+  });
+
+  it("signs each caller's local service token for the callee named by the gateway and migration URLs", async () => {
+    const seen: { path: string; credential: string }[] = [];
+    const { base, close } = await probeServer(seen);
+    try {
+      const env = envWith({ OPT2_GATEWAY_URL: base, OPT2_MIGRATION_URL: base });
+      const ctx = await createMigrationContext({ env, logger: silentLogger() });
+      await ctx.client.request({ service: 'gateway', method: 'GET', path: '/as-migration', userToken: null });
+      await ctx.clientAs('operator').request({ service: 'migration', method: 'GET', path: '/as-operator', userToken: null });
+      await ctx.close();
+    } finally {
+      await close();
+    }
+
+    const { publicKey } = await testSigningKeys();
+    const verify = (credential: string, audience: string) =>
+      verifyLocalServiceToken(credential.replace(/^Bearer /, ''), { publicKey, audience });
+    expect(seen.map(({ path: requested }) => requested)).toEqual(['/as-migration', '/as-operator']);
+    await expect(verify(seen[0]?.credential ?? '', 'gateway')).resolves.toEqual({
+      name: 'migration',
+      roles: rolesForService('migration'),
+    });
+    await expect(verify(seen[1]?.credential ?? '', 'migration')).resolves.toEqual({
+      name: 'operator',
+      roles: rolesForService('operator'),
+    });
+  });
+
+  it("calls as each caller's own service account in the cloud: owner calls as migration, cut-over calls as operator", async () => {
+    const seen: { path: string; credential: string }[] = [];
+    const { base, close } = await probeServer(seen);
+    try {
+      const env = envWith({
+        ...CLOUD_OVERRIDES,
+        OPT2_GATEWAY_URL: base,
+        OPT2_SERVICE_URLS: JSON.stringify({ 'strategies-content': base }),
+      });
+      const ctx = await createMigrationContext({ env, logger: silentLogger(), db: fakeDb() });
+      await ctx.client.request({
+        service: 'strategies-content',
+        method: 'GET',
+        path: '/internal/v1/migration/position',
+        userToken: null,
+      });
+      await ctx.clientAs('operator').request({
+        service: 'gateway',
+        method: 'POST',
+        path: '/internal/v1/cutover/freeze',
+        json: { routes: [] },
+        userToken: null,
+      });
+      await ctx.close();
+    } finally {
+      await close();
+    }
+
+    const migrationAccount = 'opt2-migration@opt2-unit.iam.gserviceaccount.com';
+    const operatorAccount = 'opt2-operator@opt2-unit.iam.gserviceaccount.com';
+    expect(cloudMinters.options).toEqual([{ serviceAccount: migrationAccount }, { serviceAccount: operatorAccount }]);
+    expect(seen.map(({ path: requested }) => requested)).toEqual(['/internal/v1/migration/position', '/internal/v1/cutover/freeze']);
+    const reader = createCloudRunInvocationReader({ project: 'opt2-unit' });
+    const owner = await reader.verify(seen[0]?.credential ?? '');
+    const operator = await reader.verify(seen[1]?.credential ?? '');
+    expect(owner).toEqual({ name: 'migration', roles: rolesForService('migration'), email: migrationAccount });
+    expect(operator).toEqual({ name: 'operator', roles: rolesForService('operator'), email: operatorAccount });
+    expect(hasAnyRole(owner.roles, ['platform.migration'])).toBe(true);
+    expect(hasAnyRole(owner.roles, ['platform.operator'])).toBe(false);
+    expect(hasAnyRole(operator.roles, ['platform.operator'])).toBe(true);
+  });
+});

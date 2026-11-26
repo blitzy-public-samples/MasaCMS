@@ -1,0 +1,669 @@
+// Unit tests for the admin shell entry point: default.cfm's layout choice, shell data loading and document output.
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import * as cheerio from 'cheerio';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { Roles, moduleRole } from '@opt2/platform/auth';
+import { renderCsrfFields } from '@opt2/platform/legacy-compat';
+import { businessClock } from '@opt2/platform/testing';
+import { createCsrfRenderer } from '@/lib/csrf';
+import { resetLegacySettingsForTests } from '@/lib/env';
+import { GatewayDenialError, GatewayUnavailableError, LEGACY_VERSION_MENU_PATH } from '@/lib/gateway-client';
+import { isSafeHtml, raw, toString } from '@/lib/html';
+import { mergeFw1Context, type AdminRequest } from '@/lib/request-context';
+import { rbFor } from '@/lib/resource-bundles/rb';
+import {
+  loadShellData,
+  renderAdminDocument,
+  selectLayout,
+  serializeAdminDocument,
+  type AdminDocument,
+  type ShellData,
+  type ShellHooks,
+  type ShellView,
+} from '@/shell/document';
+import { renderDialog } from '@/shell/dialog';
+import { renderHtmlFoot } from '@/shell/html-foot';
+import { LEGACY_VERSION_MENU } from '../fixtures/gateway/version-menu';
+import { CSRF_UPDATECORE } from '../fixtures/identity/csrf';
+import { PROMPT_TALLY_NONZERO, promptCountsNonZero, promptCountsZero } from '../fixtures/strategies-content/prompts';
+import {
+  adminS2Request,
+  anonymousRequest,
+  buildTestAdminRequest,
+  editorRequest,
+  noSitesRequest,
+  unservedEditorRequest,
+} from '../helpers/admin-request';
+import { domModel } from '../helpers/dom-model';
+import { useTestEnv } from '../helpers/env';
+import {
+  LEGACY_SITE_PATHS_KEY,
+  LEGACY_SITE_PATHS_PATH,
+  fakeGatewayClient,
+  installedSitePaths,
+  routeKey,
+  type FakeCall,
+  type FakeGatewayClient,
+} from '../helpers/fake-gateway';
+
+const FIXTURES = path.resolve(import.meta.dirname, '../fixtures/shell');
+const Z = '00000000000000000000000000000000';
+const NOW = businessClock().now();
+const MSIE_UA = 'Mozilla/4.0 (compatible; MSIE 8.0; Windows NT 6.1; Trident/4.0)';
+const RB = rbFor('en_US');
+const HOOKS: ShellHooks = { secondaryMenus: {} };
+const VIEW_MARK = '<!--VIEW-->';
+
+const USER_SITES = routeKey('GET', 'programs-sites', '/v1/user-sites');
+const ISSUE_TOKENS = routeKey('POST', 'identity', '/v1/csrf/tokens');
+const USER_SITES_CALL: FakeCall = { service: 'programs-sites', method: 'GET', path: '/v1/user-sites' };
+const UPDATE_CORE_CALL: FakeCall = {
+  service: 'identity',
+  method: 'POST',
+  path: '/v1/csrf/tokens',
+  json: { contexts: ['updatecore'] },
+};
+const HEADER_PROMPTS = routeKey('GET', 'strategies-content', '/v1/sites/default/header-prompts');
+const HEADER_PROMPTS_CALL: FakeCall = {
+  service: 'strategies-content',
+  method: 'GET',
+  path: '/v1/sites/default/header-prompts',
+};
+/** Session site data of a site with Change Sets enabled. */
+const CHANGESET_SITE = { hasChangesets: true, record: { hasChangesets: 1 } } as const;
+const CHANGESETS_ROLE = moduleRole(`${Z}014`);
+const UPDATE_CORE_QUERY = renderCsrfFields(
+  { token: CSRF_UPDATECORE.csrf_token, expires: CSRF_UPDATECORE.csrf_token_expires },
+  'url',
+);
+const VERSION_MENU = routeKey('GET', 'gateway', LEGACY_VERSION_MENU_PATH);
+const VERSION_MENU_CALL: FakeCall = { service: 'gateway', method: 'GET', path: LEGACY_VERSION_MENU_PATH };
+
+/** Regions other renderers own, replaced by markers in the oracle fixtures: [marker, region start, region end]. */
+type Regions = ReadonlyArray<readonly [marker: string, start: string, end: string]>;
+
+const TEMPLATE_REGIONS: Regions = [
+  ['<!--HTML-HEAD-->', '<!-- Favicons -->', 'jquery.nice-select.min.js" type="text/javascript"></script>'],
+  ['<!--NAV-->', '<nav id="sidebar">', '</nav>'],
+  ['<!--HEADER-->', '<header id="header-navbar"', '</header>'],
+  ['<!--TEMPLATE-SCRIPTS-->', "<script>\n\t\t\t$(document).on('click'", '</script>'],
+];
+
+const COMPACT_REGIONS: Regions = [
+  ['<!--HTML-HEAD-->', '<!-- Favicons -->', 'jquery.nice-select.min.js" type="text/javascript"></script>'],
+  ['<!--COMPACT-SCRIPTS-->', '<script type="text/javascript">\n\n\t\t\tvar resizeTabPane', '</script>'],
+];
+
+const fixture = (name: string): string => readFileSync(path.join(FIXTURES, name), 'utf8');
+
+/** Markup with whitespace between tags dropped and other whitespace runs collapsed. */
+const squash = (markup: string): string => markup.replace(/>\s+</g, '><').replace(/\s+/g, ' ').trim();
+
+/** `markup` with each region present replaced by its marker. */
+const skeleton = (markup: string, regions: Regions): string =>
+  regions.reduce((page, [marker, start, end]) => {
+    const from = page.indexOf(start);
+    if (from < 0) return page;
+    const to = page.indexOf(end, from);
+    expect(to).toBeGreaterThan(from);
+    return page.slice(0, from) + marker + page.slice(to + end.length);
+  }, markup);
+
+/** One row of programs-sites' user site list, its dashboard hidden unless `extra` shows it. */
+const listed = (siteid: string, site: string | null, extra: Record<string, unknown> = {}) => ({
+  siteid,
+  site,
+  orderno: 1,
+  domain: 'localhost',
+  domainAlias: null,
+  showDashboard: 0,
+  ...extra,
+});
+
+const DEFAULT_SITES = [listed('default', 'Default')];
+
+/**
+ * An in-memory gateway answering the user's sites with `sites`, identity's Update Core token pair, no `default` prompt
+ * legacy's installed theme paths and the oracle's Version menu facts.
+ */
+function shellGateway(sites: readonly unknown[] = DEFAULT_SITES): FakeGatewayClient {
+  return fakeGatewayClient({
+    [LEGACY_SITE_PATHS_KEY]: installedSitePaths,
+    [USER_SITES]: { status: 200, body: { sites } },
+    [ISSUE_TOKENS]: { status: 200, body: { tokens: [CSRF_UPDATECORE] } },
+    [HEADER_PROMPTS]: { status: 200, body: promptCountsZero },
+    [VERSION_MENU]: { status: 200, body: LEGACY_VERSION_MENU },
+  });
+}
+
+/** The shell data of `ctx` over `gateway`, at {@link NOW}. */
+const load = (ctx: AdminRequest, gateway: FakeGatewayClient = shellGateway()): Promise<ShellData> =>
+  loadShellData(ctx, { gateway, csrf: createCsrfRenderer(gateway), rb: RB, now: NOW });
+
+/** The document of `ctx` around `view`, its shell data loaded first. */
+async function documentFor(ctx: AdminRequest, view: Partial<ShellView> = {}): Promise<AdminDocument> {
+  const doc = renderAdminDocument(ctx, { body: raw(VIEW_MARK), ...view }, HOOKS, await load(ctx));
+  for (const part of [doc.preamble, doc.head, doc.body]) expect(isSafeHtml(part)).toBe(true);
+  return doc;
+}
+
+const $of = (doc: AdminDocument) => cheerio.load(serializeAdminDocument(doc));
+
+/** `ctx` with the session site emptied, as before the set-up switched to one. */
+const withoutSessionSite = (ctx: AdminRequest): AdminRequest => ({ ...ctx, session: { ...ctx.session, siteid: '' } });
+
+/** The calls of `gateway`, without its own reads of legacy's layout values. */
+const callsBesidePaths = (gateway: FakeGatewayClient): FakeCall[] =>
+  gateway.calls.filter(({ path }) => path !== LEGACY_SITE_PATHS_PATH);
+
+/** The queries of `gateway`'s reads of legacy's layout values. */
+const legacyPathQueries = (gateway: FakeGatewayClient) =>
+  gateway.calls.filter(({ path }) => path === LEGACY_SITE_PATHS_PATH).map(({ query }) => query);
+
+let restoreEnv: () => void;
+
+beforeEach(() => {
+  for (const key of Object.keys(process.env)) if (key.startsWith('MURA_')) vi.stubEnv(key, undefined);
+  vi.stubEnv('MURA_PORT', '8080');
+  vi.stubEnv('MURA_SITEIDINURLS', 'false');
+  vi.stubEnv('MURA_INDEXFILEINURLS', 'false');
+  resetLegacySettingsForTests();
+  restoreEnv = useTestEnv();
+});
+
+afterEach(() => {
+  restoreEnv();
+  vi.unstubAllEnvs();
+  resetLegacySettingsForTests();
+});
+
+describe('selectLayout', () => {
+  it.each([
+    { compactDisplay: 'true', layout: 'compact' },
+    { compactDisplay: 'TRUE', layout: 'compact' },
+    { compactDisplay: 'True', layout: 'compact' },
+    { compactDisplay: '1', layout: 'compact' },
+    { compactDisplay: 'yes', layout: 'compact' },
+    { compactDisplay: ' yes', layout: 'compact' },
+    { compactDisplay: '1.0', layout: 'compact' },
+    { compactDisplay: '01', layout: 'compact' },
+    { compactDisplay: ' TRUE', layout: 'compact' },
+    { compactDisplay: 'TRUE ', layout: 'compact' },
+    { compactDisplay: ' True ', layout: 'compact' },
+    { compactDisplay: ' FALSE', layout: 'template' },
+    { compactDisplay: 'false', layout: 'template' },
+    { compactDisplay: ' true', layout: 'template' },
+    { compactDisplay: 'true ', layout: 'template' },
+    { compactDisplay: '0', layout: 'template' },
+    { compactDisplay: 'no', layout: 'template' },
+    { compactDisplay: '1.', layout: 'template' },
+    { compactDisplay: '', layout: 'template' },
+    { compactDisplay: undefined, layout: 'template' },
+  ])('chooses $layout for compactDisplay "$compactDisplay"', ({ compactDisplay, layout }) => {
+    const url: Record<string, string> = compactDisplay === undefined ? {} : { compactDisplay };
+    expect(selectLayout(mergeFw1Context([], url, {}))).toBe(layout);
+  });
+});
+
+describe('loadShellData', () => {
+  it.each([
+    { name: 'an anonymous request', ctx: () => anonymousRequest({ circuit: 'cLogin', item: 'main' }) },
+    { name: 'a compact request', ctx: () => adminS2Request({ circuit: 'cArch', item: 'edit', rc: { compactDisplay: 'true' } }) },
+    { name: 'a session without a site', ctx: () => withoutSessionSite(adminS2Request({ circuit: 'cUsers', item: 'list' })) },
+    { name: 'a public member', ctx: () => noSitesRequest({ s2IsPrivate: false }, { circuit: 'cEditProfile', item: 'edit' }) },
+  ])('loads no site list, prompt counts, tokens or server facts for $name', async ({ ctx }) => {
+    const gateway = shellGateway();
+    const data = await load(ctx(), gateway);
+    expect(callsBesidePaths(gateway)).toEqual([]);
+    expect(data.userSites).toEqual([]);
+    expect(data.prompts).toEqual(promptCountsZero);
+    expect(data.updateCoreCsrfQuery).toBe('');
+    expect(data.server).toBeNull();
+  });
+
+  it("lists the owner's sites for S2 users, each with its own dashboard flag, and renders the Update Core tokens", async () => {
+    const gateway = shellGateway([
+      listed('default', 'Default'),
+      listed('tenant-a', 'Tenant A', { showDashboard: 1 }),
+      listed('tenant-b', null, { showDashboard: 0 }),
+    ]);
+    const ctx = adminS2Request({ circuit: 'cUsers', item: 'list', site: { record: { showDashboard: 1 } } });
+    const data = await load(ctx, gateway);
+    expect(callsBesidePaths(gateway)).toHaveLength(4);
+    expect(callsBesidePaths(gateway)).toEqual(
+      expect.arrayContaining([USER_SITES_CALL, UPDATE_CORE_CALL, HEADER_PROMPTS_CALL, VERSION_MENU_CALL]),
+    );
+    expect(data.userSites).toEqual([
+      { siteId: 'default', site: 'Default', showDashboard: false },
+      { siteId: 'tenant-a', site: 'Tenant A', showDashboard: true },
+      { siteId: 'tenant-b', site: '', showDashboard: false },
+    ]);
+    expect(data.updateCoreCsrfQuery).toBe(UPDATE_CORE_QUERY);
+  });
+
+  it.each(['false', 'no', '0'])('renders no Update Core tokens when allowAutoUpdates is "%s"', async (value) => {
+    vi.stubEnv('MURA_ALLOWAUTOUPDATES', value);
+    resetLegacySettingsForTests();
+    const gateway = shellGateway();
+    const data = await load(adminS2Request({ circuit: 'cUsers', item: 'list' }), gateway);
+    expect(callsBesidePaths(gateway)).toHaveLength(3);
+    expect(callsBesidePaths(gateway)).toEqual(expect.arrayContaining([USER_SITES_CALL, HEADER_PROMPTS_CALL, VERSION_MENU_CALL]));
+    expect(data.updateCoreCsrfQuery).toBe('');
+  });
+
+  it("keeps the owner's name order and each site's own dashboard flag for other private users", async () => {
+    const ctx = editorRequest({ circuit: 'cArch', item: 'list', site: { record: { showDashboard: 1 } } });
+    const gateway = shellGateway([
+      listed('a', 'Alpha'),
+      listed('b', 'beta', { showDashboard: 1 }),
+      listed('default', 'Default'),
+      listed('zeta', 'Zeta'),
+    ]);
+    const data = await load(ctx, gateway);
+    expect(callsBesidePaths(gateway)).toHaveLength(3);
+    expect(callsBesidePaths(gateway)).toEqual(expect.arrayContaining([USER_SITES_CALL, HEADER_PROMPTS_CALL, VERSION_MENU_CALL]));
+    expect(data.userSites).toEqual([
+      { siteId: 'a', site: 'Alpha', showDashboard: false },
+      { siteId: 'b', site: 'beta', showDashboard: true },
+      { siteId: 'default', site: 'Default', showDashboard: false },
+      { siteId: 'zeta', site: 'Zeta', showDashboard: false },
+    ]);
+    expect(data.updateCoreCsrfQuery).toBe('');
+  });
+
+  it('lists no site for a private user the owner lists none for', async () => {
+    const gateway = shellGateway([]);
+    const data = await load(noSitesRequest({ s2IsPrivate: true }, { circuit: 'cArch', item: 'list' }), gateway);
+    expect(callsBesidePaths(gateway)).toHaveLength(2);
+    expect(callsBesidePaths(gateway)).toEqual(expect.arrayContaining([USER_SITES_CALL, VERSION_MENU_CALL]));
+    expect(data.userSites).toEqual([]);
+  });
+
+  it('rejects when programs-sites refuses the site list', async () => {
+    const gateway = shellGateway();
+    gateway.setRoute(USER_SITES, { status: 403, body: {} });
+    await expect(load(adminS2Request({ circuit: 'cUsers', item: 'list' }), gateway)).rejects.toBeInstanceOf(
+      GatewayDenialError,
+    );
+  });
+
+  it('rejects when the gateway refuses the Version menu facts', async () => {
+    const gateway = shellGateway();
+    gateway.setRoute(VERSION_MENU, { status: 403, body: {} });
+    await expect(load(adminS2Request({ circuit: 'cUsers', item: 'list' }), gateway)).rejects.toMatchObject({
+      name: 'GatewayDenialError',
+      service: 'gateway',
+      operation: 'getLegacyVersionMenu',
+    });
+  });
+
+  it('lets gateway unavailability propagate', async () => {
+    const gateway = shellGateway();
+    gateway.failWith();
+    await expect(load(adminS2Request({ circuit: 'cUsers', item: 'list' }), gateway)).rejects.toBeInstanceOf(
+      GatewayUnavailableError,
+    );
+  });
+
+  it('passes the labels and clock through and holds no plugins or export directory', async () => {
+    const data = await load(adminS2Request({ circuit: 'cUsers', item: 'list' }));
+    expect(data.rb).toBe(RB);
+    expect(data.now).toBe(NOW);
+    expect(data.sitePlugins).toEqual([]);
+    expect(data.exportLocationExists).toBe(false);
+  });
+
+  it("loads the gateway's server facts into the full layout's Version menu only", async () => {
+    const ctx = adminS2Request({ circuit: 'cArch', item: 'list' });
+    const data = await load(ctx);
+    expect(data.server).toEqual({ ...LEGACY_VERSION_MENU, javaVersion: '' });
+    const $ = $of(renderAdminDocument(ctx, { body: raw(VIEW_MARK) }, HOOKS, data));
+    expect($('ul.version a.no-link').map((_, link) => $(link).text().replace(/\s+/g, ' ').trim()).get()).toEqual([
+      'Core Version 7.6.1',
+      'App Server ColdFusion (2023,0,26,331018)',
+      'DB Server Microsoft SQL Server (Microsoft SQL Server 2022 - 16.0.4305.5)',
+      'OS Version UNIX (6.12.105+)',
+    ]);
+    expect((await load(compactEdit())).server).toBeNull();
+    expect((await load(anonymousRequest())).server).toBeNull();
+  });
+
+  it('loads the session site prompt counts into the header badges and their tally', async () => {
+    const gateway = shellGateway();
+    gateway.setRoute(HEADER_PROMPTS, { status: 200, body: promptCountsNonZero });
+    const ctx = adminS2Request({ circuit: 'cUsers', item: 'list', site: CHANGESET_SITE });
+    const data = await load(ctx, gateway);
+    expect(callsBesidePaths(gateway)).toContainEqual(HEADER_PROMPTS_CALL);
+    expect(data.prompts).toEqual(promptCountsNonZero);
+    const $ = $of(renderAdminDocument(ctx, { body: raw(VIEW_MARK) }, HOOKS, data));
+    expect($('#user-tools-selector .dropdown-toggle .badge').text()).toBe(String(PROMPT_TALLY_NONZERO));
+    expect($('.mura-user-tools .badge').map((_, badge) => $(badge).text()).get()).toEqual(['3', '2', '1', '4', '2']);
+  });
+
+  it.each([
+    { name: 'the site has no change sets', ctx: () => adminS2Request({ circuit: 'cUsers', item: 'list' }), pending: 0 },
+    {
+      name: 'the user lacks the Change Sets module',
+      ctx: () => editorRequest({ circuit: 'cArch', item: 'list', site: CHANGESET_SITE }),
+      pending: 0,
+    },
+    {
+      name: 'the user lacks the Site Manager module',
+      ctx: () =>
+        editorRequest({ circuit: 'cArch', item: 'list', site: CHANGESET_SITE, user: { roles: [Roles.systemUser, CHANGESETS_ROLE] } }),
+      pending: 0,
+    },
+    {
+      name: 'the user holds both modules on a change-set site',
+      ctx: () =>
+        editorRequest({
+          circuit: 'cArch',
+          item: 'list',
+          site: CHANGESET_SITE,
+          user: { roles: [Roles.systemUser, CHANGESETS_ROLE, moduleRole(`${Z}000`)] },
+        }),
+      pending: promptCountsNonZero.pendingChangesets,
+    },
+  ])('shows $pending pending change-set approvals when $name', async ({ ctx, pending }) => {
+    const gateway = shellGateway();
+    gateway.setRoute(HEADER_PROMPTS, { status: 200, body: promptCountsNonZero });
+    expect((await load(ctx(), gateway)).prompts).toEqual({ ...promptCountsNonZero, pendingChangesets: pending });
+  });
+
+  it('loads no prompt counts for a session site the token does not serve', async () => {
+    const gateway = shellGateway();
+    const data = await load(unservedEditorRequest({ circuit: 'cArch', item: 'list' }), gateway);
+    expect(callsBesidePaths(gateway)).toHaveLength(2);
+    expect(callsBesidePaths(gateway)).toEqual(expect.arrayContaining([USER_SITES_CALL, VERSION_MENU_CALL]));
+    expect(data.prompts).toEqual(promptCountsZero);
+  });
+
+  it('rejects when strategies-content refuses the prompt counts', async () => {
+    const gateway = shellGateway();
+    gateway.setRoute(HEADER_PROMPTS, { status: 403, body: {} });
+    await expect(load(editorRequest({ circuit: 'cArch', item: 'list' }), gateway)).rejects.toBeInstanceOf(
+      GatewayDenialError,
+    );
+  });
+
+  it.each([
+    {
+      name: 'the full layout',
+      ctx: () => adminS2Request({ circuit: 'cUsers', item: 'list', rc: { siteid: 'tenant-a' } }),
+      query: { themeSite: 'tenant-a', initSite: 'default' },
+    },
+    {
+      name: 'the full layout of clogin.main, which prints no Mura.init',
+      ctx: () => anonymousRequest({ circuit: 'cLogin', item: 'main' }),
+      query: { themeSite: 'default' },
+    },
+    {
+      name: 'the compact layout of clogin.main',
+      ctx: () => anonymousRequest({ circuit: 'cLogin', item: 'main', rc: { compactDisplay: 'true' } }),
+      query: { themeSite: 'default', initSite: 'default' },
+    },
+    {
+      name: 'a session without a site and an empty rc.siteid',
+      ctx: () => withoutSessionSite(adminS2Request({ circuit: 'cUsers', item: 'list', rc: { siteid: '' } })),
+      query: { themeSite: 'default', initSite: 'default' },
+    },
+  ])("reads legacy's layout values once for $name", async ({ ctx, query }) => {
+    const gateway = shellGateway();
+    const request = ctx();
+    const data = await load(request, gateway);
+    expect(legacyPathQueries(gateway)).toEqual([
+      { sessionSite: request.session.siteid || 'default', host: 'localhost', forwardedProto: 'http', ...query },
+    ]);
+    expect(data.legacyPaths).toEqual({
+      themeAssetPath: '/themes/default',
+      ...('initSite' in query ? { initThemeAssetPath: 'http://localhost/themes/default' } : {}),
+    });
+  });
+
+  it("rejects when the gateway refuses legacy's layout values", async () => {
+    const gateway = shellGateway();
+    gateway.setRoute(LEGACY_SITE_PATHS_KEY, { status: 401 });
+    await expect(load(adminS2Request({ circuit: 'cUsers', item: 'list' }), gateway)).rejects.toEqual(
+      new GatewayDenialError('gateway', 'legacySitePaths', 401),
+    );
+  });
+
+  it('defaults the clock to the current time', async () => {
+    const gateway = shellGateway();
+    const before = Date.now();
+    const data = await loadShellData(anonymousRequest(), { gateway, csrf: createCsrfRenderer(gateway), rb: RB });
+    expect(data.now.getTime()).toBeGreaterThanOrEqual(before);
+    expect(data.now.getTime()).toBeLessThanOrEqual(Date.now());
+  });
+
+  it('reads the user names from the session struct and leaves them empty when anonymous', async () => {
+    const admin = await load(adminS2Request({ session: { mura: { fname: 'Ada', lname: 'Admin' } } }));
+    expect(admin.user).toEqual({ fname: 'Ada', lname: 'Admin', passwordExpired: false, hasDefaultPassword: false });
+    const anonymous = await load(anonymousRequest());
+    expect(anonymous.user).toEqual({ fname: '', lname: '', passwordExpired: false, hasDefaultPassword: false });
+  });
+
+  it.each([
+    { name: 'stored true', adminState: { hasdefaultpassword: true }, expected: true },
+    { name: 'stored false, as only its presence counts', adminState: { hasdefaultpassword: false }, expected: true },
+    { name: 'absent', adminState: {}, expected: false },
+  ])('reads the default-password flag when session.hasdefaultpassword is $name', async ({ adminState, expected }) => {
+    const ctx = await buildTestAdminRequest({ circuit: 'cUsers', action: 'list', user: 'admin', sessionState: { adminState } });
+    expect((await load(ctx)).user.hasDefaultPassword).toBe(expected);
+  });
+
+  it.each([
+    { name: 'passwords never expire', expire: undefined, created: '2020-01-01T00:00:00.000', expired: false },
+    { name: 'the password is younger than the limit', expire: '30', created: '2026-06-15T12:00:00.000', expired: false },
+    { name: 'the password is older than the limit', expire: '30', created: '2026-05-01T12:00:00.000', expired: true },
+    { name: 'the creation date is not a date', expire: '30', created: '', expired: true },
+    { name: 'the struct cached an expiry', expire: '30', created: '2026-06-15T12:00:00.000', cached: 'yes', expired: true },
+    { name: 'the struct cached no expiry', expire: '30', created: '2026-05-01T12:00:00.000', cached: false, expired: false },
+  ])('derives passwordExpired when $name', async ({ expire, created, cached, expired }) => {
+    if (expire !== undefined) vi.stubEnv('MURA_EXPIREPASSWORDS', expire);
+    resetLegacySettingsForTests();
+    const mura = cached === undefined ? { passwordCreated: created } : { passwordCreated: created, PASSWORDEXPIRED: cached };
+    const data = await load(adminS2Request({ circuit: 'cUsers', item: 'list', session: { mura } }));
+    expect(data.user.passwordExpired).toBe(expired);
+  });
+
+  it('never reports an expired password for an anonymous session', async () => {
+    vi.stubEnv('MURA_EXPIREPASSWORDS', '30');
+    resetLegacySettingsForTests();
+    expect((await load(anonymousRequest())).user.passwordExpired).toBe(false);
+  });
+});
+
+describe('renderAdminDocument against the oracle', () => {
+  it.each([
+    {
+      name: 'the anonymous login page',
+      ctx: () => anonymousRequest({ circuit: 'cLogin', item: 'main' }),
+      view: {},
+      file: 'template-login.html',
+      regions: TEMPLATE_REGIONS,
+      layout: 'template',
+    },
+    {
+      name: 'the S2 users list',
+      ctx: () => adminS2Request({ circuit: 'cUsers', item: 'list' }),
+      view: {},
+      file: 'template-admin-cusers-list.html',
+      regions: TEMPLATE_REGIONS,
+      layout: 'template',
+    },
+    {
+      name: 'the compact content edit',
+      ctx: () => adminS2Request({ circuit: 'cArch', item: 'edit', rc: { compactDisplay: 'true' } }),
+      view: { ajax: raw('<!--AJAX-->') },
+      file: 'compact-modal-carch-edit.html',
+      regions: COMPACT_REGIONS,
+      layout: 'compact',
+    },
+  ])('serializes $name as the oracle rendered it', async ({ ctx, view, file, regions, layout }) => {
+    const doc = await documentFor(ctx(), view);
+    expect(doc.layout).toBe(layout);
+    const page = skeleton(serializeAdminDocument(doc), regions);
+    expect(squash(page)).toBe(squash(fixture(file)));
+    expect(domModel(page)).toEqual(domModel(fixture(file)));
+  });
+});
+
+describe('renderAdminDocument', () => {
+  it('dispatches to the compact layout for a case-insensitive compactDisplay', async () => {
+    const doc = await documentFor(adminS2Request({ circuit: 'cUsers', item: 'list', rc: { compactDisplay: 'TRUE' } }));
+    expect(doc).toMatchObject({ layout: 'compact', title: 'Masa CMS', noCache: false });
+    expect(doc.bodyAttrs).toEqual({ id: 'cusers', class: 'compact modal-wrapper' });
+  });
+
+  it('derives the original circuit and fuseaction from the action unless the view overrides them', async () => {
+    const ctx = adminS2Request({ circuit: 'cArch', item: 'imageDetails', rc: { moduleid: '' } });
+    const derived = await documentFor(ctx);
+    expect(derived.bodyAttrs.id).toBe('carch');
+    expect(derived.title).toBe('Masa CMS - Image Details');
+    const overridden = await documentFor(ctx, { originalCircuit: 'cArch', originalFuseaction: 'list' });
+    expect(overridden.bodyAttrs.id).toBe('cArch');
+    expect(overridden.title).toBe('Masa CMS - Drafts');
+  });
+
+  it('takes the module title and body class from the view, else from the switch and rc', async () => {
+    const content = await documentFor(editorRequest({ circuit: 'cArch', item: 'list', rc: { moduleid: `${Z}000` } }));
+    expect(content.title).toBe('Masa CMS - Site Content');
+    expect(content.bodyAttrs.class).toBe('mura-admin header-navbar-fixed no-constrain sidebar-tab');
+    const ctx = adminS2Request({ circuit: 'cUsers', item: 'list', rc: { bodyclass: 'from-rc' } });
+    expect((await documentFor(ctx)).bodyAttrs.class).toBe('mura-admin header-navbar-fixed no-constrain from-rc');
+    const viewed = await documentFor(ctx, { moduleTitle: 'Custom', bodyclass: 'from-view' });
+    expect(viewed.title).toBe('Masa CMS - Custom');
+    expect(viewed.bodyAttrs.class).toBe('mura-admin header-navbar-fixed no-constrain from-view');
+  });
+
+  it('feeds the loaded sites, Update Core tokens and user into the header, nav and notices', async () => {
+    vi.stubEnv('MURA_EXPIREPASSWORDS', '30');
+    resetLegacySettingsForTests();
+    const ctx = adminS2Request({
+      circuit: 'cUsers',
+      item: 'list',
+      session: { mura: { fname: 'Ada', lname: 'Admin', passwordCreated: '2026-05-01T12:00:00.000' } },
+    });
+    const doc = await documentFor(ctx);
+    const $ = $of(doc);
+    expect($('#site-selector-list li a').text().trim()).toBe('Default');
+    expect($('#user-tools-name').text().trim()).toBe('Ada Admin');
+    expect($('[data-alertid="passwordexpirednotice"]').length).toBe(1);
+    expect(toString(doc.body)).toContain(`action=updateCore${UPDATE_CORE_QUERY}`);
+  });
+
+  it.each([
+    { name: 'not dismissed', alerts: { default: {} }, shown: 1 },
+    { name: 'dismissed', alerts: { default: { defaultpasswordnotice: { type: '', text: '' } } }, shown: 0 },
+  ])('renders the default-password notice login flagged $shown time(s) when $name', async ({ alerts, shown }) => {
+    const ctx = await buildTestAdminRequest({
+      circuit: 'cUsers',
+      action: 'list',
+      user: 'admin',
+      sessionState: { mura: { alerts }, adminState: { hasdefaultpassword: true } },
+    });
+    const $ = $of(await documentFor(ctx));
+    expect($('[data-alertid="defaultpasswordnotice"]').length).toBe(shown);
+  });
+
+  it.each([
+    { name: 'the request names one', rc: { siteid: 'tenant-b' }, action: 'cUsers.list', expected: 'tenant-b' },
+    { name: 'the request names none', rc: undefined, action: 'cUsers.list', expected: 'tenant-a' },
+    { name: 'the request holds an empty one', rc: { siteid: '' }, action: 'cSettings.editSite', expected: 'default' },
+  ])('resolves the layout site id when $name', async ({ rc, action, expected }) => {
+    const base = adminS2Request({ session: { siteid: 'tenant-a' } });
+    const request = mergeFw1Context([], { muraAction: action, ...rc }, {});
+    const ctx: AdminRequest = { ...base, rc: request, action: `core:${action.toLowerCase()}` };
+    const $ = $of(await documentFor(ctx));
+    expect($('#globalSearch input[name="siteid"]').val()).toBe(expected);
+  });
+});
+
+const ASSET_ROOTS = /^\/(?:admin\/assets|core\/vendor|core\/modules)\//;
+const ADMIN_CSS = '/admin/assets/css/admin.min.css';
+const FILEBROWSER_CSS = '/admin/assets/js/filebrowser/assets/css/filebrowser.css';
+const COLORPICKER_CSS = '/core/vendor/colorpicker/css/bootstrap-colorpicker.min.css?coreversion=7.6.1';
+const IE_CSS = '/admin/assets/css/ie.min.css?coreversion=7.6.1';
+
+/** `src`/`href` of every `<script>` and `<link>` tag, those in IE conditional comments included. */
+const assetRefs = (markup: string): string[] =>
+  [...markup.matchAll(/<(?:script|link)\b[^>]*?\s(?:src|href)="([^"]*)"/g)].map((match) => match[1] ?? '');
+
+/** `href` of every `<link>` tag carrying `rel="stylesheet"`, in document order. */
+const stylesheetRefs = (markup: string): string[] =>
+  [...markup.matchAll(/<link\b[^>]*>/g)]
+    .map((match) => match[0])
+    .filter((tag) => /\srel="stylesheet"/.test(tag))
+    .map((tag) => /\shref="([^"]*)"/.exec(tag)?.[1] ?? '');
+
+const msie = (ctx: AdminRequest): AdminRequest => ({ ...ctx, isMSIE: true, userAgent: MSIE_UA });
+const usersList = (): AdminRequest => adminS2Request({ circuit: 'cUsers', item: 'list' });
+const compactEdit = (): AdminRequest => adminS2Request({ circuit: 'cArch', item: 'edit', rc: { compactDisplay: 'true' } });
+
+describe('shell assets', () => {
+  it('loads the footer scripts in legacy order', () => {
+    const $ = cheerio.load(toString(renderHtmlFoot()), null, false);
+    expect($('script').map((_, script) => $(script).attr('src')).get()).toEqual([
+      '/admin/assets/js/jquery/jquery-tagselector.js?coreversion=7.6.1',
+      '/admin/assets/js/bootstrap-tabdrop.js',
+      '/admin/assets/js/bootstrap-slider/bootstrap-slider.min.js',
+    ]);
+  });
+
+  it('renders the alert dialog alone, without the Razuna assets', () => {
+    expect(toString(renderDialog())).toBe(
+      '<div id="alertDialog" title="Alert" class="hide">\n\t<span id="alertDialogMessage"></span>\n</div>',
+    );
+  });
+
+  it.each([
+    { name: 'the full layout', ctx: usersList, chrome: true, stylesheets: [ADMIN_CSS, FILEBROWSER_CSS, COLORPICKER_CSS] },
+    {
+      name: 'the full layout for MSIE',
+      ctx: () => msie(usersList()),
+      chrome: true,
+      stylesheets: [ADMIN_CSS, FILEBROWSER_CSS, COLORPICKER_CSS, IE_CSS],
+    },
+    { name: 'the compact layout', ctx: compactEdit, chrome: false, stylesheets: [FILEBROWSER_CSS, COLORPICKER_CSS, ADMIN_CSS] },
+    {
+      name: 'the compact layout for MSIE',
+      ctx: () => msie(compactEdit()),
+      chrome: false,
+      stylesheets: [FILEBROWSER_CSS, COLORPICKER_CSS, ADMIN_CSS, IE_CSS],
+    },
+  ])('references only legacy assets in place in $name', async ({ ctx, chrome, stylesheets }) => {
+    const markup = serializeAdminDocument(await documentFor(ctx()));
+    expect(cheerio.load(markup)('#sidebar, #header-navbar').length).toBe(chrome ? 2 : 0);
+    const refs = assetRefs(markup);
+    expect(refs.length).toBeGreaterThan(0);
+    expect(refs.filter((url) => !ASSET_ROOTS.test(url))).toEqual([]);
+    expect(stylesheetRefs(markup)).toEqual(stylesheets);
+    expect(markup).not.toMatch(/<style\b/i);
+  });
+});
+
+describe('serializeAdminDocument', () => {
+  const doc: AdminDocument = {
+    layout: 'template',
+    title: 'T',
+    htmlAttrs: { lang: 'en_US', class: 'mura no-focus' },
+    bodyAttrs: { id: 'carch', class: 'mura-admin x&amp;y' },
+    preamble: raw('<!DOCTYPE html>\n<html lang="en_US">'),
+    head: raw('\t<title>T</title>'),
+    body: raw('<p>x</p>'),
+    noCache: true,
+  };
+
+  it('joins preamble, head and body with the body attributes in record order, as recorded', () => {
+    expect(serializeAdminDocument(doc)).toBe(
+      '<!DOCTYPE html>\n<html lang="en_US">\n<head>\n\t<title>T</title>\n</head>\n' +
+        '<body id="carch" class="mura-admin x&amp;y">\n<p>x</p>\n</body>\n</html>',
+    );
+  });
+
+  it('emits a bare body tag without attributes', () => {
+    expect(serializeAdminDocument({ ...doc, bodyAttrs: {} })).toContain('\n</head>\n<body>\n<p>x</p>\n</body>\n</html>');
+  });
+});

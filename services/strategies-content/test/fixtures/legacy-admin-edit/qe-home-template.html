@@ -1,0 +1,53 @@
+
+<script>
+	$('.mura-quickEdit select').niceSelect();
+</script>
+
+	<h1>Layout Template</h1>
+	<span class="cancel" onclick="siteManager.closeQuickEdit();" title="Cancel"><i class="mi-close"></i></span>
+
+	
+		<select id="mura-quickEdit-template">
+			
+				<option value="blank.cfm" >blank.cfm</option>
+				
+				<option value="default.cfm" selected>default.cfm</option>
+				
+				<option value="home.cfm" >home.cfm</option>
+				
+				<option value="one_column.cfm" >one_column.cfm</option>
+				
+				<option value="three_column.cfm" >three_column.cfm</option>
+				
+				<option value="two_column_SL.cfm" >two_column_SL.cfm</option>
+				
+				<option value="two_column_SR.cfm" >two_column_SR.cfm</option>
+				
+		</select>
+		<h1>Alternate Child Template</h1>
+		<select id="mura-quickEdit-childtemplate">
+			<option value="">none</option>
+			
+				<option value="blank.cfm" >blank.cfm</option>
+				
+				<option value="default.cfm" >default.cfm</option>
+				
+				<option value="home.cfm" >home.cfm</option>
+				
+				<option value="one_column.cfm" >one_column.cfm</option>
+				
+				<option value="three_column.cfm" >three_column.cfm</option>
+				
+				<option value="two_column_SL.cfm" >two_column_SL.cfm</option>
+				
+				<option value="two_column_SR.cfm" >two_column_SR.cfm</option>
+				
+		</select>
+		
+	
+	<div class="form-actions">
+		
+		<button id="btn__quickedit__save" class="btn mura-primary" onclick="siteManager.saveQuickEdit(this);">Submit</button>
+		<button id="btn__quickedit__schedule" style="display:none;" type="button" class="btn mura-primary"> Manage Schedule</button>
+	</div>
+	

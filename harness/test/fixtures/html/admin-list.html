@@ -1,0 +1,130 @@
+<!-- Saved legacy admin page: muraAction=cusers.listusers (full layout). -->
+<!DOCTYPE html>
+<html lang="en_US" class="mura no-focus">
+	<head>
+		<meta charset="utf-8">
+		<title>Masa CMS - Users</title>
+		<link href="/admin/assets/css/admin.min.css" rel="stylesheet" type="text/css" />
+		<script src="/admin/assets/js/user.js" type="text/javascript"></script>
+	</head>
+	<body id="cUsers" class="mura-admin header-navbar-fixed no-constrain">
+		<div id="page-container" class="sidebar-o">
+			<main id="main-container" class="block-constrain">
+				<div class="content">
+					<div class="alert alert-success"><span><a data-alertid="fixturesaved" class="close alert-dismiss" data-dismiss="alert"><i class="mi-close"></i></a></span>Your changes have been saved.</div>
+					<div class="alert alert-error"><span><a data-alertid="fixturefailed" class="close alert-dismiss" data-dismiss="alert"><i class="mi-close"></i></a></span>The selected user could not be deleted.</div>
+					<div id="mura-content">
+<div class="mura-header">
+	<h1>Users &amp; Groups</h1>
+	<div class="nav-module-specific btn-group">
+		<a class="btn" href="/admin/index.cfm?muraAction=cusers.edituser&siteid=tenant-a&userid="><i class="mi-plus-circle"></i> Add User</a>
+		<a class="btn" href="/admin/index.cfm?muraAction=cusers.editgroup&siteid=tenant-a&userid="><i class="mi-plus-circle"></i> Add Group</a>
+		<a class="btn" href="/admin/index.cfm?muraAction=cusers.default&siteid=tenant-a"><i class="mi-group"></i> Groups</a>
+		<a class="btn" href="./?muraAction=cPerm.module&amp;contentid=00000000000000000000000000000000008&amp;siteid=tenant-a&amp;moduleid=00000000000000000000000000000000008"><i class="mi-group"></i> Permissions</a>
+	</div>
+</div>
+<div class="block block-constrain">
+	<ul id="viewTabs" class="mura-tab-links nav-tabs">
+		<li class="active"><a href="/admin/index.cfm?muraAction=cusers.listusers&siteid=tenant-a&ispublic=1&unassigned=0">Site Members</a></li>
+		<li><a href="/admin/index.cfm?muraAction=cusers.listusers&siteid=tenant-a&ispublic=0&unassigned=0">System Users</a></li>
+	</ul>
+	<div class="block-content tab-content">
+		<div id="tab1" class="tab-pane active">
+			<div class="block block-bordered">
+				<div class="block-header">
+					<h3 class="block-title">Users</h3>
+				</div>
+				<div class="block-content">
+					<div class="mura-control-group">
+						<a class="btn" href="/admin/index.cfm?muraAction=cusers.listusers&siteid=tenant-a&ispublic=1&unassigned=1"><i class="mi-filter"></i> View Unassigned Only</a>
+						<a class="btn" href="/admin/index.cfm?muraAction=cusers.download&siteid=tenant-a&ispublic=1&unassigned=0"><i class="mi-download"></i> Download</a>
+					</div>
+					<table id="tbl-users" class="table table-striped table-condensed table-bordered mura-table-grid">
+						<thead>
+							<tr>
+								<th class="actions"></th>
+								<th class="actions"></th>
+								<th class="var-width">User</th>
+								<th>Email</th>
+								<th class="hidden-xs">Date Last Update</th>
+								<th class="hidden-xs hidden-sm">Time Last Update</th>
+								<th class="hidden-xs">Last Updated By</th>
+							</tr>
+						</thead>
+						<tbody>
+							<tr>
+								<td class="actions">
+									<a class="show-actions" href="javascript:;"><i class="mi-ellipsis-v"></i></a>
+									<div class="actions-menu hide">
+										<ul class="actions-list">
+											<li><a href="/admin/index.cfm?muraAction=cusers.edituser&userid=11111111-1111-1111-1111111111111111&siteid=tenant-a" rel="tooltip"><i class="mi-pencil"></i>Edit</a></li>
+											<li class="delete"><a href="/admin/index.cfm?muraAction=cusers.update&action=delete&ispublic=1&userid=11111111-1111-1111-1111111111111111&siteid=tenant-a&type=1&csrf_token=FIXTURECSRFTOKEN0000000000000004&csrf_token_expires=260630120000000" rel="tooltip"><i class="mi-trash"></i>Delete</a></li>
+										</ul>
+									</div>
+								</td>
+								<td class="actions">
+									<ul>
+										<li><a rel="tooltip" title="Site Member"><i class="mi-user"></i></a></li>
+									</ul>
+								</td>
+								<td class="var-width"><a href="./?muraAction=cUsers.editUser&amp;userID=11111111-1111-1111-1111111111111111&amp;siteid=tenant-a">Person01, Fixture</a></td>
+								<td><a href="mailto:person01@example.test">person01@example.test</a></td>
+								<td class="hidden-xs">06/30/2026</td>
+								<td class="hidden-xs hidden-sm">12:00 PM</td>
+								<td class="hidden-xs">Admin Fixture</td>
+							</tr>
+							<tr>
+								<td class="actions">
+									<a class="show-actions" href="javascript:;"><i class="mi-ellipsis-v"></i></a>
+									<div class="actions-menu hide">
+										<ul class="actions-list">
+											<li><a href="/admin/index.cfm?muraAction=cusers.edituser&userid=22222222-2222-2222-2222222222222222&siteid=tenant-a" rel="tooltip"><i class="mi-pencil"></i>Edit</a></li>
+											<li class="delete"><a href="/admin/index.cfm?muraAction=cusers.update&action=delete&ispublic=1&userid=22222222-2222-2222-2222222222222222&siteid=tenant-a&type=1&csrf_token=FIXTURECSRFTOKEN0000000000000004&csrf_token_expires=260630120000000" rel="tooltip"><i class="mi-trash"></i>Delete</a></li>
+										</ul>
+									</div>
+								</td>
+								<td class="actions">
+									<ul>
+										<li><a rel="tooltip" title="Site Member"><i class="mi-user"></i></a></li>
+									</ul>
+								</td>
+								<td class="var-width"><a href="./?muraAction=cUsers.editUser&amp;userID=22222222-2222-2222-2222222222222222&amp;siteid=tenant-a">Person02, Fixture</a></td>
+								<td><a href="mailto:person02@example.test">person02@example.test</a></td>
+								<td class="hidden-xs">06/29/2026</td>
+								<td class="hidden-xs hidden-sm">09:15 AM</td>
+								<td class="hidden-xs">Admin Fixture</td>
+							</tr>
+							<tr>
+								<td class="actions">
+									<a class="show-actions" href="javascript:;"><i class="mi-ellipsis-v"></i></a>
+									<div class="actions-menu hide">
+										<ul class="actions-list">
+											<li><a href="/admin/index.cfm?muraAction=cusers.edituser&userid=33333333-3333-3333-3333333333333333&siteid=tenant-a" rel="tooltip"><i class="mi-pencil"></i>Edit</a></li>
+											<li class="delete"><a href="/admin/index.cfm?muraAction=cusers.update&action=delete&ispublic=1&userid=33333333-3333-3333-3333333333333333&siteid=tenant-a&type=1&csrf_token=FIXTURECSRFTOKEN0000000000000004&csrf_token_expires=260630120000000" rel="tooltip"><i class="mi-trash"></i>Delete</a></li>
+										</ul>
+									</div>
+								</td>
+								<td class="actions">
+									<ul>
+										<li><a rel="tooltip" title="System User"><i class="mi-user"></i></a></li>
+									</ul>
+								</td>
+								<td class="var-width"><a href="./?muraAction=cUsers.editUser&amp;userID=33333333-3333-3333-3333333333333333&amp;siteid=tenant-a">Person03, Fixture</a></td>
+								<td><a href="mailto:person03@example.test">person03@example.test</a></td>
+								<td class="hidden-xs">06/28/2026</td>
+								<td class="hidden-xs hidden-sm">04:30 PM</td>
+								<td class="hidden-xs">Admin Fixture</td>
+							</tr>
+						</tbody>
+					</table>
+				</div>
+			</div>
+		</div>
+	</div>
+</div>
+					</div>
+				</div>
+			</main>
+		</div>
+	</body>
+</html>

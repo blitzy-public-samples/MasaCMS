@@ -1,0 +1,5 @@
+import { describe, it } from 'vitest';
+
+describe('admin sessions', () => {
+  it.each([['/admin/', { a: 1 }, './']])('redirects a successful login with a return URL %s, %j, to %j', () => {});
+});

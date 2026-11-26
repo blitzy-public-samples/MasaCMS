@@ -1,0 +1,298 @@
+
+
+<div class="mura-layout-row">
+	
+
+
+<div id="navReportsShowing">
+	<div class="btn-group">
+	
+	<span>Showing:</span>
+	<a id="navReportsToggle" class="dropdown-toggle" data-toggle="dropdown">My Submissions<i class="mi-chevron-down"></i></a>
+		<ul id="navReports" class="dropdown-menu">
+			<li><a href="" data-report="">All Site Content</a></li>
+			
+			<li><a href="" data-report="mydrafts">My Drafts</a></li>
+			
+			<li><a href="" data-report="mysubmissions" class="active">My Submissions<span class="badge badge-important">1</span></a></li>
+			
+			<li><a href="" data-report="myapprovals">My Approvals<span class="badge badge-important">1</span></a></li>
+			
+			<li><a href="" data-report="myexpires">My Expiring Content</a></li>
+			<li><a href="" data-report="expires">All Expiring Content</a></li>
+			
+			<li><a href="" data-report="mylockedcontent">
+				Files I'm Editing Offline </a></li>
+		</ul>
+	</div>
+
+	
+		<div class="navSort">
+			<span class="hidden-xs hidden-sm">Sort By:</span>
+			<div class="mura-input-set">
+				<a href="" data-sortby="lastupdate" class="btn active">Updated</a>
+				<a href="" data-sortby="created" class="btn">Created</a>
+				<a href="" data-sortby="menutitle" class="btn">Title</a>
+				
+					<a href="" data-sortby="duedate" class="btn">Due Date</a>
+				
+			</div>
+		</div> <!-- ./navSort -->
+	
+
+</div> 
+
+<div id="navFilters">
+	<div id="navFiltersToggle">Advanced Filters<i class="mi-chevron-down"></i></div>
+	<div id="navFilterControls">
+		<div class="mura-layout-row">
+
+			
+			<div class="mura-6 mura-control-group">
+				<label>Keywords</label>
+		    <input class="text" id="contentKeywords" value="" type="text">
+	  	</div>
+			
+
+			
+			
+				<div class="mura-3 mura-control-group">
+					<label>Type</label>
+					<select name="contentTypeFilter" id="contentTypeFilter">
+						<option value="">All</option>
+						
+								<option value="Calendar^Default">Calendar</option>
+								
+								<option value="Component^Default">Component</option>
+								
+									<option value="Component^Widget">Component / Widget</option>
+								
+								<option value="File^Default">File</option>
+								
+									<option value="File^Brochure">File / Brochure</option>
+								
+								<option value="Folder^Default">Folder</option>
+								
+								<option value="Form^Default">Form</option>
+								
+									<option value="Form^Survey">Form / Survey</option>
+								
+								<option value="Link^Default">Link</option>
+								
+								<option value="Page^Default">Page</option>
+								
+									<option value="Page^Special">Page / Special</option>
+								
+					</select>
+				</div>
+			
+			
+
+			
+				<div id="tags" class="mura-3 mura-control-group mura-filter-tags tagSelector">
+					
+			   		<label>Tags</label>
+		   		
+
+					<input type="text" name="tags">
+					
+				</div>
+
+			
+				<div id="mura-list-tree" class="mura-6 mura-control-group category-select">
+					<label>Categories</label>
+					<div id="category-select-control"></div>
+					<div id="category-select-list">
+						
+<ul id="mura-nodes" class="categories checkboxTree">
+
+<li>
+<input type="checkbox" name="categoryID" class="checkbox"  value="2229FB72-FC29-AE58-FA447A006770F27B"/> Cat A 
+<ul class="categories">
+
+<li>
+<input type="checkbox" name="categoryID" class="checkbox"  value="2229FD3F-CCF9-DB0F-BBA4B1FE48B5C874"/> Cat B 
+</li>
+
+</ul>
+
+</li>
+
+<li>
+Closed C 
+</li>
+
+</ul>
+
+					</div>
+				</div>
+			
+			
+
+			
+			<div id="navFilterButtons" class="mura-actions mura-5">
+				<div class="form-actions">
+					
+						<button type="submit" class="btn btn-default mura-primary" name="filterList" onclick="siteManager.loadSiteFlatByFilter();"><i class="mi-filter"></i> Filter</button>
+					
+				</div>
+			</div>
+			
+
+		</div> 
+	</div>	
+</div>	
+
+	
+
+		<div class="mura-results-wrapper">
+		<p class="search-showing">Showing 1-1 of 1 Results</p>
+		
+		</div>
+	
+
+	<table class="mura-table-grid">
+		
+
+		<tr data-siteid="default" data-contentid="222A1362-95F5-7182-AF47E22D5AA7D1FC" data-contenthistid="222A13AE-945D-455A-00881CE1105C2A1C" data-sortby="orderno" data-sortdirection="asc" data-moduleid="00000000000000000000000000000000000" data-type="Page" class="mura-node-data">
+			<td class="add"><a class="add" href="javascript:;"  onclick="siteManager.showMenu('newContentMenu','editor',this,'222A1362-95F5-7182-AF47E22D5AA7D1FC','222A1362-95F5-7182-AF47E22D5AA7D1FC','222A1362-95F5-7182-AF47E22D5AA7D1FC','default','Page','00000000000000000000000000000000000');"><i class="mi-ellipsis-v"></i></a></td>
+			<td class="var-width item">
+
+			<div class="actions">
+				<ul class="siteSummary">
+					
+
+					    <li class="edit"><a title="Edit" onclick="draftprompt.call(this,event);return false;" data-siteid="default" data-contentid="222A1362-95F5-7182-AF47E22D5AA7D1FC" data-contenthistid="222A13AE-945D-455A-00881CE1105C2A1C" href="" data-href="./?muraAction=cArch.edit&contenthistid=222A13AE-945D-455A-00881CE1105C2A1C&contentid=222A1362-95F5-7182-AF47E22D5AA7D1FC&type=Page&parentid=222A01B2-C3CB-E417-627BBA806D0308A3&topid=222A01B2-C3CB-E417-627BBA806D0308A3&siteid=default&moduleid=00000000000000000000000000000000000&startrow=1"><i class="mi-pencil"></i></a></li>
+						
+							<li class="preview"><a title="Preview" href="http://localhost:22180/flat-folder/flat-page-3/"><i class="mi-globe"></i></a></li>
+							
+						 <li class="version-history"><a title="Version History" href="./?muraAction=cArch.hist&contentid=222A1362-95F5-7182-AF47E22D5AA7D1FC&type=Page&parentid=222A01B2-C3CB-E417-627BBA806D0308A3&topid=222A01B2-C3CB-E417-627BBA806D0308A3&siteid=default&moduleid=00000000000000000000000000000000000&startrow=1"><i class="mi-history"></i></a></li>
+
+						
+							<li class="permissions disabled"><a><i class="mi-group"></i></a></li>
+						
+					        <li class="delete"><a title="Delete" href="./?muraAction=cArch.update&contentid=222A1362-95F5-7182-AF47E22D5AA7D1FC&type=Page&action=deleteall&topid=222A01B2-C3CB-E417-627BBA806D0308A3&siteid=default&moduleid=00000000000000000000000000000000000&parentid=222A01B2-C3CB-E417-627BBA806D0308A3&startrow=1&csrf_token=<token>&csrf_token_expires=<token>"onclick="return confirmDialog('Deleting\x20\x27Flat\x20Page\x203\x27\x20will\x20also\x20delete\x20all\x20content\x20nested\x20beneath\x20it',this.href)">
+							<i class="mi-trash"></i></a></li>
+					    
+
+				</ul>
+			</div>
+			
+
+				<h2>
+					
+						<a class="draftprompt" title="Edit" class="draftprompt"  href="./?muraAction=cArch.edit&contenthistid=222A13AE-945D-455A-00881CE1105C2A1C&contentid=222A1362-95F5-7182-AF47E22D5AA7D1FC&type=Page&parentid=222A01B2-C3CB-E417-627BBA806D0308A3&topid=222A01B2-C3CB-E417-627BBA806D0308A3&siteid=default&moduleid=00000000000000000000000000000000000&startrow=1">Flat Page 3 
+								(Pending Approval)
+							
+
+						</a>
+					
+				</h2>
+				
+					<span class="breadcrumb-label">Location: </span><ul class="breadcrumb">
+		
+			<li class="">
+			<a 
+				href="" onclick="return siteManager.loadSiteManagerInTab(function(){siteManager.loadSiteManager('default','00000000000000000000000000000000001','00000000000000000000000000000000000','','','Page',1)});"
+			><i class="mi-file"></i>Home</a></li>
+		
+			<li class="">
+			<a 
+				href="" onclick="return siteManager.loadSiteManagerInTab(function(){siteManager.loadSiteManager('default','222A01B2-C3CB-E417-627BBA806D0308A3','00000000000000000000000000000000000','','','Folder',1)});"
+			><i class="mi-folder-open-o"></i>Flat Folder</a></li>
+		
+		<li class=""><strong>
+		<a 
+			href="" onclick="return siteManager.loadSiteManagerInTab(function(){siteManager.loadSiteManager('default','222A1362-95F5-7182-AF47E22D5AA7D1FC','00000000000000000000000000000000000','','','Page',1)});"
+		><i class="mi-file"></i>Flat Page 3</a></strong></li>
+		</ul> 
+				<ul class="nodeMeta">
+					</dd>
+					<li class="tags">Tags: <strong>alpha,beta</strong></li>
+					<li class="type">Type: <strong>Page (Default)</strong></li>
+					<li class="updated-short" title="Updated on 11/316/2026 at 2:57:12 PM  by  / Created on 11/316/2026 at 2:44:14 PM ">Updated: <strong>11/316/2026</strong></li>
+				</ul>
+			</tr>
+		
+	</table>
+
+	
+
+		<div class="mura-results-wrapper">
+		<p class="search-showing">Showing 1-1 of 1 Results</p>
+		
+		</div>
+	
+
+</div>
+</div>
+
+<script>
+	// list view advanced filters
+  jQuery(document).ready(function(){
+
+  	var serializeCatCheckboxes = function(){
+			var catContainer = jQuery('#category-select-control');
+  		jQuery(catContainer).find('.tag').remove();
+			jQuery('#category-select-list input[type=checkbox]:checked').each(function(){
+	  		var thisText = $(this).parent('li').clone().children().remove().end().text();
+	  		var selCat = '<span class="tag">' + thisText + '</span>';
+	  		jQuery(selCat).appendTo(catContainer);
+
+  		});
+  	}
+  	jQuery('#category-select-list input[type=checkbox]').click(function(){
+  			serializeCatCheckboxes();
+  	});
+		serializeCatCheckboxes();
+
+  	jQuery('#category-select-list').hide();
+  	jQuery('#category-select-control').click(function(){
+  		jQuery('#category-select-list').slideToggle('fast');
+  	})
+
+		jQuery('#navFilterControls').hide();
+		var toggleNavFilters = function(el){
+			jQuery('#navFilterControls').slideToggle('fast');
+			jQuery(el).find('i').toggleClass('mi-chevron-down').toggleClass('mi-chevron-up');
+		}
+
+		jQuery('#navFiltersToggle').click(function(){
+			toggleNavFilters(jQuery(this));
+		})
+
+		
+
+		jQuery('td.item').on('click',function(e){
+			var el = e.target;
+			var elType = el.tagName;
+			var editLink = $(el).find('a.draftprompt');
+			if (elType == 'TD' || elType == 'UL' || elType == 'H2'){
+					$(editLink).trigger('click');
+			}
+		})
+
+  });
+
+	function clearFlatviewFilter(){
+		flatViewArgs=$.extend(
+			initFlatViewArgs(),
+			{
+					report:'mysubmissions',
+					sortby:'lastupdate',
+					sortdirection:'desc',
+					tag:'',
+					type:'',
+					subtype:'',
+					categoryid:'',
+					keywords:''
+					,
+					filtered:false
+					
+
+					});
+
+		siteManager.loadSiteFlat(flatViewArgs);
+	}
+</script>
+

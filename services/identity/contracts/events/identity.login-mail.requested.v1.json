@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:opt2:identity:event:identity.login-mail.requested.v1",
+  "$comment": "source-sha: 696383140578f8dea3ece26f80cd7bfb370ddf0f",
+  "title": "identity.login-mail.requested.v1 payload",
+  "description": "One login-information mail to send, as legacy renders it.",
+  "x-opt2-kind": "process",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "messageId",
+    "siteId",
+    "to",
+    "from",
+    "subject",
+    "text",
+    "bcc",
+    "kind",
+    "userId",
+    "returnId"
+  ],
+  "properties": {
+    "messageId": {
+      "description": "Id of the mail message.",
+      "$ref": "#/$defs/cfUuid"
+    },
+    "siteId": {
+      "description": "Site whose mail settings apply; empty for the global configuration.",
+      "$ref": "#/$defs/siteId"
+    },
+    "to": {
+      "description": "Recipient address list as passed to the legacy mailer.",
+      "type": "string"
+    },
+    "from": {
+      "description": "Sender display name.",
+      "type": "string"
+    },
+    "subject": {
+      "description": "Mail subject.",
+      "type": "string"
+    },
+    "text": {
+      "description": "Rendered plain-text body.",
+      "type": "string"
+    },
+    "bcc": {
+      "description": "Bcc list the legacy caller computed; not sent.",
+      "type": "string"
+    },
+    "kind": {
+      "description": "Legacy entry point that requested the mail.",
+      "type": "string",
+      "enum": [
+        "forgot-password",
+        "send-login"
+      ]
+    },
+    "userId": {
+      "description": "User the mail is about.",
+      "$ref": "#/$defs/cfUuid"
+    },
+    "returnId": {
+      "description": "Redirect id embedded in the return URL.",
+      "$ref": "#/$defs/cfUuid"
+    }
+  },
+  "$defs": {
+    "cfUuid": {
+      "description": "35-character ColdFusion UUID.",
+      "type": "string",
+      "pattern": "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{16}$"
+    },
+    "siteId": {
+      "description": "Legacy Masa site id, or empty.",
+      "type": "string",
+      "maxLength": 50
+    }
+  }
+}

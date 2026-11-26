@@ -1,0 +1,153 @@
+
+  <div class="mura-panel panel">
+    <div class="mura-panel-heading" role="tab" id="heading-layout">
+      <h4 class="mura-panel-title">
+        <a class="collapse collapsed" role="button" data-toggle="collapse" data-parent="#content-panels" href="#panel-layout" aria-expanded="false" aria-controls="panel-layout">Layout</a>
+      </h4>
+    </div>
+      <div id="panel-layout" class="panel-collapse collapse" role="tabpanel" aria-labelledby="heading-layout" aria-expanded="false" style="height: 0px;">
+        <div class="mura-panel-body">
+
+      			<span id="extendset-container-tablayoutobjectstop" class="extendset-container"></span>
+            <div class="mura-control-group">
+
+                    <div class="mura-control-group">
+                      <label>
+                          <span data-toggle="popover" title="" data-placement="right"
+                          data-content="Select&#x20;the&#x20;layout&#x20;file&#x20;for&#x20;the&#x20;page&#x20;that&#x20;you&#x20;are&#x20;working&#x20;on."
+                          data-original-title="Layout&#x20;Template">
+                            Layout Template
+                           <i class="mi-question-circle"></i></span>
+                			</label>
+    		              <select name="template" class="dropdown">
+    			            
+    			              <option value="">Inherit From Parent</option>
+    			            
+    				                <option value="blank.cfm" >blank.cfm</option>
+    				              
+    				                <option value="default.cfm" >default.cfm</option>
+    				              
+    				                <option value="home.cfm" >home.cfm</option>
+    				              
+    				                <option value="one_column.cfm" >one_column.cfm</option>
+    				              
+    				                <option value="three_column.cfm" >three_column.cfm</option>
+    				              
+    				                <option value="two_column_SL.cfm" >two_column_SL.cfm</option>
+    				              
+    				                <option value="two_column_SR.cfm" >two_column_SR.cfm</option>
+    				              
+    		          		</select>
+            			</div>
+
+                  <div class="mura-control-group">
+                  <label>
+                    <span data-toggle="popover" title="" data-placement="right"
+                    data-content="An&#x20;optional&#x20;layout&#x20;file&#x20;that&#x20;can&#x20;be&#x20;set&#x20;as&#x20;the&#x20;template&#x20;cascade.&#x20;If&#x20;not&#x20;set&#x20;the&#x20;template&#x20;cascade&#x20;will&#x20;default&#x20;to&#x20;the&#x20;layout&#x20;template&#x20;value."
+                    data-original-title="Alternate&#x20;Child&#x20;Layout&#x20;Template">
+                      Alternate Child Layout Template
+                     <i class="mi-question-circle"></i></span>
+                  </label>
+                  <select name="childTemplate" class="dropdown">
+    	            <option value="">none</option>
+    							
+    		                  <option value="blank.cfm" >blank.cfm</option>
+    		                
+    		                  <option value="default.cfm" >default.cfm</option>
+    		                
+    		                  <option value="home.cfm" >home.cfm</option>
+    		                
+    		                  <option value="one_column.cfm" >one_column.cfm</option>
+    		                
+    		                  <option value="three_column.cfm" >three_column.cfm</option>
+    		                
+    		                  <option value="two_column_SL.cfm" >two_column_SL.cfm</option>
+    		                
+    		                  <option value="two_column_SR.cfm" >two_column_SR.cfm</option>
+    		                
+    	          </select>
+            </div>
+          </div>
+          
+          <div class="mura-control-group">
+            <label>
+              <span data-toggle="popover" title="" data-placement="right"
+              data-content="A&#x20;Cascade&#x20;allows&#x20;you&#x20;to&#x20;select&#x20;a&#x20;any&#x20;number&#x20;of&#x20;Display&#x20;Objects&#x20;to&#x20;include&#x20;on&#x20;a&#x20;page&#x20;or&#x20;section&#x20;without&#x20;having&#x20;to&#x20;repeat&#x20;the&#x20;process&#x20;for&#x20;every&#x20;page&#x20;in&#x20;that&#x20;section.&#x20;&quot;Start&#x20;New&#x20;Cascade&quot;&#x20;clears&#x20;an&#x20;inherited&#x20;cascade&#x20;of&#x20;display&#x20;objects&#x20;allowing&#x20;you&#x20;to&#x20;start&#x20;over&#x20;with&#x20;a&#x20;new&#x20;Cascade.&#x20;&quot;Inherit&#x20;Cascade&quot;&#x20;is&#x20;the&#x20;default&#x20;setting&#x20;for&#x20;new&#x20;content&#x20;and&#x20;&quot;inherits&quot;&#x20;the&#x20;object&#x20;of&#x20;the&#x20;last&#x20;new&#x20;cascade&#x20;above&#x20;it.&#x20;&quot;Ignore&#x20;Cascade&quot;&#x20;allows&#x20;a&#x20;single&#x20;page&#x20;or&#x20;Masa&#x20;CMS&#x20;folder&#x20;to&#x20;not&#x20;inherit&#x20;the&#x20;objects&#x20;defined&#x20;by&#x20;a&#x20;previous&#x20;Cascade&#x20;without&#x20;affecting&#x20;the&#x20;items&#x20;below&#x20;it."
+              data-original-title="Inheritance&#x20;Rules">
+                Inheritance Rules
+               <i class="mi-question-circle"></i></span>
+            </label>
+             
+                <div class="help-block">This content node is curent inheriting display objects from:
+                
+                  <a href='/admin/?muraAction=cArch.edit&contenthistid=6300ED69-1320-5CC3-F922E3012E2C6BAE&contentid=00000000000000000000000000000000001&type=Page&siteid=default&topid=00000000000000000000000000000000001&parentid=00000000000000000000000000000000END&moduleid=00000000000000000000000000000000000&compactdisplay=No#tabLayoutObjects'>Home</a>
+                
+                </div>
+                
+            <label for="ioi" class="radio inline">
+            <input type="radio" name="inheritObjects" id="ioi" value="Inherit" checked>Inherit Cascade
+            </label>
+            <label for="ioc" class="radio inline">
+            <input type="radio" name="inheritObjects" id="ioc" value="Cascade" >
+            Start New Cascade
+            </label>
+            <label for="ior" class="radio inline">
+            <input type="radio" name="inheritObjects" id="ior" value="Reject" >
+            Do Not Inherit Cascade
+            </label>
+          </div>
+
+            
+              <div class="mura-control-group">
+                <label>Content Objects</label>
+                <div class="help-block">
+                  <p>To manage content objects, <a href="#" onclick="return preview('http://localhost:21680/layout-child-page/?previewid=3FC56571-01B7-3E2B-6DD650DBCA570AFB','');">preview this content node</a> and select the "Inline Edit" option.</p>
+                </div>
+              </div>
+
+            
+        
+
+				<div class="mura-control-group extendedattributes-group" id="extendedattributes-container-layoutobjects">
+					<div class="bigui" id="bigui__layoutobjects" data-label="Manage Extended Attributes">
+						<div class="bigui__title">Manage Extended Attributes</div>
+						<div class="bigui__controls">
+							<span id="extendset-container-tabextendedattributestop"></span>
+							<span id="extendset-container-layoutobjects" class="extendset-container extendedattributes-body" data-controlparent="extendedattributes-container-layoutobjects"></span>
+							<span id="extendset-container-tabextendedattributesbottom"></span>
+						</div>
+					</div>
+					
+				</div>
+
+      <span id="extendset-container-tablayoutobjectsbottom" class="extendset-container"></span>
+
+    </div>
+  </div>
+</div> 
+  
+<script>
+siteManager.customtaggroups=[];
+
+var remoteFeedConfiguratorTitle='Remote\x20Feed';
+var localIndexConfiguratorTitle='Local\x20Index';
+var tagCloudConfiguratorTitle='Tag\x20Cloud';
+var categorySummaryConfiguratorTitle='Category\x20Summary';	
+var slideShowConfiguratorTitle='Slide\x20Show';	
+var relatedContentConfiguratorTitle='Related\x20Content';	
+var siteMapConfiguratorTitle='Site\x20Map';		
+var genericConfiguratorTitle='Not\x20Available';	
+var genericConfiguratorMessage='This\x20display\x20object\x20does\x20not\x20have\x20any\x20configurable\x20options.';
+var contentid='3FC53CE9\x2DCE84\x2DD36C\x2D9FDD421339652522';
+var parentid='00000000000000000000000000000000001';
+
+var contenthistid='3FC56571-01B7-3E2B-6DD650DBCA570AFB';
+
+
+siteManager.allowopenfeeds=false;
+
+var pluginConfigurators=new Array();
+
+	siteManager.layoutmanager=true;
+
+</script>

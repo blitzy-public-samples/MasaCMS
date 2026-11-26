@@ -1,0 +1,151 @@
+
+
+	<div class="mura-header">
+		<h1>Form Data</h1>
+		
+<div class="nav-module-specific btn-group">
+	
+				<a class="btn" href="./?muraAction=cArch.list&siteid=default&topid=00000000000000000000000000000000004&parentid=00000000000000000000000000000000004&moduleid=00000000000000000000000000000000004"><i class="mi-arrow-circle-left"></i>
+						Back to Forms
+					</a>
+				<a class="btn" href="./?muraAction=cArch.hist&contentid=00000000000000000000000000000000001&type=Form&parentid=00000000000000000000000000000000004&topid=00000000000000000000000000000000004&siteid=default&startrow=1&moduleid=00000000000000000000000000000000004"><i class="mi-history"></i> Version History</a>
+				
+				<a class="btn" title="sitemanager.content.managedate_missing" href="./?muraAction=cArch.datamanager&contentid=00000000000000000000000000000000001&type=Form&topid=00000000000000000000000000000000004&siteid=default&moduleid=00000000000000000000000000000000004&parentid=00000000000000000000000000000000004"><i class="mi-wrench"></i> Form Data</a>
+				
+				<a class="btn" title="Edit Display" href="./?muraAction=cArch.datamanager&contentid=00000000000000000000000000000000001&type=Form&action=display&topid=00000000000000000000000000000000004&siteid=default&moduleid=00000000000000000000000000000000004&parentid=00000000000000000000000000000000004"><i class="mi-pencil"></i> Edit Display</a>
+				<a class="btn" title="Delete" href="./?muraAction=cArch.update&contentid=00000000000000000000000000000000001&type=Form&action=deleteall&topid=00000000000000000000000000000000004&siteid=default&moduleid=00000000000000000000000000000000004&parentid=00000000000000000000000000000000004&csrf_token=<token>&csrf_token_expires=<token>" onClick="return confirmDialog('Delete\x20Form\x3F',this.href)"><i class="mi-trash"></i> Delete Form</a>
+				
+					<a class="btn" href="./?muraAction=cPerm.main&contentid=00000000000000000000000000000000001&type=Form&parentid=00000000000000000000000000000000004&topid=00000000000000000000000000000000004&siteid=default&moduleid=00000000000000000000000000000000004&startrow=1"><i class="mi-group"></i> Permissions</a>
+				
+</div>
+
+		<div class="mura-item-metadata">
+			<div class="label-group">
+				<span class="label">Title: <strong>Home</strong></span>
+				<span class="label">Total Records Available: <strong>2</strong></span>
+			</div>
+		</div><!-- /.mura-item-metadata -->
+	</div> <!-- /.mura-header -->
+	
+
+	<div class="block block-constrain">
+		<div class="block block-bordered">
+		  <div class="block-content">
+					
+<script type="text/javascript">
+function setFields(){
+document.getElementById('responseDisplayFields').value=document.getElementById('summaryList2').value + '~' + document.getElementById('detailList2').value;
+}
+</script>
+
+
+  <form novalidate="novalidate" name="frmDisplayFields" method="post" action="index.cfm">
+
+<div class="mura-control-group">
+
+  <div class="mura-control-group half">
+  <label>Available Fields</label>
+    <select name="availableFields" size="10" id="availableFields" class="multiSelect">
+      
+        <option value="EMAIL">EMAIL</option>
+      
+        <option value="MESSAGE">MESSAGE</option>
+      
+        <option value="NAME">NAME</option>
+      
+    </select>
+  </div>
+  <div class="mura-control-group half">
+    <table class="mura-control-table">
+      <tr>
+        <td class="nested"><input type="button" class="btn btn-sm" value=">>" onclick="dataManager.addObject('availableFields','summaryList','summaryList2');" class="objectNav btn">
+          <br />
+          <input type="button" class="btn btn-sm" value="<<" onclick="dataManager.deleteObject('summaryList','summaryList2');" class="objectNav btn">            </td>
+        <td class="nested" style="width:76%;"> <label>Summary Display Fields</label><br />
+          <select name="summaryList" id="summaryList" size="4" style="width:100%;" class="multiSelect">
+            
+          </select>
+          <input type="hidden" name="summaryList2" id="summaryList2" value="" class="multiSelect"></td>
+        <td  class="nested"><input type="button" class="btn btn-sm" value="Up" onclick="dataManager.moveUp('summaryList','summaryList2');" class="objectNav btn">
+          <br />
+          <input type="button" class="btn btn-sm" value="Down" onclick="dataManager.moveDown('summaryList','summaryList2');" class="objectNav btn"></td>
+      </tr>
+      <tr>
+        <td class="nested"><input type="button" class="btn btn-sm" value=">>" onclick="dataManager.addObject('availableFields','detailList','detailList2');" class="objectNav btn">
+          <br />
+          <input type="button" class="btn btn-sm" value="<<" onclick="dataManager.deleteObject('detailList','detailList2');" class="objectNav btn"></td>
+        <td class="nested"><label>Detail Display Fields</label><br />
+          <select name="detailList"  id="detailList" size="4" style="width:100%;">
+            
+          </select>
+          <input type="hidden" name="detailList2" id="detailList2" value=""></td>
+        <td  class="nested"><input type="button" class="btn btn-sm" value="Up" onclick="dataManager.moveUp('detailList','detailList2');" class="objectNav btn">
+          <br />
+          <input type="button" class="btn btn-sm" value="Down" onclick="dataManager.moveDown('detailList','detailList2');" class="objectNav btn"></td>
+      </tr>
+    </table>
+  </div>
+</div>
+
+<div class="mura-control-group">
+  <label>Records Per Page
+  </label>
+  <select name="nextN" class="dropdown mura-constrain mura-numeric">
+    
+      <option value="5" >5</option>
+    
+      <option value="10" selected>10</option>
+    
+      <option value="15" >15</option>
+    
+      <option value="20" >20</option>
+    
+      <option value="25" >25</option>
+    
+      <option value="30" >30</option>
+    
+      <option value="35" >35</option>
+    
+      <option value="40" >40</option>
+    
+      <option value="45" >45</option>
+    
+      <option value="50" >50</option>
+    
+  </select>
+</div>
+
+<div class="mura-control-group">
+  <label>Sort By</label>
+  <select name="sortBy" class="dropdown mura-constrain">
+    
+      <option value="EMAIL" >EMAIL</option>
+    
+      <option value="MESSAGE" >MESSAGE</option>
+    
+      <option value="NAME" >NAME</option>
+    
+  </select>
+  <select name="sortDirection" class="dropdown mura-constrain">
+    <option value="asc" selected>Ascending</option>
+    <option value="desc" >Descending</option>
+  </select>
+</div>
+
+<div class="mura-actions">
+  <div class="form-actions">
+    <button class="btn mura-primary" onclick="submitForm(document.forms.frmDisplayFields,'setDisplay');"><i class="mi-check-circle"></i>Update</button>
+  </div>
+</div>
+
+<input type="hidden" value="setDisplay" name="action">
+<input type="hidden" name="muraAction" value="cArch.datamanager" />
+<input type="hidden" name="contentid" value="00000000000000000000000000000000001" />
+<input type="hidden" name="siteid" value="default" />
+<input type="hidden" name="moduleid" value="00000000000000000000000000000000004" />
+
+</form>
+
+			</div> <!-- /.block-content -->
+		</div> <!-- /.block-bordered -->
+	</div> <!-- /.block-constrain -->

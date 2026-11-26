@@ -1,0 +1,36 @@
+{
+  "name": "@SERVER_NAME@",
+  "openBrowser": false,
+  "trayEnable": false,
+  "app": {
+    "cfengine": "@CFENGINE@",
+    "serverHomeDirectory": "@SERVER_HOME@"
+  },
+  "web": {
+    "webroot": "@WEBROOT@",
+    "host": "@HOST@",
+    "http": {
+      "enable": true,
+      "port": "@PORT@"
+    },
+    "ssl": {
+      "enable": false
+    },
+    "rewrites": {
+      "enable": true
+    },
+    "rules": [
+      "regex( pattern='^/+(gateway|legacy-fixtures|harness|services|migration|platform|infra|web|opt2|[.]github/+workflows)(/|$)', case-sensitive=false ) and is-directory() -> { error-file( file='/dev/null', response-codes={ 404 } ); response-code( 404 ) }",
+      "regex( pattern='^/+gateway/+legacy-bridge(/|$)', case-sensitive=false ) and not regex( pattern='^/+gateway/+legacy-bridge/+cfml/+(session|jobs|scheduler|site|files)[.]cfm$', case-sensitive=true ) -> { error-file( file='/dev/null', response-codes={ 404 } ); response-code( 404 ) }"
+    ]
+  },
+  "jvm": {
+    "javaHome": "/usr/lib/jvm/java-17-openjdk-amd64",
+    "heapSize": 2048,
+    "args": "@JVM_ARGS@ -Dcom.sun.media.imageio.disableCodecLib=true -Djava.io.tmpdir=@LEGACY_TMP_DIR@"
+  },
+  "env": {
+    "MURA_PORT": "@GATEWAY_PORT@",
+    "MURA_PROXYPORT": "@GATEWAY_PORT@"
+  }
+}

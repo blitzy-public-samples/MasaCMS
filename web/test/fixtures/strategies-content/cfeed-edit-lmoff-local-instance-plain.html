@@ -1,0 +1,289 @@
+
+
+<div class="mura-header">
+
+		<h1>Edit Local Index Instance</h1>
+	
+</div> <!-- /.mura-header -->
+
+
+
+
+
+<span id="msg">
+
+</span>
+
+<form novalidate="novalidate" action="./?muraAction=cFeed.update&siteid=default" method="post" name="form1" id="feedFrm" onsubmit="return validate(this);" style="width: 412px">
+
+<div class="block block-constrain">
+
+
+	<ul class="navTask nav nav-pills">
+		<li><a href="?muraAction=cFeed.edit&amp;siteid=default&amp;feedid=4AF5606F-A1BC-7084-A6DCD411EEEB1BE7&amp;type=Local&amp;homeID=&amp;compactDisplay=true">Edit Default Settings</a></li>
+	</ul>
+
+<!-- Content Filters -->
+ 
+<div id="tabDisplay" class="tab-pane">
+
+	<div class="block block-bordered">
+		<!-- block header -->
+		<div class="block-header">
+			<h3 class="block-title">Display Defaults</h3>
+		</div> <!-- /.block header -->
+		<div class="block-content">
+		<h2>Cap Local Empty List</h2>
+			<div class="mura-control-group">
+				<label>List Image Size</label>
+				<select name="instanceimageSize" data-displayobjectparam="imageSize" onchange="if(this.value=='custom'){jQuery('#feedCustomImageOptions').fadeIn('fast')}else{jQuery('#feedCustomImageOptions').hide();jQuery('#feedCustomImageOptions').find(':input').val('AUTO');}">
+					
+						<option value="small" selected>Small</option>
+					
+						<option value="medium">Medium</option>
+					
+						<option value="large">Large</option>
+					
+						<option value="carouselimage">carouselimage</option>
+					
+					<option value="custom">Custom</option>
+				</select>
+		</div>
+
+		<div id="feedCustomImageOptions" class="mura-control-group" style="display:none">
+			<div class="mura-control-group">
+				<label>Width</label>
+				<input class="mura-constrain numeric" name="instanceimageWidth" data-displayobjectparam="imageWidth" type="text" value="AUTO" />
+			</div>
+
+			<div class="mura-control-group">
+				<label>Height</label>
+				<input class="mura-constrain numeric" name="instanceimageHeight" data-displayobjectparam="imageHeight" type="text" value="AUTO" />
+			</div>
+		</div>
+
+	<div class="mura-control-group">
+		<label>Display Name on Content Object?</label>
+		<label class="radio inline">
+			<input name="instancedisplayName" data-displayobjectparam="displayName" type="radio" value="1" class="radio" onchange="jQuery('#altNameContainer').toggle();">
+			Yes
+		</label>
+		<label class="radio inline">
+			<input name="instancedisplayName" data-displayobjectparam="displayName" type="radio" value="0" class="radio" onchange="jQuery('#altNameContainer').toggle();" checked>
+			No
+		</label>
+	</div>
+
+	<div class="mura-control-group" id="altNameContainer"  style="display:none;">
+		<label>Alternate Display Name</label>
+		<input name="instancealtName" data-displayobjectparam="altName" type="text" value="" maxlength="250">
+	</div>
+
+	<div class="mura-control-group">
+		<label>
+			Custom CSS Classes
+		</label>
+		<input name="cssclass"  data-displayobjectparam="cssclass" type="text" value="" maxlength="255">
+	</div>
+
+				<div class="mura-control-group">
+					<label>
+			View All Link
+		</label>
+						<input name="viewalllink" data-displayobjectparam="viewallink" type="text" value="" maxlength="255">
+	</div>
+
+				<div class="mura-control-group">
+					<label>
+			View All Label
+		</label>
+					<input name="viewalllabel" data-displayobjectparam="viewalllabel" type="text" value="" maxlength="100">
+	</div>
+
+				<div class="mura-control-group">
+					<label>Max Items</label>
+					<select name="instancemaxItems" data-displayobjectparam="maxItems">
+			
+			<option value="1" >1</option>
+			
+			<option value="2" >2</option>
+			
+			<option value="3" >3</option>
+			
+			<option value="4" >4</option>
+			
+			<option value="5" >5</option>
+			
+			<option value="6" >6</option>
+			
+			<option value="7" >7</option>
+			
+			<option value="8" >8</option>
+			
+			<option value="9" >9</option>
+			
+			<option value="10" >10</option>
+			
+			<option value="11" >11</option>
+			
+			<option value="12" >12</option>
+			
+			<option value="13" >13</option>
+			
+			<option value="14" >14</option>
+			
+			<option value="15" >15</option>
+			
+			<option value="16" >16</option>
+			
+			<option value="17" >17</option>
+			
+			<option value="18" >18</option>
+			
+			<option value="19" >19</option>
+			
+			<option value="20" selected>20</option>
+			
+			<option value="25" >25</option>
+			
+			<option value="50" >50</option>
+			
+			<option value="100" >100</option>
+			
+			<option value="100000" >All</option>
+			</select>
+		</div>
+
+		<div class="mura-control-group">
+				 <label>Items Per Page</label>
+					<select name="instancenextN" data-displayobjectparam="nextN">
+			
+			<option value="1" >1</option>
+			
+			<option value="2" >2</option>
+			
+			<option value="3" >3</option>
+			
+			<option value="4" >4</option>
+			
+			<option value="5" >5</option>
+			
+			<option value="6" >6</option>
+			
+			<option value="7" >7</option>
+			
+			<option value="8" >8</option>
+			
+			<option value="9" >9</option>
+			
+			<option value="10" >10</option>
+			
+			<option value="11" >11</option>
+			
+			<option value="12" >12</option>
+			
+			<option value="13" >13</option>
+			
+			<option value="14" >14</option>
+			
+			<option value="15" >15</option>
+			
+			<option value="16" >16</option>
+			
+			<option value="17" >17</option>
+			
+			<option value="18" >18</option>
+			
+			<option value="19" >19</option>
+			
+			<option value="20" selected>20</option>
+			
+			<option value="25" >25</option>
+			
+			<option value="50" >50</option>
+			
+			<option value="100" >100</option>
+			
+			<option value="100000" >All</option>
+			</select>
+			</div>
+
+				<div class="mura-control-group" id="availableFields">
+						<label>
+					<span class="half">Available Fields</span> <span class="half">Selected Fields</span>
+				</label>
+				<div id="sortableFields">
+					<p class="dragMsg">
+										<span class="dragFrom half">Drag Fields from Here&hellip;</span><span class="half">&hellip;and Drop Them Here.</span>
+					</p>
+
+					
+
+					<ul id="availableListSort" class="displayListSortOptions">
+						
+							<li class="ui-state-default">Image</li>
+						
+							<li class="ui-state-default">Body</li>
+						
+							<li class="ui-state-default">ReadMore</li>
+						
+							<li class="ui-state-default">Credits</li>
+						
+							<li class="ui-state-default">Comments</li>
+						
+							<li class="ui-state-default">Tags</li>
+						
+							<li class="ui-state-default">Rating</li>
+						
+					</ul>
+
+					<ul id="displayListSort" class="displayListSortOptions">
+						
+							<li class="ui-state-highlight">Title</li>
+						
+							<li class="ui-state-highlight">Summary</li>
+						
+							<li class="ui-state-highlight">Date</li>
+						
+					</ul>
+					<input type="hidden" id="displayList" value="Title,Summary,Date" name="instancedisplayList"  data-displayobjectparam="displayList"/>
+				</div>
+				<script>
+					jQuery(document).ready(
+						function(){
+							feedManager.setDisplayListSort();
+						}
+					);
+				</script>
+			</div>
+			</div> <!-- /.block-content -->
+		</div> <!-- /.block-bordered -->
+	</div> <!-- /.tab-pane -->
+
+<div class="mura-actions">
+	<div class="clearfix form-actions">
+	
+			<button class="btn" onclick="updateInstanceObject();submitForm(document.forms.form1,'update');return false;"><i class="mi-check-circle"></i>Update</button>
+		
+			<input type="hidden" name="homeID" value="" />
+		
+		<input type=hidden name="feedID" value="4AF5606F-A1BC-7084-A6DCD411EEEB1BE7">
+		<input type="hidden" name="action" value="update">
+	
+	<input type="hidden" name="type" value="Local"><input name="isActive" type="hidden" value="1" />
+	<input type="hidden" id="instanceParams" value='' name="instanceParams" />
+	<input type="hidden" name="assignmentID" value="3BE4B6EE-B691-7668-7949CEF63B83E540" />
+	<input type="hidden" name="orderno" value="1" />
+	<input type="hidden" name="regionid" value="2" />
+	<input type=hidden name="instanceid" value="">
+	<input type="hidden" name="closeCompactDisplay" value="true" />
+	<input type="hidden" name="csrf_token" value="TESTCSRFTOKEN0000000000000000000" /><input type="hidden" name="csrf_token_expires" value="260630150000000" />
+	</div>
+</div>
+
+</div> <!-- /.block-constrain -->
+</form>
+
+<script type="text/javascript">
+$searchParams.setSearchButtons();
+</script>

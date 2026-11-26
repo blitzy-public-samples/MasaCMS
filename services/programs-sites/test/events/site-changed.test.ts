@@ -1,0 +1,765 @@
+import { fileURLToPath } from 'node:url';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  TENANT_A,
+  TENANT_B,
+  TENANT_LIST,
+  TENANT_UMBRELLA,
+  createCapturingPublisher,
+  createThrowawaySchema,
+  deliverDuplicate,
+  deliverOutOfOrder,
+  isAck,
+  mintTasksInvokerToken,
+  pgAvailable,
+  pushTo,
+  registryPayloads,
+  seedRegistry,
+  testEnvelope,
+  versionedSequence,
+  withoutTenant,
+  type CapturingPublisher,
+  type TenantFixture,
+  type ThrowawaySchema,
+} from '@opt2/platform/testing';
+import {
+  GateClosedError,
+  UNPUBLISHED_EVENTS_HEADER,
+  WRITE_POSITION_HEADER_LC,
+  encodeKey,
+  encodeRow,
+  parseWritePosition,
+  type ApplyRequest,
+  type GateRequest,
+} from '@opt2/platform/migration-kit';
+import type { EventEnvelope } from '@opt2/platform/events';
+import { outboxDrainCounts, outboxRuntimeFor, sweepOutbox } from '@opt2/platform/outbox';
+import { tenantIdForSite } from '@opt2/platform/tenancy';
+import { buildTestApp, headersFor, type FakeTaskPort, type TestApp } from '../helpers/app.js';
+import { TOPIC, writeSiteChanged } from '../../src/events/site-changed.js';
+import { SITE_CHANGED_SUBSCRIPTION, siteRegistryConsumerRegistration } from '../../src/events/consumers.js';
+import { siteChangedPayload } from '../../src/domain/pools.js';
+import { SITE_DEFAULTS } from '../../src/legacy/site-fields.js';
+import { SITE, UNITS, type SiteRow } from '../../src/repo/tables.js';
+import { tsettingsMapping } from '../../src/migration/mappings/tsettings.js';
+
+type SitePayload = ReturnType<typeof siteChangedPayload>;
+
+type OutboxRow = {
+  seq: string;
+  event_id: string;
+  kind: string;
+  envelope: {
+    eventId: string;
+    tenantId: string;
+    aggregateType: string;
+    aggregateId: string;
+    aggregateVersion: number;
+    payload: unknown;
+  };
+  published_at: Date | null;
+  xmin: string;
+};
+
+type ChangelogRow = { seq: string; xid: string; xid_low: string; op: string; origin: string };
+
+type RegistryRow = {
+  site_id: string;
+  tenant_id: string;
+  public_user_pool_tenant: string | null;
+  private_user_pool_tenant: string | null;
+  category_pool_tenant: string | null;
+  file_pool_tenant: string | null;
+  display_pool_tenant: string | null;
+  content_pool_tenants: string[] | null;
+  domains: string[] | null;
+  aggregate_version: string;
+  updated_at: Date;
+  deleted: boolean;
+};
+
+type InboxRow = { tenant_id: string; status: string };
+
+/** A site and its tenant: a fixture tenant, or a site the migration applies of a case create. */
+type SiteRef = Pick<TenantFixture, 'siteId' | 'tenantId'>;
+
+const MIGRATIONS_DIR = fileURLToPath(new URL('../../db/migrations/', import.meta.url));
+const SERVICE = 'programs-sites';
+const SWEEP_QUEUE = 'programs-sites-outbox-sweep';
+const SWEEP_INTERVAL_S = 60;
+const GATE_HOLDER = 'site-changed-events-suite';
+const SEED_BATCH_ID = 'site-changed-events-seed-tenant-a';
+const FORM = { 'content-type': 'application/x-www-form-urlencoded' };
+// Seeded rows hold the bean init defaults settingsDAO.create stores for a new site.
+const BEAN_DEFAULTS: ReadonlyMap<string, unknown> = new Map(
+  Object.entries(SITE_DEFAULTS).map(([name, value]) => [name.toLowerCase(), value]),
+);
+
+describe.skipIf(!(await pgAvailable()))('programs-sites.site.changed.v1', () => {
+  let schema!: ThrowawaySchema;
+  let app!: TestApp['app'];
+  let publisher!: CapturingPublisher;
+  let taskPort!: FakeTaskPort;
+  let clock!: TestApp['clock'];
+
+  /** `<throwaway schema>.<name>`. */
+  const table = (name: string): string => `${schema.schema}.${name}`;
+
+  /** Rows of `sql` in a tenant transaction of `fixture`, under the RLS the app runs under. */
+  async function tenantQuery<R extends Record<string, unknown>>(fixture: Pick<TenantFixture, 'tenantId'>, sql: string, params: unknown[] = []): Promise<R[]> {
+    return (await schema.app.withTenant(fixture.tenantId, (tx) => tx.query<R>(sql, params))).rows;
+  }
+
+  /** Rows of `sql` in a metadata transaction, for the non-tenant registry. */
+  async function metadataQuery<R extends Record<string, unknown>>(sql: string, params: unknown[] = []): Promise<R[]> {
+    return (await schema.app.withMetadata((tx) => tx.query<R>(sql, params))).rows;
+  }
+
+  /** The `tenant_registry` row of `siteId`, or undefined. */
+  async function registryRow(siteId: string): Promise<RegistryRow | undefined> {
+    const [row] = await metadataQuery<RegistryRow>(`SELECT * FROM ${table('tenant_registry')} WHERE site_id = $1`, [siteId]);
+    return row;
+  }
+
+  /** The stored `site` row of `fixture`, with its row `xmin`. */
+  async function storedSite(fixture: SiteRef): Promise<SiteRow & { xmin: string }> {
+    const [row] = await tenantQuery<SiteRow & { xmin: string }>(
+      fixture,
+      `SELECT *, xmin::text AS xmin FROM ${table('site')} WHERE siteid = $1`,
+      [fixture.siteId],
+    );
+    if (row === undefined) throw new Error(`no stored site ${fixture.siteId}`);
+    return row;
+  }
+
+  /** The site topic's outbox rows of `fixture`, in numeric `seq` order. */
+  function outboxRows(fixture: SiteRef): Promise<OutboxRow[]> {
+    return tenantQuery<OutboxRow>(
+      fixture,
+      `SELECT seq::text AS seq, event_id::text AS event_id, kind, envelope, published_at, xmin::text AS xmin
+         FROM ${table('outbox')} WHERE topic = $1 AND ordering_key = $2 ORDER BY ${table('outbox')}.seq`,
+      [TOPIC, fixture.siteId],
+    );
+  }
+
+  /** The changelog rows of `fixture`'s site row, in `seq` order, with the low 32 bits of each xid. */
+  function siteChangelog(fixture: TenantFixture): Promise<ChangelogRow[]> {
+    return tenantQuery<ChangelogRow>(
+      fixture,
+      `SELECT seq::text AS seq, xid::text AS xid, (xid::text::numeric % 4294967296)::text AS xid_low, op, origin
+         FROM ${table('changelog')} WHERE "table" = $1 AND key = $2 ORDER BY seq`,
+      [SITE.table, encodeKey(SITE.columns, SITE.key ?? [], { siteid: fixture.siteId })],
+    );
+  }
+
+  /** Inbox receipts of `eventId` in every fixture tenant. */
+  async function inboxRows(eventId: string): Promise<InboxRow[]> {
+    const rows: InboxRow[] = [];
+    for (const fixture of TENANT_LIST) {
+      rows.push(
+        ...(await tenantQuery<InboxRow>(fixture, `SELECT tenant_id::text AS tenant_id, status FROM ${table('inbox')} WHERE event_id = $1`, [
+          eventId,
+        ])),
+      );
+    }
+    return rows;
+  }
+
+  /** Outbox rows a sweep selects (unpublished, not held), summed over every fixture tenant. */
+  async function unpublishedOutboxCount(): Promise<number> {
+    let count = 0;
+    for (const fixture of TENANT_LIST) {
+      const [row] = await tenantQuery<{ count: string }>(
+        fixture,
+        `SELECT count(*)::text AS count FROM ${table('outbox')} WHERE published_at IS NULL AND NOT held`,
+      );
+      count += Number(row?.count ?? 0);
+    }
+    return count;
+  }
+
+  /** The fixture registry payload of `siteId`. */
+  function fixturePayload(siteId: string): SitePayload {
+    const payload = registryPayloads().find((candidate) => candidate.siteId === siteId);
+    if (payload === undefined) throw new TypeError(`no fixture payload for ${siteId}`);
+    return payload;
+  }
+
+  /** A contract-valid site envelope of `fixture` at `aggregateVersion`. */
+  function siteEnvelope(fixture: SiteRef, aggregateVersion: number, payload: SitePayload) {
+    return testEnvelope({ topic: TOPIC, tenantId: fixture.tenantId, aggregateId: fixture.siteId, aggregateVersion, payload });
+  }
+
+  /** A site the registry seed never holds, with a contract-valid payload pooled like tenant-a's. */
+  function unregisteredSite(siteId: string): { siteId: string; tenantId: string; payload: SitePayload } {
+    const payload = { ...fixturePayload(TENANT_A.siteId), siteId, privateUserPoolId: siteId, contentPoolIds: [siteId], domains: [`${siteId}.events.test`] };
+    return { siteId, tenantId: tenantIdForSite(siteId), payload };
+  }
+
+  /** A `tsettings` row holding the site bean's init defaults (empty text as NULL), its id, its name and `values`. */
+  function tsettingsRow(siteId: string, values: Readonly<Record<string, unknown>> = {}): Record<string, unknown> {
+    const row: Record<string, unknown> = Object.fromEntries(
+      tsettingsMapping.legacyColumns.map(({ name }) => [name, BEAN_DEFAULTS.get(name.toLowerCase()) || null]),
+    );
+    for (const [name, value] of Object.entries({ SiteID: siteId, Site: `Site ${siteId}`, ...values })) {
+      if (!(name in row)) throw new TypeError(`tsettings maps no column ${name}`);
+      row[name] = value;
+    }
+    return row;
+  }
+
+  /** A one-row `tsettings` batch: a backfill upsert unless `op` or `origin` say otherwise. */
+  function tsettingsBatch(
+    batchId: string,
+    row: Readonly<Record<string, unknown>>,
+    { op = 'upsert', origin = 'backfill' }: { op?: 'upsert' | 'delete'; origin?: ApplyRequest['origin'] } = {},
+  ): ApplyRequest {
+    const columns = tsettingsMapping.legacyColumns;
+    return {
+      batchId,
+      origin,
+      legacyTable: tsettingsMapping.legacyTable,
+      siteId: String(row.SiteID),
+      columns: columns.map((column) => ({ ...column })),
+      rows: [{ op, row: encodeRow(columns, row) }],
+    };
+  }
+
+  /** `siteId` and its tenant, for a site a case creates and deletes through migration applies. */
+  function appliedSite(siteId: string): SiteRef {
+    return { siteId, tenantId: tenantIdForSite(siteId) };
+  }
+
+  /** Applies a one-row `tsettings` feed batch of `op` for `site`, `values` over the bean defaults, and expects it applied. */
+  async function feedSite(site: SiteRef, batchId: string, op: 'upsert' | 'delete', values: Readonly<Record<string, unknown>> = {}) {
+    const res = await migrationPost('apply', tsettingsBatch(batchId, tsettingsRow(site.siteId, values), { op, origin: 'migration-feed' }));
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ duplicate: false, applied: 1 });
+  }
+
+  /** The envelope stored in an outbox row. */
+  function envelopeOf(row: OutboxRow): EventEnvelope<SitePayload> {
+    return row.envelope as unknown as EventEnvelope<SitePayload>;
+  }
+
+  /** Pushes the envelope of each outbox row to the registry subscription in order, expecting each acked with 204. */
+  async function pushRows(rows: readonly OutboxRow[]): Promise<void> {
+    for (const row of rows) expect((await pushTo(app, SITE_CHANGED_SUBSCRIPTION, envelopeOf(row))).statusCode).toBe(204);
+  }
+
+  /** Inbox statuses of `site`'s tenant by event id. */
+  async function siteInbox(site: SiteRef): Promise<Record<string, string>> {
+    const rows = await tenantQuery<{ event_id: string; status: string }>(site, `SELECT event_id::text AS event_id, status FROM ${table('inbox')}`);
+    return Object.fromEntries(rows.map((row) => [row.event_id, row.status]));
+  }
+
+  /** POSTs `body` to `/internal/v1/migration/<route>` as the migration service. */
+  async function migrationPost(route: 'apply' | 'gate', body: ApplyRequest | GateRequest) {
+    return app.inject({ method: 'POST', url: `/internal/v1/migration/${route}`, headers: await headersFor('service:migration'), payload: body });
+  }
+
+  /** POSTs the Sites screen order save of `tenant-a` at `orderno` as an S2 admin with a CSRF token the identity recorder accepts. */
+  async function orderTenantA(orderno: number) {
+    const form = new URLSearchParams({ orderID: 'tenant-a', orderno: String(orderno), csrf_token: 'T', csrf_token_expires: 'E' });
+    return app.inject({
+      method: 'POST',
+      url: '/v1/sites/order',
+      headers: { ...(await headersFor('s2', { site: TENANT_A.siteId })), ...FORM },
+      payload: form.toString(),
+    });
+  }
+
+  /** Name of the sweep chain task of the slot `offset` slots after the clock's current one. */
+  function sweepTaskName(offset = 0): string {
+    const slotStart = Math.floor(clock.now().getTime() / 1000 / SWEEP_INTERVAL_S) * SWEEP_INTERVAL_S;
+    return `${SWEEP_QUEUE}-${slotStart + offset * SWEEP_INTERVAL_S}`;
+  }
+
+  /** Site ids of the `/v2/sites` page an S2 admin reads, in registry order. */
+  async function pagedSiteIds(): Promise<string[]> {
+    const res = await app.inject({ method: 'GET', url: '/v2/sites?limit=1000', headers: await headersFor('s2', { site: TENANT_A.siteId }) });
+    expect(res.statusCode).toBe(200);
+    return res.json<{ items: { siteid: string }[] }>().items.map((item) => item.siteid);
+  }
+
+  /** POSTs the current slot's outbox sweep task as the local Cloud Tasks adapter would. */
+  async function sweep() {
+    const name = sweepTaskName();
+    return app.inject({
+      method: 'POST',
+      url: '/internal/v1/outbox/sweep',
+      headers: {
+        authorization: `Bearer ${await mintTasksInvokerToken({ audience: SERVICE })}`,
+        'x-cloudtasks-taskname': name,
+        'x-cloudtasks-queuename': SWEEP_QUEUE,
+      },
+      payload: { queue: SWEEP_QUEUE, name, tenantId: null, payload: {} },
+    });
+  }
+
+  beforeAll(async () => {
+    schema = await createThrowawaySchema({ service: SERVICE, migrationsDir: MIGRATIONS_DIR });
+    await seedRegistry(schema.app, schema.schema);
+    publisher = createCapturingPublisher();
+    ({ app, taskPort, clock } = await buildTestApp({ db: schema.app, publisher }));
+
+    const gateRequests: GateRequest[] = [
+      { op: 'close', units: [...UNITS], holderId: GATE_HOLDER, allowLegacy: true },
+      { op: 'open', units: [...UNITS], holderId: GATE_HOLDER },
+    ];
+    for (const request of gateRequests) {
+      const res = await migrationPost('gate', request);
+      expect(res.statusCode).toBe(200);
+    }
+    const gates = (await migrationPost('gate', { op: 'status', units: [...UNITS] })).json<{ units: { state: string }[] }>();
+    expect(gates.units.map((gate) => gate.state)).toEqual(UNITS.map(() => 'open'));
+
+    const seed = fixturePayload(TENANT_A.siteId);
+    const seeded = await migrationPost(
+      'apply',
+      tsettingsBatch(
+        SEED_BATCH_ID,
+        tsettingsRow(TENANT_A.siteId, {
+          Domain: seed.domains?.[0],
+          publicUserPoolID: seed.publicUserPoolId,
+          privateUserPoolID: seed.privateUserPoolId,
+          categoryPoolID: seed.categoryPoolId,
+          filePoolID: seed.filePoolId,
+          displayPoolID: seed.displayPoolId,
+        }),
+      ),
+    );
+    expect(seeded.statusCode).toBe(200);
+    expect(seeded.json()).toMatchObject({ duplicate: false, applied: 1 });
+    publisher.clear();
+  });
+
+  // Registry cases push versions of the same fixture sites, so each starts from the seeded registry with no consumer progress.
+  beforeEach(async () => {
+    await seedRegistry(schema.app, schema.schema);
+    for (const fixture of TENANT_LIST) {
+      await tenantQuery(fixture, `DELETE FROM ${table('consumer_aggregate_version')} WHERE subscription = $1`, [SITE_CHANGED_SUBSCRIPTION]);
+    }
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    // An injected publish failure a case did not consume must not fail a later case's publish.
+    publisher?.failNext(0);
+  });
+
+  afterAll(async () => {
+    await app?.close();
+    await schema?.drop();
+  });
+
+  it('writes one state outbox row carrying the stored site with legacy pool ids, publishes it after commit and audits the write', async () => {
+    const before = await outboxRows(TENANT_A);
+    const targetLogs = (await siteChangelog(TENANT_A)).filter((log) => log.origin === 'target');
+
+    const res = await orderTenantA(2);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ written: true });
+    const added = (await outboxRows(TENANT_A)).slice(before.length);
+    expect(added).toHaveLength(1);
+    const [row] = added as [OutboxRow];
+    const site = await storedSite(TENANT_A);
+    expect(row.kind).toBe('state');
+    expect(row.envelope).toMatchObject({
+      tenantId: TENANT_A.tenantId,
+      aggregateType: 'site',
+      aggregateId: TENANT_A.siteId,
+      aggregateVersion: Number(site.row_version),
+    });
+    expect(row.envelope.payload).toEqual(siteChangedPayload(site));
+    expect(row.envelope.payload).toEqual({
+      siteId: 'tenant-a',
+      publicUserPoolId: 'umbrella',
+      privateUserPoolId: 'tenant-a',
+      categoryPoolId: 'umbrella',
+      filePoolId: 'umbrella',
+      displayPoolId: 'umbrella',
+      contentPoolIds: ['tenant-a'],
+      domains: [fixturePayload(TENANT_A.siteId).domains?.[0]],
+    });
+    expect(row.published_at).toBeInstanceOf(Date);
+    expect(publisher.published.filter((event) => event.envelope.eventId === row.event_id)).toEqual([
+      expect.objectContaining({ topic: TOPIC }),
+    ]);
+    const logs = (await siteChangelog(TENANT_A)).filter((log) => log.origin === 'target');
+    expect(logs).toHaveLength(targetLogs.length + 1);
+    const position = parseWritePosition(res.headers[WRITE_POSITION_HEADER_LC] as string | undefined);
+    expect(position.get(SERVICE)).toBe(logs.at(-1)?.xid);
+  });
+
+  it('commits the outbox row with the site row and its changelog row in one transaction and survives a failed in-request flush', async () => {
+    const before = await outboxRows(TENANT_A);
+    const logsBefore = await siteChangelog(TENANT_A);
+    publisher.failNext();
+
+    // The unpublished row withholds the answer: the request is abandoned while its write stays committed.
+    await expect(orderTenantA(3)).rejects.toMatchObject({ code: 'LIGHT_ECONNRESET' });
+
+    const added = (await outboxRows(TENANT_A)).slice(before.length);
+    expect(added).toHaveLength(1);
+    const [row] = added as [OutboxRow];
+    expect(row.published_at).toBeNull();
+    const logs = (await siteChangelog(TENANT_A)).slice(logsBefore.length);
+    expect(logs).toHaveLength(1);
+    const [log] = logs as [ChangelogRow];
+    expect(log.origin).toBe('target');
+    const site = await storedSite(TENANT_A);
+    expect(row.envelope.aggregateVersion).toBe(Number(site.row_version));
+    expect(row.xmin).toBe(site.xmin);
+    expect(log.xid_low).toBe(site.xmin);
+  });
+
+  it('applies a pushed site event to the tenant registry with resolved pool tenants and one applied inbox receipt', async () => {
+    const payload: SitePayload = { ...siteChangedPayload(await storedSite(TENANT_A)), domains: ['marker-a.events.test'] };
+    const envelope = siteEnvelope(TENANT_A, 100, payload);
+
+    const res = await pushTo(app, SITE_CHANGED_SUBSCRIPTION, envelope);
+
+    expect(res.statusCode).toBe(204);
+    expect(await registryRow(TENANT_A.siteId)).toMatchObject({
+      tenant_id: TENANT_A.tenantId,
+      public_user_pool_tenant: TENANT_UMBRELLA.tenantId,
+      private_user_pool_tenant: TENANT_A.tenantId,
+      category_pool_tenant: TENANT_UMBRELLA.tenantId,
+      file_pool_tenant: TENANT_UMBRELLA.tenantId,
+      display_pool_tenant: TENANT_UMBRELLA.tenantId,
+      content_pool_tenants: [TENANT_A.tenantId],
+      domains: ['marker-a.events.test'],
+      aggregate_version: '100',
+    });
+    expect(await inboxRows(envelope.eventId)).toEqual([{ tenant_id: TENANT_A.tenantId, status: 'applied' }]);
+  });
+
+  it('applies a redelivered event once, leaving the registry row untouched by every repeat', async () => {
+    const envelope = siteEnvelope(TENANT_B, 200, { ...fixturePayload(TENANT_B.siteId), domains: ['once-b.events.test'] });
+    const first = await pushTo(app, SITE_CHANGED_SUBSCRIPTION, envelope);
+    expect(first.statusCode).toBe(204);
+    const applied = await registryRow(TENANT_B.siteId);
+    expect(applied).toMatchObject({ domains: ['once-b.events.test'], aggregate_version: '200' });
+
+    const repeats = await deliverDuplicate(app, SITE_CHANGED_SUBSCRIPTION, envelope, 3);
+
+    expect(repeats.map(isAck)).toEqual([true, true, true]);
+    expect(await registryRow(TENANT_B.siteId)).toEqual(applied);
+    expect(await inboxRows(envelope.eventId)).toEqual([{ tenant_id: TENANT_B.tenantId, status: 'applied' }]);
+  });
+
+  it('reaches the in-order final state from out-of-order deliveries, applying a version gap and acking a stale version as ignored', async () => {
+    const base = siteEnvelope(TENANT_UMBRELLA, 101, fixturePayload(TENANT_UMBRELLA.siteId));
+    const envelopes = versionedSequence(base, [101, 102, 103, 105], (version) => ({
+      ...fixturePayload(TENANT_UMBRELLA.siteId),
+      domains: [`v${version}.umbrella.test`],
+    }));
+    const v103 = envelopes[2]!;
+    const v105 = envelopes[3]!;
+
+    const responses = await deliverOutOfOrder(app, SITE_CHANGED_SUBSCRIPTION, envelopes, [0, 1, 3, 2]);
+
+    expect(responses.map((res) => res.statusCode)).toEqual([204, 204, 204, 204]);
+    const row = await registryRow(TENANT_UMBRELLA.siteId);
+    expect(row).toMatchObject({ tenant_id: TENANT_UMBRELLA.tenantId, domains: v105.payload.domains, aggregate_version: '105' });
+    expect(await inboxRows(v105.eventId)).toEqual([{ tenant_id: TENANT_UMBRELLA.tenantId, status: 'applied' }]);
+    expect(await inboxRows(v103.eventId)).toEqual([{ tenant_id: TENANT_UMBRELLA.tenantId, status: 'stale' }]);
+    const progress = await tenantQuery<{ last_version: string }>(
+      TENANT_UMBRELLA,
+      `SELECT last_version::text AS last_version FROM ${table('consumer_aggregate_version')}
+        WHERE subscription = $1 AND aggregate_type = 'site' AND aggregate_id = $2`,
+      [SITE_CHANGED_SUBSCRIPTION, TENANT_UMBRELLA.siteId],
+    );
+    expect(progress).toEqual([{ last_version: '105' }]);
+  });
+
+  it('dead-letters an event without a tenant as missing-tenant and acks it without a receipt', async () => {
+    const envelope = withoutTenant(siteEnvelope(TENANT_B, 900, fixturePayload(TENANT_B.siteId)));
+    const registered = await registryRow(TENANT_B.siteId);
+    const letters = publisher.deadLetters(SITE_CHANGED_SUBSCRIPTION).length;
+
+    const res = await pushTo(app, SITE_CHANGED_SUBSCRIPTION, envelope);
+
+    expect(res.statusCode).toBe(204);
+    const added = publisher.deadLetters(SITE_CHANGED_SUBSCRIPTION).slice(letters);
+    expect(added.map((letter) => letter.reason)).toEqual(['missing-tenant']);
+    expect(await inboxRows(envelope.eventId)).toEqual([]);
+    expect(await registryRow(TENANT_B.siteId)).toEqual(registered);
+  });
+
+  it('dead-letters an event whose payload breaks the closed schema as schema-invalid and acks it without a receipt', async () => {
+    const { domains: _dropped, ...withoutDomains } = fixturePayload(TENANT_B.siteId);
+    const envelope = siteEnvelope(TENANT_B, 901, withoutDomains);
+    const registered = await registryRow(TENANT_B.siteId);
+    const letters = publisher.deadLetters(SITE_CHANGED_SUBSCRIPTION).length;
+
+    const res = await pushTo(app, SITE_CHANGED_SUBSCRIPTION, envelope);
+
+    expect(res.statusCode).toBe(204);
+    const added = publisher.deadLetters(SITE_CHANGED_SUBSCRIPTION).slice(letters);
+    expect(added.map((letter) => letter.reason)).toEqual(['schema-invalid']);
+    expect(await inboxRows(envelope.eventId)).toEqual([]);
+    expect(await registryRow(TENANT_B.siteId)).toEqual(registered);
+  });
+
+  it('nacks a delivery whose apply hits a closed gate, keeping no receipt, and applies its redelivery', async () => {
+    const envelope = siteEnvelope(TENANT_B, 300, { ...fixturePayload(TENANT_B.siteId), domains: ['nack-b.events.test'] });
+    const registered = await registryRow(TENANT_B.siteId);
+    const apply = vi
+      .spyOn(siteRegistryConsumerRegistration.consumer, 'apply')
+      .mockRejectedValueOnce(new GateClosedError([SITE.unit]));
+
+    const nacked = await pushTo(app, SITE_CHANGED_SUBSCRIPTION, envelope);
+
+    expect(apply).toHaveBeenCalledTimes(1);
+    expect(isAck(nacked)).toBe(false);
+    expect(nacked.statusCode).toBe(503);
+    expect(await inboxRows(envelope.eventId)).toEqual([]);
+    expect(await registryRow(TENANT_B.siteId)).toEqual(registered);
+
+    apply.mockRestore();
+    const redelivered = await pushTo(app, SITE_CHANGED_SUBSCRIPTION, envelope);
+
+    expect(redelivered.statusCode).toBe(204);
+    expect(await registryRow(TENANT_B.siteId)).toMatchObject({ domains: ['nack-b.events.test'], aggregate_version: '300' });
+    expect(await inboxRows(envelope.eventId)).toEqual([{ tenant_id: TENANT_B.tenantId, status: 'applied' }]);
+  });
+
+  it('emits a backfilled site as a state event with Masa pool defaults, and treats a repeated batch as a no-op', async () => {
+    const batch = tsettingsBatch('site-changed-events-backfill-tenant-b', tsettingsRow(TENANT_B.siteId, { Domain: 'tenant-b.opt2.test' }));
+    const before = await outboxRows(TENANT_B);
+
+    const res = await migrationPost('apply', batch);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ batchId: batch.batchId, duplicate: false, applied: 1, skipped: 0 });
+    const applied = await outboxRows(TENANT_B);
+    const rows = applied.slice(before.length);
+    expect(rows).toHaveLength(1);
+    const [row] = rows as [OutboxRow];
+    const site = await storedSite(TENANT_B);
+    expect(row.kind).toBe('state');
+    expect(row.envelope).toMatchObject({
+      tenantId: TENANT_B.tenantId,
+      aggregateType: 'site',
+      aggregateId: TENANT_B.siteId,
+      aggregateVersion: Number(site.row_version),
+    });
+    expect(row.envelope.payload).toEqual(fixturePayload(TENANT_B.siteId));
+    expect(row.published_at).toBeInstanceOf(Date);
+    expect(publisher.published.map((event) => event.envelope.eventId)).toContain(row.event_id);
+    const logs = await siteChangelog(TENANT_B);
+    expect(logs.length).toBeGreaterThan(0);
+    expect(new Set(logs.map((log) => log.origin))).toEqual(new Set(['backfill']));
+
+    const repeated = await migrationPost('apply', batch);
+
+    expect(repeated.statusCode).toBe(200);
+    expect(repeated.json()).toEqual({ batchId: batch.batchId, duplicate: true, applied: 0, skipped: 0 });
+    expect(await outboxRows(TENANT_B)).toEqual(applied);
+    expect(await siteChangelog(TENANT_B)).toEqual(logs);
+    expect(await storedSite(TENANT_B)).toEqual(site);
+    const batches = await tenantQuery<{ batch_id: string }>(TENANT_B, `SELECT batch_id FROM ${table('migration_batch')} WHERE batch_id = $1`, [
+      batch.batchId,
+    ]);
+    expect(batches).toHaveLength(1);
+  });
+
+  it('announces a deleted site as its last stored state marked deleted above its versions, marking its registry row deleted once', async () => {
+    const site = appliedSite('events-deleted');
+    await feedSite(site, 'site-changed-events-deleted-create', 'upsert', { Domain: 'deleted.events.test' });
+    await feedSite(site, 'site-changed-events-deleted-update', 'upsert', { Domain: 'deleted.events.test', publicUserPoolID: TENANT_UMBRELLA.siteId });
+    const lastState = await storedSite(site);
+    const announced = await outboxRows(site);
+    expect(announced.map((row) => row.envelope.aggregateVersion)).toEqual([1, 2]);
+
+    await feedSite(site, 'site-changed-events-deleted-delete', 'delete');
+
+    expect(await tenantQuery(site, `SELECT siteid FROM ${table('site')}`)).toEqual([]);
+    const rows = await outboxRows(site);
+    expect(rows).toHaveLength(3);
+    const [, , tombstone] = rows as [OutboxRow, OutboxRow, OutboxRow];
+    expect(tombstone.kind).toBe('state');
+    expect(tombstone.envelope).toMatchObject({ tenantId: site.tenantId, aggregateType: 'site', aggregateId: site.siteId, aggregateVersion: 3 });
+    expect(tombstone.envelope.payload).toEqual({ ...siteChangedPayload(lastState), deleted: true });
+    expect(tombstone.published_at).toBeInstanceOf(Date);
+    expect(publisher.published.map((event) => event.envelope.eventId)).toContain(tombstone.event_id);
+    // The delete's own transaction marked the registry row, so the later deliveries change nothing.
+    const tombstoned = { tenant_id: site.tenantId, public_user_pool_tenant: TENANT_UMBRELLA.tenantId, aggregate_version: '3', deleted: true };
+    expect(await registryRow(site.siteId)).toMatchObject(tombstoned);
+
+    await pushRows(announced);
+    expect(await registryRow(site.siteId)).toMatchObject(tombstoned);
+    const deliveries = await deliverDuplicate(app, SITE_CHANGED_SUBSCRIPTION, envelopeOf(tombstone), 3);
+    expect(deliveries.map(isAck)).toEqual([true, true, true]);
+    expect(await registryRow(site.siteId)).toMatchObject(tombstoned);
+    const stale = [3, 1].map((version) => siteEnvelope(site, version, siteChangedPayload(lastState)));
+    for (const envelope of stale) expect((await pushTo(app, SITE_CHANGED_SUBSCRIPTION, envelope)).statusCode).toBe(204);
+
+    expect(await registryRow(site.siteId)).toMatchObject(tombstoned);
+    expect(await siteInbox(site)).toEqual({
+      ...Object.fromEntries(announced.map((row) => [row.event_id, 'applied'])),
+      [tombstone.event_id]: 'applied',
+      ...Object.fromEntries(stale.map((envelope) => [envelope.eventId, 'stale'])),
+    });
+  });
+
+  it('announces a site created again after its deletion above the deletion version and registers it again', async () => {
+    const site = appliedSite('events-recreated');
+    await feedSite(site, 'site-changed-events-recreated-create', 'upsert', { Domain: 'first.events.test' });
+    await feedSite(site, 'site-changed-events-recreated-delete', 'delete');
+    await pushRows(await outboxRows(site));
+    expect(await registryRow(site.siteId)).toMatchObject({ aggregate_version: '2', deleted: true });
+
+    await feedSite(site, 'site-changed-events-recreated-again', 'upsert', { Domain: 'again.events.test' });
+
+    const rows = await outboxRows(site);
+    expect(rows.map(({ envelope }) => [envelope.aggregateVersion, (envelope.payload as SitePayload).deleted])).toEqual([
+      [1, undefined],
+      [2, true],
+      [3, undefined],
+    ]);
+    const stored = await storedSite(site);
+    expect(stored.row_version).toBe('3');
+    expect(rows[2]?.envelope.payload).toEqual(siteChangedPayload(stored));
+    await pushRows(rows.slice(2));
+    expect(await registryRow(site.siteId)).toMatchObject({
+      tenant_id: site.tenantId,
+      domains: ['again.events.test'],
+      aggregate_version: '3',
+      deleted: false,
+    });
+    expect(Object.values(await siteInbox(site))).toEqual(['applied', 'applied', 'applied']);
+  });
+
+  it.each([
+    ['deleted', 'delete', {}, { aggregate_version: '2', deleted: true }, false],
+    ['created again', 'upsert', { Domain: 'recovered.events.test' }, { domains: ['recovered.events.test'], aggregate_version: '3', deleted: false }, true],
+  ] as const)('publishes from the next sweep the event of a site %s whose in-request flush failed', async (name, op, values, registered, paged) => {
+    const site = appliedSite(`events-recovered-${op}`);
+    await feedSite(site, `site-changed-${site.siteId}-create`, 'upsert');
+    if (op === 'upsert') await feedSite(site, `site-changed-${site.siteId}-delete`, 'delete');
+    await pushRows(await outboxRows(site));
+
+    publisher.failNext();
+    // The unpublished row turns the committed apply into the legacy 503 carrying its unpublished count and write position.
+    const unflushed = await migrationPost(
+      'apply',
+      tsettingsBatch(`site-changed-${site.siteId}-${name}`, tsettingsRow(site.siteId, values), { op, origin: 'migration-feed' }),
+    );
+    expect(unflushed.statusCode, unflushed.body).toBe(503);
+    expect(unflushed.json()).toEqual({ apiversion: 'v1', method: 'invalid', error: { code: 'server_error', message: 'Unhandled Exception' } });
+    expect(unflushed.headers[UNPUBLISHED_EVENTS_HEADER.toLowerCase()]).toBe('1');
+    const pending = (await outboxRows(site)).at(-1) as OutboxRow;
+    const position = parseWritePosition(unflushed.headers[WRITE_POSITION_HEADER_LC] as string | undefined).get(SERVICE);
+    expect(position).toMatch(/^[0-9]+$/);
+    expect(String(BigInt(position as string) % 4294967296n)).toBe(pending.xmin);
+    expect(pending.envelope.aggregateVersion).toBe(Number(registered.aggregate_version));
+    expect(pending.published_at).toBeNull();
+    expect(await registryRow(site.siteId)).toMatchObject(registered);
+    expect((await outboxDrainCounts(schema.app)).tenants).toContainEqual({ tenantId: site.tenantId, unpublished: 1, held: 0 });
+
+    const res = await sweep();
+
+    expect(res.statusCode).toBe(200);
+    expect((await outboxRows(site)).at(-1)?.published_at).toBeInstanceOf(Date);
+    expect(publisher.published.map((event) => event.envelope.eventId)).toContain(pending.event_id);
+    await pushRows([pending]);
+    expect(await registryRow(site.siteId)).toMatchObject(registered);
+    expect((await pagedSiteIds()).includes(site.siteId)).toBe(paged);
+  });
+
+  it('publishes unflushed outbox rows from the sweep task and secures the next slot of the sweep chain', async () => {
+    const before = await outboxRows(TENANT_A);
+    publisher.failNext();
+    await expect(orderTenantA(4)).rejects.toMatchObject({ code: 'LIGHT_ECONNRESET' });
+    const site = await storedSite(TENANT_A);
+    publisher.failNext();
+    const envelope = await schema.app.withTenant(TENANT_A.tenantId, (tx) =>
+      writeSiteChanged(tx, { siteId: TENANT_A.siteId, rowVersion: BigInt(site.row_version), payload: siteChangedPayload(site) }),
+    );
+    expect(envelope).not.toBeNull();
+    const own = (await outboxRows(TENANT_A)).slice(before.length);
+    expect(own).toHaveLength(2);
+    expect(own[1]?.event_id).toBe(envelope?.eventId);
+    expect(own.map((row) => row.published_at)).toEqual([null, null]);
+    const ownIds = own.map((row) => row.event_id);
+    const pending = await unpublishedOutboxCount();
+    const callsBefore = taskPort.calls.length;
+
+    const res = await sweep();
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ published: pending, failed: 0 });
+    const published = new Map((await outboxRows(TENANT_A)).map((row) => [row.event_id, row.published_at]));
+    expect(ownIds.map((id) => published.get(id))).toEqual([expect.any(Date), expect.any(Date)]);
+    expect(publisher.published.map((event) => event.envelope.eventId)).toEqual(expect.arrayContaining(ownIds));
+    expect(taskPort.tasks(SWEEP_QUEUE).map((task) => task.input.name)).toContain(sweepTaskName(1));
+    expect(taskPort.calls.slice(callsBefore)).toContainEqual({
+      op: 'create',
+      args: [expect.objectContaining({ queue: SWEEP_QUEUE, name: sweepTaskName(1) })],
+    });
+  });
+
+  it('registers an unregistered site in its write transaction, so drain counts and the sweep reach its unflushed row; a rollback registers nothing', async () => {
+    const site = unregisteredSite('events-unregistered');
+    const args = { siteId: site.siteId, rowVersion: 1, payload: site.payload };
+
+    await expect(
+      schema.app.withTenant(site.tenantId, async (tx) => {
+        await writeSiteChanged(tx, args);
+        throw new Error('rolled back');
+      }),
+    ).rejects.toThrow('rolled back');
+
+    expect(await registryRow(site.siteId)).toBeUndefined();
+    expect(await outboxRows(site)).toEqual([]);
+    expect((await outboxDrainCounts(schema.app)).tenants.map((count) => count.tenantId)).not.toContain(site.tenantId);
+
+    publisher.failNext();
+    const envelope = await schema.app.withTenant(site.tenantId, (tx) => writeSiteChanged(tx, args));
+
+    expect(envelope).not.toBeNull();
+    expect(await registryRow(site.siteId)).toMatchObject({
+      tenant_id: site.tenantId,
+      public_user_pool_tenant: TENANT_UMBRELLA.tenantId,
+      private_user_pool_tenant: site.tenantId,
+      category_pool_tenant: TENANT_UMBRELLA.tenantId,
+      file_pool_tenant: TENANT_UMBRELLA.tenantId,
+      display_pool_tenant: TENANT_UMBRELLA.tenantId,
+      content_pool_tenants: [site.tenantId],
+      domains: site.payload.domains,
+      aggregate_version: '1',
+    });
+    expect((await outboxRows(site)).map((row) => [row.event_id, row.published_at])).toEqual([[envelope?.eventId, null]]);
+    expect((await outboxDrainCounts(schema.app)).tenants).toContainEqual({ tenantId: site.tenantId, unpublished: 1, held: 0 });
+
+    const swept = await sweepOutbox(outboxRuntimeFor(schema.schema), { service: SERVICE, clock });
+
+    expect(swept.failed).toBe(0);
+    expect((await outboxRows(site)).map((row) => row.published_at)).toEqual([expect.any(Date)]);
+    expect(publisher.published.map((event) => event.envelope.eventId)).toContain(envelope?.eventId);
+    expect((await outboxDrainCounts(schema.app)).tenants).toContainEqual({ tenantId: site.tenantId, unpublished: 0, held: 0 });
+  });
+
+  it('records the later push of a self-registered site event as one applied receipt and leaves its registry row unchanged', async () => {
+    const site = unregisteredSite('events-self-registered');
+    const envelope = await schema.app.withTenant(site.tenantId, (tx) =>
+      writeSiteChanged(tx, { siteId: site.siteId, rowVersion: 1, payload: site.payload }),
+    );
+    if (envelope === null) throw new Error('writeSiteChanged stored no envelope');
+    const registered = await registryRow(site.siteId);
+    expect(registered).toMatchObject({ tenant_id: site.tenantId, aggregate_version: '1' });
+
+    const res = await pushTo(app, SITE_CHANGED_SUBSCRIPTION, envelope);
+
+    expect(res.statusCode).toBe(204);
+    expect(await registryRow(site.siteId)).toEqual(registered);
+    const receipts = await tenantQuery<InboxRow>(site, `SELECT tenant_id::text AS tenant_id, status FROM ${table('inbox')} WHERE event_id = $1`, [
+      envelope.eventId,
+    ]);
+    expect(receipts).toEqual([{ tenant_id: site.tenantId, status: 'applied' }]);
+  });
+});

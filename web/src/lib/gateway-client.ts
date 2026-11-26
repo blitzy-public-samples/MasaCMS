@@ -1,0 +1,784 @@
+// Web's only data path: gateway calls, relayed under GATEWAY_SERVICE_PREFIX or the gateway's own (server-only).
+import { Readable } from 'node:stream';
+import type { ReadableStream as NodeReadableStream } from 'node:stream/web';
+import type { InvocationMinter } from '@opt2/platform/auth';
+import {
+  LegacyServiceUnavailableError,
+  PATH_PAIRS_HEADER,
+  legacyFaultOf,
+  pathPairsHeaderValue,
+} from '@opt2/platform/legacy-compat';
+import {
+  createServiceClient,
+  decodeServiceBody,
+  REQUEST_ID_HEADER,
+  SERVICE_CALL_TIMEOUT_MS,
+  ServiceUnavailableError,
+  type ServiceClient,
+  type ServiceRequest,
+  type ServiceResponse,
+} from '@opt2/platform/service-kit';
+import { activeSpanIds, withExtractedContext } from '@opt2/platform/tracing';
+import type { paths as GatewayPaths } from '@/generated/clients/gateway';
+import type { paths as IdentityPaths } from '@/generated/clients/identity';
+import type { paths as PeoplePaths } from '@/generated/clients/people';
+import type { paths as ProgramsSitesPaths } from '@/generated/clients/programs-sites';
+import type { paths as StrategiesContentPaths } from '@/generated/clients/strategies-content';
+import { webAuthRuntime } from './auth';
+import { GATEWAY_SERVICE_PREFIX, webEnv } from './env';
+
+/** Service folder names the gateway relays web's calls to. */
+export const WEB_SERVICE_NAMES = [
+  'identity',
+  'people',
+  'programs-sites',
+  'strategies-content',
+] as const;
+
+/** One of the four services web calls through the gateway. */
+export type WebServiceName = (typeof WEB_SERVICE_NAMES)[number];
+
+// The gateway is the platform client's only callee, so the invocation credential's audience is always the gateway.
+const GATEWAY_CALLEE = 'gateway';
+const WEB_CALLER = 'web';
+// The platform client's own callee label, so decode errors read as they would from the client.
+const GATEWAY_LABEL = `Service ${GATEWAY_CALLEE} (called by ${WEB_CALLER})`;
+const FORM_CONTENT_TYPE = 'application/x-www-form-urlencoded';
+const UNAVAILABLE_STATUSES: ReadonlySet<number> = new Set([502, 503, 504]);
+/** Path of the gateway's `legacySitePaths`. */
+const LEGACY_SITE_PATHS = '/internal/v1/legacy-site-paths';
+/** The owners' unit-gate wait, `GATE_WAIT_MS` of `@opt2/platform/migration-kit`, which web does not load. */
+const OWNER_GATE_WAIT_MS = 30_000;
+
+/**
+ * Bound of a relayed call: the gateway's target forward bound (owner gate wait plus one call bound) and one more
+ * call bound, so the gateway answers a relayed call first.
+ */
+export const RELAYED_CALL_TIMEOUT_MS = OWNER_GATE_WAIT_MS + 2 * SERVICE_CALL_TIMEOUT_MS;
+
+/** A relayed service, or the gateway answering one of its own operations. */
+export type GatewayCallee = WebServiceName | typeof GATEWAY_CALLEE;
+
+/** Path of the gateway's own `getLegacyVersionMenu`, called at that path rather than through the relay. */
+export const LEGACY_VERSION_MENU_PATH = '/internal/v1/legacy-server/version-menu' satisfies keyof GatewayPaths;
+
+/** Path of the gateway's own `getLegacyPlugins`, called at that path rather than through the relay. */
+export const LEGACY_PLUGINS_PATH = '/internal/v1/legacy-server/plugins' satisfies keyof GatewayPaths;
+
+/** Per-request facts every call carries. */
+export interface GatewayCallContext {
+  /** Raw bearer user token exactly as the gateway attached it, an anonymous session's included; absent without one. */
+  readonly userToken?: string;
+  readonly requestId: string;
+  /** Inbound request headers; their `traceparent`/`tracestate` continue the trace when no span is active. */
+  readonly inbound: HeadersInit;
+  /** The admin path pairs rc holds unscanned, named to every service in `X-Opt2-Path-Pairs`. */
+  readonly pathPairs?: Readonly<Record<string, string>>;
+}
+
+/** HTTP methods of a service call. */
+export type HttpMethod = ServiceRequest['method'];
+
+/** Service path, for example `/v1/sites`. */
+export type ServicePath = `/${string}`;
+
+export type QueryValue = string | number | boolean;
+
+/** Query parameters in order; null and undefined are skipped and an object value expands into its own pairs. */
+export type QueryInput =
+  | URLSearchParams
+  | Readonly<Record<string, QueryValue | readonly QueryValue[] | Readonly<Record<string, QueryValue>> | null | undefined>>;
+
+/** Form fields in order; array values and repeated entries repeat the field. */
+export type FormInput =
+  | URLSearchParams
+  | FormData
+  | Iterable<readonly [string, string]>
+  | Readonly<Record<string, string | readonly string[]>>;
+
+/** One call to a service through the gateway. */
+export interface GatewayRequest {
+  readonly method: HttpMethod;
+  readonly path: ServicePath;
+  readonly query?: QueryInput;
+  /** Body sent as `application/json`; takes precedence over `form` and `body`. */
+  readonly json?: unknown;
+  /** Body sent as `application/x-www-form-urlencoded`, fields in the given order; takes precedence over `body`. */
+  readonly form?: FormInput;
+  /** Raw body; the caller sets its content type in `headers`, and a stream's content-length, else it is chunked. */
+  readonly body?: Buffer | string | Readable;
+  readonly headers?: Readonly<Record<string, string>>;
+}
+
+/** Query and headers of the convenience calls. */
+export type GatewayRequestOptions = Pick<GatewayRequest, 'query' | 'headers'>;
+
+/** A body of known size that streams from its start on every `stream()` call; a `Blob` is one. */
+export interface ReplayableBody {
+  readonly size: number;
+  stream(): ReadableStream<Uint8Array>;
+}
+
+/** A multipart body relayed with its original `content-type`, boundary included. */
+export interface MultipartBody {
+  readonly contentType: string;
+  readonly body: ReadableStream<Uint8Array> | Blob | ArrayBuffer | Uint8Array | ReplayableBody;
+}
+
+/** The request body and headers that relay a multipart body. */
+export interface MultipartRelay {
+  readonly body: Buffer | Readable;
+  readonly headers: Readonly<Record<string, string>>;
+}
+
+/** The gateway's answer with every status, headers and body as relayed. */
+export interface GatewayResponse<T = unknown> {
+  readonly status: number;
+  /** Whether the status is 2xx. */
+  readonly ok: boolean;
+  /** Response headers with lower-cased names. */
+  readonly headers: Readonly<Record<string, string | string[]>>;
+  readonly body: T;
+  /** Every `Set-Cookie` value, unchanged and in order. */
+  readonly setCookies: readonly string[];
+  /** The `Location` header, unchanged. */
+  readonly location?: string;
+}
+
+/** A streamed call's answer: a 2xx body unread as the received byte stream, any other status's body as the bytes. */
+export type StreamedResponse =
+  | (GatewayResponse<Readable> & { readonly ok: true })
+  | (GatewayResponse<Buffer> & { readonly ok: false });
+
+/** The service call a streamed 2xx body answers. */
+export interface StreamedCall {
+  readonly service: WebServiceName;
+  /** `<METHOD> <path>` without the query; a facade call names its contract path template. */
+  readonly operation: string;
+}
+
+const streamedCalls = new WeakMap<Readable, StreamedCall>();
+
+/** The call `body` answers when it is a streamed 2xx body; undefined for any other stream. */
+export function streamedCallOf(body: Readable): StreamedCall | undefined {
+  return streamedCalls.get(body);
+}
+
+/** Destroys `body` when it is a streamed answer's unread body, ending its upstream call; any other body needs nothing. */
+export function discardStreamed(body: unknown): void {
+  if (!(body instanceof Readable)) return;
+  // An unread body reports its destruction as an error event, which nothing else listens for.
+  body.once('error', () => undefined).destroy();
+}
+
+/** The owning service is unreachable or the gateway answered 502, 503 or 504; renders as the legacy admin 503. */
+export class GatewayUnavailableError extends LegacyServiceUnavailableError {
+  override readonly name: string = 'GatewayUnavailableError';
+
+  constructor(
+    readonly service: GatewayCallee,
+    /** Gateway status; undefined when the gateway itself could not be reached or did not answer in time. */
+    readonly status?: number,
+    override readonly cause?: unknown,
+  ) {
+    super(
+      `Service ${service} unavailable through the gateway (${status === undefined ? 'no answer' : `HTTP ${status}`})`,
+      'admin',
+      'gateway-unavailable',
+    );
+  }
+}
+
+/** Whether `value` is an unavailability error or a response with an unavailable status (502, 503, 504). */
+export function isUnavailable(value: unknown): boolean {
+  if (value instanceof LegacyServiceUnavailableError) return true;
+  const status = (value as { status?: unknown } | null | undefined)?.status;
+  return typeof status === 'number' && UNAVAILABLE_STATUSES.has(status);
+}
+
+/** The owning service answered 401 or 403; handlers answer it with the legacy access gate's redirect. */
+export class GatewayDenialError extends Error {
+  override readonly name: string = 'GatewayDenialError';
+
+  constructor(
+    readonly service: GatewayCallee,
+    readonly operation: string,
+    readonly status: 401 | 403,
+  ) {
+    super(`${operation} answered HTTP ${status}`);
+  }
+}
+
+/** A facade answer as {@link okBody} reads it. */
+type CallResult<T> =
+  | { readonly ok: true; readonly body: T }
+  | { readonly ok: false; readonly status: number; readonly body?: unknown };
+
+/**
+ * The 2xx body of `operation`'s answer from `service`.
+ * @throws GatewayDenialError For 401 or 403.
+ * @throws LegacyFaultError For an error envelope whose `stacktrace` names the fault legacy raises there.
+ * @throws Error For any other non-2xx status.
+ */
+export function okBody<T>(response: CallResult<T>, service: GatewayCallee, operation: string): T {
+  if (response.ok) return response.body;
+  if (response.status === 401 || response.status === 403) {
+    throw new GatewayDenialError(service, operation, response.status);
+  }
+  const fault = legacyFaultOf(response.body);
+  if (fault !== undefined) throw fault;
+  throw new Error(`${operation} answered HTTP ${response.status}`);
+}
+
+/**
+ * Lets any answer of `operation` from `service` through except a denial.
+ * @throws GatewayDenialError For 401 or 403.
+ */
+export function assertNotDenied(
+  response: { readonly status: number },
+  service: WebServiceName,
+  operation: string,
+): void {
+  if (response.status === 401 || response.status === 403) {
+    throw new GatewayDenialError(service, operation, response.status);
+  }
+}
+
+/**
+ * Lets any raw answer through except a 500 error envelope whose `stacktrace` names the fault legacy raises there.
+ * @throws LegacyFaultError That fault.
+ */
+export function assertNoLegacyFault(
+  response: Pick<GatewayResponse<Buffer | Readable>, 'status' | 'headers' | 'body'>,
+  service: WebServiceName,
+): void {
+  if (response.status !== 500) return;
+  // A body is a stream only for a 2xx, so a 500 arrives as bytes.
+  const body = response.body instanceof Readable ? undefined : decodeServiceBody(response.body, response.headers['content-type'], service);
+  const fault = legacyFaultOf(body);
+  if (fault !== undefined) throw fault;
+}
+
+/**
+ * Lets any raw answer of `operation` through except a 500, which legacy answers with onError's page.
+ * @throws LegacyFaultError For a 500 error envelope whose `stacktrace` names the fault legacy raises there.
+ * @throws Error For any other 500.
+ */
+export function assertNotFailed(
+  response: Pick<GatewayResponse<Buffer | Readable>, 'status' | 'headers' | 'body'>,
+  service: WebServiceName,
+  operation: string,
+): void {
+  assertNoLegacyFault(response, service);
+  if (response.status === 500) throw new Error(`${operation} answered HTTP 500`);
+}
+
+/** Web's invocation credential, minted by the auth runtime (local signer or Google ID token). */
+const webInvocationMinter: InvocationMinter = {
+  async headersFor(target, opts) {
+    return (await webAuthRuntime()).invocationMinter.headersFor(target, opts);
+  },
+};
+
+let serviceClient: ServiceClient | undefined;
+
+/** The process-wide platform client, whose only callee is the gateway. */
+function processServiceClient(): ServiceClient {
+  serviceClient ??= createServiceClient({
+    serviceUrls: { [GATEWAY_CALLEE]: webEnv().OPT2_GATEWAY_URL },
+    self: WEB_CALLER,
+    credentials: webInvocationMinter,
+  });
+  return serviceClient;
+}
+
+/** Installs `client` (`undefined` rebuilds from the environment on next use); returns a restore function. */
+export function setServiceClientForTests(client: ServiceClient | undefined): () => void {
+  const previous = serviceClient;
+  serviceClient = client;
+  return () => {
+    serviceClient = previous;
+  };
+}
+
+function lowerCased(headers: Readonly<Record<string, string>> = {}): Record<string, string> {
+  return Object.fromEntries(Object.entries(headers).map(([name, value]) => [name.toLowerCase(), value]));
+}
+
+function isIterable<T>(value: object): value is Iterable<T> {
+  return Symbol.iterator in value;
+}
+
+function isQueryObject(value: QueryValue | readonly QueryValue[] | object): value is Readonly<Record<string, QueryValue>> {
+  return typeof value === 'object' && !Array.isArray(value);
+}
+
+/** Query pairs in the given order. */
+function queryParams(query: QueryInput): URLSearchParams {
+  if (query instanceof URLSearchParams) return query;
+  const params = new URLSearchParams();
+  for (const [name, value] of Object.entries(query)) {
+    if (value === null || value === undefined) continue;
+    if (isQueryObject(value)) {
+      for (const [key, item] of Object.entries(value)) params.append(key, String(item));
+    } else {
+      for (const item of [value].flat()) params.append(name, String(item));
+    }
+  }
+  return params;
+}
+
+/** `path` with the query appended, form-encoded as browsers encode it. */
+function withQuery(path: string, query: QueryInput | undefined): string {
+  const search = query === undefined ? '' : queryParams(query).toString();
+  return search === '' ? path : `${path}${path.includes('?') ? '&' : '?'}${search}`;
+}
+
+/** The URL-encoded form body, fields in the given order. */
+function encodeForm(form: FormInput): string {
+  const entries: Iterable<readonly [string, unknown]> = isIterable<readonly [string, unknown]>(form)
+    ? form
+    : Object.entries(form).flatMap(([name, value]) => [value].flat().map((item): [string, string] => [name, item]));
+  const params = new URLSearchParams();
+  for (const [name, value] of entries) {
+    if (typeof value !== 'string') throw new TypeError(`Form field ${name} is a file; send it with postMultipart`);
+    params.append(name, value);
+  }
+  return params.toString();
+}
+
+/** Runs `send` so the platform client propagates the active span, else the inbound trace context unchanged. */
+function withInboundTrace<T>(inbound: HeadersInit, headers: Record<string, string>, send: () => Promise<T>): Promise<T> {
+  if (activeSpanIds() !== undefined) return send();
+  const received = new Headers(inbound);
+  const traceparent = received.get('traceparent') ?? undefined;
+  const tracestate = received.get('tracestate') ?? undefined;
+  return withExtractedContext({ traceparent, tracestate }, () => {
+    // Without a registered context manager the extraction never becomes active (and nothing injects), so copy as received.
+    if (activeSpanIds() === undefined && traceparent !== undefined) {
+      headers.traceparent = traceparent;
+      if (tracestate !== undefined) headers.tracestate = tracestate;
+    }
+    return send();
+  });
+}
+
+function firstValue(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+function toGatewayResponse<T>({ status, headers, body }: ServiceResponse<T>): GatewayResponse<T> {
+  const cookies = headers['set-cookie'];
+  return {
+    status,
+    ok: status >= 200 && status < 300,
+    headers,
+    body,
+    setCookies: cookies === undefined ? [] : [cookies].flat(),
+    location: firstValue(headers.location),
+  };
+}
+
+/** How a call returns its body: decoded by media type, as the received bytes, or a 2xx body unread as a stream. */
+type BodyMode = 'decoded' | 'bytes' | 'streamed';
+
+/**
+ * Sends one call relayed to `service`, or to the gateway's own path acting for no user, failing closed on
+ * unavailability; every other status is returned.
+ */
+async function send<T>(
+  ctx: GatewayCallContext,
+  service: GatewayCallee,
+  req: GatewayRequest,
+  mode: BodyMode,
+  serviceClient: ServiceClient | undefined,
+): Promise<GatewayResponse<T>> {
+  const own = service === GATEWAY_CALLEE;
+  const headers = lowerCased(req.headers);
+  headers[REQUEST_ID_HEADER] = ctx.requestId;
+  const pathPairs = own ? undefined : pathPairsHeaderValue(Object.entries(ctx.pathPairs ?? {}));
+  if (pathPairs !== undefined) headers[PATH_PAIRS_HEADER.toLowerCase()] = pathPairs;
+  let body = req.body;
+  if (req.json === undefined && req.form !== undefined) {
+    headers['content-type'] = FORM_CONTENT_TYPE;
+    body = encodeForm(req.form);
+  }
+  const request: ServiceRequest = {
+    service: GATEWAY_CALLEE,
+    method: req.method,
+    path: withQuery(own ? req.path : `${GATEWAY_SERVICE_PREFIX}/${service}${req.path}`, req.query),
+    json: req.json,
+    body,
+    headers,
+    // Web has no request context, so null keeps an anonymous call anonymous instead of falling back to one.
+    userToken: own ? null : (ctx.userToken ?? null),
+    // Bytes always, so an unavailable status fails closed whatever its body; decoded below otherwise.
+    rawBody: true,
+    // Only a 2xx body is left unread; an unavailable status, never 2xx, still arrives as bytes.
+    ...(mode === 'streamed' ? { stream: true } : {}),
+    // Outlasts the gateway's closed-gate wait, so web never answers 503 for a held write that then commits.
+    ...(own ? {} : { timeoutMs: RELAYED_CALL_TIMEOUT_MS }),
+  };
+  let response: ServiceResponse<Buffer | Readable>;
+  try {
+    response = await withInboundTrace(ctx.inbound, headers, () =>
+      (serviceClient ?? processServiceClient()).request<Buffer | Readable>(request),
+    );
+  } catch (error) {
+    if (error instanceof ServiceUnavailableError) throw new GatewayUnavailableError(service, undefined, error);
+    throw error;
+  }
+  if (UNAVAILABLE_STATUSES.has(response.status)) throw new GatewayUnavailableError(service, response.status);
+  // A body is a Readable only for a streamed call's 2xx.
+  const decoded =
+    mode === 'decoded'
+      ? decodeServiceBody(response.body as Buffer, response.headers['content-type'], GATEWAY_LABEL)
+      : response.body;
+  return toGatewayResponse({ ...response, body: decoded as T });
+}
+
+type LowerMethod = 'get' | 'post' | 'put' | 'patch' | 'delete';
+
+const HTTP_METHODS: Readonly<Record<LowerMethod, HttpMethod>> = {
+  get: 'GET',
+  post: 'POST',
+  put: 'PUT',
+  patch: 'PATCH',
+  delete: 'DELETE',
+};
+
+/** Path templates of a generated `paths` type. */
+export type PathOf<Paths> = Extract<keyof Paths, ServicePath>;
+
+/** Methods a generated path item defines. */
+export type MethodOf<Item> = {
+  [M in LowerMethod & keyof Item]-?: undefined extends Item[M] ? never : M;
+}[LowerMethod & keyof Item];
+
+/** The generated operation of `method` on a path item. */
+export type OperationOf<Item, M extends LowerMethod> = Exclude<Item[M & keyof Item], undefined>;
+
+type ParametersOf<Op> = Op extends { parameters: infer Parameters } ? Parameters : never;
+
+/** Path parameters of an operation; `never` when its path has none. */
+export type PathParamsOf<Op> = Exclude<ParametersOf<Op> extends { path?: infer Path } ? Path : never, undefined>;
+
+/** Query parameters of an operation; `never` when it declares none. */
+export type QueryOf<Op> = Exclude<ParametersOf<Op> extends { query?: infer Query } ? Query : never, undefined>;
+
+type RequestContentOf<Op> = Op extends { requestBody?: infer Body }
+  ? [Exclude<Body, undefined>] extends [never]
+    ? never
+    : Exclude<Body, undefined> extends { content: infer Content }
+      ? Content
+      : never
+  : never;
+
+/** JSON request body of an operation; `never` when it accepts none. */
+export type JsonBodyOf<Op> = [RequestContentOf<Op>] extends [never]
+  ? never
+  : RequestContentOf<Op> extends { 'application/json': infer Json }
+    ? Json
+    : never;
+
+type SuccessStatus = 200 | 201 | 202 | 203 | 204 | 205 | 206 | 207 | 208 | 226 | '2XX';
+type ResponsesOf<Op> = Op extends { responses: infer Responses } ? Responses : never;
+type ContentBodyOf<Response> = Response extends { content: infer Content } ? Content[keyof Content] : undefined;
+
+/** Body of an operation's 2xx responses as `call` decodes it. */
+export type SuccessBodyOf<Op> = {
+  [S in keyof ResponsesOf<Op>]: S extends SuccessStatus ? ContentBodyOf<ResponsesOf<Op>[S]> : never;
+}[keyof ResponsesOf<Op>];
+
+/** A typed call's answer: the contract's success body when `ok`, otherwise the body as relayed. */
+export type OperationResponse<Op> =
+  | (GatewayResponse<SuccessBodyOf<Op>> & { readonly ok: true })
+  | (GatewayResponse<unknown> & { readonly ok: false });
+
+type PathInputOf<Op> = [PathParamsOf<Op>] extends [never]
+  ? { readonly params?: never }
+  : { readonly params: PathParamsOf<Op> };
+
+type QueryInputOf<Op> = [QueryOf<Op>] extends [never]
+  ? { readonly query?: never }
+  : ParametersOf<Op> extends { query: object }
+    ? { readonly query: QueryOf<Op> }
+    : { readonly query?: QueryOf<Op> };
+
+/** Request parts of a typed call: `params` fill the `{name}` segments of the path template. */
+export type OperationInput<Op> = PathInputOf<Op> &
+  QueryInputOf<Op> & {
+    readonly json?: JsonBodyOf<Op>;
+    readonly form?: FormInput;
+    readonly body?: GatewayRequest['body'];
+    readonly headers?: Readonly<Record<string, string>>;
+  };
+
+type InputArgs<Op> = object extends OperationInput<Op> ? [input?: OperationInput<Op>] : [input: OperationInput<Op>];
+
+/** Calls bound to one service and typed by its generated contract. */
+export interface ServiceFacade<Paths> {
+  readonly service: WebServiceName;
+  /** Calls `method` on the contract path template `path`. */
+  call<P extends PathOf<Paths>, M extends MethodOf<Paths[P]>>(
+    method: M,
+    path: P,
+    ...input: InputArgs<OperationOf<Paths[P], M>>
+  ): Promise<OperationResponse<OperationOf<Paths[P], M>>>;
+  /** As `call`, with the body returned as the received bytes. */
+  raw<P extends PathOf<Paths>, M extends MethodOf<Paths[P]>>(
+    method: M,
+    path: P,
+    ...input: InputArgs<OperationOf<Paths[P], M>>
+  ): Promise<GatewayResponse<Buffer>>;
+  /** As `raw`, with a 2xx body returned unread as a stream. */
+  stream<P extends PathOf<Paths>, M extends MethodOf<Paths[P]>>(
+    method: M,
+    path: P,
+    ...input: InputArgs<OperationOf<Paths[P], M>>
+  ): Promise<StreamedResponse>;
+}
+
+type IdentityOperation<P extends PathOf<IdentityPaths>, M extends MethodOf<IdentityPaths[P]>> = OperationOf<
+  IdentityPaths[P],
+  M
+>;
+type ProgramsSitesOperation<P extends PathOf<ProgramsSitesPaths>, M extends MethodOf<ProgramsSitesPaths[P]>> = OperationOf<
+  ProgramsSitesPaths[P],
+  M
+>;
+type CurrentSessionOperation = IdentityOperation<'/v1/sessions/current', 'get'>;
+type SessionSitesOperation = IdentityOperation<'/v1/sessions/current/sites', 'get'>;
+type AdminSessionStateOperation = IdentityOperation<'/v1/sessions/current/admin-state', 'get'>;
+type SaveAdminSessionStateOperation = IdentityOperation<'/v1/sessions/current/admin-state', 'post'>;
+type CsrfTokensOperation = IdentityOperation<'/v1/csrf/tokens', 'post'>;
+type ReversePermLookUpOperation = IdentityOperation<'/v1/permissions/reverse-lookup', 'get'>;
+type ListSitesOperation = ProgramsSitesOperation<'/v1/sites', 'get'>;
+type GetSiteOperation = ProgramsSitesOperation<'/v1/sites/{siteId}', 'get'>;
+type GetShellSiteOperation = ProgramsSitesOperation<'/v1/sites/{siteId}/shell', 'get'>;
+type GetUserPoolSitesOperation = ProgramsSitesOperation<'/v1/sites/{siteId}/user-pool-sites', 'get'>;
+type HrefDomainsOperation = ProgramsSitesOperation<'/v1/href-domains', 'get'>;
+type UserSitesOperation = ProgramsSitesOperation<'/v1/user-sites', 'get'>;
+type LegacySitePathsOperation = OperationOf<GatewayPaths['/internal/v1/legacy-site-paths'], 'get'>;
+type LegacyVersionMenuOperation = OperationOf<GatewayPaths[typeof LEGACY_VERSION_MENU_PATH], 'get'>;
+type LegacyPluginsOperation = OperationOf<GatewayPaths[typeof LEGACY_PLUGINS_PATH], 'get'>;
+
+/** The gateway's own read of legacy's live site beans. */
+export interface LegacySiteFacade {
+  /** First-touch path values legacy's site beans give a browser request with these host facts (`legacySitePaths`). */
+  paths(query: QueryOf<LegacySitePathsOperation>): Promise<OperationResponse<LegacySitePathsOperation>>;
+}
+
+/** Identity calls, plus the session and CSRF operations the shell and lib use. */
+export interface IdentityFacade extends ServiceFacade<IdentityPaths> {
+  /** The session's user struct and login-time roles (`getCurrentSession`). */
+  currentSession(): Promise<OperationResponse<CurrentSessionOperation>>;
+  /** Sites the session may administer, the admin `siteArray` (`listCurrentSessionSites`). */
+  sessionSites(): Promise<OperationResponse<SessionSitesOperation>>;
+  /** The admin session-scope values the session stored, `{}` when none (`getAdminSessionState`). */
+  adminSessionState(): Promise<OperationResponse<AdminSessionStateOperation>>;
+  /** Stores each given admin session value, replacing that key whole (`saveAdminSessionState`). */
+  saveAdminSessionState(
+    state: JsonBodyOf<SaveAdminSessionStateOperation>,
+  ): Promise<OperationResponse<SaveAdminSessionStateOperation>>;
+  /** One token pair per legacy CSRF context, in request order (`issueCsrfTokens`). */
+  csrfTokens(contexts: JsonBodyOf<CsrfTokensOperation>['contexts']): Promise<OperationResponse<CsrfTokensOperation>>;
+  /** Whether the session user may reach the token site's users (`getReversePermLookUp`). */
+  reversePermLookUp(): Promise<OperationResponse<ReversePermLookUpOperation>>;
+}
+
+/** Programs-sites calls, plus the site reads the shell and lib use. */
+export interface ProgramsSitesFacade extends ServiceFacade<ProgramsSitesPaths> {
+  /** Every site, sorted as the Sites screen sorts them (`listSites`). */
+  listSites(query?: QueryOf<ListSitesOperation>): Promise<OperationResponse<ListSitesOperation>>;
+  /** A site's stored settings, `tsettings` extend sets with values and image sizes, without Razuna settings (`getSite`). */
+  getSite(siteId: PathParamsOf<GetSiteOperation>['siteId']): Promise<OperationResponse<GetSiteOperation>>;
+  /** The site settings the admin layout reads, for any private admin user (`getShellSite`). */
+  getShellSite(siteId: PathParamsOf<GetShellSiteOperation>['siteId']): Promise<OperationResponse<GetShellSiteOperation>>;
+  /** The same settings of the site's private, then public, user pool sites (`getUserPoolSites`). */
+  getUserPoolSites(
+    siteId: PathParamsOf<GetUserPoolSitesOperation>['siteId'],
+  ): Promise<OperationResponse<GetUserPoolSitesOperation>>;
+  /** Registered domains and the domain of `siteid`, else `default`, for sanitizeHref (`getHrefDomains`). */
+  hrefDomains(siteid: string): Promise<OperationResponse<HrefDomainsOperation>>;
+  /** The user's sites by name, plus the site `host` binds to when given (`listUserSites`). */
+  userSites(host?: string): Promise<OperationResponse<UserSitesOperation>>;
+}
+
+/** Service calls of one web request, all relayed by the gateway. */
+export interface GatewayClient {
+  /** Sends one call: JSON bodies parsed, `text/*` decoded as UTF-8, anything else a Buffer. */
+  call<T = unknown>(service: WebServiceName, request: GatewayRequest): Promise<GatewayResponse<T>>;
+  /** Sends one call and returns the body as the received bytes, for fragment and JSON passthrough. */
+  raw(service: WebServiceName, request: GatewayRequest): Promise<GatewayResponse<Buffer>>;
+  /** As `raw`, with a 2xx body returned unread as a stream, for download passthrough. */
+  stream(service: WebServiceName, request: GatewayRequest): Promise<StreamedResponse>;
+  get<T = unknown>(service: WebServiceName, path: ServicePath, options?: GatewayRequestOptions): Promise<GatewayResponse<T>>;
+  /** POSTs `json` as `application/json`. */
+  post<T = unknown>(
+    service: WebServiceName,
+    path: ServicePath,
+    json: unknown,
+    options?: GatewayRequestOptions,
+  ): Promise<GatewayResponse<T>>;
+  /** POSTs `form` URL-encoded with its field names and order unchanged. */
+  postForm<T = unknown>(
+    service: WebServiceName,
+    path: ServicePath,
+    form: FormInput,
+    options?: GatewayRequestOptions,
+  ): Promise<GatewayResponse<T>>;
+  /** POSTs an inbound multipart body unchanged, with its own content type and boundary. */
+  postMultipart<T = unknown>(
+    service: WebServiceName,
+    path: ServicePath,
+    multipart: MultipartBody,
+    options?: GatewayRequestOptions,
+  ): Promise<GatewayResponse<T>>;
+  readonly legacySite: LegacySiteFacade;
+  readonly identity: IdentityFacade;
+  readonly people: ServiceFacade<PeoplePaths>;
+  readonly programsSites: ProgramsSitesFacade;
+  readonly strategiesContent: ServiceFacade<StrategiesContentPaths>;
+  /** The legacy server facts of the nav Version menu, the gateway's own `getLegacyVersionMenu`. */
+  legacyVersionMenu(): Promise<OperationResponse<LegacyVersionMenuOperation>>;
+  /** Legacy's installed plugins, which the Global Settings Plugins tab lists, the gateway's own `getLegacyPlugins`. */
+  legacyPlugins(): Promise<OperationResponse<LegacyPluginsOperation>>;
+}
+
+type CoreCalls = Pick<GatewayClient, 'call' | 'raw' | 'stream'>;
+
+interface UntypedInput {
+  readonly params?: Readonly<Record<string, unknown>>;
+  readonly query?: QueryInput;
+  readonly json?: unknown;
+  readonly form?: FormInput;
+  readonly body?: GatewayRequest['body'];
+  readonly headers?: Readonly<Record<string, string>>;
+}
+
+/** `template` with each `{name}` segment replaced by the URI-encoded parameter. */
+function fillPath(template: ServicePath, params: Readonly<Record<string, unknown>> = {}): ServicePath {
+  return template.replace(/\{([^}]+)\}/g, (_segment, name: string) => {
+    const value = params[name];
+    if (value === undefined || value === null) throw new TypeError(`Missing path parameter ${name} of ${template}`);
+    return encodeURIComponent(String(value));
+  }) as ServicePath;
+}
+
+function facadeRequest(method: LowerMethod, path: ServicePath, input: UntypedInput = {}): GatewayRequest {
+  const { params, ...parts } = input;
+  return { ...parts, method: HTTP_METHODS[method], path: fillPath(path, params) };
+}
+
+/** A contract-typed facade over `core` for `service`. */
+function serviceFacade<Paths>(core: CoreCalls, service: WebServiceName): ServiceFacade<Paths> {
+  const untyped = {
+    service,
+    call: async (method: LowerMethod, path: ServicePath, input?: UntypedInput) =>
+      core.call(service, facadeRequest(method, path, input)),
+    raw: async (method: LowerMethod, path: ServicePath, input?: UntypedInput) =>
+      core.raw(service, facadeRequest(method, path, input)),
+    stream: async (method: LowerMethod, path: ServicePath, input?: UntypedInput) => {
+      const response = await core.stream(service, facadeRequest(method, path, input));
+      // The template, not the filled path, so no path parameter reaches a log line.
+      if (response.ok) streamedCalls.set(response.body, { service, operation: `${HTTP_METHODS[method]} ${path}` });
+      return response;
+    },
+  };
+  // The contract types constrain callers; at runtime every operation is the same request shape.
+  return untyped as unknown as ServiceFacade<Paths>;
+}
+
+function identityFacade(core: CoreCalls): IdentityFacade {
+  const facade = serviceFacade<IdentityPaths>(core, 'identity');
+  return {
+    ...facade,
+    currentSession: () => facade.call('get', '/v1/sessions/current'),
+    sessionSites: () => facade.call('get', '/v1/sessions/current/sites'),
+    adminSessionState: () => facade.call('get', '/v1/sessions/current/admin-state'),
+    saveAdminSessionState: (state) => facade.call('post', '/v1/sessions/current/admin-state', { json: state }),
+    csrfTokens: (contexts) => facade.call('post', '/v1/csrf/tokens', { json: { contexts } }),
+    reversePermLookUp: () => facade.call('get', '/v1/permissions/reverse-lookup'),
+  };
+}
+
+function programsSitesFacade(core: CoreCalls): ProgramsSitesFacade {
+  const facade = serviceFacade<ProgramsSitesPaths>(core, 'programs-sites');
+  return {
+    ...facade,
+    listSites: (query) => facade.call('get', '/v1/sites', { query }),
+    getSite: (siteId) => facade.call('get', '/v1/sites/{siteId}', { params: { siteId } }),
+    getShellSite: (siteId) => facade.call('get', '/v1/sites/{siteId}/shell', { params: { siteId } }),
+    getUserPoolSites: (siteId) => facade.call('get', '/v1/sites/{siteId}/user-pool-sites', { params: { siteId } }),
+    hrefDomains: (siteid) => facade.call('get', '/v1/href-domains', { query: { siteid } }),
+    userSites: (host) => facade.call('get', '/v1/user-sites', { query: { host } }),
+  };
+}
+
+// The DOM and node:stream/web declare the same global ReadableStream separately.
+const readableOf = (stream: ReadableStream<Uint8Array>): Readable =>
+  Readable.fromWeb(stream as NodeReadableStream<Uint8Array>);
+
+/** The unbuffered relay of `multipart`: bytes as a Buffer view, a sized body with its length, a bare stream chunked. */
+export function multipartRelay(multipart: MultipartBody): MultipartRelay {
+  const { contentType, body } = multipart;
+  const headers = { 'content-type': contentType };
+  if (body instanceof Uint8Array) return { body: Buffer.from(body.buffer, body.byteOffset, body.byteLength), headers };
+  if (body instanceof ArrayBuffer) return { body: Buffer.from(body), headers };
+  if (body instanceof ReadableStream) return { body: readableOf(body), headers };
+  return { body: readableOf(body.stream()), headers: { ...headers, 'content-length': String(body.size) } };
+}
+
+/** The service calls of one web request (user token, request id, trace context), over `serviceClient` when given. */
+export function createGatewayClient(ctx: GatewayCallContext, serviceClient?: ServiceClient): GatewayClient {
+  const core: CoreCalls = {
+    call: <T>(service: WebServiceName, request: GatewayRequest) =>
+      send<T>(ctx, service, request, 'decoded', serviceClient),
+    raw: (service, request) => send<Buffer>(ctx, service, request, 'bytes', serviceClient),
+    // The platform client returns a Readable exactly for a streamed 2xx, so `ok` tells the body apart.
+    stream: async (service, request) => {
+      const response = (await send<Buffer | Readable>(ctx, service, request, 'streamed', serviceClient)) as StreamedResponse;
+      const [path = request.path] = request.path.split('?', 1);
+      if (response.ok) streamedCalls.set(response.body, { service, operation: `${request.method} ${path}` });
+      return response;
+    },
+  };
+  return {
+    ...core,
+    get: (service, path, options = {}) => core.call(service, { ...options, method: 'GET', path }),
+    post: (service, path, json, options = {}) => core.call(service, { ...options, method: 'POST', path, json }),
+    postForm: (service, path, form, options = {}) => core.call(service, { ...options, method: 'POST', path, form }),
+    postMultipart: async (service, path, multipart, options = {}) => {
+      const relay = multipartRelay(multipart);
+      return core.call(service, {
+        ...options,
+        method: 'POST',
+        path,
+        headers: { ...options.headers, ...relay.headers },
+        body: relay.body,
+      });
+    },
+    legacySite: {
+      paths: async (query) => {
+        const request: GatewayRequest = { method: 'GET', path: LEGACY_SITE_PATHS, query };
+        const response = await send(ctx, GATEWAY_CALLEE, request, 'decoded', serviceClient);
+        return response as OperationResponse<LegacySitePathsOperation>;
+      },
+    },
+    identity: identityFacade(core),
+    people: serviceFacade(core, 'people'),
+    programsSites: programsSitesFacade(core),
+    strategiesContent: serviceFacade(core, 'strategies-content'),
+    legacyVersionMenu: async () => {
+      const request: GatewayRequest = { method: 'GET', path: LEGACY_VERSION_MENU_PATH };
+      const response = await send(ctx, GATEWAY_CALLEE, request, 'decoded', serviceClient);
+      return response as OperationResponse<LegacyVersionMenuOperation>;
+    },
+    legacyPlugins: async () => {
+      const request: GatewayRequest = { method: 'GET', path: LEGACY_PLUGINS_PATH };
+      const response = await send(ctx, GATEWAY_CALLEE, request, 'decoded', serviceClient);
+      return response as OperationResponse<LegacyPluginsOperation>;
+    },
+  };
+}

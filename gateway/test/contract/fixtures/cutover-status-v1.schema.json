@@ -1,0 +1,136 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "tableVersion",
+    "previous",
+    "epoch",
+    "groupAuthority",
+    "frozen",
+    "instances",
+    "acknowledgedEpoch",
+    "inflight",
+    "sessionMode"
+  ],
+  "properties": {
+    "tableVersion": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^v[0-9]{4}$"
+    },
+    "previous": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^v[0-9]{4}$"
+    },
+    "epoch": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "groupAuthority": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string",
+        "enum": [
+          "legacy",
+          "target"
+        ]
+      }
+    },
+    "frozen": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z0-9-]+:\\S+$"
+      }
+    },
+    "instances": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "instanceId",
+          "seenEpoch",
+          "heartbeatAt",
+          "live"
+        ],
+        "properties": {
+          "instanceId": {
+            "type": "string"
+          },
+          "seenEpoch": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "heartbeatAt": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,6})?(Z|[+-]\\d{2}:\\d{2})$"
+          },
+          "live": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "acknowledgedEpoch": {
+      "description": "Lowest epoch seen by a live instance; null when none is live.",
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "inflight": {
+      "description": "In-flight writes grouped by instance, route and side; rows of an instance not live in `instances` are orphans.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "instanceId",
+          "route",
+          "side",
+          "count",
+          "oldestStartedAt"
+        ],
+        "properties": {
+          "instanceId": {
+            "type": "string"
+          },
+          "route": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]+:\\S+$"
+          },
+          "side": {
+            "type": "string",
+            "enum": [
+              "legacy",
+              "target"
+            ]
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "oldestStartedAt": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,6})?(Z|[+-]\\d{2}:\\d{2})$"
+          }
+        }
+      }
+    },
+    "sessionMode": {
+      "type": "string",
+      "enum": [
+        "legacy-primary",
+        "target-primary"
+      ]
+    }
+  }
+}

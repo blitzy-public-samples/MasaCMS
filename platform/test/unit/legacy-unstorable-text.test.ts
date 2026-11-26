@@ -1,0 +1,183 @@
+// Tests the text PostgreSQL cannot hold as legacy does: unpaired surrogates as legacy's answers write them, and the requests storing a NUL halted to legacy.
+import { describe, expect, it } from 'vitest';
+import {
+  NUL_TEXT_HALT_VARIANT,
+  javaUtf8Text,
+  scannedRouteKey,
+  textHaltedRouteKey,
+  type RouteKeyOptions,
+  type ScannedRouteKeyRequest,
+} from '../../src/legacy-compat/index.js';
+
+const JSON_TYPE = 'application/json';
+const URLENCODED = 'application/x-www-form-urlencoded';
+const FIXTURE = '/legacy-fixtures/cfml/api.cfm';
+const API = '/_api/json/v1/tenant-a';
+const REST = '/_api/rest/v1/tenant-a';
+const ADMIN = '/admin/index.cfm';
+const ID = 'A1B2C3D4-E5F6-7890-ABCDEF1234567890';
+/** Route-key options under which `flag` is a remote function of comments, as the inventory declares it. */
+const FLAG: RouteKeyOptions = { entityRemoteFunctions: { comment: ['flag'] } };
+
+/** A request as sent: target, method, and an optional body with its content type. */
+interface Sent {
+  url: string;
+  method?: string;
+  contentType?: string;
+  /** A JSON value parsed as the gateway parses a JSON body, or url-encoded form text. */
+  body?: unknown;
+  /** Headers in place of the content type's. */
+  headers?: ScannedRouteKeyRequest['headers'];
+}
+
+/** Url or form fields as the gateway parses them. */
+function fieldsOf(search: string): Record<string, string> {
+  return Object.fromEntries(new URLSearchParams(search));
+}
+
+/** The route-key request of `sent`, a POST unless it names its method. */
+function requestOf({ url, method = 'POST', contentType = JSON_TYPE, body, headers }: Sent): ScannedRouteKeyRequest {
+  const at = url.indexOf('?');
+  const request: ScannedRouteKeyRequest = {
+    url,
+    method,
+    path: at === -1 ? url : url.slice(0, at),
+    query: fieldsOf(at === -1 ? '' : url.slice(at + 1)),
+    headers: headers ?? { 'content-type': contentType },
+  };
+  if (contentType === URLENCODED) request.form = fieldsOf(String(body));
+  else if (body !== undefined) request.jsonBody = body;
+  return request;
+}
+
+/** `depth` nested arrays around `inner`. */
+function nested(depth: number, inner: unknown): unknown {
+  let value = inner;
+  for (let i = 0; i < depth; i += 1) value = [value];
+  return value;
+}
+
+describe('javaUtf8Text', () => {
+  it.each<[string, string, string]>([
+    ['empty text', '', ''],
+    ['text without surrogates, NUL included', 'a\u0000b \u00e9\u2713', 'a\u0000b \u00e9\u2713'],
+    ['a lone high surrogate', '\ud800x', '?x'],
+    ['a lone low surrogate', 'x\udc00', 'x?'],
+    ['a surrogate pair', '\ud83d\ude00', '\ud83d\ude00'],
+    ['a high surrogate before a pair', '\ud83d\ud83d\ude00', '?\ud83d\ude00'],
+    ['a low surrogate after a pair', '\ud83d\ude00\ude00', '\ud83d\ude00?'],
+    ['a reversed pair', '\ude00\ud83d', '??'],
+    ['surrogates at both ends', '\udfff-\ud800', '?-?'],
+  ])('writes %s as Java UTF-8 encodes it', (_label, text, written) => {
+    expect(javaUtf8Text(text)).toBe(written);
+  });
+});
+
+describe('textHaltedRouteKey', () => {
+  it.each<[string, Sent, string]>([
+    ['a fixture create whose title holds a NUL', { url: `${FIXTURE}/people/persons`, body: { title: 'a\u0000b', amount: '1.0000' } }, 'fixture:people/persons@post'],
+    ['a fixture edit', { url: `${FIXTURE}/people/persons/A1B2C3D4-E5F6-7890-ABCDEF1234567890/edit`, body: { title: '\u0000' } }, 'fixture:people/persons/{id}/edit@post'],
+    ['a JSON API save', { url: '/_api/json/v1/tenant-a/variationtargeting/', body: { initjs: 'x\u0000' } }, 'api:variationtargeting.save'],
+    ['a REST save', { url: '/_api/rest/v1/tenant-a/variationtargeting', body: { targetingjs: '\u0000' } }, 'rest:variationtargeting.save'],
+    ['a nested value', { url: `${FIXTURE}/people/persons`, body: { variables: { name: ['a', 'b\u0000'] } } }, 'fixture:people/persons@post'],
+    ['a key', { url: `${FIXTURE}/people/persons`, body: { 'ti\u0000tle': 'x' } }, 'fixture:people/persons@post'],
+    ['a value nested past any stack depth', { url: `${FIXTURE}/people/persons`, body: { answers: nested(200_000, '\u0000') } }, 'fixture:people/persons@post'],
+    [
+      'a body under a repeated Content-Type header',
+      { url: `${FIXTURE}/people/persons/A1B2C3D4-E5F6-7890-ABCDEF1234567890/archive`, headers: { 'Content-Type': ['application/json; charset=utf-8'] }, body: { comment: '\u0000' } },
+      'fixture:people/persons/{id}/archive@post',
+    ],
+    [
+      'a fixture write whose path id holds a NUL, under a form body',
+      { url: `${FIXTURE}/people/persons/A1B2C3D4%00-E5F6-7890-ABCDEF1234567890/archive`, contentType: URLENCODED, body: 'comment=x' },
+      'fixture:people/persons/{id}/archive@post',
+    ],
+    ['a fixture path whose action holds a NUL', { url: `${FIXTURE}/people/persons/abc/arch%00ive`, body: {} }, 'fixture:people/persons/{id}/arch\u0000ive@post'],
+    ['a person archive whose path id holds a NUL', { url: `${FIXTURE}/people/persons/abc%00def/archive`, body: {} }, 'fixture:people/persons/{id}/archive@post'],
+    ['a person read whose path id ends in a NUL', { url: `${FIXTURE}/people/persons/${ID}%00/status`, method: 'GET' }, 'fixture:people/persons/{id}/status@get'],
+    ['a JSON API delete whose 35-character path id holds a NUL', { url: `${API}/category/${ID.slice(0, 34)}%00`, method: 'DELETE' }, 'api:category.delete'],
+    ['a REST save whose path id holds a NUL', { url: `${REST}/variationtargeting/${ID.slice(0, 8)}%00${ID.slice(9)}`, method: 'PUT', body: {} }, 'rest:variationtargeting.save'],
+    ['a JSON API delete whose path-pair id holds a NUL', { url: `${API}/delete/entityname/comment/id/${ID}%00`, method: 'DELETE' }, 'api:comment.delete'],
+    ['a JSON API save whose path-pair value holds a NUL', { url: `${API}/save/entityname/category/name/a%00b`, contentType: URLENCODED, body: '' }, 'api:category.save'],
+    ['a REST login whose path-pair username holds a NUL', { url: `${REST}/login/username/admin%00/password/x`, method: 'GET' }, 'rest:login'],
+    ['a JSON API delete whose site segment holds a NUL', { url: `/_api/json/v1/tenant%00-a/category/${ID}`, method: 'DELETE' }, 'api:category.delete'],
+    ['a JSON API save whose entity segment holds a NUL', { url: `${API}/cate%00gory/`, body: {} }, 'api:cate\u0000gory.save'],
+    ['a JSON API read whose path id holds a NUL', { url: `${API}/content/${ID.slice(0, 34)}%00`, method: 'GET' }, 'api:content.findone'],
+    ['a REST save whose Basic client secret holds a NUL', { url: `${REST}/category/`, headers: { authorization: `Basic ${Buffer.from(`${ID}:s\u0000`).toString('base64')}` } }, 'rest:category.save'],
+    ['an admin create whose path-pair value holds a NUL', { url: `${ADMIN}/cusers/update/fname/a%00b?muraAction=cUsers.update`, contentType: URLENCODED, body: 'type=2&action=Add' }, 'admin:cusers.update'],
+    ['an admin save keyed by its path whose path-pair value holds a NUL', { url: `${ADMIN}/cfeed/update/name/a%00b`, contentType: URLENCODED, body: 'action=add' }, 'admin:cfeed.update'],
+    ['an admin save whose path-pair name holds a NUL beside a posted name', { url: `${ADMIN}/ccategory/update/na%00me/x`, contentType: URLENCODED, body: 'name=Real' }, 'admin:ccategory.update'],
+    ['an admin save whose last path segment names a NUL', { url: `${ADMIN}/cchangesets/save/x%00`, contentType: URLENCODED, body: 'name=a' }, 'admin:cchangesets.save'],
+    ['an admin address save whose path-pair value is only a NUL', { url: `${ADMIN}/cusers/updateaddress/address1/%00?muraAction=cUsers.updateAddress`, method: 'GET' }, 'admin:cusers.updateaddress'],
+    ['a person list, a read', { url: `${FIXTURE}/people/persons`, method: 'GET', body: { pageIndex: '1\u0000' } }, 'fixture:people/persons@get'],
+  ])('halts %s under the NUL variant of its base key', (_label, sent, base) => {
+    const { result, unhalted } = textHaltedRouteKey(requestOf(sent));
+    expect([result.key, result.variant, unhalted?.key]).toStrictEqual([`${base}{${NUL_TEXT_HALT_VARIANT}}`, NUL_TEXT_HALT_VARIANT, base]);
+    expect(result.params).toStrictEqual(unhalted?.params);
+  });
+
+  it.each<[string, Sent]>([
+    ['an unpaired surrogate on a person archive, which stores no request text', { url: `${FIXTURE}/people/persons/${ID}/archive`, body: { effectiveFrom: '\ud800' } }],
+    ['an unpaired surrogate in a fixture read', { url: `${FIXTURE}/people/persons`, method: 'GET', body: { title: '\ud800' } }],
+    ['a fixture JSON array body holding an unpaired surrogate, which api.cfm does not merge', { url: `${FIXTURE}/people/persons`, body: ['\ud800'] }],
+    ['an unpaired surrogate in a JSON API save, which Masa binds as varchar and stores as `?`', { url: `${API}/variationtargeting/`, body: { initjs: '\ud800x' } }],
+    ['an unpaired surrogate in a REST save', { url: `${REST}/variationtargeting`, body: { targetingjs: 'y\udc00' } }],
+    ['a form value encoding a surrogate, which legacy decodes to U+FFFD', { url: `${FIXTURE}/people/persons`, contentType: URLENCODED, body: 'title=%ED%A0%80x' }],
+    ['a JSON body sent without a content type', { url: `${FIXTURE}/people/persons`, headers: { 'content-type': undefined }, body: { title: '\u0000' } }],
+    ['a url NUL, which the scan strips', { url: `${FIXTURE}/people/persons?title=a%00b`, method: 'GET', body: undefined }],
+    ['a form NUL, which the scan strips', { url: `${FIXTURE}/people/persons`, contentType: URLENCODED, body: 'title=a%00b' }],
+    ['a url name holding a NUL, which the scan copies to its stripped name', { url: `${API}/variationtargeting/?init%00js=a`, contentType: URLENCODED, body: 'targetingjs=c' }],
+    ['a form name holding a NUL', { url: `${FIXTURE}/people/persons`, contentType: URLENCODED, body: 'ti%00tle=a&amount=1' }],
+    ['an admin form name holding a NUL', { url: '/admin/?muraAction=cUsers.update', contentType: URLENCODED, body: 'type=1&action=Add&groupna%00me=x' }],
+    ['an admin path-pair value holding a NUL that the form replaces', { url: `${ADMIN}/ccategory/update/name/a%00b?muraAction=cCategory.update`, contentType: URLENCODED, body: 'name=Real' }],
+    ['a NUL in an admin action segment, which keys an action no entry lists', { url: `${ADMIN}/cus%00ers/update`, contentType: URLENCODED, body: 'type=1' }],
+    ['a NUL in an admin action segment the url action replaces', { url: `${ADMIN}/cus%00ers/update?muraAction=cUsers.update`, contentType: URLENCODED, body: 'type=1' }],
+    ['an admin path pair holding an escaped percent sign, which FW/1 reads as text', { url: `${ADMIN}/ccategory/update/name/a%2500b`, contentType: URLENCODED, body: '' }],
+    ['a reload whose admin path pair holds a NUL, which legacy always serves', { url: `${ADMIN}/cusers/update/fname/a%00b?appreload`, contentType: URLENCODED, body: 'type=2' }],
+    ['a JSON body legacy does not read for its content type', { url: `${FIXTURE}/people/persons`, contentType: 'text/plain', body: { title: '\u0000' } }],
+    ['a JSON array body, which legacy does not merge', { url: '/_api/json/v1/tenant-a/variationtargeting/', body: ['\u0000'] }],
+    ['a JSON body of an admin action, which reads no JSON body', { url: '/admin/?muraAction=cUsers.update', body: { type: '\u0000' } }],
+    ['a JSON body of a page', { url: '/', body: { doaction: '\u0000' } }],
+    ['a JSON body of an OPT-2 path', { url: '/opt2/stub/ping', body: { x: '\u0000' } }],
+    ['a reload, which legacy always serves', { url: '/_api/json/v1/tenant-a/variationtargeting/?appreload', body: { initjs: '\u0000' } }],
+    ['a fixture path id holding an escaped percent sign, which api.cfm reads as text', { url: `${FIXTURE}/people/persons/abc%2500def`, method: 'GET' }],
+    ['a JSON API path segment holding a NUL that only names a path param, which parseParamsFromPath strips', { url: `${API}/variationtargeting/abc%00def`, method: 'GET' }],
+    ['a NUL in a path-pair name, which parseParamsFromPath strips', { url: `${API}/save/entityname/category/na%00me/x`, contentType: URLENCODED, body: '' }],
+    ['a NUL in path segments after a 35-character id, which processRequest never reads', { url: `${API}/category/${ID}/x/y%00`, method: 'DELETE' }],
+    ['a NUL in a REST OAuth endpoint segment, matched only against names', { url: `${REST}/oauth2/token%00`, method: 'GET' }],
+    ['a NUL in the site segment of a REST OAuth path, which falls back to the default site', { url: '/_api/rest/v1/de%00fault/oauth', method: 'GET' }],
+    ['a NUL in a REST login path-pair name', { url: `${REST}/login/x%00`, method: 'GET' }],
+    ['a path NUL of a family that takes no path params', { url: '/_api/feed/v1/a%00b?feedid=x', method: 'GET' }],
+    ['a NUL in a fixture folder template path', { url: '/legacy-fixtures/cfml/seed.cfm/a%00b', method: 'GET' }],
+  ])('keys %s as scannedRouteKey does', (_label, sent) => {
+    const request = requestOf(sent);
+    expect(textHaltedRouteKey(request)).toStrictEqual(scannedRouteKey(request));
+  });
+
+  it.each<[string, string, RouteKeyOptions, string | undefined]>([
+    ['the bean a path id holding a NUL loads', `${API}/comment/${ID.slice(0, 34)}%00/flag`, FLAG, 'api:comment.~flag'],
+    ['a segment after the function, which legacy never reads', `${API}/comment/flag/x%00`, FLAG, undefined],
+    ['the same path, a path pair whose value holds the NUL when flag is no remote function', `${API}/comment/flag/x%00`, {}, 'api:comment.findall'],
+  ])('keys a comment flag whose NUL lands in %s by where it lands', (_label, url, options, base) => {
+    const request = requestOf({ url, contentType: URLENCODED, body: '' });
+    const { result, unhalted } = textHaltedRouteKey(request, options);
+    if (base === undefined) expect(textHaltedRouteKey(request, options)).toStrictEqual(scannedRouteKey(request, options));
+    else expect([result.key, unhalted?.key]).toStrictEqual([`${base}{${NUL_TEXT_HALT_VARIANT}}`, base]);
+  });
+
+  it('keys a scan-halted request holding a NUL under the scan variant, as scannedRouteKey does', () => {
+    const request = requestOf({ url: '/_api/json/v1/tenant-a/?method=findOne&entityname=user&a-b=one&a.b=two', body: { x: '\u0000' } });
+    const keyed = textHaltedRouteKey(request);
+    expect(keyed).toStrictEqual(scannedRouteKey(request));
+    expect([keyed.result.key, keyed.unhalted?.key]).toStrictEqual(['api:user.findone{scriptprotect=fault}', 'api:user.findone']);
+  });
+
+  it.each<[string, Sent, Record<string, string>]>([
+    ['a url value, its NUL stripped', { url: `${FIXTURE}/people/persons?title=a%00b`, method: 'GET' }, { title: 'ab' }],
+    ['a url name, kept beside its stripped copy', { url: `${FIXTURE}/people/persons?ti%00tle=a`, method: 'GET' }, { 'ti\u0000tle': 'a', title: 'a' }],
+    ['a form name, kept beside its stripped copy', { url: `${FIXTURE}/people/persons`, contentType: URLENCODED, body: 'ti%00tle=a' }, { 'ti\u0000tle': 'a', title: 'a' }],
+    ['an admin path-pair value, unscanned', { url: `${ADMIN}/cusers/update/fname/%20a%00b`, contentType: URLENCODED, body: 'type=2' }, { fname: ' a\u0000b' }],
+  ])('leaves %s in the params legacy reads', (_label, sent, params) => {
+    expect(textHaltedRouteKey(requestOf(sent)).result.params).toMatchObject(params);
+  });
+});

@@ -1,0 +1,1 @@
+{"openapi":"3.1.0","info":{"title":"relative fragment","version":"1.0.0","x-source-sha":"696383140578f8dea3ece26f80cd7bfb370ddf0f"},"paths":{},"components":{"schemas":{"Health":{"$ref":"../shared.json#components/schemas/Health"}}}}

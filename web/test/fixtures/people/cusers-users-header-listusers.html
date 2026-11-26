@@ -1,0 +1,53 @@
+
+
+			
+<div class="mura-header">
+	<h1>Users & Groups</h1>
+
+	<div class="nav-module-specific btn-group">
+
+		
+			<a class="btn" href="/admin/index.cfm?muraAction=cusers.edituser&siteid=default&userid=" onclick="actionModal();">
+				<i class="mi-plus-circle"></i> 
+				Add User
+			</a>
+
+	  
+			<a class="btn" href="/admin/index.cfm?muraAction=cusers.editgroup&siteid=default&userid=" onclick="actionModal();">
+				<i class="mi-plus-circle"></i> 
+				Add Group
+			</a>
+
+		
+
+			
+				<a class="btn" href="/admin/index.cfm?muraAction=cusers&siteid=default" onclick="actionModal();">
+					<i class="mi-group"></i>
+					Groups
+				</a>
+
+	  
+		</div>
+
+	<div class="mura-item-metadata">
+		
+  <form class="form-inline" novalidate="novalidate" action="" method="get" name="form1" id="siteSearch">
+    <div class="mura-search">
+      <span class="mura-input-set">
+      <input id="search" name="search" type="text" value="" placeholder="Search for Users" />
+      <button type="button" class="btn" onclick="submitForm(document.forms.form1);">
+        <i class="mi-search"></i>
+      </button>
+    </span>
+      <button type="button" class="btn" onclick="actionModal();window.location='./?muraAction=cUsers.advancedSearch&amp;ispublic=0&amp;siteid=default&amp;newSearch=true'" value="Advanced">
+        Advanced
+      </button>
+      <input type="hidden" name="siteid" value="default" />
+      <input type="hidden" name="ispublic" value="0" />
+      <input type="hidden" name="muraAction" value="cUsers.search" />
+    </div>
+  </form>
+
+	</div><!-- /.mura-item-metadata -->
+</div> <!-- /.mura-header -->
+

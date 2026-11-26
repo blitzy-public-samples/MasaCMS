@@ -1,0 +1,147 @@
+// Error types shared by golden capture, replay and comparison.
+import type { DifferenceKind } from './normalise/masks.js';
+
+/** Locations of a case's golden set and replay output, repository- or `${OPT2_STATE_DIR}`-relative, never absolute. */
+export interface HaltEvidence {
+  golden: string;
+  replay: string;
+}
+
+// Kept as a literal variable reference so exception entries written from it hold no machine path.
+const REPLAY_ROOT = '${OPT2_STATE_DIR}/golden/replay';
+
+const SETS_ROOT = 'harness/golden/sets';
+
+/**
+ * Subdirectory of `golden/sets`, `golden/raw`, `golden/replay` and `golden/sessions` holding a rehearsal crossing: a
+ * non-rehearsal scenario captured again before the GS-PE-RH sets and replayed with `--rehearsal` across the v0003
+ * activation, kept apart so its own set and v0002 replay stand.
+ */
+export const REHEARSAL_CROSSING_DIR = 'rehearsal';
+
+/**
+ * Portable evidence paths of scenario `scenarioId`, or of its rehearsal crossing when `crossing`, the one place both
+ * halt producers (capture, replay) build them.
+ */
+export function haltEvidence(scenarioId: string, crossing = false): HaltEvidence {
+  const dir = (root: string): string => (crossing ? `${root}/${REHEARSAL_CROSSING_DIR}` : root);
+  return { golden: `${dir(SETS_ROOT)}/${scenarioId}.json`, replay: `${dir(REPLAY_ROOT)}/${scenarioId}.json` };
+}
+
+/** Fields of an {@link EquivalenceImpossible}. */
+export interface EquivalenceImpossibleOptions {
+  scenario: string;
+  /** Canonical route key of the halted case. */
+  routeKey: string;
+  reason: string;
+  evidence: HaltEvidence;
+  /** Observed difference; the reason stands in for it when absent. */
+  difference?: string;
+}
+
+/** Raised for a case that cannot be made equivalent to legacy; the case is recorded halted and the run continues. */
+export class EquivalenceImpossible extends Error {
+  override readonly name: string = 'EquivalenceImpossible';
+  readonly scenario: string;
+  readonly routeKey: string;
+  readonly reason: string;
+  readonly evidence: HaltEvidence;
+  readonly difference?: string;
+
+  constructor(opts: EquivalenceImpossibleOptions) {
+    super(`${opts.scenario} ${opts.routeKey}: ${opts.reason}`);
+    this.scenario = opts.scenario;
+    this.routeKey = opts.routeKey;
+    this.reason = opts.reason;
+    this.evidence = opts.evidence;
+    this.difference = opts.difference;
+  }
+}
+
+/** True for an {@link EquivalenceImpossible}, including one thrown by another copy of this module. */
+export function isEquivalenceImpossible(value: unknown): value is EquivalenceImpossible {
+  return value instanceof EquivalenceImpossible || (value instanceof Error && value.name === 'EquivalenceImpossible');
+}
+
+/** An observed difference an exceptions entry describes; an omitted field matches any value. */
+export interface DifferenceSelector {
+  step: string;
+  /** The difference's path, or a parent of it ending at a `.` or `[` segment boundary. */
+  path: string;
+  kind?: DifferenceKind[];
+  /** Deep-partial match of the golden value. */
+  expected?: unknown;
+  /** Deep-partial match of the replayed value. */
+  actual?: unknown;
+}
+
+/** One entry of `opt2/exceptions-list.json`; `scenario` and `evidence` are absent once their scenario was retired. */
+export interface ExceptionEntry {
+  id: string;
+  scenario?: string;
+  routeKey: string;
+  /** Further route keys the entry covers. */
+  appliesTo?: string[];
+  difference: string;
+  /** Differences the entry excuses; an entry without selectors excuses none. */
+  matches?: DifferenceSelector[];
+  decision: 'preserve' | 'fix';
+  reason: string;
+  status: 'open' | 'accepted' | 'halted';
+  evidence?: HaltEvidence;
+  sourceSha: string;
+}
+
+/** Id prefix of an exceptions entry keyed by one halted people roster operation, `EX-ROSTER-HALT-<operationId>`. */
+export const ROSTER_HALT_ID_PREFIX = 'EX-ROSTER-HALT-';
+
+/** Whether `id` names an entry keyed by one roster operation, which is matched by its id alone. */
+export function isRosterHaltId(id: string): boolean {
+  return id.startsWith(ROSTER_HALT_ID_PREFIX);
+}
+
+/** Halted `preserve` exceptions entry recording `err`. */
+export function haltedExceptionEntry(
+  err: EquivalenceImpossible,
+  opts: { id: string; sourceSha: string },
+): ExceptionEntry & Required<Pick<ExceptionEntry, 'scenario' | 'evidence'>> {
+  return {
+    id: opts.id,
+    scenario: err.scenario,
+    routeKey: err.routeKey,
+    difference: err.difference ?? err.reason,
+    decision: 'preserve',
+    reason: err.reason,
+    status: 'halted',
+    evidence: { golden: err.evidence.golden, replay: err.evidence.replay },
+    sourceSha: opts.sourceSha,
+  };
+}
+
+/** Invalid catalogue or normalise rules, a missing golden set, or an unresolved binding. */
+export class GoldenConfigError extends Error {
+  override readonly name: string = 'GoldenConfigError';
+  /** File or JSON path the problem was found at. */
+  readonly path?: string;
+
+  constructor(message: string, opts: { path?: string; cause?: unknown } = {}) {
+    super(message, opts.cause === undefined ? undefined : { cause: opts.cause });
+    this.path = opts.path;
+  }
+}
+
+/** A secret placeholder without a unique value in its source; the message names where it looked, never a value. */
+export class MissingSecretError extends Error {
+  override readonly name: string = 'MissingSecretError';
+
+  /**
+   * @param placeholder Unresolved placeholder, e.g. `${secret:seed:<username>}`.
+   * @param source Env var name or file path that was searched.
+   */
+  constructor(
+    readonly placeholder: string,
+    readonly source: string,
+  ) {
+    super(`Secret ${placeholder} has no unique value in ${source}`);
+  }
+}

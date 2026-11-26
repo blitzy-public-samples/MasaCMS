@@ -1,0 +1,71 @@
+
+<div class="form-inline">
+<h2>Search for Content</h2>
+<div class="mura-input-set">
+	<input id="parentSearch" name="parentSearch" value="" type="text" class="text" maxlength="50" onclick="return false;">
+	<input id="parentSearchSubmit" type="button" class="btn" onclick="siteManager.loadSiteParents('default','222A56D5-0413-3807-D3CDEA0B68355AAE','00000000000000000000000000000000001',document.getElementById('parentSearch').value,0);return false;" value="Search">
+</div>
+
+</div>
+
+ <table class="mura-table-grid">
+  
+		<tr>
+		  <th class="actions"></th>
+	    <th class="var-width">Select New Content Parent</th>
+    </tr>
+	
+			<tr class="alt">
+				<td class="actions"><input type="radio" name="parentid" value="00000000000000000000000000000000001" checked="checked"></td>
+				 <td class="var-width">
+		<ul class="navZoom">
+		
+		<li class="mi-file "> <strong>Home</strong></li>
+		</ul></td>
+			</tr> 
+						<tr >
+						  <td class="actions"><input type="radio" name="parentid" value="222A49FE-B704-ABFB-BD9A4976583ECFCA"></td>
+			        <td class="var-width">
+		<ul class="navZoom">
+		
+			<li class="mi-file "> Home</li>
+		
+			<li class="mi-folder-open-o "> Flat Folder</li>
+		
+		<li class="mi-file "> <strong>Secret Page</strong></li>
+		</ul></td>
+						</tr>
+				 	
+						<tr class="alt">
+						  <td class="actions"><input type="radio" name="parentid" value="222A4CB5-AA8F-CFA8-E27E048A7AF846CE"></td>
+			        <td class="var-width">
+		<ul class="navZoom">
+		
+			<li class="mi-file "> Home</li>
+		
+			<li class="mi-folder-open-o "> Flat Folder</li>
+		
+			<li class="mi-file locked"> Secret Page</li>
+		
+		<li class="mi-file locked"> <strong>Under Secret</strong></li>
+		</ul></td>
+						</tr>
+				 	
+  </table>
+</td></tr></table>
+
+
+<script type="text/javascript">
+	$(document).ready(function(){	
+		$('#parentSearch').on('keypress',function(e){
+			if(e.which == 13) {
+				var pval = $(this).val();
+				$('#parentSearchSubmit').trigger('click');
+				setTimeout(function(){						
+				$('#parentSearch').focus();	
+				},'250')	
+				return false;
+		  	}
+		})
+	})
+</script>

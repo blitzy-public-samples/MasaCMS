@@ -1,0 +1,21 @@
+
+<script>
+	$('.mura-quickEdit select').niceSelect();
+</script>
+
+	<h1>Inheritance Rules</h1>
+	<span class="cancel" onclick="siteManager.closeQuickEdit();" title="Cancel"><i class="mi-close"></i></span>
+
+	
+		<select id="mura-quickEdit-inheritobjects">
+			<option value="Inherit">Inherit Cascade</option>
+			<option value="Cascade">Start New Cascade</option>
+			<option value="Reject" selected>Do Not Inherit Cascade</option>
+		</select>
+	
+	<div class="form-actions">
+		
+		<button id="btn__quickedit__save" class="btn mura-primary" onclick="siteManager.saveQuickEdit(this);">Submit</button>
+		<button id="btn__quickedit__schedule" style="display:none;" type="button" class="btn mura-primary"> Manage Schedule</button>
+	</div>
+	

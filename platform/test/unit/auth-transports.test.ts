@@ -1,0 +1,2320 @@
+import { createPublicKey, createSecretKey, randomBytes, type KeyObject } from 'node:crypto';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { GoogleAuth, IdTokenClient, OAuth2Client, gaxios, type CredentialBody } from 'google-auth-library';
+import { CertificateFormat } from 'google-auth-library/build/src/auth/oauth2client.js';
+import {
+  CompactSign,
+  SignJWT,
+  calculateJwkThumbprint,
+  createLocalJWKSet,
+  errors,
+  exportJWK,
+  exportSPKI,
+  generateKeyPair,
+  jwtVerify,
+  type CryptoKey,
+  type JWTPayload,
+  type JWTVerifyGetKey,
+} from 'jose';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
+import {
+  ANONYMOUS_PRINCIPAL_UID,
+  AuthDenial,
+  GOOGLE_SECURETOKEN_JWKS_URL,
+  INVOCATION_HEADER,
+  KeySourceUnavailableError,
+  LOCAL_SECRET_FILES,
+  LOCAL_SERVICE_ISSUER,
+  LOCAL_SERVICE_TOKEN_TTL_SECONDS,
+  LOCAL_USER_TOKEN,
+  MANAGED_INVOKER_NAMES,
+  SIGNATURE_REMOVED_MARKER,
+  TRANSPORTS,
+  assertSiteMatches,
+  cloudUserTokenSettings,
+  createAuthFromEnv,
+  createCloudCloudTasksTransport,
+  createCloudInvocationMinter,
+  createCloudInvocationVerifier,
+  createCloudPubSubPushTransport,
+  createCloudRunInvocationReader,
+  createLocalCloudTasksTransport,
+  createLocalInvocationMinter,
+  createLocalInvocationVerifier,
+  createLocalPubSubPushTransport,
+  createServiceTransport,
+  createUserTokenVerifier,
+  hasAnyRole,
+  invocationAudience,
+  loadLocalSigningKeys,
+  localSecretPath,
+  managedAudience,
+  rolesForService,
+  serviceAccountEmail,
+  serviceIdentityFromEmail,
+  signLocalServiceToken,
+  transportForPath,
+  verifyLocalServiceToken,
+  type AuthDenialReason,
+  type AuthDenialType,
+  type AuthEnv,
+  type AuthRequest,
+  type AuthResult,
+  type AuthSetup,
+  type LocalSigningKeys,
+  type Transport,
+  type TransportAuthenticator,
+  type TransportSet,
+  type UserClaims,
+  type UserTokenVerifier,
+} from '../../src/auth/index.js';
+// The Google-auth bound and the legacy error base are not re-exported by the auth surface.
+import { GOOGLE_AUTH_TIMEOUT_MS } from '../../src/auth/deadline.js';
+import { LegacyApiError, LegacyServiceUnavailableError } from '../../src/legacy-compat/index.js';
+import { serializeError } from '../../src/logging/index.js';
+import { EnvFileError } from '../../src/service-kit/env.js';
+import {
+  TENANT_A,
+  TEST_PUSH_KEY,
+  mintServiceToken,
+  mintTasksInvokerToken,
+  mintUserToken,
+  pushKeyQuery,
+  testJwks,
+  testSigningKeys,
+  testVerifier,
+  writeTestSecrets,
+} from '../../src/testing/index.js';
+
+const NOW = Math.floor(Date.now() / 1000);
+const PROJECT = 'proj';
+const PEOPLE_URL = 'https://opt2-people-abc123-uc.a.run.app';
+const CONTENT_URL = 'https://opt2-strategies-content-abc123-uc.a.run.app';
+const PUSH_ENDPOINT = `${PEOPLE_URL}/internal/v1/events/people.programs-sites.site.changed.v1`;
+const GOOGLE_ISSUER = 'https://accounts.google.com';
+const GATEWAY_EMAIL = 'opt2-gateway@proj.iam.gserviceaccount.com';
+const PUBSUB_INVOKER_EMAIL = 'opt2-pubsub-invoker@proj.iam.gserviceaccount.com';
+const TASKS_INVOKER_EMAIL = 'opt2-tasks-invoker@proj.iam.gserviceaccount.com';
+const MIGRATION_EMAIL = 'opt2-migration@proj.iam.gserviceaccount.com';
+const OPERATOR_EMAIL = 'opt2-operator@proj.iam.gserviceaccount.com';
+const BASIC_HEADER = 'Basic dXNlcg==';
+const BEARER_CHALLENGE = 'Bearer error="invalid_access_token"';
+
+interface DenialShape {
+  statusCode: 401 | 403;
+  type: AuthDenialType;
+  reason: AuthDenialReason;
+  wwwAuthenticate: string | undefined;
+}
+
+const INVALID_ACCESS_TOKEN: DenialShape = {
+  statusCode: 401,
+  type: 'invalidAccessToken',
+  reason: 'invalid-credential',
+  wwwAuthenticate: BEARER_CHALLENGE,
+};
+const ACCESS_TOKEN_EXPIRED: DenialShape = {
+  statusCode: 401,
+  type: 'accessTokenExpired',
+  reason: 'expired-credential',
+  wwwAuthenticate: BEARER_CHALLENGE,
+};
+const INVALID_CREDENTIAL: DenialShape = {
+  statusCode: 401,
+  type: 'authorization',
+  reason: 'invalid-credential',
+  wwwAuthenticate: undefined,
+};
+const WRONG_SCHEME: DenialShape = { ...INVALID_CREDENTIAL, reason: 'wrong-scheme' };
+
+interface SigningKey {
+  privateKey: CryptoKey;
+  publicKey: CryptoKey;
+  kid: string;
+}
+
+/** Generates an extractable RS256 key pair with its RFC 7638 thumbprint as kid. */
+async function newSigningKey(): Promise<SigningKey> {
+  const { privateKey, publicKey } = await generateKeyPair('RS256', { extractable: true });
+  return { privateKey, publicKey, kid: await calculateJwkThumbprint(await exportJWK(publicKey)) };
+}
+
+/** Signs `payload` as an RS256 JWT with `key`, announcing `kid` in the header. */
+function signToken(payload: JWTPayload, key: SigningKey, kid = key.kid): Promise<string> {
+  return new SignJWT(payload).setProtectedHeader({ alg: 'RS256', kid, typ: 'JWT' }).sign(key.privateKey);
+}
+
+/** Signs `payload` with `exp` written as the raw JSON number `rawExp`, such as `1e400`, which `SignJWT` cannot encode. */
+function signWithRawExp(payload: JWTPayload, rawExp: string, key: SigningKey): Promise<string> {
+  const claims = JSON.stringify({ ...payload, exp: undefined }).replace(/}$/, `,"exp":${rawExp}}`);
+  return new CompactSign(new TextEncoder().encode(claims))
+    .setProtectedHeader({ alg: 'RS256', kid: key.kid, typ: 'JWT' })
+    .sign(key.privateKey);
+}
+
+/** Claims of the site-scoped user token the tests present, as identity's local signer mints them. */
+const USER: UserClaims = {
+  iss: LOCAL_USER_TOKEN.issuer,
+  aud: LOCAL_USER_TOKEN.audience,
+  sub: 'A1B2C3D4-E5F6-7A8B-9C0D1E2F3A4B5C6D',
+  sid: 'b7e6d5c4-session',
+  tid: TENANT_A.tenantId,
+  site: TENANT_A.siteId,
+  roles: ['site-admin', 'm:008'],
+  s2: false,
+  epoch: 3,
+  iat: NOW,
+  exp: NOW + LOCAL_USER_TOKEN.lifetimeSeconds,
+};
+
+/** User claims for crafted payloads; an `undefined` override drops the claim and other values may break its shape. */
+function userClaims(overrides: Record<string, unknown> = {}): JWTPayload {
+  return { ...USER, ...overrides };
+}
+
+/** User token minted by the test kit from the default claims with `overrides` applied. */
+function userToken(overrides: Partial<UserClaims> = {}): Promise<string> {
+  return mintUserToken({ ...USER, ...overrides });
+}
+
+/** Google-signed OIDC ID token claims of the gateway's service account, addressed to the people service. */
+function googleOidcClaims(overrides: Record<string, unknown> = {}): JWTPayload {
+  return {
+    iss: GOOGLE_ISSUER,
+    aud: PEOPLE_URL,
+    azp: '104729384756102938475',
+    sub: '104729384756102938475',
+    email: GATEWAY_EMAIL,
+    email_verified: true,
+    iat: NOW,
+    exp: NOW + 3600,
+    ...overrides,
+  };
+}
+
+/** Local service token claims of the gateway addressed to the people service. */
+function serviceClaims(overrides: Record<string, unknown> = {}): JWTPayload {
+  return {
+    iss: LOCAL_SERVICE_ISSUER,
+    aud: 'people',
+    sub: 'service:gateway',
+    roles: ['service:gateway'],
+    iat: NOW,
+    exp: NOW + LOCAL_SERVICE_TOKEN_TTL_SECONDS,
+    ...overrides,
+  };
+}
+
+/** Builds the token Cloud Run forwards after verifying it: the signature segment replaced by the marker. */
+function cloudRunForwarded(payload: JWTPayload): string {
+  const encode = (part: object): string => Buffer.from(JSON.stringify(part)).toString('base64url');
+  return `${encode({ alg: 'RS256', kid: 'google-key-1', typ: 'JWT' })}.${encode(payload)}.${SIGNATURE_REMOVED_MARKER}`;
+}
+
+/** Runs `action` and returns the status, legacy type, reason and challenge of the AuthDenial it throws. */
+async function denialOf(action: () => unknown): Promise<DenialShape> {
+  let outcome: unknown;
+  try {
+    await action();
+  } catch (err) {
+    outcome = err;
+  }
+  if (!(outcome instanceof AuthDenial)) {
+    throw new Error(`Expected an AuthDenial, got ${String(outcome)}`);
+  }
+  return {
+    statusCode: outcome.statusCode,
+    type: outcome.type,
+    reason: outcome.reason,
+    wwwAuthenticate: outcome.wwwAuthenticate,
+  };
+}
+
+type FederatedCerts = Awaited<ReturnType<OAuth2Client['getFederatedSignonCertsAsync']>>;
+
+/** OAuth2Client whose Google signing certificates come from an in-memory PEM map instead of the federated endpoint. */
+class InMemoryCertsClient extends OAuth2Client {
+  constructor(private readonly pems: Record<string, string>) {
+    super();
+  }
+
+  override getFederatedSignonCertsAsync(): Promise<FederatedCerts> {
+    return Promise.resolve({ certs: this.pems, format: CertificateFormat.PEM });
+  }
+}
+
+/** OAuth2Client whose certificate fetch never settles, as when Google's certificate endpoint stalls. */
+class StalledCertsClient extends OAuth2Client {
+  override getFederatedSignonCertsAsync(): Promise<FederatedCerts> {
+    return new Promise(() => undefined);
+  }
+}
+
+/** AbortSignal.timeout signals held by the test: the durations requested and their explicit expiry. */
+interface HeldTimeouts {
+  /** Milliseconds each AbortSignal.timeout call requested, in call order. */
+  readonly requested: readonly number[];
+  /** Aborts every signal handed out so far with the TimeoutError AbortSignal.timeout raises. */
+  expire(): void;
+}
+
+/** Runs `action` while AbortSignal.timeout hands out signals only `expire` aborts; returns the durations requested. */
+async function withHeldTimeouts(action: (timeouts: HeldTimeouts) => Promise<void>): Promise<number[]> {
+  const requested: number[] = [];
+  const controllers: AbortController[] = [];
+  const spy = vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms) => {
+    requested.push(ms);
+    const controller = new AbortController();
+    controllers.push(controller);
+    return controller.signal;
+  });
+  const expire = (): void => {
+    for (const controller of controllers.splice(0)) {
+      controller.abort(new DOMException('The operation was aborted due to timeout', 'TimeoutError'));
+    }
+  };
+  try {
+    await action({ requested, expire });
+    return requested;
+  } finally {
+    spy.mockRestore();
+  }
+}
+
+/** Denial `verification` ends in once its timeout expires, after asserting it was pending on one new timeout. */
+async function denialOnExpiry(timeouts: HeldTimeouts, verification: () => Promise<unknown>): Promise<DenialShape> {
+  const before = timeouts.requested.length;
+  let settled = false;
+  const denial = denialOf(() =>
+    verification().finally(() => {
+      settled = true;
+    }),
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  expect(settled).toBe(false);
+  expect(timeouts.requested).toHaveLength(before + 1);
+  timeouts.expire();
+  return denial;
+}
+
+/** GoogleAuth handing out the given ID-token clients instead of discovering credentials. */
+class InMemoryGoogleAuth extends GoogleAuth {
+  readonly requestedAudiences: string[] = [];
+
+  constructor(private readonly clientFor: (audience: string) => IdTokenClient) {
+    super();
+  }
+
+  override getIdTokenClient(targetAudience: string): Promise<IdTokenClient> {
+    this.requestedAudiences.push(targetAudience);
+    return Promise.resolve(this.clientFor(targetAudience));
+  }
+}
+
+/** GoogleAuth whose ID-token client discovery never settles, as when the metadata server stalls. */
+class StalledGoogleAuth extends GoogleAuth {
+  override getIdTokenClient(): Promise<IdTokenClient> {
+    return new Promise(() => undefined);
+  }
+}
+
+/** ID-token client whose request headers carry no Authorization entry. */
+class HeaderlessIdTokenClient extends IdTokenClient {
+  override getRequestHeaders(): Promise<Headers> {
+    return Promise.resolve(new Headers());
+  }
+}
+
+/** InMemoryGoogleAuth whose ADC principal is `principal` and ADC client `source`; the first `failures` principal lookups reject. */
+class PrincipalGoogleAuth extends InMemoryGoogleAuth {
+  credentialLookups = 0;
+
+  constructor(
+    clientFor: (audience: string) => IdTokenClient,
+    private readonly principal: string,
+    private readonly source: OAuth2Client,
+    private failures = 0,
+  ) {
+    super(clientFor);
+  }
+
+  override getCredentials(): Promise<CredentialBody> {
+    this.credentialLookups += 1;
+    if (this.failures > 0) {
+      this.failures -= 1;
+      return Promise.reject(new Error('metadata server unavailable'));
+    }
+    return Promise.resolve({ client_email: this.principal });
+  }
+
+  override getClient(): Promise<OAuth2Client> {
+    return Promise.resolve(this.source);
+  }
+}
+
+/** Impersonation source credential recording each IAM Credentials request and answering with an ID token for its audience. */
+class RecordingSourceClient extends OAuth2Client {
+  readonly requests: { url: string; method: string | undefined; data: unknown }[] = [];
+
+  constructor(private readonly idTokenFor: (audience: string, opts: gaxios.GaxiosOptions) => Promise<string>) {
+    super();
+  }
+
+  override getAccessToken(): Promise<{ token: string }> {
+    return Promise.resolve({ token: 'source-access-token' });
+  }
+
+  override async request<T>(opts: gaxios.GaxiosOptions): gaxios.GaxiosPromise<T> {
+    this.requests.push({ url: String(opts.url), method: opts.method, data: opts.data });
+    const { audience } = opts.data as { audience: string };
+    return { data: { token: await this.idTokenFor(audience, opts) } } as unknown as gaxios.GaxiosResponse<T>;
+  }
+}
+
+let issuerKey: SigningKey;
+let foreignKey: SigningKey;
+let keySet: JWTVerifyGetKey;
+let localKeys: LocalSigningKeys;
+let googleClient: InMemoryCertsClient;
+let stateDir: string;
+
+beforeAll(async () => {
+  issuerKey = await testSigningKeys();
+  foreignKey = await newSigningKey();
+  keySet = createLocalJWKSet(await testJwks());
+  localKeys = issuerKey;
+  // Google's certificates are the test key too, so a cross-scheme token is refused by its claims, not its signature.
+  googleClient = new InMemoryCertsClient({ [issuerKey.kid]: await exportSPKI(issuerKey.publicKey) });
+  stateDir = await mkdtemp(path.join(os.tmpdir(), 'opt2-unit-'));
+  await writeTestSecrets(stateDir);
+});
+
+afterAll(async () => {
+  await rm(stateDir, { recursive: true, force: true });
+});
+
+// Only Date is faked: every case reads the clock at NOW, while real timers, promises and I/O run on.
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(NOW * 1000);
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+describe('AuthDenial', () => {
+  it.each([
+    {
+      factory: "unauthenticated('missing-credential')",
+      create: () => AuthDenial.unauthenticated('missing-credential'),
+      expected: { ...INVALID_CREDENTIAL, reason: 'missing-credential' },
+    },
+    { factory: 'invalidToken()', create: () => AuthDenial.invalidToken(), expected: INVALID_ACCESS_TOKEN },
+    { factory: 'expiredToken()', create: () => AuthDenial.expiredToken(), expected: ACCESS_TOKEN_EXPIRED },
+    {
+      factory: 'forbidden()',
+      create: () => AuthDenial.forbidden(),
+      expected: { statusCode: 403, type: 'authorization', reason: 'forbidden', wwwAuthenticate: undefined },
+    },
+    {
+      factory: "forbidden('undeclared-route')",
+      create: () => AuthDenial.forbidden('undeclared-route'),
+      expected: { statusCode: 403, type: 'authorization', reason: 'undeclared-route', wwwAuthenticate: undefined },
+    },
+    {
+      factory: 'siteMismatch()',
+      create: () => AuthDenial.siteMismatch(),
+      expected: { statusCode: 403, type: 'authorization', reason: 'site-mismatch', wwwAuthenticate: undefined },
+    },
+  ])('$factory carries its status, legacy error type, reason and challenge', async ({ create, expected }) => {
+    expect(
+      await denialOf(() => {
+        throw create();
+      }),
+    ).toEqual(expected);
+  });
+
+  it('is a LegacyApiError named AuthDenial whose message is the legacy error message', () => {
+    expect(AuthDenial.unauthenticated('wrong-scheme')).toBeInstanceOf(LegacyApiError);
+    expect(AuthDenial.forbidden().name).toBe('AuthDenial');
+    expect(AuthDenial.unauthenticated('wrong-scheme').message).toBe('authorization: Insufficient Account Permissions');
+    expect(AuthDenial.invalidToken().message).toBe('invalidAccessToken: Invalid Access Token');
+    expect(AuthDenial.expiredToken().message).toBe('accessTokenExpired: Access Token Expired');
+  });
+});
+
+describe('TRANSPORTS', () => {
+  it('lists the service, Pub/Sub push and Cloud Tasks schemes in a frozen array', () => {
+    expect(TRANSPORTS).toEqual(['service', 'pubsub-push', 'cloud-tasks']);
+    expect(Object.isFrozen(TRANSPORTS)).toBe(true);
+  });
+});
+
+describe('user token settings', () => {
+  it('fixes the local signer to opt2-local-identity, audience opt2-local, five minutes, RS256', () => {
+    expect(LOCAL_USER_TOKEN).toEqual({
+      issuer: 'opt2-local-identity',
+      audience: 'opt2-local',
+      lifetimeSeconds: 300,
+      algorithm: 'RS256',
+    });
+  });
+
+  it('derives the Identity Platform issuer and audience from the project and uses the securetoken JWKS', () => {
+    expect(cloudUserTokenSettings(PROJECT)).toEqual({
+      issuer: 'https://securetoken.google.com/proj',
+      audience: 'proj',
+      jwksUrl: 'https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com',
+    });
+    expect(GOOGLE_SECURETOKEN_JWKS_URL).toBe(cloudUserTokenSettings(PROJECT).jwksUrl);
+  });
+});
+
+/** Verifier for identity's local signer over the in-memory key set. */
+function localVerifier(): UserTokenVerifier {
+  return createUserTokenVerifier({ issuer: LOCAL_USER_TOKEN.issuer, audience: LOCAL_USER_TOKEN.audience, keySet });
+}
+
+describe('createUserTokenVerifier', () => {
+  it('returns the declared claims of a valid local user token and drops undeclared ones', async () => {
+    const token = await signToken({ ...userClaims(), nonce: 'n-1', jti: 'j-1' }, issuerKey);
+    await expect(localVerifier().verify(token)).resolves.toEqual(userClaims());
+  });
+
+  it('accepts an audience list that contains the expected audience', async () => {
+    const aud = [LOCAL_USER_TOKEN.audience, 'opt2-local-admin'];
+    await expect(localVerifier().verify(await userToken({ aud }))).resolves.toEqual(userClaims({ aud }));
+  });
+
+  it('maps an Identity Platform ID token to its declared claims', async () => {
+    const settings = cloudUserTokenSettings(PROJECT);
+    const claims = userClaims({ iss: settings.issuer, aud: settings.audience, exp: NOW + 3600 });
+    const token = await signToken(
+      {
+        ...claims,
+        auth_time: NOW,
+        user_id: claims.sub,
+        firebase: { identities: {}, sign_in_provider: 'custom', tenant: 'tenant-a-k3j2h' },
+      },
+      issuerKey,
+    );
+    const verifier = createUserTokenVerifier({ issuer: settings.issuer, audience: settings.audience, keySet });
+    await expect(verifier.verify(token)).resolves.toEqual(claims);
+  });
+
+  it('verifies a project-level Identity Platform ID token of the anonymous principal with an empty sub', async () => {
+    const settings = cloudUserTokenSettings(PROJECT);
+    const claims = userClaims({ iss: settings.issuer, aud: settings.audience, sub: '', roles: [], exp: NOW + 3600 });
+    const token = await signToken(
+      {
+        ...claims,
+        sub: ANONYMOUS_PRINCIPAL_UID,
+        auth_time: NOW,
+        user_id: ANONYMOUS_PRINCIPAL_UID,
+        firebase: { identities: {}, sign_in_provider: 'custom' },
+      },
+      issuerKey,
+    );
+    const verifier = createUserTokenVerifier({ issuer: settings.issuer, audience: settings.audience, keySet });
+    await expect(verifier.verify(token)).resolves.toEqual(claims);
+    expect(ANONYMOUS_PRINCIPAL_UID).toHaveLength(36);
+  });
+
+  it.each([
+    { problem: 'the wrong issuer', overrides: { iss: 'https://securetoken.google.com/proj' } },
+    { problem: 'the wrong audience', overrides: { aud: 'people' } },
+    { problem: 'a tenant id that is not a UUID', overrides: { tid: 'tenant-a' } },
+    { problem: 'no site', overrides: { site: undefined } },
+    { problem: 'a numeric session id', overrides: { sid: 42 } },
+    { problem: 'no roles', overrides: { roles: undefined } },
+    { problem: 'a non-string role', overrides: { roles: ['member', 7] } },
+    { problem: 'a non-boolean s2 flag', overrides: { s2: 'false' } },
+    { problem: 'a negative epoch', overrides: { epoch: -1 } },
+    { problem: 'a fractional epoch', overrides: { epoch: 1.5 } },
+    { problem: 'no expiry', overrides: { exp: undefined } },
+  ])('answers a token with $problem as invalidAccessToken', async ({ overrides }) => {
+    const token = await signToken(userClaims(overrides), issuerKey);
+    expect(await denialOf(() => localVerifier().verify(token))).toEqual(INVALID_ACCESS_TOKEN);
+  });
+
+  it.each([
+    { problem: 'is signed by a key outside the key set', token: () => signToken(userClaims(), foreignKey) },
+    {
+      problem: 'carries a known kid over a foreign signature',
+      token: () => signToken(userClaims(), foreignKey, issuerKey.kid),
+    },
+    {
+      problem: 'is signed with HS256',
+      token: () =>
+        new SignJWT(userClaims()).setProtectedHeader({ alg: 'HS256' }).sign(createSecretKey(randomBytes(32))),
+    },
+    { problem: 'is not a JWT', token: () => Promise.resolve('not-a-jwt') },
+  ])('answers a token that $problem as invalidAccessToken', async ({ token }) => {
+    const presented = await token();
+    expect(await denialOf(() => localVerifier().verify(presented))).toEqual(INVALID_ACCESS_TOKEN);
+  });
+
+  it('answers an expired token as accessTokenExpired', async () => {
+    const token = await userToken({ iat: NOW - 600, exp: NOW - 300 });
+    expect(await denialOf(() => localVerifier().verify(token))).toEqual(ACCESS_TOKEN_EXPIRED);
+  });
+
+  it.each([
+    {
+      kind: 'a Pub/Sub push OIDC token',
+      token: () => signToken(googleOidcClaims({ aud: PUSH_ENDPOINT, email: PUBSUB_INVOKER_EMAIL }), issuerKey),
+    },
+    {
+      kind: 'a Cloud Tasks OIDC token',
+      token: () => signToken(googleOidcClaims({ email: TASKS_INVOKER_EMAIL }), issuerKey),
+    },
+    { kind: 'a local tasks-invoker service token', token: () => mintTasksInvokerToken({ audience: 'people' }) },
+  ])('answers $kind presented as a user token with invalidAccessToken', async ({ token }) => {
+    const presented = await token();
+    expect(await denialOf(() => localVerifier().verify(presented))).toEqual(INVALID_ACCESS_TOKEN);
+  });
+
+  it.each([
+    { failure: 'a JWKS timeout', error: new errors.JWKSTimeout() },
+    { failure: 'an invalid JWKS response', error: new errors.JWKSInvalid() },
+    { failure: 'a generic JOSE failure', error: new errors.JOSEError() },
+    { failure: 'a non-JOSE failure', error: new Error('connect ECONNREFUSED 127.0.0.1:443') },
+  ])('raises $failure of the key source as the legacy 503 KeySourceUnavailableError', async ({ error }) => {
+    const verifier = createUserTokenVerifier({
+      issuer: LOCAL_USER_TOKEN.issuer,
+      audience: LOCAL_USER_TOKEN.audience,
+      keySet: () => Promise.reject(error),
+    });
+    const raised: unknown = await verifier.verify(await userToken()).catch((err: unknown) => err);
+    expect(raised).toBeInstanceOf(KeySourceUnavailableError);
+    expect(raised).toBeInstanceOf(LegacyServiceUnavailableError);
+    expect(raised).toMatchObject({ surface: 'auto', reason: 'key-source-unavailable', message: 'User-token key source unavailable' });
+    expect((raised as KeySourceUnavailableError).cause).toBe(error);
+  });
+
+  it.each([
+    { match: 'no key', error: new errors.JWKSNoMatchingKey() },
+    { match: 'several keys', error: new errors.JWKSMultipleMatchingKeys() },
+  ])('answers a token whose kid matches $match in the key set as invalidAccessToken', async ({ error }) => {
+    const verifier = createUserTokenVerifier({
+      issuer: LOCAL_USER_TOKEN.issuer,
+      audience: LOCAL_USER_TOKEN.audience,
+      keySet: () => Promise.reject(error),
+    });
+    const token = await userToken();
+    expect(await denialOf(() => verifier.verify(token))).toEqual(INVALID_ACCESS_TOKEN);
+  });
+
+  it('rejects a malformed token without fetching the remote key set', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    try {
+      const verifier = createUserTokenVerifier(cloudUserTokenSettings(PROJECT));
+      expect(await denialOf(() => verifier.verify('header.payload'))).toEqual(INVALID_ACCESS_TOKEN);
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+});
+
+describe('assertSiteMatches', () => {
+  it.each([undefined, null, ''])('accepts a request whose siteid is %j', (siteid) => {
+    expect(() => {
+      assertSiteMatches(siteid, { site: 'tenant-a' });
+    }).not.toThrow();
+  });
+
+  it('accepts a siteid equal to the token site in any letter case', () => {
+    expect(() => {
+      assertSiteMatches('Tenant-A', { site: 'tenant-a' });
+    }).not.toThrow();
+  });
+
+  it('refuses a siteid naming another site with a 403 site-mismatch', async () => {
+    const denial = await denialOf(() => {
+      assertSiteMatches('default', { site: 'tenant-a' });
+    });
+    expect(denial).toEqual({
+      statusCode: 403,
+      type: 'authorization',
+      reason: 'site-mismatch',
+      wwwAuthenticate: undefined,
+    });
+  });
+});
+
+/** `<stateDir>/variants/<name>` with the test key files but no push key; the private key is `pem`, `absent` or a directory. */
+async function stateDirWith(name: string, privateKey: 'pem' | 'absent' | 'directory'): Promise<string> {
+  const variant = path.join(stateDir, 'variants', name);
+  await writeTestSecrets(variant);
+  await rm(localSecretPath(variant, LOCAL_SECRET_FILES.pubsubPushKey));
+  if (privateKey !== 'pem') {
+    const privatePath = localSecretPath(variant, LOCAL_SECRET_FILES.tokenSigningPrivateKey);
+    await rm(privatePath);
+    if (privateKey === 'directory') {
+      await mkdir(privatePath);
+    }
+  }
+  return variant;
+}
+
+describe('local signing keys', () => {
+  it('places the secret files under <stateDir>/secrets with the up.sh file names', () => {
+    expect(LOCAL_SECRET_FILES).toEqual({
+      tokenSigningPrivateKey: 'token-signing-private.pem',
+      tokenSigningPublicKey: 'token-signing-public.pem',
+      pubsubPushKey: 'pubsub-push-key',
+    });
+    expect(localSecretPath('/state', LOCAL_SECRET_FILES.pubsubPushKey)).toBe('/state/secrets/pubsub-push-key');
+  });
+
+  it('loads both PEM keys and derives the kid from the public key thumbprint', async () => {
+    const keys = await loadLocalSigningKeys(await stateDirWith('full', 'pem'));
+    expect(keys.kid).toBe(issuerKey.kid);
+    const token = await signLocalServiceToken({ keys, caller: 'gateway', audience: 'people' });
+    await expect(verifyLocalServiceToken(token, { publicKey: keys.publicKey, audience: 'people' })).resolves.toEqual({
+      name: 'gateway',
+      roles: ['service:gateway'],
+    });
+  });
+
+  it('loads only the public key when the private key file is absent, so signing fails', async () => {
+    const keys = await loadLocalSigningKeys(await stateDirWith('verify-only', 'absent'));
+    expect(keys.privateKey).toBeUndefined();
+    expect(keys.kid).toBe(issuerKey.kid);
+    await expect(signLocalServiceToken({ keys, caller: 'gateway', audience: 'people' })).rejects.toThrow(
+      'Local service token for gateway needs token-signing-private.pem',
+    );
+  });
+
+  it.each([
+    { setup: 'absent' as const, requirePrivate: true, code: 'ENOENT', syscall: 'open' },
+    { setup: 'directory' as const, requirePrivate: false, code: 'EISDIR', syscall: 'read' },
+  ])('fails with $code when the private key is $setup and requirePrivate is $requirePrivate, naming the file', async ({
+    setup,
+    requirePrivate,
+    code,
+    syscall,
+  }) => {
+    const variant = await stateDirWith(`private-${setup}`, setup);
+    const error = await loadLocalSigningKeys(variant, { requirePrivate }).catch((err: unknown) => err);
+    expect(error).toBeInstanceOf(EnvFileError);
+    expect(error).toMatchObject({ code, syscall, variable: 'OPT2_STATE_DIR', file: 'secrets/token-signing-private.pem' });
+    expect(serializeError(error).message).toBe(`cannot read OPT2_STATE_DIR file secrets/token-signing-private.pem (${syscall} ${code})`);
+  });
+
+  it('fails naming the public key file when the state directory holds no secrets', async () => {
+    const empty = path.join(stateDir, 'variants', 'no-secrets');
+    const error = await loadLocalSigningKeys(empty).catch((err: unknown) => err);
+    expect(error).toBeInstanceOf(EnvFileError);
+    expect(error).toMatchObject({ code: 'ENOENT', file: 'secrets/token-signing-public.pem' });
+    expect((error as Error).message).toContain(localSecretPath(empty, LOCAL_SECRET_FILES.tokenSigningPublicKey));
+    expect(serializeError(error).message).toBe('cannot read OPT2_STATE_DIR file secrets/token-signing-public.pem (open ENOENT)');
+  });
+});
+
+describe('local service tokens', () => {
+  it('signs an RS256 token from opt2-local-service for the caller, addressed to the callee, for five minutes', async () => {
+    const token = await signLocalServiceToken({ keys: localKeys, caller: 'migration', audience: 'people' });
+    const { payload, protectedHeader } = await jwtVerify(token, issuerKey.publicKey);
+    expect(protectedHeader).toEqual({ alg: 'RS256', kid: issuerKey.kid });
+    expect(payload).toMatchObject({
+      iss: 'opt2-local-service',
+      aud: 'people',
+      sub: 'service:migration',
+      roles: ['service:migration', 'platform.migration'],
+    });
+    expect(payload.iat).toBeGreaterThanOrEqual(NOW);
+    expect((payload.exp ?? 0) - (payload.iat ?? 0)).toBe(LOCAL_SERVICE_TOKEN_TTL_SECONDS);
+  });
+
+  it('signs the given roles and lifetime', async () => {
+    const roles = ['service:gateway', 'platform.operator'];
+    const token = await signLocalServiceToken({
+      keys: localKeys,
+      caller: 'gateway',
+      audience: 'strategies-content',
+      roles,
+      ttlSeconds: 60,
+    });
+    const { payload } = await jwtVerify(token, issuerKey.publicKey);
+    expect(payload.roles).toEqual(roles);
+    expect((payload.exp ?? 0) - (payload.iat ?? 0)).toBe(60);
+  });
+
+  it.each([
+    { form: 'CryptoKey', publicKey: () => Promise.resolve<CryptoKey | KeyObject>(issuerKey.publicKey) },
+    { form: 'KeyObject', publicKey: async () => createPublicKey(await exportSPKI(issuerKey.publicKey)) },
+  ])('verifies a service token to the calling workload and its roles under a $form public key', async ({
+    publicKey,
+  }) => {
+    const token = await mintServiceToken({ caller: 'gateway', audience: 'people' });
+    await expect(
+      verifyLocalServiceToken(token, { publicKey: await publicKey(), audience: 'people' }),
+    ).resolves.toEqual({ name: 'gateway', roles: ['service:gateway'] });
+  });
+
+  it.each([
+    {
+      problem: 'is addressed to another service',
+      token: () => mintServiceToken({ caller: 'gateway', audience: 'strategies-content' }),
+    },
+    {
+      problem: 'has the user-token issuer',
+      token: () => signToken(serviceClaims({ iss: LOCAL_USER_TOKEN.issuer }), issuerKey),
+    },
+    {
+      problem: 'has expired',
+      token: () => signLocalServiceToken({ keys: localKeys, caller: 'gateway', audience: 'people', ttlSeconds: -60 }),
+    },
+    { problem: 'has no expiry', token: () => signToken(serviceClaims({ exp: undefined }), issuerKey) },
+    { problem: 'has a non-numeric expiry', token: () => signToken(serviceClaims({ exp: '9999999999' }), issuerKey) },
+    { problem: 'has a non-finite expiry', token: () => signWithRawExp(serviceClaims(), '1e400', issuerKey) },
+    { problem: 'is signed by another key', token: () => signToken(serviceClaims(), foreignKey) },
+    {
+      problem: "carries a kid other than the key's thumbprint",
+      token: () => signToken(serviceClaims(), issuerKey, 'unknown-kid-123'),
+    },
+    {
+      problem: 'carries no kid',
+      token: () => new SignJWT(serviceClaims()).setProtectedHeader({ alg: 'RS256', typ: 'JWT' }).sign(issuerKey.privateKey),
+    },
+    { problem: 'is not a JWT', token: () => Promise.resolve('not-a-jwt') },
+    { problem: 'has no subject', token: () => signToken(serviceClaims({ sub: undefined }), issuerKey) },
+    {
+      problem: 'has a subject without the service: prefix',
+      token: () => signToken(serviceClaims({ sub: 'gateway' }), issuerKey),
+    },
+    { problem: 'has an empty service name', token: () => signToken(serviceClaims({ sub: 'service:' }), issuerKey) },
+    { problem: 'has no roles', token: () => signToken(serviceClaims({ roles: undefined }), issuerKey) },
+    { problem: 'has a roles string', token: () => signToken(serviceClaims({ roles: 'service:gateway' }), issuerKey) },
+    {
+      problem: 'has a non-string role',
+      token: () => signToken(serviceClaims({ roles: ['service:gateway', 1] }), issuerKey),
+    },
+  ])('refuses a token that $problem as invalid-credential', async ({ token }) => {
+    const presented = await token();
+    expect(
+      await denialOf(() => verifyLocalServiceToken(presented, { publicKey: issuerKey.publicKey, audience: 'people' })),
+    ).toEqual(INVALID_CREDENTIAL);
+  });
+
+  it('propagates a key failure that is not a token fault', async () => {
+    const token = await mintServiceToken({ caller: 'gateway', audience: 'people' });
+    await expect(
+      verifyLocalServiceToken(token, { publicKey: createSecretKey(randomBytes(32)), audience: 'people' }),
+    ).rejects.toBeInstanceOf(TypeError);
+  });
+});
+
+describe('service account emails', () => {
+  it('names managed invokers with the opt2- service account prefix', () => {
+    expect(MANAGED_INVOKER_NAMES).toEqual(['pubsub-invoker', 'tasks-invoker']);
+    expect(serviceAccountEmail('pubsub-invoker', PROJECT)).toBe(PUBSUB_INVOKER_EMAIL);
+    expect(serviceAccountEmail('tasks-invoker', PROJECT)).toBe(TASKS_INVOKER_EMAIL);
+  });
+
+  it.each(['gateway', 'people', 'migration', 'operator', 'pubsub-invoker', 'tasks-invoker'])(
+    'round-trips the %s service account email to its workload identity',
+    (name) => {
+      const email = serviceAccountEmail(name, PROJECT);
+      expect(serviceIdentityFromEmail(email, PROJECT)).toEqual({ name, roles: rolesForService(name), email });
+    },
+  );
+
+  it.each([
+    'opt2-people@other.iam.gserviceaccount.com',
+    'opt2-people@xproj.iam.gserviceaccount.com',
+    'people@proj.iam.gserviceaccount.com',
+    'opt2-@proj.iam.gserviceaccount.com',
+    'opt2-people@proj.example.com',
+  ])('maps %s to no workload identity', (email) => {
+    expect(serviceIdentityFromEmail(email, PROJECT)).toBeNull();
+  });
+
+  it('uses the callee URL origin as the cloud invocation audience', () => {
+    expect(invocationAudience(`${PEOPLE_URL}/internal/v1/people?siteid=default`)).toBe(PEOPLE_URL);
+  });
+});
+
+describe('local invocation credentials', () => {
+  it('mints a bearer service token in X-Serverless-Authorization that the callee verifier accepts', async () => {
+    const headers = await createLocalInvocationMinter({ keys: localKeys, caller: 'gateway' }).headersFor({
+      name: 'people',
+    });
+    expect(Object.keys(headers)).toEqual(['x-serverless-authorization']);
+    expect(headers[INVOCATION_HEADER]).toMatch(/^Bearer [\w-]+\.[\w-]+\.[\w-]+$/);
+    const verifier = createLocalInvocationVerifier({ publicKey: issuerKey.publicKey, callee: 'people' });
+    await expect(verifier.verify(headers[INVOCATION_HEADER] ?? '')).resolves.toEqual({
+      name: 'gateway',
+      roles: ['service:gateway'],
+    });
+  });
+
+  it('carries the roles the minter declares', async () => {
+    const roles = ['service:migration', 'platform.migration', 'platform.operator'];
+    const headers = await createLocalInvocationMinter({ keys: localKeys, caller: 'migration', roles }).headersFor({
+      name: 'people',
+    });
+    const verifier = createLocalInvocationVerifier({ publicKey: issuerKey.publicKey, callee: 'people' });
+    await expect(verifier.verify(headers[INVOCATION_HEADER] ?? '')).resolves.toEqual({ name: 'migration', roles });
+  });
+
+  it('refuses a credential minted for another callee as invalid-credential', async () => {
+    const headers = await createLocalInvocationMinter({ keys: localKeys, caller: 'gateway' }).headersFor({
+      name: 'strategies-content',
+    });
+    const verifier = createLocalInvocationVerifier({ publicKey: issuerKey.publicKey, callee: 'people' });
+    expect(await denialOf(() => verifier.verify(headers[INVOCATION_HEADER] ?? ''))).toEqual(INVALID_CREDENTIAL);
+  });
+
+  it('refuses a local-key service token whose kid is not the key thumbprint as invalid-credential', async () => {
+    const token = await signToken(serviceClaims(), issuerKey, 'unknown-kid-123');
+    const verifier = createLocalInvocationVerifier({ publicKey: issuerKey.publicKey, callee: 'people' });
+    expect(await denialOf(() => verifier.verify(`Bearer ${token}`))).toEqual(INVALID_CREDENTIAL);
+  });
+
+  it.each(MANAGED_INVOKER_NAMES)('refuses a %s service token on a service route as the wrong scheme', async (caller) => {
+    const headers = await createLocalInvocationMinter({ keys: localKeys, caller }).headersFor({ name: 'people' });
+    const verifier = createLocalInvocationVerifier({ publicKey: issuerKey.publicKey, callee: 'people' });
+    expect(await denialOf(() => verifier.verify(headers[INVOCATION_HEADER] ?? ''))).toEqual(WRONG_SCHEME);
+  });
+
+  it('refuses a user token presented as the invocation credential as invalid-credential', async () => {
+    const token = await userToken({ aud: 'people' });
+    const verifier = createLocalInvocationVerifier({ publicKey: issuerKey.publicKey, callee: 'people' });
+    expect(await denialOf(() => verifier.verify(`Bearer ${token}`))).toEqual(INVALID_CREDENTIAL);
+  });
+
+  it.each([
+    { header: BASIC_HEADER, expected: WRONG_SCHEME },
+    { header: '', expected: WRONG_SCHEME },
+    { header: 'Bearer', expected: INVALID_CREDENTIAL },
+    { header: 'Bearer abc def', expected: INVALID_CREDENTIAL },
+  ])('answers the header $header with reason $expected.reason', async ({ header, expected }) => {
+    const verifier = createLocalInvocationVerifier({ publicKey: issuerKey.publicKey, callee: 'people' });
+    expect(await denialOf(() => verifier.verify(header))).toEqual(expected);
+  });
+
+  it('accepts a lower-case bearer scheme surrounded by whitespace', async () => {
+    const token = await mintServiceToken({ caller: 'gateway', audience: 'people' });
+    const verifier = createLocalInvocationVerifier({ publicKey: issuerKey.publicKey, callee: 'people' });
+    await expect(verifier.verify(`  bearer ${token}  `)).resolves.toEqual({ name: 'gateway', roles: ['service:gateway'] });
+  });
+});
+
+describe('createCloudRunInvocationReader', () => {
+  const reader = createCloudRunInvocationReader({ project: PROJECT });
+
+  it('reads the calling workload from a token whose signature Cloud Run removed', async () => {
+    await expect(reader.verify(`Bearer ${cloudRunForwarded(googleOidcClaims())}`)).resolves.toEqual({
+      name: 'gateway',
+      roles: ['service:gateway'],
+      email: GATEWAY_EMAIL,
+    });
+  });
+
+  it.each([PUBSUB_INVOKER_EMAIL, TASKS_INVOKER_EMAIL])(
+    'refuses the managed-delivery identity %s on a service route as the wrong scheme',
+    async (email) => {
+      const header = `Bearer ${cloudRunForwarded(googleOidcClaims({ email }))}`;
+      expect(await denialOf(() => reader.verify(header))).toEqual(WRONG_SCHEME);
+    },
+  );
+
+  it.each([
+    { problem: 'still carries its signature', token: () => signToken(googleOidcClaims(), issuerKey) },
+    { problem: 'has two segments', token: () => Promise.resolve('header.payload') },
+    {
+      problem: 'has an undecodable payload',
+      token: () => Promise.resolve(cloudRunForwarded(googleOidcClaims()).replace(/\.[\w-]+\./, '.%%%.')),
+    },
+    { problem: 'has no email', token: () => Promise.resolve(cloudRunForwarded(googleOidcClaims({ email: undefined }))) },
+    { problem: 'has a numeric email', token: () => Promise.resolve(cloudRunForwarded(googleOidcClaims({ email: 42 }))) },
+    {
+      problem: "names another project's service account",
+      token: () =>
+        Promise.resolve(cloudRunForwarded(googleOidcClaims({ email: 'opt2-gateway@other.iam.gserviceaccount.com' }))),
+    },
+    {
+      problem: 'names a user account',
+      token: () => Promise.resolve(cloudRunForwarded(googleOidcClaims({ email: 'admin@example.com' }))),
+    },
+  ])('refuses a token that $problem as invalid-credential', async ({ token }) => {
+    const header = `Bearer ${await token()}`;
+    expect(await denialOf(() => reader.verify(header))).toEqual(INVALID_CREDENTIAL);
+  });
+
+  it('refuses a non-bearer header as the wrong scheme', async () => {
+    expect(await denialOf(() => reader.verify(BASIC_HEADER))).toEqual(WRONG_SCHEME);
+  });
+});
+
+describe('createCloudInvocationVerifier', () => {
+  /** Verifier for the people service over the in-memory Google certificates. */
+  function peopleVerifier(): ReturnType<typeof createCloudInvocationVerifier> {
+    return createCloudInvocationVerifier({
+      project: PROJECT,
+      audience: `${PEOPLE_URL}/internal/v1/people`,
+      client: googleClient,
+    });
+  }
+
+  it('accepts a Google-signed ID token for the callee origin and reads the caller email', async () => {
+    const token = await signToken(googleOidcClaims(), issuerKey);
+    await expect(peopleVerifier().verify(`Bearer ${token}`)).resolves.toEqual({
+      name: 'gateway',
+      roles: ['service:gateway'],
+      email: GATEWAY_EMAIL,
+    });
+  });
+
+  it.each([
+    { kind: 'Pub/Sub push', claims: googleOidcClaims({ aud: PEOPLE_URL, email: PUBSUB_INVOKER_EMAIL }) },
+    { kind: 'Cloud Tasks', claims: googleOidcClaims({ email: TASKS_INVOKER_EMAIL }) },
+  ])('refuses a $kind OIDC token on a service route as the wrong scheme', async ({ claims }) => {
+    const token = await signToken(claims, issuerKey);
+    expect(await denialOf(() => peopleVerifier().verify(`Bearer ${token}`))).toEqual(WRONG_SCHEME);
+  });
+
+  it.each([
+    { problem: 'the wrong audience', overrides: { aud: CONTENT_URL } },
+    { problem: 'the push endpoint path as audience', overrides: { aud: PUSH_ENDPOINT } },
+    { problem: 'the wrong issuer', overrides: { iss: 'https://securetoken.google.com/proj' } },
+    { problem: 'an expiry an hour ago', overrides: { iat: NOW - 7200, exp: NOW - 3600 } },
+    { problem: 'an unverified email', overrides: { email_verified: false } },
+    { problem: 'a string email_verified flag', overrides: { email_verified: 'true' } },
+    { problem: 'no email', overrides: { email: undefined } },
+    { problem: "another project's service account", overrides: { email: 'opt2-gateway@other.iam.gserviceaccount.com' } },
+  ])('refuses an ID token with $problem as invalid-credential', async ({ overrides }) => {
+    const token = await signToken(googleOidcClaims(overrides), issuerKey);
+    expect(await denialOf(() => peopleVerifier().verify(`Bearer ${token}`))).toEqual(INVALID_CREDENTIAL);
+  });
+
+  it.each([
+    { problem: 'is signed by an unknown Google key', token: () => signToken(googleOidcClaims(), foreignKey) },
+    {
+      problem: 'carries a known kid over a foreign signature',
+      token: () => signToken(googleOidcClaims(), foreignKey, issuerKey.kid),
+    },
+    { problem: 'is a local user token', token: () => userToken({ aud: PEOPLE_URL }) },
+  ])('refuses a credential that $problem as invalid-credential', async ({ token }) => {
+    const header = `Bearer ${await token()}`;
+    expect(await denialOf(() => peopleVerifier().verify(header))).toEqual(INVALID_CREDENTIAL);
+  });
+
+  it('refuses a non-bearer header as the wrong scheme before consulting Google', async () => {
+    const verifier = createCloudInvocationVerifier({ project: PROJECT, audience: PEOPLE_URL });
+    expect(await denialOf(() => verifier.verify(BASIC_HEADER))).toEqual(WRONG_SCHEME);
+  });
+
+  it('refuses as invalid-credential once a stalled certificate fetch outlasts the Google-auth timeout', async () => {
+    const header = `Bearer ${await signToken(googleOidcClaims(), issuerKey)}`;
+    const client = new StalledCertsClient();
+    const verifier = createCloudInvocationVerifier({ project: PROJECT, audience: PEOPLE_URL, client });
+    const timeouts = await withHeldTimeouts(async (held) => {
+      expect(await denialOnExpiry(held, () => verifier.verify(header))).toEqual(INVALID_CREDENTIAL);
+    });
+    expect(timeouts).toEqual([GOOGLE_AUTH_TIMEOUT_MS]);
+  });
+});
+
+describe('createCloudInvocationMinter', () => {
+  it('attaches a Google-signed ID token for the callee origin that the cloud verifier accepts', async () => {
+    const token = await signToken(googleOidcClaims(), issuerKey);
+    const fetchedFor: string[] = [];
+    const auth = new InMemoryGoogleAuth(
+      (targetAudience) =>
+        new IdTokenClient({
+          targetAudience,
+          idTokenProvider: {
+            fetchIdToken: (audience) => {
+              fetchedFor.push(audience);
+              return Promise.resolve(token);
+            },
+          },
+        }),
+    );
+    const headers = await createCloudInvocationMinter({ auth }).headersFor({
+      name: 'people',
+      url: `${PEOPLE_URL}/internal/v1/people`,
+    });
+    expect(headers).toEqual({ [INVOCATION_HEADER]: `Bearer ${token}` });
+    expect(auth.requestedAudiences).toEqual([PEOPLE_URL]);
+    expect(fetchedFor).toEqual([PEOPLE_URL]);
+    const verifier = createCloudInvocationVerifier({ project: PROJECT, audience: PEOPLE_URL, client: googleClient });
+    await expect(verifier.verify(headers[INVOCATION_HEADER] ?? '')).resolves.toEqual({
+      name: 'gateway',
+      roles: ['service:gateway'],
+      email: GATEWAY_EMAIL,
+    });
+  });
+
+  it('keeps one ID-token client per callee origin', async () => {
+    const tokens = new Map([
+      [PEOPLE_URL, await signToken(googleOidcClaims(), issuerKey)],
+      [CONTENT_URL, await signToken(googleOidcClaims({ aud: CONTENT_URL }), issuerKey)],
+    ]);
+    const fetchedFor: string[] = [];
+    const auth = new InMemoryGoogleAuth(
+      (targetAudience) =>
+        new IdTokenClient({
+          targetAudience,
+          idTokenProvider: {
+            fetchIdToken: (audience) => {
+              fetchedFor.push(audience);
+              return Promise.resolve(tokens.get(audience) ?? '');
+            },
+          },
+        }),
+    );
+    const minter = createCloudInvocationMinter({ auth });
+    const people = await minter.headersFor({ name: 'people', url: `${PEOPLE_URL}/internal/v1/people` });
+    const peopleAgain = await minter.headersFor({ name: 'people', url: `${PEOPLE_URL}/internal/v1/tokens` });
+    const content = await minter.headersFor({ name: 'strategies-content', url: `${CONTENT_URL}/internal/v1/files` });
+    expect(auth.requestedAudiences).toEqual([PEOPLE_URL, CONTENT_URL]);
+    expect(fetchedFor).toEqual([PEOPLE_URL, CONTENT_URL]);
+    expect(peopleAgain).toEqual(people);
+    expect(content).toEqual({ [INVOCATION_HEADER]: `Bearer ${tokens.get(CONTENT_URL) ?? ''}` });
+  });
+
+  it('rejects a target without a URL', async () => {
+    await expect(createCloudInvocationMinter().headersFor({ name: 'people' })).rejects.toThrow(
+      new TypeError('No URL for invocation target people'),
+    );
+  });
+
+  it('fails when the ID-token client yields no Authorization header', async () => {
+    const auth = new InMemoryGoogleAuth(
+      (targetAudience) =>
+        new HeaderlessIdTokenClient({
+          targetAudience,
+          idTokenProvider: { fetchIdToken: () => Promise.reject(new Error('not requested')) },
+        }),
+    );
+    await expect(createCloudInvocationMinter({ auth }).headersFor({ name: 'people', url: PEOPLE_URL })).rejects.toThrow(
+      `ID token client for ${PEOPLE_URL} returned no Authorization header`,
+    );
+  });
+
+  /** GoogleAuth whose ID-token clients fetch `token` once `ready` settles. */
+  function tokenAuthAfter(ready: Promise<unknown>, token: () => string): InMemoryGoogleAuth {
+    return new InMemoryGoogleAuth(
+      (targetAudience) =>
+        new IdTokenClient({
+          targetAudience,
+          idTokenProvider: {
+            fetchIdToken: async () => {
+              await ready;
+              return token();
+            },
+          },
+        }),
+    );
+  }
+
+  it.each([
+    { stage: 'a stalled client discovery', auth: () => new StalledGoogleAuth(), signal: () => AbortSignal.timeout(20) },
+    {
+      stage: 'a stalled token fetch',
+      auth: () => tokenAuthAfter(new Promise(() => undefined), () => 'never'),
+      signal: () => AbortSignal.timeout(20),
+    },
+    {
+      stage: 'an acquisition under an already aborted signal',
+      auth: () => tokenAuthAfter(Promise.resolve(), () => 'token'),
+      signal: () => AbortSignal.abort(new Error('deadline passed')),
+    },
+  ])('rejects with the signal reason when it aborts during $stage', async ({ auth, signal }) => {
+    const aborting = signal();
+    const err = await createCloudInvocationMinter({ auth: auth() })
+      .headersFor({ name: 'people', url: PEOPLE_URL }, { signal: aborting })
+      .catch((e: unknown) => e);
+    expect(aborting.aborted).toBe(true);
+    expect(err).toBe(aborting.reason as unknown);
+  });
+
+  it('keeps the ID-token client an abandoned acquisition discovered', async () => {
+    const token = await signToken(googleOidcClaims(), issuerKey);
+    let release = (): void => undefined;
+    const auth = tokenAuthAfter(
+      new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+      () => token,
+    );
+    const minter = createCloudInvocationMinter({ auth });
+    const aborting = new AbortController();
+    const abandoned = minter.headersFor({ name: 'people', url: PEOPLE_URL }, { signal: aborting.signal });
+    aborting.abort(new Error('deadline passed'));
+    await expect(abandoned).rejects.toThrow('deadline passed');
+    release();
+    await expect(minter.headersFor({ name: 'people', url: PEOPLE_URL })).resolves.toEqual({
+      [INVOCATION_HEADER]: `Bearer ${token}`,
+    });
+    expect(auth.requestedAudiences).toEqual([PEOPLE_URL]);
+  });
+
+  /** ADC running as the migration account: its own ID tokens through getIdTokenClient, operator ones through `source`. */
+  async function migrationAdc(failures = 0): Promise<{ auth: PrincipalGoogleAuth; source: RecordingSourceClient }> {
+    const adcToken = await signToken(googleOidcClaims({ email: MIGRATION_EMAIL }), issuerKey);
+    const source = new RecordingSourceClient((audience) =>
+      signToken(googleOidcClaims({ aud: audience, email: OPERATOR_EMAIL }), issuerKey),
+    );
+    const auth = new PrincipalGoogleAuth(
+      (targetAudience) =>
+        new IdTokenClient({ targetAudience, idTokenProvider: { fetchIdToken: () => Promise.resolve(adcToken) } }),
+      MIGRATION_EMAIL,
+      source,
+      failures,
+    );
+    return { auth, source };
+  }
+
+  it.each([
+    {
+      caller: 'migration',
+      via: "ADC's own ID-token client",
+      serviceAccount: MIGRATION_EMAIL,
+      adcAudiences: [PEOPLE_URL],
+      exchanges: [],
+      admitted: 'platform.migration',
+      refused: 'platform.operator',
+    },
+    {
+      caller: 'operator',
+      via: 'a recorded IAM generateIdToken exchange',
+      serviceAccount: OPERATOR_EMAIL,
+      adcAudiences: [],
+      exchanges: [
+        {
+          url: `https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/${OPERATOR_EMAIL}:generateIdToken`,
+          method: 'POST',
+          data: { delegates: [], audience: PEOPLE_URL, includeEmail: true, useEmailAzp: true },
+        },
+      ],
+      admitted: 'platform.operator',
+      refused: 'platform.migration',
+    },
+  ])(
+    'mints as the $caller account from migration ADC through $via',
+    async ({ caller, serviceAccount, adcAudiences, exchanges, admitted, refused }) => {
+      const { auth, source } = await migrationAdc();
+      const headers = await createCloudInvocationMinter({ auth, serviceAccount }).headersFor({
+        name: 'people',
+        url: `${PEOPLE_URL}/internal/v1/people`,
+      });
+      expect(auth.requestedAudiences).toEqual(adcAudiences);
+      expect(source.requests).toEqual(exchanges);
+      const verifier = createCloudInvocationVerifier({ project: PROJECT, audience: PEOPLE_URL, client: googleClient });
+      const identity = await verifier.verify(headers[INVOCATION_HEADER] ?? '');
+      expect(identity).toEqual({ name: caller, roles: rolesForService(caller), email: serviceAccount });
+      expect(hasAnyRole(identity.roles, [admitted])).toBe(true);
+      expect(hasAnyRole(identity.roles, [refused])).toBe(false);
+    },
+  );
+
+  it('looks up the ADC principal at the first call, once, retrying a failed lookup at the next call', async () => {
+    const { auth, source } = await migrationAdc(1);
+    const minter = createCloudInvocationMinter({ auth, serviceAccount: OPERATOR_EMAIL });
+    expect(auth.credentialLookups).toBe(0);
+    await expect(minter.headersFor({ name: 'people', url: PEOPLE_URL })).rejects.toThrow('metadata server unavailable');
+    await expect(minter.headersFor({ name: 'people', url: PEOPLE_URL })).resolves.toHaveProperty(INVOCATION_HEADER);
+    await expect(minter.headersFor({ name: 'strategies-content', url: CONTENT_URL })).resolves.toHaveProperty(INVOCATION_HEADER);
+    expect(auth.credentialLookups).toBe(2);
+    expect(source.requests.map(({ data }) => (data as { audience: string }).audience)).toEqual([PEOPLE_URL, CONTENT_URL]);
+  });
+
+  it('fails closed on a TokenCreator denial, without ADC fallback, and retries the exchange at the next call', async () => {
+    // IAM Credentials' answer when ADC's account lacks roles/iam.serviceAccountTokenCreator on the target.
+    const denial = {
+      error: {
+        code: 403,
+        message: "Permission 'iam.serviceAccounts.getOpenIdToken' denied on resource (or it may not exist).",
+        status: 'PERMISSION_DENIED',
+      },
+    };
+    // gaxios turns the recorded 403 into its own GaxiosError, as on the wire.
+    const source = new RecordingSourceClient((_audience, opts) =>
+      new gaxios.Gaxios()
+        .request<{ token: string }>({
+          ...opts,
+          fetchImplementation: () => Promise.resolve(Response.json(denial, { status: 403 })),
+        })
+        .then(({ data }) => data.token),
+    );
+    const auth = new PrincipalGoogleAuth(
+      (targetAudience) =>
+        new IdTokenClient({ targetAudience, idTokenProvider: { fetchIdToken: () => Promise.resolve('adc-id-token') } }),
+      MIGRATION_EMAIL,
+      source,
+    );
+    const minter = createCloudInvocationMinter({ auth, serviceAccount: OPERATOR_EMAIL });
+    const attempt = (): Promise<unknown> =>
+      minter.headersFor({ name: 'people', url: PEOPLE_URL }).catch((e: unknown) => e);
+    for (const err of [await attempt(), await attempt()]) {
+      expect(err).toBeInstanceOf(gaxios.GaxiosError);
+      expect(err).toMatchObject({ message: denial.error.message, status: 403, response: { status: 403, data: denial } });
+    }
+    const exchange = {
+      url: `https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/${OPERATOR_EMAIL}:generateIdToken`,
+      method: 'POST',
+      data: { delegates: [], audience: PEOPLE_URL, includeEmail: true, useEmailAzp: true },
+    };
+    expect(source.requests).toEqual([exchange, exchange]);
+    expect(auth.requestedAudiences).toEqual([]);
+  });
+});
+
+const PUSH_PATH = new URL(PUSH_ENDPOINT).pathname;
+const TASK_PATH = '/internal/v1/tasks/site-monitor';
+const PEOPLE_PATH = '/internal/v1/people';
+const LOCAL_JWKS_URL = 'http://127.0.0.1:8111/.well-known/jwks.json';
+/** The emulator push endpoint's query, as `app.inject` receives it. */
+const PUSH_QUERY: Record<string, string> = Object.fromEntries(new URLSearchParams(pushKeyQuery()));
+const MISSING_CREDENTIAL: DenialShape = { ...INVALID_CREDENTIAL, reason: 'missing-credential' };
+const PUBSUB_INVOKER_IDENTITY = { service: { name: 'pubsub-invoker', roles: ['service:pubsub-invoker'] } };
+const TASKS_INVOKER_IDENTITY = { service: { name: 'tasks-invoker', roles: ['service:tasks-invoker'] } };
+
+/** Authenticates a request to `route` carrying `headers` and `query` on a route that requires credentials. */
+function authenticate(
+  authenticator: TransportAuthenticator,
+  route: string,
+  headers: AuthRequest['headers'],
+  query?: AuthRequest['query'],
+): Promise<AuthResult> {
+  return authenticator.authenticate({ path: route, headers, query }, { optional: false });
+}
+
+/** Authenticates `sent` as Node parses it: every pair in `rawHeaders`, only each name's first value in `headers`. */
+function authenticateSent(
+  authenticator: TransportAuthenticator,
+  route: string,
+  sent: ReadonlyArray<readonly [string, string]>,
+): Promise<AuthResult> {
+  const headers: Record<string, string> = {};
+  for (const [name, value] of sent) {
+    headers[name.toLowerCase()] ??= value;
+  }
+  return authenticator.authenticate({ path: route, headers, rawHeaders: sent.flat() }, { optional: false });
+}
+
+/** Bearer header of a test-kit service token from `caller` addressed to `audience`. */
+async function localServiceBearer(caller: string, audience = 'people'): Promise<string> {
+  return `Bearer ${await mintServiceToken({ caller, audience })}`;
+}
+
+describe('transportForPath', () => {
+  it.each([
+    { path: '/internal/v1/events/people.programs-sites.site.changed.v1', transport: 'pubsub-push' },
+    { path: `${PUSH_PATH}?${pushKeyQuery()}`, transport: 'pubsub-push' },
+    { path: '/internal/v1/events/', transport: 'service' },
+    { path: '/internal/v1/events/a/b', transport: 'service' },
+    { path: TASK_PATH, transport: 'cloud-tasks' },
+    { path: '/internal/v1/tasks/feeds/import', transport: 'cloud-tasks' },
+    { path: '/internal/v1/tasks', transport: 'service' },
+    { path: '/internal/v1/outbox/sweep', transport: 'cloud-tasks' },
+    { path: '/internal/v1/outbox/sweep/now', transport: 'service' },
+    { path: '/internal/v1/jobs/sitemonitor', transport: 'cloud-tasks' },
+    { path: '/internal/v1/migration/apply', transport: 'service' },
+    { path: '/internal/v1/tokens', transport: 'service' },
+    { path: '/people?next=/internal/v1/tasks/x', transport: 'service' },
+    { path: '/_api/json/v1/default/content', transport: 'service' },
+  ])('assigns $path to the $transport transport', ({ path: route, transport }) => {
+    expect(transportForPath(route)).toBe(transport);
+  });
+});
+
+describe('managedAudience', () => {
+  it.each([
+    { given: 'a bare origin', selfUrl: PEOPLE_URL, route: PUSH_PATH, audience: PUSH_ENDPOINT },
+    {
+      given: 'a trailing slash and a route query',
+      selfUrl: `${PEOPLE_URL}/`,
+      route: `${PUSH_PATH}?attempt=2`,
+      audience: PUSH_ENDPOINT,
+    },
+    {
+      given: 'a service URL path and query',
+      selfUrl: `${PEOPLE_URL}/base?region=us`,
+      route: '/internal/v1/outbox/sweep',
+      audience: `${PEOPLE_URL}/internal/v1/outbox/sweep`,
+    },
+    {
+      given: 'the sweep route of a run.app URL',
+      selfUrl: 'https://people-abc.a.run.app',
+      route: '/internal/v1/outbox/sweep',
+      audience: 'https://people-abc.a.run.app/internal/v1/outbox/sweep',
+    },
+  ])('keeps the service origin and the route path given $given', ({ selfUrl, route, audience }) => {
+    expect(managedAudience(selfUrl, route)).toBe(audience);
+  });
+});
+
+describe('createServiceTransport', () => {
+  /** Service scheme of the people service over the in-memory user key set and the local invocation key. */
+  function peopleService(): TransportAuthenticator {
+    return createServiceTransport({
+      userVerifier: localVerifier(),
+      invocationVerifier: createLocalInvocationVerifier({ publicKey: issuerKey.publicKey, callee: 'people' }),
+    });
+  }
+
+  it('accepts a user token with the caller invocation credential and returns the user, the raw token and the caller', async () => {
+    const token = await userToken();
+    const transport = peopleService();
+    expect(transport.transport).toBe('service');
+    await expect(
+      authenticate(transport, PEOPLE_PATH, {
+        authorization: `Bearer ${token}`,
+        [INVOCATION_HEADER]: await localServiceBearer('gateway'),
+      }),
+    ).resolves.toEqual({
+      user: userClaims(),
+      userToken: token,
+      service: { name: 'gateway', roles: ['service:gateway'] },
+    });
+  });
+
+  it('accepts an invocation credential without a user token as a call for no user', async () => {
+    const result = await authenticate(peopleService(), PEOPLE_PATH, {
+      [INVOCATION_HEADER]: await localServiceBearer('migration'),
+    });
+    expect(result).toStrictEqual({
+      service: { name: 'migration', roles: ['service:migration', 'platform.migration'] },
+    });
+  });
+
+  it('refuses a request without an invocation credential as missing-credential when the route requires one', async () => {
+    const token = await userToken();
+    expect(
+      await denialOf(() => authenticate(peopleService(), PEOPLE_PATH, { authorization: `Bearer ${token}` })),
+    ).toEqual(MISSING_CREDENTIAL);
+  });
+
+  it('passes a request without credentials on a route where they are optional', async () => {
+    await expect(peopleService().authenticate({ path: PEOPLE_PATH, headers: {} }, { optional: true })).resolves.toEqual(
+      {},
+    );
+  });
+
+  it('verifies a user token without an invocation credential on a route where the credential is optional', async () => {
+    const token = await userToken();
+    await expect(
+      peopleService().authenticate(
+        { path: PEOPLE_PATH, headers: { authorization: `Bearer ${token}` } },
+        { optional: true },
+      ),
+    ).resolves.toEqual({ user: userClaims(), userToken: token });
+  });
+
+  it.each([
+    { label: 'a credential minted for another callee', header: () => localServiceBearer('gateway', 'strategies-content'), denial: INVALID_CREDENTIAL },
+    { label: "a managed invoker's service token", header: () => localServiceBearer('tasks-invoker'), denial: WRONG_SCHEME },
+  ])('still verifies $label presented on a route where the invocation credential is optional', async ({ header, denial }) => {
+    const headers = { [INVOCATION_HEADER]: await header() };
+    expect(await denialOf(() => peopleService().authenticate({ path: PEOPLE_PATH, headers }, { optional: true }))).toEqual(
+      denial,
+    );
+  });
+
+  it('refuses a non-bearer Authorization as the wrong scheme', async () => {
+    const headers = { authorization: BASIC_HEADER, [INVOCATION_HEADER]: await localServiceBearer('gateway') };
+    expect(await denialOf(() => authenticate(peopleService(), PEOPLE_PATH, headers))).toEqual(WRONG_SCHEME);
+  });
+
+  it.each(['authorization', INVOCATION_HEADER])('refuses a repeated %s header as invalid-credential', async (name) => {
+    const authorization = `Bearer ${await userToken()}`;
+    const invocation = await localServiceBearer('gateway');
+    const repeated = name === 'authorization' ? authorization : invocation;
+    const headers = { authorization, [INVOCATION_HEADER]: invocation, [name]: [repeated, repeated] };
+    expect(await denialOf(() => authenticate(peopleService(), PEOPLE_PATH, headers))).toEqual(INVALID_CREDENTIAL);
+  });
+
+  it.each([
+    { label: 'Authorization and authorization', names: ['Authorization', 'authorization', INVOCATION_HEADER] },
+    {
+      label: 'X-Serverless-Authorization and x-serverless-AUTHORIZATION',
+      names: ['authorization', 'X-Serverless-Authorization', 'x-serverless-AUTHORIZATION'],
+    },
+  ])('refuses raw headers sending $label as invalid-credential', async ({ names }) => {
+    const authorization = `Bearer ${await userToken()}`;
+    const invocation = await localServiceBearer('gateway');
+    const sent = names.map((name) => [name, name.toLowerCase() === 'authorization' ? authorization : invocation] as const);
+    expect(await denialOf(() => authenticateSent(peopleService(), PEOPLE_PATH, sent))).toEqual(INVALID_CREDENTIAL);
+  });
+
+  it('verifies credential headers sent once each, in any letter case', async () => {
+    const token = await userToken();
+    const sent = [
+      ['AUTHORIZATION', `Bearer ${token}`],
+      ['X-Note', 'Authorization'],
+      ['X-Serverless-Authorization', await localServiceBearer('gateway')],
+    ] as const;
+    await expect(authenticateSent(peopleService(), PEOPLE_PATH, sent)).resolves.toEqual({
+      user: userClaims(),
+      userToken: token,
+      service: { name: 'gateway', roles: ['service:gateway'] },
+    });
+  });
+
+  it.each([
+    { kind: 'a local tasks-invoker service token', token: () => mintTasksInvokerToken({ audience: 'people' }) },
+    {
+      kind: 'a Pub/Sub push OIDC token',
+      token: () => signToken(googleOidcClaims({ aud: PUSH_ENDPOINT, email: PUBSUB_INVOKER_EMAIL }), issuerKey),
+    },
+    {
+      kind: 'a Cloud Tasks OIDC token',
+      token: () => signToken(googleOidcClaims({ email: TASKS_INVOKER_EMAIL }), issuerKey),
+    },
+  ])('answers $kind presented as the user token with invalidAccessToken', async ({ token }) => {
+    const headers = {
+      authorization: `Bearer ${await token()}`,
+      [INVOCATION_HEADER]: await localServiceBearer('gateway'),
+    };
+    expect(await denialOf(() => authenticate(peopleService(), PEOPLE_PATH, headers))).toEqual(INVALID_ACCESS_TOKEN);
+  });
+
+  it.each(MANAGED_INVOKER_NAMES)(
+    'refuses a %s service token presented as the invocation credential as the wrong scheme',
+    async (caller) => {
+      const headers = { [INVOCATION_HEADER]: await localServiceBearer(caller) };
+      expect(await denialOf(() => authenticate(peopleService(), PEOPLE_PATH, headers))).toEqual(WRONG_SCHEME);
+    },
+  );
+
+  it.each([
+    {
+      problem: 'an invocation token for another service',
+      headers: async () => ({ [INVOCATION_HEADER]: await localServiceBearer('gateway', 'strategies-content') }),
+      expected: INVALID_CREDENTIAL,
+    },
+    {
+      problem: 'an invocation token from the user issuer',
+      headers: async () => ({
+        [INVOCATION_HEADER]: `Bearer ${await signToken(serviceClaims({ iss: LOCAL_USER_TOKEN.issuer }), issuerKey)}`,
+      }),
+      expected: INVALID_CREDENTIAL,
+    },
+    {
+      problem: 'an invocation token without an expiry',
+      headers: async () => ({
+        [INVOCATION_HEADER]: `Bearer ${await signToken(serviceClaims({ exp: undefined }), issuerKey)}`,
+      }),
+      expected: INVALID_CREDENTIAL,
+    },
+    {
+      problem: 'an invocation token with a non-finite expiry',
+      headers: async () => ({ [INVOCATION_HEADER]: `Bearer ${await signWithRawExp(serviceClaims(), '1e400', issuerKey)}` }),
+      expected: INVALID_CREDENTIAL,
+    },
+    {
+      problem: 'a user token for another audience',
+      headers: async () => ({
+        authorization: `Bearer ${await userToken({ aud: 'people' })}`,
+        [INVOCATION_HEADER]: await localServiceBearer('gateway'),
+      }),
+      expected: INVALID_ACCESS_TOKEN,
+    },
+    {
+      problem: 'a user token from another issuer',
+      headers: async () => ({
+        authorization: `Bearer ${await userToken({ iss: 'other' })}`,
+        [INVOCATION_HEADER]: await localServiceBearer('gateway'),
+      }),
+      expected: INVALID_ACCESS_TOKEN,
+    },
+    {
+      problem: 'an expired user token',
+      headers: async () => ({
+        authorization: `Bearer ${await userToken({ iat: NOW - 600, exp: NOW - 300 })}`,
+        [INVOCATION_HEADER]: await localServiceBearer('gateway'),
+      }),
+      expected: ACCESS_TOKEN_EXPIRED,
+    },
+  ])('refuses $problem with the $expected.type error', async ({ headers, expected }) => {
+    const presented = await headers();
+    expect(await denialOf(() => authenticate(peopleService(), PEOPLE_PATH, presented))).toEqual(expected);
+  });
+});
+
+describe('createLocalPubSubPushTransport', () => {
+  /** Local push scheme holding the test push key. */
+  function push(): TransportAuthenticator {
+    return createLocalPubSubPushTransport({ pushKey: TEST_PUSH_KEY });
+  }
+
+  it('refuses to build on an empty push key', () => {
+    expect(() => createLocalPubSubPushTransport({ pushKey: '' })).toThrow(
+      new TypeError('Local Pub/Sub push key is empty'),
+    );
+  });
+
+  it('accepts the push key in the key query parameter as the pubsub-invoker', async () => {
+    expect(push().transport).toBe('pubsub-push');
+    await expect(authenticate(push(), PUSH_PATH, {}, PUSH_QUERY)).resolves.toEqual(PUBSUB_INVOKER_IDENTITY);
+  });
+
+  it.each([
+    { presented: 'another key of the same length', key: `x${TEST_PUSH_KEY.slice(1)}` },
+    { presented: 'a prefix of the key', key: TEST_PUSH_KEY.slice(0, -1) },
+    { presented: 'the key with a suffix', key: `${TEST_PUSH_KEY}x` },
+    { presented: 'an empty key', key: '' },
+    { presented: 'a numeric key', key: 42 },
+    { presented: 'a repeated key parameter', key: [TEST_PUSH_KEY, TEST_PUSH_KEY] },
+  ])('refuses $presented as invalid-credential without throwing', async ({ key }) => {
+    expect(await denialOf(() => authenticate(push(), PUSH_PATH, {}, { key }))).toEqual(INVALID_CREDENTIAL);
+  });
+
+  it.each([
+    { request: 'no query', query: undefined },
+    { request: 'a query without a key', query: { attempt: '2' } },
+  ])('refuses a delivery with $request as missing-credential', async ({ query }) => {
+    expect(await denialOf(() => authenticate(push(), PUSH_PATH, {}, query))).toEqual(MISSING_CREDENTIAL);
+  });
+
+  it.each([
+    { kind: 'a bearer user token', authorization: async () => `Bearer ${await userToken()}` },
+    {
+      kind: 'the pubsub-invoker OIDC token',
+      authorization: async () =>
+        `Bearer ${await signToken(googleOidcClaims({ aud: PUSH_ENDPOINT, email: PUBSUB_INVOKER_EMAIL }), issuerKey)}`,
+    },
+    { kind: 'Basic credentials', authorization: () => Promise.resolve(BASIC_HEADER) },
+  ])('refuses $kind in Authorization as the wrong scheme even with the right key', async ({ authorization }) => {
+    const headers = { authorization: await authorization() };
+    expect(await denialOf(() => authenticate(push(), PUSH_PATH, headers, PUSH_QUERY))).toEqual(WRONG_SCHEME);
+  });
+});
+
+describe.each([
+  {
+    factory: 'createCloudPubSubPushTransport',
+    create: createCloudPubSubPushTransport,
+    transport: 'pubsub-push',
+    route: PUSH_PATH,
+    invoker: 'pubsub-invoker',
+    email: PUBSUB_INVOKER_EMAIL,
+    otherInvokerEmail: TASKS_INVOKER_EMAIL,
+  },
+  {
+    factory: 'createCloudCloudTasksTransport',
+    create: createCloudCloudTasksTransport,
+    transport: 'cloud-tasks',
+    route: TASK_PATH,
+    invoker: 'tasks-invoker',
+    email: TASKS_INVOKER_EMAIL,
+    otherInvokerEmail: PUBSUB_INVOKER_EMAIL,
+  },
+] as const)('$factory', ({ create, transport, route, invoker, email, otherInvokerEmail }) => {
+  const audience = managedAudience(PEOPLE_URL, route);
+  const identity = { service: { name: invoker, roles: [`service:${invoker}`], email } };
+
+  /** Managed scheme of the people service over the in-memory Google certificates. */
+  function managed(): TransportAuthenticator {
+    return create({ project: PROJECT, selfUrl: PEOPLE_URL, client: googleClient });
+  }
+
+  /** Bearer header of an OIDC token of this invoker addressed to the route, signed with `key`. */
+  async function invokerBearer(overrides: Record<string, unknown> = {}, key: SigningKey = issuerKey): Promise<string> {
+    return `Bearer ${await signToken(googleOidcClaims({ aud: audience, email, ...overrides }), key)}`;
+  }
+
+  it(`accepts the ${invoker} OIDC token addressed to the route`, async () => {
+    const authenticator = managed();
+    expect(authenticator.transport).toBe(transport);
+    await expect(authenticate(authenticator, route, { authorization: await invokerBearer() })).resolves.toEqual(
+      identity,
+    );
+  });
+
+  it('checks the audience against the route path without its query string', async () => {
+    await expect(
+      authenticate(managed(), `${route}?attempt=2`, { authorization: await invokerBearer() }),
+    ).resolves.toEqual(identity);
+  });
+
+  it.each([
+    { problem: 'the service origin as audience', overrides: { aud: PEOPLE_URL } },
+    { problem: "another service's route as audience", overrides: { aud: managedAudience(CONTENT_URL, route) } },
+    { problem: 'the wrong issuer', overrides: { iss: 'https://securetoken.google.com/proj' } },
+    { problem: "the other managed invoker's email", overrides: { email: otherInvokerEmail } },
+    { problem: "a service caller's email", overrides: { email: GATEWAY_EMAIL } },
+    { problem: 'an unverified email', overrides: { email_verified: false } },
+    { problem: 'no email_verified flag', overrides: { email_verified: undefined } },
+    { problem: 'an expiry an hour ago', overrides: { iat: NOW - 7200, exp: NOW - 3600 } },
+  ])('refuses an OIDC token with $problem as invalid-credential', async ({ overrides }) => {
+    const headers = { authorization: await invokerBearer(overrides) };
+    expect(await denialOf(() => authenticate(managed(), route, headers))).toEqual(INVALID_CREDENTIAL);
+  });
+
+  it.each([
+    { problem: 'is signed by an unknown Google key', token: () => invokerBearer({}, foreignKey) },
+    { problem: 'is a local user token', token: async () => `Bearer ${await userToken()}` },
+    { problem: `is a local ${invoker} service token`, token: () => localServiceBearer(invoker, audience) },
+  ])('refuses a credential that $problem as invalid-credential', async ({ token }) => {
+    const headers = { authorization: await token() };
+    expect(await denialOf(() => authenticate(managed(), route, headers))).toEqual(INVALID_CREDENTIAL);
+  });
+
+  it.each([
+    { header: undefined, expected: MISSING_CREDENTIAL },
+    { header: BASIC_HEADER, expected: WRONG_SCHEME },
+    { header: 'Bearer', expected: INVALID_CREDENTIAL },
+    { header: 'Bearer   ', expected: INVALID_CREDENTIAL },
+    { header: 'Bearer abc def', expected: INVALID_CREDENTIAL },
+    { header: ['Bearer abc', 'Bearer abc'], expected: INVALID_CREDENTIAL },
+  ])('answers the Authorization $header with reason $expected.reason before consulting Google', async ({
+    header,
+    expected,
+  }) => {
+    const authenticator = create({ project: PROJECT, selfUrl: PEOPLE_URL });
+    expect(await denialOf(() => authenticate(authenticator, route, { authorization: header }))).toEqual(expected);
+  });
+
+  it('refuses as invalid-credential once a stalled certificate fetch outlasts the Google-auth timeout', async () => {
+    const headers = { authorization: await invokerBearer() };
+    const authenticator = create({ project: PROJECT, selfUrl: PEOPLE_URL, client: new StalledCertsClient() });
+    const timeouts = await withHeldTimeouts(async (held) => {
+      expect(await denialOnExpiry(held, () => authenticate(authenticator, route, headers))).toEqual(INVALID_CREDENTIAL);
+    });
+    expect(timeouts).toEqual([GOOGLE_AUTH_TIMEOUT_MS]);
+  });
+});
+
+describe('createCloudCloudTasksTransport on the fixed feed import route', () => {
+  const IMPORT_URL = 'https://strategies-content-abc.a.run.app';
+  const IMPORT_PATH = '/internal/v1/jobs/feed-auto-import';
+  const identity = { service: { ...TASKS_INVOKER_IDENTITY.service, email: TASKS_INVOKER_EMAIL } };
+
+  /** Authenticates an import delivery to strategies-content carrying a tasks-invoker OIDC token addressed to `aud`. */
+  async function importWith(aud: string): Promise<AuthResult> {
+    const token = await signToken(googleOidcClaims({ aud, email: TASKS_INVOKER_EMAIL }), issuerKey);
+    const tasks = createCloudCloudTasksTransport({ project: PROJECT, selfUrl: IMPORT_URL, client: googleClient });
+    return authenticate(tasks, IMPORT_PATH, { authorization: `Bearer ${token}` });
+  }
+
+  it('accepts the token addressed to the exact task URL', async () => {
+    await expect(importWith(`${IMPORT_URL}${IMPORT_PATH}`)).resolves.toEqual(identity);
+  });
+
+  it.each([
+    { given: 'the service origin', aud: IMPORT_URL },
+    { given: "another route's URL", aud: `${IMPORT_URL}/internal/v1/jobs/publish-scheduled-changesets` },
+  ])('refuses a token addressed to $given as invalid-credential', async ({ aud }) => {
+    expect(await denialOf(() => importWith(aud))).toEqual(INVALID_CREDENTIAL);
+  });
+});
+
+describe('createLocalCloudTasksTransport', () => {
+  const TASKS_INVOKER_SUBJECT = { sub: 'service:tasks-invoker', roles: ['service:tasks-invoker'] };
+
+  /** Local Cloud Tasks scheme of the people service over the local signing key. */
+  function tasks(): TransportAuthenticator {
+    return createLocalCloudTasksTransport({ publicKey: issuerKey.publicKey, callee: 'people' });
+  }
+
+  it('accepts a local tasks-invoker service token addressed to the service', async () => {
+    expect(tasks().transport).toBe('cloud-tasks');
+    const token = await mintTasksInvokerToken({ audience: 'people' });
+    await expect(authenticate(tasks(), TASK_PATH, { authorization: `Bearer ${token}` })).resolves.toEqual(
+      TASKS_INVOKER_IDENTITY,
+    );
+  });
+
+  it('grants only the tasks-invoker role whatever roles the token carries', async () => {
+    const token = await mintServiceToken({
+      caller: 'tasks-invoker',
+      audience: 'people',
+      roles: ['service:tasks-invoker', 'platform.operator'],
+    });
+    await expect(authenticate(tasks(), TASK_PATH, { authorization: `Bearer ${token}` })).resolves.toEqual(
+      TASKS_INVOKER_IDENTITY,
+    );
+  });
+
+  it.each(['gateway', 'migration', 'pubsub-invoker'])('refuses a %s service token as the wrong scheme', async (caller) => {
+    const headers = { authorization: await localServiceBearer(caller) };
+    expect(await denialOf(() => authenticate(tasks(), TASK_PATH, headers))).toEqual(WRONG_SCHEME);
+  });
+
+  it.each([
+    {
+      problem: 'is addressed to another service',
+      token: async () => `Bearer ${await mintTasksInvokerToken({ audience: 'strategies-content' })}`,
+    },
+    {
+      problem: 'has the user-token issuer',
+      token: async () =>
+        `Bearer ${await signToken(serviceClaims({ ...TASKS_INVOKER_SUBJECT, iss: LOCAL_USER_TOKEN.issuer }), issuerKey)}`,
+    },
+    {
+      problem: 'is signed by another key',
+      token: async () => `Bearer ${await signToken(serviceClaims(TASKS_INVOKER_SUBJECT), foreignKey)}`,
+    },
+    {
+      problem: "carries a kid other than the local key's thumbprint",
+      token: async () => `Bearer ${await signToken(serviceClaims(TASKS_INVOKER_SUBJECT), issuerKey, 'unknown-kid-123')}`,
+    },
+    {
+      problem: 'has no expiry',
+      token: async () => `Bearer ${await signToken(serviceClaims({ ...TASKS_INVOKER_SUBJECT, exp: undefined }), issuerKey)}`,
+    },
+    {
+      problem: 'has a non-finite expiry',
+      token: async () => `Bearer ${await signWithRawExp(serviceClaims(TASKS_INVOKER_SUBJECT), '1e400', issuerKey)}`,
+    },
+    { problem: 'is a local user token', token: async () => `Bearer ${await userToken()}` },
+    {
+      problem: 'is a Cloud Tasks OIDC token',
+      token: async () =>
+        `Bearer ${await signToken(googleOidcClaims({ aud: 'people', email: TASKS_INVOKER_EMAIL }), issuerKey)}`,
+    },
+  ])('refuses a credential that $problem as invalid-credential', async ({ token }) => {
+    const headers = { authorization: await token() };
+    expect(await denialOf(() => authenticate(tasks(), TASK_PATH, headers))).toEqual(INVALID_CREDENTIAL);
+  });
+
+  it.each([
+    { header: undefined, expected: MISSING_CREDENTIAL },
+    { header: BASIC_HEADER, expected: WRONG_SCHEME },
+    { header: 'Bearer', expected: INVALID_CREDENTIAL },
+  ])('answers the Authorization $header with reason $expected.reason', async ({ header, expected }) => {
+    expect(await denialOf(() => authenticate(tasks(), TASK_PATH, { authorization: header }))).toEqual(expected);
+  });
+
+  it.each([
+    {
+      label: 'Authorization, then authorization with a garbage token',
+      first: 'Authorization',
+      second: 'authorization',
+      copy: 'Bearer garbage',
+    },
+    {
+      label: 'authorization, then AUTHORIZATION with the same token',
+      first: 'authorization',
+      second: 'AUTHORIZATION',
+      copy: undefined,
+    },
+  ])('refuses raw headers sending $label as invalid-credential', async ({ first, second, copy }) => {
+    const bearer = `Bearer ${await mintTasksInvokerToken({ audience: 'people' })}`;
+    const sent = [
+      [first, bearer],
+      [second, copy ?? bearer],
+    ] as const;
+    expect(await denialOf(() => authenticateSent(tasks(), TASK_PATH, sent))).toEqual(INVALID_CREDENTIAL);
+  });
+
+  it('verifies a tasks-invoker token sent once in raw headers', async () => {
+    const sent = [['Authorization', `Bearer ${await mintTasksInvokerToken({ audience: 'people' })}`]] as const;
+    await expect(authenticateSent(tasks(), TASK_PATH, sent)).resolves.toEqual(TASKS_INVOKER_IDENTITY);
+  });
+});
+
+describe('createAuthFromEnv', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** Answers every fetch with the issuer key set, so remote JWKS verifiers run offline; returns the spy. */
+  async function serveIssuerJwks(): Promise<MockInstance<typeof fetch>> {
+    const jwks = await testJwks();
+    return vi.spyOn(globalThis, 'fetch').mockImplementation(() => Promise.resolve(Response.json(jwks)));
+  }
+
+  /** Serves the issuer key as Google's OIDC signing certificate to every OAuth2Client. */
+  async function serveGoogleCerts(): Promise<void> {
+    const certs = { [issuerKey.kid]: await exportSPKI(issuerKey.publicKey) };
+    vi.spyOn(OAuth2Client.prototype, 'getFederatedSignonCertsAsync').mockResolvedValue({
+      certs,
+      format: CertificateFormat.PEM,
+    });
+  }
+
+  /** Writes `contents` as the push key file of `dir` and returns `dir`. */
+  async function withPushKey(dir: string, contents = `${TEST_PUSH_KEY}\n`): Promise<string> {
+    await writeFile(localSecretPath(dir, LOCAL_SECRET_FILES.pubsubPushKey), contents);
+    return dir;
+  }
+
+  /** Verifiers, minter and managed schemes of the people service built from the in-memory keys. */
+  function injectedPieces() {
+    return {
+      userVerifier: localVerifier(),
+      invocationVerifier: createLocalInvocationVerifier({ publicKey: issuerKey.publicKey, callee: 'people' }),
+      invocationMinter: createLocalInvocationMinter({ keys: localKeys, caller: 'people' }),
+      transports: {
+        'pubsub-push': createLocalPubSubPushTransport({ pushKey: TEST_PUSH_KEY }),
+        'cloud-tasks': createLocalCloudTasksTransport({ publicKey: issuerKey.publicKey, callee: 'people' }),
+      },
+    };
+  }
+
+  describe('in local mode', () => {
+    /** Local environment of the people service over `dir`; an `undefined` override drops the setting. */
+    function localEnv(dir: string, overrides: Partial<AuthEnv> = {}): AuthEnv {
+      return {
+        OPT2_ENV: 'local',
+        OPT2_SERVICE_NAME: 'people',
+        OPT2_STATE_DIR: dir,
+        OPT2_JWKS_URL: LOCAL_JWKS_URL,
+        ...overrides,
+      };
+    }
+
+    it.each([
+      {
+        settings: 'unset',
+        env: {},
+        iss: LOCAL_USER_TOKEN.issuer,
+        aud: LOCAL_USER_TOKEN.audience,
+        refusedIss: 'https://identity.example/opt2',
+      },
+      {
+        settings: 'blank',
+        env: { OPT2_TOKEN_ISSUER: '  ', OPT2_TOKEN_AUDIENCE: '' },
+        iss: LOCAL_USER_TOKEN.issuer,
+        aud: LOCAL_USER_TOKEN.audience,
+        refusedIss: 'https://identity.example/opt2',
+      },
+      {
+        settings: 'explicit',
+        env: { OPT2_TOKEN_ISSUER: 'https://identity.example/opt2', OPT2_TOKEN_AUDIENCE: 'opt2-people' },
+        iss: 'https://identity.example/opt2',
+        aud: 'opt2-people',
+        refusedIss: LOCAL_USER_TOKEN.issuer,
+      },
+    ])('verifies the service scheme with the OPT2_JWKS_URL key set and $settings token issuer and audience settings', async ({
+      settings,
+      env,
+      iss,
+      aud,
+      refusedIss,
+    }) => {
+      const fetchSpy = await serveIssuerJwks();
+      const variant = await withPushKey(await stateDirWith(`env-user-${settings}`, 'pem'));
+      const auth = await createAuthFromEnv(localEnv(variant, env));
+      const token = await userToken({ iss, aud });
+      await expect(
+        authenticate(auth.transports.service, PEOPLE_PATH, {
+          authorization: `Bearer ${token}`,
+          [INVOCATION_HEADER]: await localServiceBearer('gateway'),
+        }),
+      ).resolves.toEqual({
+        user: userClaims({ iss, aud }),
+        userToken: token,
+        service: { name: 'gateway', roles: ['service:gateway'] },
+      });
+      expect(fetchSpy).toHaveBeenCalledWith(LOCAL_JWKS_URL, expect.anything());
+      const refused = await userToken({ iss: refusedIss, aud });
+      expect(await denialOf(() => auth.userVerifier.verify(refused))).toEqual(INVALID_ACCESS_TOKEN);
+    });
+
+    it('accepts the trimmed push key file on the Pub/Sub push scheme and a tasks-invoker token on the Cloud Tasks scheme', async () => {
+      const auth = await createAuthFromEnv(localEnv(await withPushKey(await stateDirWith('env-managed', 'absent'))));
+      expect(Object.isFrozen(auth.transports)).toBe(true);
+      expect(auth.transports.service.transport).toBe('service');
+      const push = auth.transports['pubsub-push'];
+      await expect(authenticate(push, PUSH_PATH, {}, PUSH_QUERY)).resolves.toEqual(PUBSUB_INVOKER_IDENTITY);
+      expect(await denialOf(() => authenticate(push, PUSH_PATH, {}, { key: `${TEST_PUSH_KEY}\n` }))).toEqual(
+        INVALID_CREDENTIAL,
+      );
+      await expect(
+        authenticate(auth.transports['cloud-tasks'], TASK_PATH, {
+          authorization: `Bearer ${await mintTasksInvokerToken({ audience: 'people' })}`,
+        }),
+      ).resolves.toEqual(TASKS_INVOKER_IDENTITY);
+    });
+
+    it.each([
+      { carrying: 'its service roles', minterRoles: undefined, roles: ['service:people'] },
+      {
+        carrying: 'the minterRoles',
+        minterRoles: ['service:people', 'platform.operator'],
+        roles: ['service:people', 'platform.operator'],
+      },
+    ])('mints invocation credentials for the service carrying $carrying', async ({ minterRoles, roles }) => {
+      const variant = await withPushKey(await stateDirWith(`env-minter-${String(roles.length)}`, 'pem'));
+      const auth = await createAuthFromEnv(localEnv(variant), { minterRoles });
+      const headers = await auth.invocationMinter.headersFor({ name: 'strategies-content' });
+      const content = createLocalInvocationVerifier({ publicKey: issuerKey.publicKey, callee: 'strategies-content' });
+      await expect(content.verify(headers[INVOCATION_HEADER] ?? '')).resolves.toEqual({ name: 'people', roles });
+    });
+
+    it('starts without the private key file and fails only when minting', async () => {
+      const variant = await withPushKey(await stateDirWith('env-verify-only', 'absent'));
+      const auth = await createAuthFromEnv(localEnv(variant));
+      await expect(auth.invocationMinter.headersFor({ name: 'strategies-content' })).rejects.toThrow(
+        'Local service token for people needs token-signing-private.pem',
+      );
+    });
+
+    it('needs no state directory or JWKS URL when every key-backed piece is injected', async () => {
+      const pieces = injectedPieces();
+      const auth = await createAuthFromEnv({ OPT2_ENV: 'local', OPT2_SERVICE_NAME: 'people' }, pieces);
+      expect(auth.userVerifier).toBe(pieces.userVerifier);
+      expect(auth.invocationVerifier).toBe(pieces.invocationVerifier);
+      expect(auth.invocationMinter).toBe(pieces.invocationMinter);
+      expect(auth.transports['pubsub-push']).toBe(pieces.transports['pubsub-push']);
+      expect(auth.transports['cloud-tasks']).toBe(pieces.transports['cloud-tasks']);
+      const token = await userToken();
+      await expect(
+        authenticate(auth.transports.service, PEOPLE_PATH, {
+          authorization: `Bearer ${token}`,
+          [INVOCATION_HEADER]: await localServiceBearer('gateway'),
+        }),
+      ).resolves.toEqual({
+        user: userClaims(),
+        userToken: token,
+        service: { name: 'gateway', roles: ['service:gateway'] },
+      });
+    });
+
+    it.each([
+      { setting: 'OPT2_SERVICE_NAME', value: 'empty', env: { OPT2_SERVICE_NAME: '' } },
+      { setting: 'OPT2_SERVICE_NAME', value: 'blank', env: { OPT2_SERVICE_NAME: '   ' } },
+      { setting: 'OPT2_STATE_DIR', value: 'unset', env: { OPT2_STATE_DIR: undefined } },
+      { setting: 'OPT2_STATE_DIR', value: 'blank', env: { OPT2_STATE_DIR: ' ' } },
+      { setting: 'OPT2_JWKS_URL', value: 'unset', env: { OPT2_JWKS_URL: undefined } },
+      { setting: 'OPT2_JWKS_URL', value: 'empty', env: { OPT2_JWKS_URL: '' } },
+    ])('fails when $setting is $value', async ({ setting, env }) => {
+      const variant = await withPushKey(await stateDirWith('env-required', 'pem'));
+      await expect(createAuthFromEnv(localEnv(variant, env))).rejects.toThrow(
+        `${setting} is required for OPT2_ENV=local authentication`,
+      );
+    });
+
+    it('fails naming the push key file when it is missing', async () => {
+      const variant = await stateDirWith('env-no-push-key', 'pem');
+      const error = await createAuthFromEnv(localEnv(variant)).catch((err: unknown) => err);
+      expect(error).toBeInstanceOf(EnvFileError);
+      expect(error).toMatchObject({ code: 'ENOENT' });
+      expect(serializeError(error).message).toBe('cannot read OPT2_STATE_DIR file secrets/pubsub-push-key (open ENOENT)');
+    });
+
+    it('fails naming the public key file when the state directory holds no secrets', async () => {
+      const error = await createAuthFromEnv(localEnv(path.join(stateDir, 'variants', 'env-no-secrets'))).catch((err: unknown) => err);
+      expect(serializeError(error).message).toBe('cannot read OPT2_STATE_DIR file secrets/token-signing-public.pem (open ENOENT)');
+    });
+
+    it('refuses a push key file holding only whitespace', async () => {
+      const variant = await withPushKey(await stateDirWith('env-blank-push-key', 'pem'), ' \n');
+      await expect(createAuthFromEnv(localEnv(variant))).rejects.toThrow(
+        new TypeError('Local Pub/Sub push key is empty'),
+      );
+    });
+
+    describe("over writeTestSecrets' files with testVerifier() overrides", () => {
+      let auth: AuthSetup;
+
+      beforeAll(async () => {
+        auth = await createAuthFromEnv(
+          localEnv(stateDir, {
+            OPT2_JWKS_URL: undefined,
+            OPT2_TOKEN_ISSUER: LOCAL_USER_TOKEN.issuer,
+            OPT2_TOKEN_AUDIENCE: LOCAL_USER_TOKEN.audience,
+          }),
+          testVerifier(),
+        );
+      });
+
+      interface SchemeCredential {
+        scheme: Transport;
+        route: string;
+        request: () => Promise<Omit<AuthRequest, 'path'>>;
+      }
+
+      /** One credential per scheme, as each arrives at the people service. */
+      const CREDENTIALS: readonly SchemeCredential[] = [
+        {
+          scheme: 'service',
+          route: PEOPLE_PATH,
+          request: async () => ({
+            headers: {
+              authorization: `Bearer ${await userToken()}`,
+              [INVOCATION_HEADER]: await localServiceBearer('gateway'),
+            },
+          }),
+        },
+        { scheme: 'pubsub-push', route: PUSH_PATH, request: () => Promise.resolve({ headers: {}, query: PUSH_QUERY }) },
+        {
+          scheme: 'cloud-tasks',
+          route: TASK_PATH,
+          request: async () => ({
+            headers: { authorization: `Bearer ${await mintTasksInvokerToken({ audience: 'people' })}` },
+          }),
+        },
+      ];
+
+      /** Reason each scheme gives a credential of another scheme, keyed by credential then scheme. */
+      const REFUSALS: Readonly<Record<Transport, Partial<Record<Transport, DenialShape>>>> = {
+        service: { 'pubsub-push': WRONG_SCHEME, 'cloud-tasks': INVALID_CREDENTIAL },
+        'pubsub-push': { service: MISSING_CREDENTIAL, 'cloud-tasks': MISSING_CREDENTIAL },
+        'cloud-tasks': { service: MISSING_CREDENTIAL, 'pubsub-push': WRONG_SCHEME },
+      };
+
+      it('assembles both verifiers, the minter and one scheme per transport', () => {
+        expect(Object.keys(auth).sort()).toEqual([
+          'invocationMinter',
+          'invocationVerifier',
+          'transports',
+          'userVerifier',
+        ]);
+        expect(Object.keys(auth.transports)).toEqual([...TRANSPORTS]);
+        expect(TRANSPORTS.map((transport) => auth.transports[transport].transport)).toEqual([...TRANSPORTS]);
+      });
+
+      it('accepts every scheme credential on its own transport', async () => {
+        const identities = await Promise.all(
+          CREDENTIALS.map(async ({ scheme, route, request }) =>
+            auth.transports[scheme].authenticate({ path: route, ...(await request()) }, { optional: false }),
+          ),
+        );
+        expect(identities).toEqual([
+          {
+            user: userClaims(),
+            userToken: expect.any(String),
+            service: { name: 'gateway', roles: ['service:gateway'] },
+          },
+          PUBSUB_INVOKER_IDENTITY,
+          TASKS_INVOKER_IDENTITY,
+        ]);
+      });
+
+      it.each(
+        CREDENTIALS.flatMap((credential) =>
+          TRANSPORTS.filter((transport) => transport !== credential.scheme).map((transport) => ({
+            ...credential,
+            transport,
+          })),
+        ),
+      )('refuses the $scheme credential on the $transport transport', async ({ scheme, route, request, transport }) => {
+        const presented = { path: route, ...(await request()) };
+        expect(await denialOf(() => auth.transports[transport].authenticate(presented, { optional: false }))).toEqual(
+          REFUSALS[scheme][transport],
+        );
+      });
+    });
+  });
+
+  describe('in cloud mode', () => {
+    const SERVICE_URLS = { people: PEOPLE_URL, 'strategies-content': CONTENT_URL };
+    const NO_SERVICE_URL = 'OPT2_SERVICE_URLS has no valid URL for people';
+
+    /** Cloud environment of the people service; an `undefined` override drops the setting. */
+    function cloudEnv(overrides: Partial<AuthEnv> = {}): AuthEnv {
+      return {
+        OPT2_ENV: 'cloud',
+        OPT2_SERVICE_NAME: 'people',
+        GOOGLE_CLOUD_PROJECT: PROJECT,
+        OPT2_SERVICE_URLS: SERVICE_URLS,
+        ...overrides,
+      };
+    }
+
+    it.each([
+      { form: 'a parsed map', urls: SERVICE_URLS },
+      { form: 'JSON text', urls: JSON.stringify(SERVICE_URLS) },
+    ])('verifies managed deliveries addressed to the service URL OPT2_SERVICE_URLS gives as $form', async ({ urls }) => {
+      await serveGoogleCerts();
+      const auth = await createAuthFromEnv(cloudEnv({ OPT2_SERVICE_URLS: urls }));
+      const push = await signToken(googleOidcClaims({ aud: PUSH_ENDPOINT, email: PUBSUB_INVOKER_EMAIL }), issuerKey);
+      const task = await signToken(
+        googleOidcClaims({ aud: `${PEOPLE_URL}${TASK_PATH}`, email: TASKS_INVOKER_EMAIL }),
+        issuerKey,
+      );
+      await expect(
+        authenticate(auth.transports['pubsub-push'], PUSH_PATH, { authorization: `Bearer ${push}` }),
+      ).resolves.toEqual({ service: { ...PUBSUB_INVOKER_IDENTITY.service, email: PUBSUB_INVOKER_EMAIL } });
+      await expect(
+        authenticate(auth.transports['cloud-tasks'], TASK_PATH, { authorization: `Bearer ${task}` }),
+      ).resolves.toEqual({ service: { ...TASKS_INVOKER_IDENTITY.service, email: TASKS_INVOKER_EMAIL } });
+    });
+
+    it("trusts Cloud Run's verification of invocation credentials by default", async () => {
+      const auth = await createAuthFromEnv(cloudEnv());
+      await expect(auth.invocationVerifier.verify(`Bearer ${cloudRunForwarded(googleOidcClaims())}`)).resolves.toEqual({
+        name: 'gateway',
+        roles: ['service:gateway'],
+        email: GATEWAY_EMAIL,
+      });
+      const signed = `Bearer ${await signToken(googleOidcClaims(), issuerKey)}`;
+      expect(await denialOf(() => auth.invocationVerifier.verify(signed))).toEqual(INVALID_CREDENTIAL);
+    });
+
+    it('verifies the Google signature of invocation credentials for the service origin under invocationTrust verify', async () => {
+      await serveGoogleCerts();
+      const auth = await createAuthFromEnv(cloudEnv(), { invocationTrust: 'verify' });
+      const signed = `Bearer ${await signToken(googleOidcClaims(), issuerKey)}`;
+      await expect(auth.invocationVerifier.verify(signed)).resolves.toEqual({
+        name: 'gateway',
+        roles: ['service:gateway'],
+        email: GATEWAY_EMAIL,
+      });
+      const forwarded = `Bearer ${cloudRunForwarded(googleOidcClaims())}`;
+      expect(await denialOf(() => auth.invocationVerifier.verify(forwarded))).toEqual(INVALID_CREDENTIAL);
+      const forContent = `Bearer ${await signToken(googleOidcClaims({ aud: CONTENT_URL }), issuerKey)}`;
+      expect(await denialOf(() => auth.invocationVerifier.verify(forContent))).toEqual(INVALID_CREDENTIAL);
+    });
+
+    it.each([
+      {
+        settings: 'unset',
+        env: {},
+        iss: 'https://securetoken.google.com/proj',
+        aud: PROJECT,
+        jwksUrl: GOOGLE_SECURETOKEN_JWKS_URL,
+        refusedIss: LOCAL_USER_TOKEN.issuer,
+      },
+      {
+        settings: 'blank',
+        env: { OPT2_TOKEN_ISSUER: '', OPT2_TOKEN_AUDIENCE: ' ', OPT2_JWKS_URL: '  ' },
+        iss: 'https://securetoken.google.com/proj',
+        aud: PROJECT,
+        jwksUrl: GOOGLE_SECURETOKEN_JWKS_URL,
+        refusedIss: LOCAL_USER_TOKEN.issuer,
+      },
+      {
+        settings: 'explicit',
+        env: {
+          OPT2_TOKEN_ISSUER: 'https://identity.example/opt2',
+          OPT2_TOKEN_AUDIENCE: 'opt2-people',
+          OPT2_JWKS_URL: LOCAL_JWKS_URL,
+        },
+        iss: 'https://identity.example/opt2',
+        aud: 'opt2-people',
+        jwksUrl: LOCAL_JWKS_URL,
+        refusedIss: 'https://securetoken.google.com/proj',
+      },
+    ])('verifies user tokens against the $settings issuer, audience and JWKS settings', async ({
+      env,
+      iss,
+      aud,
+      jwksUrl,
+      refusedIss,
+    }) => {
+      const fetchSpy = await serveIssuerJwks();
+      const auth = await createAuthFromEnv(cloudEnv(env));
+      const overrides = { iss, aud, exp: NOW + 3600 };
+      await expect(auth.userVerifier.verify(await userToken(overrides))).resolves.toEqual(userClaims(overrides));
+      expect(fetchSpy).toHaveBeenCalledWith(jwksUrl, expect.anything());
+      const refused = await userToken({ iss: refusedIss, aud });
+      expect(await denialOf(() => auth.userVerifier.verify(refused))).toEqual(INVALID_ACCESS_TOKEN);
+    });
+
+    it('bounds every Google ID-token check with one shared client whose certificate requests time out', async () => {
+      const clients = new Set<OAuth2Client>();
+      vi.spyOn(OAuth2Client.prototype, 'getFederatedSignonCertsAsync').mockImplementation(function (this: OAuth2Client) {
+        clients.add(this);
+        return new Promise(() => undefined);
+      });
+      const auth = await createAuthFromEnv(cloudEnv(), { invocationTrust: 'verify' });
+      const bearer = async (overrides: Record<string, unknown> = {}): Promise<string> =>
+        `Bearer ${await signToken(googleOidcClaims(overrides), issuerKey)}`;
+      const service = await bearer();
+      const push = await bearer({ aud: PUSH_ENDPOINT, email: PUBSUB_INVOKER_EMAIL });
+      const task = await bearer({ aud: `${PEOPLE_URL}${TASK_PATH}`, email: TASKS_INVOKER_EMAIL });
+      const timeouts = await withHeldTimeouts(async (held) => {
+        expect(await denialOnExpiry(held, () => auth.invocationVerifier.verify(service))).toEqual(INVALID_CREDENTIAL);
+        expect(
+          await denialOnExpiry(held, () =>
+            authenticate(auth.transports['pubsub-push'], PUSH_PATH, { authorization: push }),
+          ),
+        ).toEqual(INVALID_CREDENTIAL);
+        expect(
+          await denialOnExpiry(held, () =>
+            authenticate(auth.transports['cloud-tasks'], TASK_PATH, { authorization: task }),
+          ),
+        ).toEqual(INVALID_CREDENTIAL);
+      });
+      expect(timeouts).toEqual([GOOGLE_AUTH_TIMEOUT_MS, GOOGLE_AUTH_TIMEOUT_MS, GOOGLE_AUTH_TIMEOUT_MS]);
+      expect(clients.size).toBe(1);
+      expect([...clients][0]?.transporter.defaults.timeout).toBe(GOOGLE_AUTH_TIMEOUT_MS);
+    });
+
+    it('mints with the Google ID-token minter, which needs the callee URL', async () => {
+      const auth = await createAuthFromEnv(cloudEnv());
+      await expect(auth.invocationMinter.headersFor({ name: 'strategies-content' })).rejects.toThrow(
+        new TypeError('No URL for invocation target strategies-content'),
+      );
+    });
+
+    it.each<{ problem: string; env: Partial<AuthEnv>; message: string }>([
+      {
+        problem: 'GOOGLE_CLOUD_PROJECT is unset',
+        env: { GOOGLE_CLOUD_PROJECT: undefined },
+        message: 'GOOGLE_CLOUD_PROJECT is required for OPT2_ENV=cloud authentication',
+      },
+      {
+        problem: 'GOOGLE_CLOUD_PROJECT is blank',
+        env: { GOOGLE_CLOUD_PROJECT: ' ' },
+        message: 'GOOGLE_CLOUD_PROJECT is required for OPT2_ENV=cloud authentication',
+      },
+      {
+        problem: 'OPT2_SERVICE_NAME is empty',
+        env: { OPT2_SERVICE_NAME: '' },
+        message: 'OPT2_SERVICE_NAME is required for OPT2_ENV=cloud authentication',
+      },
+      { problem: 'OPT2_SERVICE_URLS is unset', env: { OPT2_SERVICE_URLS: undefined }, message: NO_SERVICE_URL },
+      {
+        problem: 'OPT2_SERVICE_URLS is not JSON',
+        env: { OPT2_SERVICE_URLS: '{people:' },
+        message: 'OPT2_SERVICE_URLS must be a JSON object',
+      },
+      {
+        problem: 'OPT2_SERVICE_URLS is a JSON string',
+        env: { OPT2_SERVICE_URLS: JSON.stringify(PEOPLE_URL) },
+        message: NO_SERVICE_URL,
+      },
+      { problem: 'OPT2_SERVICE_URLS is JSON null', env: { OPT2_SERVICE_URLS: 'null' }, message: NO_SERVICE_URL },
+      {
+        problem: 'OPT2_SERVICE_URLS lacks the service',
+        env: { OPT2_SERVICE_URLS: { 'strategies-content': CONTENT_URL } },
+        message: NO_SERVICE_URL,
+      },
+      {
+        problem: 'the service URL is not a URL',
+        env: { OPT2_SERVICE_URLS: { people: 'opt2-people' } },
+        message: NO_SERVICE_URL,
+      },
+      {
+        problem: 'the service URL is not a string',
+        env: { OPT2_SERVICE_URLS: '{"people":42}' },
+        message: NO_SERVICE_URL,
+      },
+    ])('fails when $problem', async ({ env, message }) => {
+      await expect(createAuthFromEnv(cloudEnv(env))).rejects.toThrow(message);
+    });
+
+    it('needs no OPT2_SERVICE_URLS when Cloud Run vouches for callers and both managed schemes are injected', async () => {
+      const { transports } = injectedPieces();
+      const env = cloudEnv({ OPT2_SERVICE_URLS: undefined });
+      const auth = await createAuthFromEnv(env, { transports });
+      expect(auth.transports['pubsub-push']).toBe(transports['pubsub-push']);
+      expect(auth.transports['cloud-tasks']).toBe(transports['cloud-tasks']);
+      await expect(createAuthFromEnv(env, { transports, invocationTrust: 'verify' })).rejects.toThrow(NO_SERVICE_URL);
+    });
+  });
+
+  it.each([
+    { key: 'service', registered: 'pubsub-push' },
+    { key: 'pubsub-push', registered: 'cloud-tasks' },
+    { key: 'cloud-tasks', registered: 'service' },
+  ] as const)('refuses an authenticator implementing $registered registered as the $key transport', async ({
+    key,
+    registered,
+  }) => {
+    const pieces = injectedPieces();
+    const byTransport: TransportSet = { ...pieces.transports, service: createServiceTransport(pieces) };
+    const auth = createAuthFromEnv(
+      { OPT2_ENV: 'local', OPT2_SERVICE_NAME: 'people' },
+      { ...pieces, transports: { ...byTransport, [key]: byTransport[registered] } },
+    );
+    await expect(auth).rejects.toThrow(new TypeError(`The ${key} authenticator implements ${registered}`));
+  });
+});
+

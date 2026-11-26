@@ -1,0 +1,6 @@
+dist/
+coverage/
+src/generated/
+playwright-report/
+test-results/
+*.tsbuildinfo

@@ -1,0 +1,413 @@
+/** Request mapping, auth denials, error answers and contract shape of the custom image size routes over a recording ImageSizesDomain. */
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
+import { parse } from 'yaml';
+import { INVOCATION_HEADER, Roles, collectRouteMatrix } from '@opt2/platform/auth';
+import { createLogger } from '@opt2/platform/logging';
+import { GateClosedError } from '@opt2/platform/migration-kit';
+import { createService, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
+import type { TenantDb } from '@opt2/platform/tenancy';
+import {
+  ROLE_SET,
+  TENANT_A,
+  assertResponseMatchesOpenApi,
+  authHeadersFor,
+  loadOpenApiDocument,
+  mintServiceToken,
+  testVerifier,
+  writeTestSecrets,
+} from '@opt2/platform/testing';
+import {
+  applyImageSizeSet,
+  newImageSizeBean,
+  type ImageSizeBean,
+  type ImageSizesDomain,
+} from '../../src/domain/image-sizes.js';
+import { registerImageSizeRoutes } from '../../src/routes/image-sizes.js';
+
+type ContractOperation = Record<string, unknown>;
+type Method = 'GET' | 'PUT' | 'DELETE';
+
+const OPENAPI = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as {
+  paths: Record<string, Record<string, ContractOperation>>;
+};
+const SIZE_PATHS = ['/v1/sites/{siteId}/image-sizes', '/v2/sites/{siteId}/image-sizes', '/v1/sites/{siteId}/image-sizes/{sizeId}'];
+const SIZE_ID = '6A1C9E2B-1D3F-4A5B-8C7D9E0F1A2B3C4D';
+const NEW_SIZE_ID = '0B2D4F6A-8C0E-4A1B-9D3F5A7C9E1B3D5F';
+const LIST_URL = '/v1/sites/tenant-a/image-sizes';
+const PAGE_URL = '/v2/sites/tenant-a/image-sizes';
+const SIZE_URL = `${LIST_URL}/${SIZE_ID}`;
+const STORED: ImageSizeBean = {
+  sizeId: SIZE_ID,
+  siteId: 'tenant-a',
+  name: 'hero-wide',
+  height: '400',
+  width: 'AUTO',
+  isNew: 0,
+};
+const STORED_JSON = { sizeID: SIZE_ID, siteID: 'tenant-a', name: 'hero-wide', height: '400', width: 'AUTO', isNew: 0 };
+const NEW_BEAN: ImageSizeBean = { sizeId: NEW_SIZE_ID, siteId: '', name: '', height: 'AUTO', width: 'AUTO', isNew: 1 };
+const NEW_JSON = { sizeID: NEW_SIZE_ID, siteID: '', name: '', height: 'AUTO', width: 'AUTO', isNew: 1 };
+const FORM = { 'content-type': 'application/x-www-form-urlencoded' };
+const JSON_BODY = { 'content-type': 'application/json' };
+const SIZE_BODY = { name: 'hero', height: '400', width: 'AUTO' };
+const ROUTES: ReadonlyArray<[Method, string]> = [
+  ['GET', LIST_URL],
+  ['GET', PAGE_URL],
+  ['GET', SIZE_URL],
+  ['PUT', SIZE_URL],
+  ['DELETE', SIZE_URL],
+];
+
+let stateDir: string;
+let app: FastifyInstance;
+let imageSizes: { [K in keyof ImageSizesDomain]: Mock<ImageSizesDomain[K]> };
+
+const db: TenantDb = {
+  schema: 'programs_sites',
+  withTenant: () => Promise.reject(new Error('the recording domain runs no SQL')),
+  withMetadata: () => Promise.reject(new Error('the recording domain runs no SQL')),
+  end: async () => undefined,
+};
+
+const tenantAClaims = (sub: string) => expect.objectContaining({ sub, site: 'tenant-a', tid: TENANT_A.tenantId });
+
+beforeAll(async () => {
+  stateDir = await mkdtemp(path.join(tmpdir(), 'opt2-programs-sites-image-size-routes-'));
+  await writeTestSecrets(stateDir);
+});
+
+afterAll(async () => {
+  await rm(stateDir, { recursive: true, force: true });
+});
+
+beforeEach(async () => {
+  imageSizes = {
+    listImageSizes: vi.fn<ImageSizesDomain['listImageSizes']>(async () => [STORED]),
+    pageImageSizes: vi.fn<ImageSizesDomain['pageImageSizes']>(async () => ({ items: [STORED], next: null })),
+    loadImageSize: vi.fn<ImageSizesDomain['loadImageSize']>(async () => STORED),
+    saveImageSize: vi.fn<ImageSizesDomain['saveImageSize']>(async () => STORED),
+    deleteImageSize: vi.fn<ImageSizesDomain['deleteImageSize']>(async () => true),
+    readSiteImageSizes: vi.fn<ImageSizesDomain['readSiteImageSizes']>(async () => [STORED]),
+  };
+  app = await createService({
+    name: 'programs-sites',
+    version: '1.0.0',
+    env: loadEnv(undefined, {
+      PORT: '8113',
+      OPT2_SERVICE_NAME: 'programs-sites',
+      OPT2_ENV: 'local',
+      OPT2_JWKS_URL: 'http://127.0.0.1:9/jwks',
+      OPT2_TOKEN_ISSUER: 'opt2-local-identity',
+      OPT2_TOKEN_AUDIENCE: 'opt2-local',
+      OPT2_STATE_DIR: stateDir,
+      TZ: 'UTC',
+    }),
+    verifierOverride: testVerifier('programs-sites'),
+    pool: db,
+    logger: createLogger({
+      service: 'programs-sites',
+      version: '1.0.0',
+      env: 'local',
+      destination: { write: () => undefined },
+    }),
+  });
+  await registerImageSizeRoutes(app, { db, imageSizes });
+  await app.ready();
+});
+
+afterEach(async () => {
+  await app.opt2.shutdown();
+});
+
+async function headersAs(name: string): Promise<Record<string, string>> {
+  const subject = ROLE_SET.find((candidate) => candidate.name === name);
+  if (subject === undefined) throw new Error(`No role subject ${name}`);
+  return authHeadersFor(subject, { audience: 'programs-sites', site: 'tenant-a' });
+}
+
+/** Injects a request with `headers` and checks the answer against the contract. */
+async function send(
+  method: Method,
+  url: string,
+  headers: Record<string, string>,
+  payload?: string | Record<string, unknown>,
+) {
+  const res = await app.inject({ method, url, headers, payload });
+  assertResponseMatchesOpenApi(OPENAPI, {
+    method,
+    path: url,
+    status: res.statusCode,
+    contentType: res.headers['content-type'],
+    body: res.body,
+  });
+  return res;
+}
+
+function expectNoDomainCall(): void {
+  for (const operation of Object.values(imageSizes)) expect(operation).not.toHaveBeenCalled();
+}
+
+describe('route declarations', () => {
+  it('match the contract operations', () => {
+    const declared = collectRouteMatrix(app).routes.filter((route) => /^\/v[12]\/sites\//.test(route.url));
+    const expected = SIZE_PATHS.flatMap((template) =>
+      Object.entries(OPENAPI.paths[template] ?? {})
+        .filter(([method]) => method !== 'parameters')
+        .map(([method, operation]) => ({
+          method: method.toUpperCase(),
+          url: template.replace('{siteId}', ':siteId').replace('{sizeId}', ':sizeId'),
+          transport: operation['x-opt2-transport'],
+          requires: operation['x-opt2-requires'],
+          siteCheck: true,
+        })),
+    );
+    expect(expected).toHaveLength(5);
+    expect(declared).toEqual(expect.arrayContaining(expected.map((entry) => expect.objectContaining(entry))));
+    expect(declared).toHaveLength(5);
+  });
+});
+
+describe('GET /v2/sites/:siteId/image-sizes', () => {
+  it.each([
+    ['s2', 'tenant-a', '', { limit: 50 }, { items: [STORED], next: SIZE_ID }, { items: [STORED_JSON], next: SIZE_ID }],
+    ['site-admin', 'TENANT-A', `?limit=1000&after=${SIZE_ID}`, { limit: 1000, after: SIZE_ID }, { items: [], next: null }, { items: [], next: null }],
+  ])('answers the domain page of the path site for %s on %s%s', async (as, site, query, page, answer, expected) => {
+    imageSizes.pageImageSizes.mockResolvedValueOnce(answer);
+    const res = await send('GET', `/v2/sites/${site}/image-sizes${query}`, await headersAs(as));
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual(expected);
+    expect(imageSizes.pageImageSizes).toHaveBeenCalledExactlyOnceWith(db, tenantAClaims(`test-${as}`), site, page);
+  });
+
+  it.each(['?limit=0', '?limit=1001', '?limit=x', '?after=', `?after=${'A'.repeat(36)}`])('answers invalidParameters for %s without reading', async (query) => {
+    const res = await send('GET', `${PAGE_URL}${query}`, await headersAs('s2'));
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toMatchObject({ apiversion: 'v1', error: { code: 'invalid_request' } });
+    expectNoDomainCall();
+  });
+});
+
+describe('GET /v1/sites/:siteId/image-sizes', () => {
+  it.each([
+    ['s2', 'tenant-a', [STORED], [STORED_JSON]],
+    ['site-admin', 'TENANT-A', [], []],
+  ])('answers the domain sizes of the path site for %s on %s', async (as, site, rows, expected) => {
+    imageSizes.listImageSizes.mockResolvedValueOnce(rows);
+    const res = await send('GET', `/v1/sites/${site}/image-sizes`, await headersAs(as));
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual(expected);
+    expect(imageSizes.listImageSizes).toHaveBeenCalledExactlyOnceWith(db, tenantAClaims(`test-${as}`), site);
+  });
+});
+
+describe('GET /v1/sites/:siteId/image-sizes/:sizeId', () => {
+  it.each([
+    ['a stored size', STORED, STORED_JSON],
+    ['the defaulted new size of an unknown id', NEW_BEAN, NEW_JSON],
+  ])('answers %s as loaded by the path size id', async (_label, bean, expected) => {
+    imageSizes.loadImageSize.mockResolvedValueOnce(bean);
+    const res = await send('GET', SIZE_URL, await headersAs('site-admin'));
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual(expected);
+    expect(imageSizes.loadImageSize).toHaveBeenCalledExactlyOnceWith(db, tenantAClaims('test-site-admin'), SIZE_ID);
+    expect(imageSizes.listImageSizes).not.toHaveBeenCalled();
+  });
+});
+
+describe('PUT /v1/sites/:siteId/image-sizes/:sizeId', () => {
+  it.each([
+    [
+      'a JSON body',
+      SIZE_URL,
+      JSON_BODY,
+      { name: 'Hero Wide', height: 400, width: 'AUTO', note: null },
+      { name: 'Hero Wide', height: '400', width: 'AUTO', note: '' },
+    ],
+    [
+      'a form body over the query',
+      `${SIZE_URL}?height=300&name=fromQuery`,
+      FORM,
+      'name=Hero&width=AUTO',
+      { height: '300', name: 'Hero', width: 'AUTO' },
+    ],
+    [
+      'a posted siteid and sizeid',
+      SIZE_URL,
+      FORM,
+      `siteid=TENANT-A&sizeid=${NEW_SIZE_ID}&name=Hero&height=AUTO&width=120`,
+      { siteid: 'TENANT-A', sizeid: NEW_SIZE_ID, name: 'Hero', height: 'AUTO', width: '120' },
+    ],
+    [
+      'a malformed JSON body, which legacy ignores',
+      `${SIZE_URL}?name=Q&height=1&width=2`,
+      JSON_BODY,
+      '{"name":',
+      { name: 'Q', height: '1', width: '2' },
+    ],
+    [
+      'a name of 50 code points',
+      SIZE_URL,
+      JSON_BODY,
+      { name: '\u{1F600}'.repeat(50), height: '400', width: 'AUTO' },
+      { name: '\u{1F600}'.repeat(50), height: '400', width: 'AUTO' },
+    ],
+    [
+      'a height neither digits nor AUTO',
+      SIZE_URL,
+      FORM,
+      'name=Hero&height=tall&width=AUTO',
+      { name: 'Hero', height: 'tall', width: 'AUTO' },
+    ],
+    // Oracle: probe.py form leaves NAME [INVALID], WIDTH 12, HEIGHT [INVALID]y, NOTE z (from amp;note), SITE ab, AB [INVALID].
+    [
+      'url and form values as the admin start-up scan leaves them',
+      `${SIZE_URL}?height=%20%3Cscript%3Ex%3C%2Fscript%3Ey%20&1bad=x`,
+      FORM,
+      'name=onClick&width=%2012%20&amp%3Bnote=z&site=a%00b&a-b=%20onClick%20',
+      { height: '[INVALID]y', name: '[INVALID]', width: '12', note: 'z', site: 'ab', 'a-b': 'onClick', ab: '[INVALID]' },
+    ],
+  ])('saves the merged request values of %s under the path ids, then lists the site', async (_label, url, headers, payload, posted) => {
+    const res = await send('PUT', url, { ...(await headersAs('s2')), ...headers }, payload);
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual([STORED_JSON]);
+    const claims = tenantAClaims('test-s2');
+    const input = { ...posted, siteId: 'tenant-a', sizeId: SIZE_ID };
+    expect(imageSizes.saveImageSize).toHaveBeenCalledExactlyOnceWith(db, claims, input);
+    expect(applyImageSizeSet(newImageSizeBean(), imageSizes.saveImageSize.mock.calls[0]?.[2] ?? {})).toMatchObject({
+      sizeId: SIZE_ID,
+      siteId: 'tenant-a',
+    });
+    expect(imageSizes.listImageSizes).toHaveBeenCalledExactlyOnceWith(db, claims, 'tenant-a');
+    expect(imageSizes.saveImageSize).toHaveBeenCalledBefore(imageSizes.listImageSizes);
+  });
+
+  it.each([
+    ['an absent name', SIZE_URL, JSON_BODY, { height: '400', width: 'AUTO' }],
+    ['an absent height', SIZE_URL, JSON_BODY, { name: 'hero', width: 'AUTO' }],
+    ['an absent width', SIZE_URL, FORM, 'name=hero&height=400'],
+    ['a non-string JSON name', SIZE_URL, JSON_BODY, { ...SIZE_BODY, name: ['hero'] }],
+    ['a name of 51 code points', SIZE_URL, JSON_BODY, { ...SIZE_BODY, name: 'a'.repeat(51) }],
+    ['a path sizeId of 36 characters', `${LIST_URL}/${'B'.repeat(36)}`, JSON_BODY, SIZE_BODY],
+    ['a path siteId of 26 characters', `/v1/sites/${'a'.repeat(26)}/image-sizes/${SIZE_ID}`, JSON_BODY, SIZE_BODY],
+  ])('answers invalidParameters for %s before any domain operation', async (_label, url, headers, payload) => {
+    const res = await send('PUT', url, { ...(await headersAs('s2')), ...headers }, payload);
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toMatchObject({ apiversion: 'v1', error: { code: 'invalid_request' } });
+    expectNoDomainCall();
+  });
+
+  it('denies a posted siteid of another site before any domain operation', async () => {
+    const payload = 'siteid=tenant-b&name=Hero&height=AUTO&width=AUTO';
+    const res = await send('PUT', SIZE_URL, { ...(await headersAs('s2')), ...FORM }, payload);
+    expect(res.statusCode).toBe(403);
+    expectNoDomainCall();
+  });
+});
+
+describe('DELETE /v1/sites/:siteId/image-sizes/:sizeId', () => {
+  it.each([true, false])('deletes the path size id and lists the site when the domain answers %s', async (deleted) => {
+    imageSizes.deleteImageSize.mockResolvedValueOnce(deleted);
+    const res = await send('DELETE', SIZE_URL, await headersAs('site-admin'));
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual([STORED_JSON]);
+    const claims = tenantAClaims('test-site-admin');
+    expect(imageSizes.deleteImageSize).toHaveBeenCalledExactlyOnceWith(db, claims, SIZE_ID);
+    expect(imageSizes.listImageSizes).toHaveBeenCalledExactlyOnceWith(db, claims, 'tenant-a');
+    expect(imageSizes.deleteImageSize).toHaveBeenCalledBefore(imageSizes.listImageSizes);
+  });
+});
+
+describe('write failures', () => {
+  it.each([
+    ['PUT', 'saveImageSize', SIZE_BODY],
+    ['DELETE', 'deleteImageSize', undefined],
+  ] as const)('answer the legacy 503 when %s meets a closed unit gate, listing nothing', async (method, operation, body) => {
+    imageSizes[operation].mockRejectedValueOnce(new GateClosedError(['programs-sites.image-sizes']));
+    const headers = { ...(await headersAs('s2')), ...(body === undefined ? {} : JSON_BODY) };
+    const res = await send(method, SIZE_URL, headers, body);
+    expect(res.statusCode).toBe(503);
+    expect(res.json()).toMatchObject({ apiversion: 'v1', error: { code: 'server_error' } });
+    expect(imageSizes[operation]).toHaveBeenCalledOnce();
+    expect(imageSizes.listImageSizes).not.toHaveBeenCalled();
+  });
+});
+
+describe('auth denials', () => {
+  const denials: ReadonlyArray<[string, number]> = [
+    ['anonymous', 401],
+    ['member', 403],
+    ['system-user', 403],
+    ['editor', 403],
+    ['other-tenant', 403],
+    ['service:gateway', 401],
+  ];
+
+  it.each(ROUTES.flatMap(([method, url]) => denials.map(([as, status]) => [method, url, as, status] as const)))(
+    'deny %s %s to %s with %i before any domain operation',
+    async (method, url, as, status) => {
+      const headers = { ...(await headersAs(as)), ...(method === 'PUT' ? JSON_BODY : {}) };
+      const res = await send(method, url, headers, method === 'PUT' ? SIZE_BODY : undefined);
+      expect(res.statusCode).toBe(status);
+      expect(res.json()).toMatchObject({ apiversion: 'v1', error: { code: 'invalid_request' } });
+      expectNoDomainCall();
+    },
+  );
+
+  it.each(ROUTES)('answer %s %s with 401 when a service credential carries s2 without a user token', async (method, url) => {
+    const token = await mintServiceToken({ caller: 'gateway', audience: 'programs-sites', roles: [Roles.s2] });
+    const headers = { [INVOCATION_HEADER]: `Bearer ${token}`, ...(method === 'PUT' ? JSON_BODY : {}) };
+    const res = await send(method, url, headers, method === 'PUT' ? SIZE_BODY : undefined);
+    expect(res.statusCode).toBe(401);
+    expectNoDomainCall();
+  });
+});
+
+describe('GET /internal/v1/sites/:siteId/image-sizes', () => {
+  const SERVICE_URL = '/internal/v1/sites/TENANT-A/image-sizes';
+
+  it('is declared as the contract operation', () => {
+    const operation = OPENAPI.paths['/internal/v1/sites/{siteId}/image-sizes']?.['get'];
+    const declared = collectRouteMatrix(app).routes.find((route) => route.url === '/internal/v1/sites/:siteId/image-sizes');
+    expect(declared).toMatchObject({ method: 'GET', transport: operation?.['x-opt2-transport'], requires: operation?.['x-opt2-requires'] });
+  });
+
+  it.each([
+    [[STORED], [STORED_JSON]],
+    [[], []],
+  ])('answers strategies-content the sizes the domain reads for the path site as given', async (beans, expected) => {
+    imageSizes.readSiteImageSizes.mockResolvedValueOnce(beans);
+    const res = await send('GET', SERVICE_URL, await headersAs('service:strategies-content'));
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual(expected);
+    expect(imageSizes.readSiteImageSizes).toHaveBeenCalledExactlyOnceWith(db, 'TENANT-A');
+  });
+
+  it.each<[string, number]>([
+    ['anonymous', 401],
+    ['s2', 403],
+    ['site-admin', 403],
+    ['service:gateway', 403],
+    ['service:identity', 403],
+  ])('denies %s with %i before any domain operation', async (as, status) => {
+    const res = await send('GET', SERVICE_URL, await headersAs(as));
+    expect(res.statusCode).toBe(status);
+    expect(res.json()).toMatchObject({ apiversion: 'v1', error: { code: 'invalid_request' } });
+    expectNoDomainCall();
+  });
+
+  it('answers invalidParameters for a path siteId of 26 characters before any domain operation', async () => {
+    const res = await send('GET', `/internal/v1/sites/${'a'.repeat(26)}/image-sizes`, await headersAs('service:strategies-content'));
+    expect(res.statusCode).toBe(400);
+    expectNoDomainCall();
+  });
+
+  it('answers the legacy 503 when the read meets a closed unit gate', async () => {
+    imageSizes.readSiteImageSizes.mockRejectedValueOnce(new GateClosedError(['programs-sites.image-sizes']));
+    const res = await send('GET', SERVICE_URL, await headersAs('service:strategies-content'));
+    expect(res.statusCode).toBe(503);
+    expect(res.json()).toMatchObject({ apiversion: 'v1', error: { code: 'server_error' } });
+  });
+});

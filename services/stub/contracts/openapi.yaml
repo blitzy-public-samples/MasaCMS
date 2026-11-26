@@ -1,0 +1,1629 @@
+openapi: 3.1.0
+info:
+  title: stub
+  version: 1.0.0
+  description: 'API of the OPT-2 platform-proof stub: one tenant-owned note entity with granted cross-tenant comments, its self-consumed events, the migration owner endpoints and the outbox sweep; local only, never deployed.'
+  x-source-sha: 696383140578f8dea3ece26f80cd7bfb370ddf0f
+servers:
+  - url: http://127.0.0.1:8199
+    description: local
+x-opt2-calls: []
+security:
+  - userToken: []
+    invocationCredential: []
+tags:
+  - name: notes
+    description: Tenant-owned notes and their event-fed projection.
+  - name: health
+    description: Liveness probe.
+  - name: migration
+    description: Owner side of backfill, change feed, reconciliation exports and unit gates.
+  - name: events
+    description: Pub/Sub push deliveries.
+  - name: tasks
+    description: Cloud Tasks deliveries and queue control.
+paths:
+  /healthz:
+    get:
+      operationId: healthz
+      summary: Liveness probe.
+      tags:
+        - health
+      x-opt2-transport: service
+      x-opt2-public: true
+      security: []
+      responses:
+        '200':
+          description: The service is running.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+          description: A presented credential is invalid.
+  /opt2/stub/notes:
+    post:
+      operationId: createNote
+      summary: Creates a note in the token's tenant, or with `pool` `public` in the tenant of its site's registered public user pool, and writes its `stub.note.created.v1` outbox row in the same transaction.
+      tags:
+        - notes
+      x-opt2-transport: service
+      x-opt2-requires:
+        - system-user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NoteCreate'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/NoteCreate'
+      responses:
+        '200':
+          $ref: '#/components/responses/NoteSaved'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+          description: 'Legacy 400 `invalidParameters`: a missing or oversized title, an oversized body, a `pool` other than `public`, or `pool` from a site the registry does not hold.'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    get:
+      operationId: listNotes
+      summary: Lists one page of the notes of the token's tenant ordered by creation time, then note id.
+      tags:
+        - notes
+      x-opt2-transport: service
+      x-opt2-requires:
+        - member
+        - system-user
+        - site-admin
+        - s2
+      parameters:
+        - $ref: '#/components/parameters/SiteIdQuery'
+        - name: limit
+          in: query
+          required: false
+          description: Page size, 1 to 1000; 50 when omitted.
+          schema:
+            $ref: '#/components/schemas/DigitString'
+        - name: after
+          in: query
+          required: false
+          description: The previous page's `next` cursor; a malformed cursor answers 400.
+          schema:
+            type: string
+            minLength: 1
+      responses:
+        '200':
+          $ref: '#/components/responses/NoteListRead'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+          description: 'Legacy 400 `invalidParameters`: a `limit` outside 1 to 1000, or a malformed `after` cursor.'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /opt2/stub/notes/{noteId}:
+    parameters:
+      - $ref: '#/components/parameters/NoteId'
+    get:
+      operationId: getNote
+      summary: Reads one note of the token's tenant.
+      tags:
+        - notes
+      x-opt2-transport: service
+      x-opt2-requires:
+        - member
+        - system-user
+        - site-admin
+        - s2
+      parameters:
+        - $ref: '#/components/parameters/SiteIdQuery'
+      responses:
+        '200':
+          $ref: '#/components/responses/NoteRead'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    delete:
+      operationId: deleteNote
+      summary: Deletes one note of the token's tenant; only S2 may.
+      tags:
+        - notes
+      x-opt2-transport: service
+      x-opt2-requires:
+        - s2
+      parameters:
+        - $ref: '#/components/parameters/SiteIdQuery'
+      responses:
+        '200':
+          $ref: '#/components/responses/NoteDeletedRead'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /opt2/stub/notes/{noteId}/projection:
+    parameters:
+      - $ref: '#/components/parameters/NoteId'
+    get:
+      operationId: getNoteProjection
+      summary: Reads the `stub.note_projection` row the self-consumed event wrote for a note.
+      tags:
+        - notes
+      x-opt2-transport: service
+      x-opt2-requires:
+        - member
+        - system-user
+        - site-admin
+        - s2
+      parameters:
+        - $ref: '#/components/parameters/SiteIdQuery'
+      responses:
+        '200':
+          $ref: '#/components/responses/NoteProjectionRead'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+          description: No such note in the token's tenant, or its event is not consumed yet.
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /opt2/stub/notes/{noteId}/grants:
+    parameters:
+      - $ref: '#/components/parameters/NoteId'
+    post:
+      operationId: createNoteGrant
+      summary: Grants another site's tenant `note-comment` on a note of the token's tenant, as a `tenant_grant` row written in the grantor's transaction.
+      tags:
+        - notes
+      x-opt2-transport: service
+      x-opt2-requires:
+        - system-user
+      parameters:
+        - $ref: '#/components/parameters/SiteIdQuery'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NoteGrantCreate'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/NoteGrantCreate'
+      responses:
+        '200':
+          $ref: '#/components/responses/NoteGrantSaved'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+          description: 'Legacy 400 `invalidParameters`: a missing `granteesiteid`, or one naming no registered site.'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /opt2/stub/notes/{noteId}/comments:
+    parameters:
+      - $ref: '#/components/parameters/NoteId'
+    post:
+      operationId: createNoteComment
+      summary: Comments on a note of the token's tenant, or of `grantorsiteid`'s tenant when it granted the token's tenant `note-comment`; writes the comment and its `stub.note.commented.v1` outbox row in the note's tenant.
+      tags:
+        - notes
+      x-opt2-transport: service
+      x-opt2-requires:
+        - member
+        - system-user
+        - site-admin
+        - s2
+      parameters:
+        - $ref: '#/components/parameters/SiteIdQuery'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NoteCommentCreate'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/NoteCommentCreate'
+      responses:
+        '200':
+          $ref: '#/components/responses/NoteCommentSaved'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+          description: 'Legacy 400 `invalidParameters`: a missing `grantorsiteid`, or a missing or oversized body.'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+          description: No such note in the grantor's tenant, or the grantor has not granted the token's tenant; nothing is written.
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    get:
+      operationId: listNoteComments
+      summary: Lists one page of the comments on a note of the token's tenant ordered by creation time, then comment id.
+      tags:
+        - notes
+      x-opt2-transport: service
+      x-opt2-requires:
+        - member
+        - system-user
+        - site-admin
+        - s2
+      parameters:
+        - $ref: '#/components/parameters/SiteIdQuery'
+        - name: limit
+          in: query
+          required: false
+          description: Page size, 1 to 1000; 50 when omitted.
+          schema:
+            $ref: '#/components/schemas/DigitString'
+        - name: after
+          in: query
+          required: false
+          description: The previous page's `next` cursor; a malformed cursor answers 400.
+          schema:
+            type: string
+            minLength: 1
+      responses:
+        '200':
+          $ref: '#/components/responses/NoteCommentListRead'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+          description: 'Legacy 400 `invalidParameters`: a `limit` outside 1 to 1000, or a malformed `after` cursor.'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/LegacyNotFound'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /internal/v1/migration/apply:
+    post:
+      operationId: migrationApply
+      summary: Applies one batch of canonical legacy rows to the owned units, once per batch id.
+      tags:
+        - migration
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+      security:
+        - invocationCredential: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApplyRequest'
+      responses:
+        '200':
+          description: The batch outcome; a repeated batch id is a no-op reported as `duplicate`.
+          headers:
+            X-Opt2-Write-Position:
+              $ref: '#/components/headers/XOpt2WritePosition'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplyResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/ApplyUnavailable'
+  /internal/v1/migration/export:
+    get:
+      operationId: migrationExport
+      summary: Exports one page of a unit's rows in canonical legacy form.
+      tags:
+        - migration
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+      security:
+        - invocationCredential: []
+      parameters:
+        - name: unit
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+        - $ref: '#/components/parameters/MigrationTenantId'
+        - $ref: '#/components/parameters/MigrationSiteId'
+        - name: programId
+          in: query
+          required: false
+          description: Restricts a folded unit to one `Program_<id>` schema.
+          schema:
+            $ref: '#/components/schemas/DigitString'
+        - name: after
+          in: query
+          required: false
+          description: The previous page's `next` cursor.
+          schema:
+            type: string
+            minLength: 1
+        - name: match
+          in: query
+          required: false
+          description: JSON object of legacy column to values; rows matching any entry, compared as SQL Server does. The owner may return more rows.
+          schema:
+            type: string
+            maxLength: 4096
+        - name: keys
+          in: query
+          required: false
+          description: Legacy key encodings as export rows carry them in `key`; the page holds only their rows and no object manifest.
+          style: form
+          explode: true
+          schema:
+            type: array
+            minItems: 1
+            maxItems: 100
+            items:
+              type: string
+              minLength: 1
+        - $ref: '#/components/parameters/PageLimit'
+      responses:
+        '200':
+          description: One export page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExportResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /internal/v1/migration/changes:
+    get:
+      operationId: migrationChanges
+      summary: Reads the tenant's changelog after a cursor, below the commit-safe horizon.
+      tags:
+        - migration
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+      security:
+        - invocationCredential: []
+      parameters:
+        - $ref: '#/components/parameters/MigrationTenantId'
+        - $ref: '#/components/parameters/MigrationSiteId'
+        - name: after
+          in: query
+          required: false
+          description: Cursor `<xid>:<seq>`; `0:0` when omitted.
+          schema:
+            type: string
+            pattern: '^(0|[1-9][0-9]*):(0|[1-9][0-9]*)$'
+        - $ref: '#/components/parameters/PageLimit'
+      responses:
+        '200':
+          description: One page of changes with their legacy projections.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChangesResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /internal/v1/migration/position:
+    get:
+      operationId: migrationPosition
+      summary: Reports the current write position and the outbox and inbox drain counts.
+      tags:
+        - migration
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+      security:
+        - invocationCredential: []
+      parameters:
+        - name: eventIds
+          in: query
+          required: false
+          description: Comma-separated event ids whose inbox receipts are reported.
+          schema:
+            type: string
+        - name: publishedTopics
+          in: query
+          required: false
+          description: Comma-separated topics whose published outbox events are listed in `published`; every one when the read names none of `publishedAfter`, `publishedLimit` and `publishedThrough`, otherwise one page per read.
+          schema:
+            type: string
+        - name: registeredTenants
+          in: query
+          required: false
+          description: With `true`, lists every tenant of the registry, each site's and its pools', in `registeredTenants`.
+          schema:
+            type: string
+            enum:
+              - 'true'
+              - 'false'
+        - name: publishedAfter
+          in: query
+          required: false
+          description: Pages the listing from outbox `seq` after this value, the previous answer's `publishedNext`; 0 when absent on a paged read.
+          schema:
+            type: string
+            pattern: '^(0|[1-9][0-9]{0,17})$'
+        - name: publishedLimit
+          in: query
+          required: false
+          description: Pages the listing with at most this many published events, 1 to 1000; 1000 when absent on a paged read.
+          schema:
+            type: string
+            pattern: '^([1-9][0-9]{0,2}|1000)$'
+        - name: publishedThrough
+          in: query
+          required: false
+          description: Pages the listing through outbox `seq` this value, an earlier answer's `publishedFrontier`; rows of the asked topics above it are neither listed nor blocking.
+          schema:
+            type: string
+            pattern: '^(0|[1-9][0-9]{0,17})$'
+      responses:
+        '200':
+          description: The owner's position.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PositionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /internal/v1/migration/watermark:
+    get:
+      operationId: migrationWatermarkGet
+      summary: Lists feed watermarks, optionally for one legacy table or direction.
+      tags:
+        - migration
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+      security:
+        - invocationCredential: []
+      parameters:
+        - name: legacyTable
+          in: query
+          required: false
+          schema:
+            type: string
+            minLength: 1
+        - name: direction
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/WatermarkDirection'
+      responses:
+        '200':
+          description: Watermarks ordered by legacy table and direction.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/WatermarkRecord'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+    post:
+      operationId: migrationWatermarkPost
+      summary: Records the feed watermark of one legacy table and direction.
+      tags:
+        - migration
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+      security:
+        - invocationCredential: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WatermarkInput'
+      responses:
+        '200':
+          description: The stored watermark.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WatermarkRecord'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /internal/v1/migration/gate:
+    post:
+      operationId: migrationGate
+      summary: Closes, re-phases, opens or reads the unit gates of this owner.
+      tags:
+        - migration
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+      security:
+        - invocationCredential: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GateRequest'
+      responses:
+        '200':
+          description: The gates after the operation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GateResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: Another holder owns a gate, so the compare-and-set was refused.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GateConflict'
+        '500':
+          $ref: '#/components/responses/ServerError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+          description: The gates could not close within the wait budget.
+
+  /internal/v1/events/stub.stub.note.created.v1:
+    post:
+      operationId: pushNoteCreated
+      summary: Receives push deliveries of `stub.note.created.v1` into `stub.note_projection`.
+      tags:
+        - events
+      x-opt2-transport: pubsub-push
+      x-opt2-requires:
+        - service:pubsub-invoker
+      security:
+        - pubsubPushOidc: []
+        - localPushKey: []
+      parameters:
+        - $ref: '#/components/parameters/PushKey'
+      requestBody:
+        $ref: '#/components/requestBodies/PushDelivery'
+      responses:
+        '204':
+          description: Acknowledged; the delivery was applied, already applied, or dead-lettered.
+        '400':
+          description: Not a push body; a nack.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+          description: Processing failed; a nack, redelivered by Pub/Sub.
+        '503':
+          $ref: '#/components/responses/Unavailable'
+          description: A unit gate or the database is unavailable; a nack, redelivered by Pub/Sub.
+  /internal/v1/events/stub.stub.note.commented.v1:
+    post:
+      operationId: pushNoteCommented
+      summary: Receives push deliveries of `stub.note.commented.v1` into `stub.note_activity`, one row per applied event.
+      tags:
+        - events
+      x-opt2-transport: pubsub-push
+      x-opt2-requires:
+        - service:pubsub-invoker
+      security:
+        - pubsubPushOidc: []
+        - localPushKey: []
+      parameters:
+        - $ref: '#/components/parameters/PushKey'
+      requestBody:
+        $ref: '#/components/requestBodies/PushDelivery'
+      responses:
+        '204':
+          description: Acknowledged; the delivery was applied, already applied, or dead-lettered.
+        '400':
+          description: Not a push body; a nack.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+          description: Processing failed; a nack, redelivered by Pub/Sub.
+        '503':
+          $ref: '#/components/responses/Unavailable'
+          description: A unit gate or the database is unavailable; a nack, redelivered by Pub/Sub.
+  /internal/v1/events/stub.programs-sites.site.changed.v1:
+    post:
+      operationId: pushSiteChanged
+      summary: Receives push deliveries of `programs-sites.site.changed.v1` into `stub.tenant_registry`.
+      tags:
+        - events
+      x-opt2-transport: pubsub-push
+      x-opt2-requires:
+        - service:pubsub-invoker
+      security:
+        - pubsubPushOidc: []
+        - localPushKey: []
+      parameters:
+        - $ref: '#/components/parameters/PushKey'
+      requestBody:
+        $ref: '#/components/requestBodies/PushDelivery'
+      responses:
+        '204':
+          description: Acknowledged; the delivery was applied, already applied, or dead-lettered.
+        '400':
+          description: Not a push body; a nack.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+          description: Processing failed; a nack, redelivered by Pub/Sub.
+        '503':
+          $ref: '#/components/responses/Unavailable'
+          description: The database is unavailable; a nack, redelivered by Pub/Sub.
+  /internal/v1/outbox/sweep:
+    post:
+      operationId: outboxSweep
+      summary: Creates the next sweep task on `stub-outbox-sweep`, then publishes every unpublished outbox row per registry tenant.
+      tags:
+        - tasks
+      x-opt2-transport: cloud-tasks
+      x-opt2-requires:
+        - service:tasks-invoker
+      security:
+        - tasksInvokerOidc: []
+      parameters:
+        - $ref: '#/components/parameters/CloudTasksTaskName'
+        - $ref: '#/components/parameters/CloudTasksQueueName'
+        - $ref: '#/components/parameters/CloudTasksRetryCount'
+        - $ref: '#/components/parameters/CloudTasksExecutionCount'
+        - $ref: '#/components/parameters/CloudTasksEta'
+      requestBody:
+        $ref: '#/components/requestBodies/SystemTask'
+      responses:
+        '200':
+          description: The sweep totals.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SweepResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+          description: A malformed task body, or one carrying a tenant.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+          description: The sweep failed, so Cloud Tasks retries this task.
+        '503':
+          $ref: '#/components/responses/Unavailable'
+          description: The successor task could not be created, so Cloud Tasks retries this one.
+  /internal/v1/task-queues/{queue}/pause:
+    parameters:
+      - $ref: '#/components/parameters/Queue'
+    post:
+      operationId: queuePause
+      summary: Pauses dispatch from a queue this service creates tasks on.
+      tags:
+        - tasks
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+        - platform.operator
+      security:
+        - invocationCredential: []
+      responses:
+        '200':
+          $ref: '#/components/responses/QueueControlled'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+          description: The queue is not one this service creates tasks on.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /internal/v1/task-queues/{queue}/resume:
+    parameters:
+      - $ref: '#/components/parameters/Queue'
+    post:
+      operationId: queueResume
+      summary: Resumes dispatch from a queue this service creates tasks on.
+      tags:
+        - tasks
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+        - platform.operator
+      security:
+        - invocationCredential: []
+      responses:
+        '200':
+          $ref: '#/components/responses/QueueControlled'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+          description: The queue is not one this service creates tasks on.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+  /internal/v1/task-queues/{queue}/ensure:
+    parameters:
+      - $ref: '#/components/parameters/Queue'
+    post:
+      operationId: queueEnsure
+      summary: Ensures the recurring chain of a queue this service creates has a live task.
+      tags:
+        - tasks
+      x-opt2-transport: service
+      x-opt2-requires:
+        - platform.migration
+        - platform.operator
+      security:
+        - invocationCredential: []
+      responses:
+        '200':
+          $ref: '#/components/responses/QueueControlled'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+          description: The queue is not a recurring chain this service creates.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+components:
+  securitySchemes:
+    userToken:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/securitySchemes/userToken'
+    invocationCredential:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/securitySchemes/invocationCredential'
+    pubsubPushOidc:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/securitySchemes/pubsubPushOidc'
+    localPushKey:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/securitySchemes/localPushKey'
+    tasksInvokerOidc:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/securitySchemes/tasksInvokerOidc'
+  headers:
+    Generator:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/headers/Generator'
+    StrictTransportSecurity:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/headers/StrictTransportSecurity'
+    ETag:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/headers/ETag'
+    WWWAuthenticate:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/headers/WWWAuthenticate'
+    XOpt2WritePosition:
+      description: Committed write positions `<owner>=<xid>[,<owner>=<xid>…]`, here `stub=<xid>`; the gateway strips it from client responses.
+      schema:
+        type: string
+        pattern: '^[a-z0-9][a-z0-9-]*=[0-9]+(,[a-z0-9][a-z0-9-]*=[0-9]+)*$'
+    XOpt2UnpublishedEvents:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/headers/XOpt2UnpublishedEvents'
+  parameters:
+    NoteId:
+      name: noteId
+      in: path
+      required: true
+      description: Note id; an unknown id, or one of another tenant, answers 404.
+      schema:
+        type: string
+        minLength: 1
+    SiteIdQuery:
+      name: siteid
+      in: query
+      required: false
+      description: Legacy site id, equal to the token's `site` (403 otherwise).
+      schema:
+        type: string
+        minLength: 1
+    MigrationTenantId:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/parameters/MigrationTenantId'
+    MigrationSiteId:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/parameters/MigrationSiteId'
+    PageLimit:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/parameters/PageLimit'
+    PushKey:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/parameters/PushKey'
+    CloudTasksTaskName:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/parameters/CloudTasksTaskName'
+    CloudTasksQueueName:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/parameters/CloudTasksQueueName'
+    CloudTasksRetryCount:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/parameters/CloudTasksRetryCount'
+    CloudTasksExecutionCount:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/parameters/CloudTasksExecutionCount'
+    CloudTasksEta:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/parameters/CloudTasksEta'
+    Queue:
+      name: queue
+      in: path
+      required: true
+      description: A queue this service creates tasks on; the stub creates only the local-only recurring `stub-outbox-sweep`.
+      schema:
+        type: string
+        enum:
+          - stub-outbox-sweep
+  requestBodies:
+    PushDelivery:
+      required: true
+      description: Pub/Sub push wrapper of one delivery.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/PushBody'
+    SystemTask:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/requestBodies/SystemTask'
+  responses:
+    NoteSaved:
+      description: The created note in the legacy envelope.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+        X-Opt2-Write-Position:
+          $ref: '#/components/headers/XOpt2WritePosition'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            $ref: '#/components/schemas/NoteSaveEnvelope'
+    NoteListRead:
+      description: One page of the tenant's notes in the legacy envelope.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            $ref: '#/components/schemas/NoteListEnvelope'
+    NoteRead:
+      description: One note in the legacy envelope.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            $ref: '#/components/schemas/NoteEnvelope'
+    NoteProjectionRead:
+      description: One projected note in the legacy envelope.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            $ref: '#/components/schemas/NoteProjectionEnvelope'
+    NoteDeletedRead:
+      description: The delete outcome in the legacy envelope.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+        X-Opt2-Write-Position:
+          $ref: '#/components/headers/XOpt2WritePosition'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            $ref: '#/components/schemas/NoteDeletedEnvelope'
+    NoteGrantSaved:
+      description: The stored note grant in the legacy envelope.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            $ref: '#/components/schemas/NoteGrantSaveEnvelope'
+    NoteCommentSaved:
+      description: The created comment in the legacy envelope.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+        X-Opt2-Write-Position:
+          $ref: '#/components/headers/XOpt2WritePosition'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            $ref: '#/components/schemas/NoteCommentSaveEnvelope'
+    NoteCommentListRead:
+      description: One page of a note's comments in the legacy envelope.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            $ref: '#/components/schemas/NoteCommentListEnvelope'
+    QueueControlled:
+      description: The queue's state after the operation.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/QueueControlResult'
+    BadRequest:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/responses/BadRequest'
+    Unauthorized:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/responses/Unauthorized'
+    Forbidden:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/responses/Forbidden'
+    LegacyNotFound:
+      description: Legacy 404 in the error envelope.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            $ref: '#/components/schemas/LegacyError'
+    ServerError:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/responses/ServerError'
+    Unavailable:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/responses/Unavailable'
+    ApplyUnavailable:
+      description: Legacy-shaped 503 after a fail-closed or wait-timeout condition, or for a batch committed with its events left to the outbox sweep, which carries X-Opt2-Unpublished-Events and its write position; a re-send of the same batch id answers `duplicate`.
+      headers:
+        Generator:
+          $ref: '#/components/headers/Generator'
+        Strict-Transport-Security:
+          $ref: '#/components/headers/StrictTransportSecurity'
+        ETag:
+          $ref: '#/components/headers/ETag'
+        X-Opt2-Write-Position:
+          $ref: '#/components/headers/XOpt2WritePosition'
+        X-Opt2-Unpublished-Events:
+          $ref: '#/components/headers/XOpt2UnpublishedEvents'
+      content:
+        application/json;charset=utf-8:
+          schema:
+            $ref: '#/components/schemas/LegacyUnavailable'
+
+  schemas:
+    DigitString:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/schemas/DigitString'
+    PositiveDigits:
+      type: string
+      description: Positive decimal integer as the legacy serializer quotes numbers under the default hint.
+      pattern: '^[1-9][0-9]*$'
+    CfUuid:
+      type: string
+      description: ColdFusion `createUUID()` id as the platform generates it.
+      minLength: 35
+      maxLength: 35
+      pattern: '^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{16}$'
+    NoteTimestamp:
+      type: string
+      description: Local `timestamp(3)` text without an offset, as the outbox writes it.
+      pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}[ T][0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{3})?$'
+      examples:
+        - '2026-06-30 09:15:00.000'
+    LocalTimestamp:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/schemas/LocalTimestamp'
+    WallClock:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/schemas/WallClock'
+    NullableString:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/schemas/NullableString'
+    LegacyEnvelope:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/x-opt2-variants/without-layout/schemas/LegacyEnvelope'
+    LegacyError:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/schemas/LegacyError'
+    LegacyUnavailable:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/schemas/LegacyUnavailable'
+    NoteSaveEnvelope:
+      description: Legacy envelope of a created note.
+      allOf:
+        - $ref: '#/components/schemas/LegacyEnvelope'
+        - type: object
+          required:
+            - method
+            - data
+          properties:
+            method:
+              type: string
+              const: save
+            data:
+              $ref: '#/components/schemas/Note'
+    NoteEnvelope:
+      description: Legacy envelope of one note.
+      allOf:
+        - $ref: '#/components/schemas/LegacyEnvelope'
+        - type: object
+          required:
+            - method
+            - data
+          properties:
+            method:
+              type: string
+              const: findOne
+            data:
+              $ref: '#/components/schemas/Note'
+    NoteListEnvelope:
+      description: Legacy envelope of one page of the tenant's notes.
+      allOf:
+        - $ref: '#/components/schemas/LegacyEnvelope'
+        - type: object
+          required:
+            - method
+            - data
+          properties:
+            method:
+              type: string
+              const: findMany
+            data:
+              $ref: '#/components/schemas/NoteList'
+    NoteProjectionEnvelope:
+      description: Legacy envelope of one projected note.
+      allOf:
+        - $ref: '#/components/schemas/LegacyEnvelope'
+        - type: object
+          required:
+            - method
+            - data
+          properties:
+            method:
+              type: string
+              const: findProjection
+            data:
+              $ref: '#/components/schemas/NoteProjection'
+    NoteDeletedEnvelope:
+      description: Legacy envelope of a delete.
+      allOf:
+        - $ref: '#/components/schemas/LegacyEnvelope'
+        - type: object
+          required:
+            - method
+            - data
+          properties:
+            method:
+              type: string
+              const: delete
+            data:
+              $ref: '#/components/schemas/NoteDeleted'
+    NoteGrantSaveEnvelope:
+      description: Legacy envelope of a stored note grant.
+      allOf:
+        - $ref: '#/components/schemas/LegacyEnvelope'
+        - type: object
+          required:
+            - method
+            - data
+          properties:
+            method:
+              type: string
+              const: save
+            data:
+              $ref: '#/components/schemas/NoteGrant'
+    NoteCommentSaveEnvelope:
+      description: Legacy envelope of a created comment.
+      allOf:
+        - $ref: '#/components/schemas/LegacyEnvelope'
+        - type: object
+          required:
+            - method
+            - data
+          properties:
+            method:
+              type: string
+              const: save
+            data:
+              $ref: '#/components/schemas/NoteComment'
+    NoteCommentListEnvelope:
+      description: Legacy envelope of one page of a note's comments.
+      allOf:
+        - $ref: '#/components/schemas/LegacyEnvelope'
+        - type: object
+          required:
+            - method
+            - data
+          properties:
+            method:
+              type: string
+              const: findMany
+            data:
+              $ref: '#/components/schemas/NoteCommentList'
+    Note:
+      type: object
+      description: A `stub.note` row as the legacy serializer emits it, keys lower-cased.
+      required:
+        - noteid
+        - title
+        - body
+        - created
+        - rowversion
+      additionalProperties: false
+      properties:
+        noteid:
+          $ref: '#/components/schemas/CfUuid'
+        title:
+          type: string
+          minLength: 1
+          maxLength: 255
+        body:
+          type: string
+          maxLength: 10000
+        created:
+          $ref: '#/components/schemas/NoteTimestamp'
+        rowversion:
+          $ref: '#/components/schemas/PositiveDigits'
+    NoteList:
+      type: object
+      description: One page of the tenant's notes ordered by `created`, then `noteid`; `next` is null after the last page.
+      required:
+        - items
+        - next
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          maxItems: 1000
+          items:
+            $ref: '#/components/schemas/Note'
+        next:
+          description: Cursor of the following page, sent back as `after`.
+          type:
+            - string
+            - 'null'
+    NoteProjection:
+      type: object
+      description: A `stub.note_projection` row as the legacy serializer emits it, keys lower-cased.
+      required:
+        - noteid
+        - title
+        - body
+        - created
+        - aggregateversion
+        - applycount
+        - lasteventid
+        - projectedat
+      additionalProperties: false
+      properties:
+        noteid:
+          $ref: '#/components/schemas/CfUuid'
+        title:
+          type: string
+          minLength: 1
+          maxLength: 255
+        body:
+          type: string
+          maxLength: 10000
+        created:
+          $ref: '#/components/schemas/NoteTimestamp'
+        aggregateversion:
+          $ref: '#/components/schemas/PositiveDigits'
+        applycount:
+          $ref: '#/components/schemas/PositiveDigits'
+        lasteventid:
+          type: string
+          description: Event id of the last applied delivery.
+          pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+        projectedat:
+          $ref: '#/components/schemas/NoteTimestamp'
+    NoteDeleted:
+      type: object
+      required:
+        - deleted
+      additionalProperties: false
+      properties:
+        deleted:
+          type: boolean
+          const: true
+    NoteCreate:
+      type: object
+      description: A note to create; field names match ignoring case, and other fields are ignored.
+      required:
+        - title
+      additionalProperties: true
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 255
+        body:
+          type: string
+          description: Note body; empty when omitted.
+          maxLength: 10000
+        siteid:
+          type: string
+          minLength: 1
+          description: Legacy site id, equal to the token's `site` (403 otherwise).
+        pool:
+          type: string
+          enum:
+            - public
+          description: '`public` stores the note in the tenant of the site''s registered public user pool, so its `stub.note.created.v1` fans out to every site sharing that pool; the token''s tenant when omitted.'
+    NoteGrant:
+      type: object
+      description: A stored `note-comment` grant as the legacy serializer emits it, keys lower-cased.
+      required:
+        - noteid
+        - granteesiteid
+      additionalProperties: false
+      properties:
+        noteid:
+          type: string
+          minLength: 1
+        granteesiteid:
+          type: string
+          minLength: 1
+    NoteComment:
+      type: object
+      description: A `stub.note_comment` row as the legacy serializer emits it, keys lower-cased; `authorsiteid` is the commenter's token site.
+      required:
+        - commentid
+        - noteid
+        - authorsiteid
+        - body
+        - created
+      additionalProperties: false
+      properties:
+        commentid:
+          $ref: '#/components/schemas/CfUuid'
+        noteid:
+          type: string
+          minLength: 1
+        authorsiteid:
+          type: string
+          minLength: 1
+        body:
+          type: string
+          minLength: 1
+          maxLength: 10000
+        created:
+          $ref: '#/components/schemas/NoteTimestamp'
+    NoteCommentList:
+      type: object
+      description: One page of a note's comments ordered by `created`, then `commentid`; `next` is null after the last page.
+      required:
+        - items
+        - next
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          maxItems: 1000
+          items:
+            $ref: '#/components/schemas/NoteComment'
+        next:
+          description: Cursor of the following page, sent back as `after`.
+          type:
+            - string
+            - 'null'
+    NoteGrantCreate:
+      type: object
+      description: A grant to create; field names match ignoring case, and other fields are ignored.
+      required:
+        - granteesiteid
+      additionalProperties: true
+      properties:
+        granteesiteid:
+          type: string
+          minLength: 1
+          description: Registered legacy site id of the granted tenant.
+        siteid:
+          type: string
+          minLength: 1
+          description: Legacy site id, equal to the token's `site` (403 otherwise).
+    NoteCommentCreate:
+      type: object
+      description: A comment to create; field names match ignoring case, and other fields are ignored.
+      required:
+        - grantorsiteid
+        - body
+      additionalProperties: true
+      properties:
+        grantorsiteid:
+          type: string
+          minLength: 1
+          description: Legacy site id of the note's tenant; the token's own site, or one that granted it `note-comment`.
+        body:
+          type: string
+          minLength: 1
+          maxLength: 10000
+        siteid:
+          type: string
+          minLength: 1
+          description: Legacy site id, equal to the token's `site` (403 otherwise).
+    TaskWireBody:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/schemas/TaskWireBody'
+    SystemTaskWireBody:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/schemas/SystemTaskWireBody'
+    PushBody:
+      type: object
+      description: Pub/Sub push wrapper; `data` is the base64 event envelope.
+      required:
+        - message
+        - subscription
+      additionalProperties: true
+      properties:
+        message:
+          type: object
+          additionalProperties: true
+          properties:
+            data:
+              type: string
+              contentEncoding: base64
+            attributes:
+              type: object
+              additionalProperties:
+                type: string
+            messageId:
+              type: string
+            message_id:
+              type: string
+            publishTime:
+              type: string
+            publish_time:
+              type: string
+            orderingKey:
+              type: string
+          allOf:
+            - anyOf:
+                - required:
+                    - messageId
+                  properties:
+                    messageId:
+                      minLength: 1
+                - required:
+                    - message_id
+                  properties:
+                    message_id:
+                      minLength: 1
+        subscription:
+          type: string
+          minLength: 1
+          description: Usually `projects/<project>/subscriptions/<subscription>`, the subscription the path names.
+        deliveryAttempt:
+          type: integer
+    SweepResult:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/schemas/SweepResult'
+    EnsureRecurringResult:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/schemas/EnsureRecurringResult'
+    QueueControlResult:
+      type: object
+      description: The queue's paused state after pause or resume, or the chain task `ensure` found or created.
+      required:
+        - queue
+        - service
+      additionalProperties: false
+      properties:
+        queue:
+          type: string
+        service:
+          type: string
+          const: stub
+        paused:
+          type: boolean
+        running:
+          type: integer
+          minimum: 0
+          description: Tasks of the queue still running when pause answered.
+        ensured:
+          $ref: '#/components/schemas/EnsureRecurringResult'
+    CanonicalType:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/schemas/CanonicalType'
+    CanonicalColumn:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/schemas/CanonicalColumn'
+    WatermarkDirection:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/schemas/WatermarkDirection'
+    WatermarkFields:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/schemas/WatermarkFields'
+    ApplyRequest:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/schemas/ApplyRequest'
+    ApplyResponse:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/schemas/ApplyResponse'
+    ObjectManifestEntry:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/schemas/ObjectManifestEntry'
+    ExportRow:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/schemas/ExportRow'
+    ExportTable:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/schemas/ExportTable'
+    ExportResponse:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/schemas/ExportResponse'
+    ChangeOp:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/schemas/ChangeOp'
+    ChangeOrigin:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/schemas/ChangeOrigin'
+    LegacyChange:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/schemas/LegacyChange'
+    ProjectedChangeRow:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/schemas/ProjectedChangeRow'
+    OperationStatus:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/schemas/OperationStatus'
+    ChangesResponse:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/schemas/ChangesResponse'
+    TenantDrainCount:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/schemas/TenantDrainCount'
+    OutboxDrainCounts:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/schemas/OutboxDrainCounts'
+    InboxCounts:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/schemas/InboxCounts'
+    PositionResponse:
+      type: object
+      description: The latest assigned xid and the drain counts; `outbox` or `inbox` is null where the service has no such table.
+      required:
+        - owner
+        - position
+        - outbox
+        - inbox
+      additionalProperties: false
+      properties:
+        owner:
+          type: string
+          const: stub
+        position:
+          type: string
+          pattern: '^[0-9]+$'
+        outbox:
+          oneOf:
+            - $ref: '#/components/schemas/OutboxDrainCounts'
+            - type: 'null'
+        inbox:
+          oneOf:
+            - $ref: '#/components/schemas/InboxCounts'
+            - type: 'null'
+        published:
+          type: array
+          description: Present only when `publishedTopics` is asked, empty without an outbox. Unpaged, every published outbox event of the asked topics in every tenant the registry has known by tenant, topic and id; paged, one page after `publishedAfter` and at or below `publishedFrontier`, ascending by `seq`.
+          items:
+            $ref: '#/components/schemas/PublishedEvent'
+        registeredTenants:
+          type: array
+          description: Every tenant of the registry, each site's and its pools', lower-case and sorted; present only when asked.
+          items:
+            type: string
+            format: uuid
+        publishedNext:
+          type: string
+          pattern: '^[0-9]+$'
+          description: The `publishedAfter` of the next page; it never passes an unpublished or held row of the asked topics at or below `publishedFrontier`. Present only on a paged read.
+        publishedComplete:
+          type: boolean
+          description: True when every row of the asked topics after `publishedAfter` and at or below `publishedFrontier` is published and listed. Present only on a paged read.
+        publishedFrontier:
+          type: string
+          pattern: '^[0-9]+$'
+          description: The last `seq` the page covers, the asked `publishedThrough`, else the highest `seq` of any row of the asked topics, published or not, in every tenant the registry has known when read, or `publishedAfter` when there is none; later rows are neither listed nor blocking. Present only on a paged read.
+        publishedUpTo:
+          type: integer
+          minimum: 0
+          description: Published events of the asked topics at or below `publishedAfter`, so a caller detects rows that appeared behind its cursor. Present only on a paged read whose `publishedComplete` is true.
+    PublishedEvent:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/schemas/PublishedEvent'
+    WatermarkRecord:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/schemas/WatermarkRecord'
+    WatermarkInput:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/schemas/WatermarkInput'
+    GateState:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/schemas/GateState'
+    GatePhase:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/schemas/GatePhase'
+    UnitList:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/schemas/UnitList'
+    GateRequest:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/schemas/GateRequest'
+    GateClose:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/schemas/GateClose'
+    GatePhaseChange:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/schemas/GatePhaseChange'
+    GateOpen:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/schemas/GateOpen'
+    GateStatus:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/schemas/GateStatus'
+    UnitGate:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/schemas/UnitGate'
+    GateResponse:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/schemas/GateResponse'
+    GateConflict:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/schemas/GateConflict'
+    Health:
+      $ref: '../../../platform/contracts/openapi-components.v1.yaml#/components/schemas/Health'

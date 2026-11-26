@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<!-- check-deck fixture deck -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Fixture Executive Deck</title>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&family=Fira+Code:wght@400;500&display=swap">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.css">
+  <style>
+    :root {
+      --blitzy-primary: #5B39F3;
+      --blitzy-primary-dark: #2D1C77;
+      --blitzy-primary-navy: #1A105F;
+      --blitzy-primary-light: #7A6DEC;
+      --blitzy-primary-deep: #4101DB;
+      --blitzy-accent-teal: #94FAD5;
+      --blitzy-surface-0: #FFFFFF;
+      --blitzy-surface-1: #F4EFF6;
+      --blitzy-surface-2: #F2F0FE;
+      --blitzy-surface-3: #F5F5F5;
+      --blitzy-border: #D9D9D9;
+      --blitzy-border-soft: rgba(91, 57, 243, 0.18);
+      --blitzy-text: #333333;
+      --blitzy-text-muted: #999999;
+      --blitzy-text-invert: #FFFFFF;
+      --ff-body: 'Inter', system-ui, sans-serif;
+      --ff-display: 'Space Grotesk', 'Inter', sans-serif;
+      --ff-mono: 'Fira Code', 'Courier New', monospace;
+      --gradient-hero: linear-gradient(68deg, #7A6DEC 15.56%, #5B39F3 62.74%, #4101DB 84.44%);
+      --gradient-divider: linear-gradient(135deg, #2D1C77 0%, #5B39F3 100%);
+      --gradient-accent-bar: linear-gradient(90deg, #5B39F3 0%, #94FAD5 100%);
+    }
+    .reveal { font-family: var(--ff-body); font-size: 32px; color: var(--blitzy-text); background: var(--blitzy-surface-0); }
+    .reveal .slides > section { box-sizing: border-box; height: 100%; padding: 80px 120px; text-align: left; }
+    .reveal h1, .reveal h2 { font-family: var(--ff-display); font-weight: 700; margin: 0 0 32px; }
+    .reveal h1 { font-size: 96px; }
+    .reveal h2 { font-size: 64px; }
+    .reveal .slides section.slide-title { background: var(--gradient-hero); color: var(--blitzy-text-invert); }
+    .reveal .slides section.slide-divider { background: var(--gradient-divider); color: var(--blitzy-text-invert); text-align: center; }
+    .reveal .slides section.slide-closing { background: var(--blitzy-primary-navy); color: var(--blitzy-text-invert); }
+    .reveal .eyebrow { font-family: var(--ff-mono); font-size: 24px; color: var(--blitzy-accent-teal); }
+    .reveal .lucide { width: 64px; height: 64px; }
+    .reveal .hero-icon { width: 120px; height: 120px; color: var(--blitzy-accent-teal); }
+    .reveal .kpi-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 32px; }
+    .reveal .kpi-card { background: var(--blitzy-surface-2); border: 1px solid var(--blitzy-border-soft); border-radius: 16px; padding: 32px; }
+    .reveal .kpi-icon { width: 48px; height: 48px; color: var(--blitzy-primary); }
+    .reveal .kpi-value { font-family: var(--ff-display); font-size: 72px; font-weight: 700; color: var(--blitzy-primary); }
+    .reveal .kpi-label { font-size: 24px; color: var(--blitzy-text-muted); }
+    .reveal .icon-row { display: flex; gap: 48px; color: var(--blitzy-primary); }
+    .reveal .brand-lockup { display: flex; align-items: center; gap: 16px; font-family: var(--ff-display); font-weight: 600; }
+    .reveal .accent-bar { height: 12px; margin-top: 48px; border-radius: 6px; background: var(--gradient-accent-bar); }
+    .reveal pre.mermaid { margin: 0; background: var(--blitzy-surface-1); border-radius: 16px; padding: 24px; text-align: center; }
+    .reveal .deck-table { border-collapse: collapse; font-size: 28px; }
+    .reveal .deck-table th { background: var(--blitzy-primary); color: var(--blitzy-text-invert); padding: 12px 24px; }
+    .reveal .deck-table td { border: 1px solid var(--blitzy-border); padding: 12px 24px; }
+  </style>
+</head>
+<body>
+  <div class="reveal">
+    <div class="slides">
+      <section class="slide-title">
+        <p class="eyebrow">Source SHA 696383140578f8dea3ece26f80cd7bfb370ddf0f</p>
+        <h1>Fixture Programme</h1>
+        <p>Fixture scope for a fixture audience</p>
+        <i class="hero-icon" data-lucide="layers"></i>
+      </section>
+      <section>
+        <h2>Fixture headline figures</h2>
+        <div class="kpi-grid">
+          <div class="kpi-card"><i class="kpi-icon" data-lucide="target"></i><div class="kpi-value">00</div><div class="kpi-label">Fixture KPI one</div></div>
+          <div class="kpi-card"><i class="kpi-icon" data-lucide="gauge"></i><div class="kpi-value">00</div><div class="kpi-label">Fixture KPI two</div></div>
+          <div class="kpi-card"><i class="kpi-icon" data-lucide="activity"></i><div class="kpi-value">00</div><div class="kpi-label">Fixture KPI three</div></div>
+          <div class="kpi-card"><i class="kpi-icon" data-lucide="clock"></i><div class="kpi-value">n/a</div><div class="kpi-label">Fixture KPI four</div></div>
+        </div>
+      </section>
+      <section>
+        <h2>Fixture architecture</h2>
+        <pre class="mermaid">
+          flowchart LR
+            subgraph Before
+              A[Fixture client] --> B[Fixture monolith]
+            end
+            subgraph After
+              C[Fixture client] --> D[Fixture gateway] --> E[Fixture service]
+            end
+        </pre>
+      </section>
+      <section class="slide-divider">
+        <i class="hero-icon" data-lucide="database"></i>
+        <h2>Fixture topic one</h2>
+      </section>
+      <section>
+        <h2>Fixture topic one detail</h2>
+        <ul>
+          <li>Fixture bullet one🚀</li>
+          <li>Fixture bullet two</li>
+          <li>Fixture bullet three</li>
+        </ul>
+        <table class="deck-table">
+          <thead><tr><th>Fixture column</th><th>Fixture value</th></tr></thead>
+          <tbody>
+            <tr><td>Fixture row one</td><td>00</td></tr>
+            <tr><td>Fixture row two</td><td>n/a</td></tr>
+          </tbody>
+        </table>
+      </section>
+      <section class="slide-divider">
+        <i class="hero-icon" data-lucide="shield"></i>
+        <h2>Fixture topic two</h2>
+      </section>
+      <section>
+        <h2>Fixture topic two detail</h2>
+        <ul>
+          <li>Fixture note one</li>
+          <li>Fixture note two</li>
+        </ul>
+        <div class="icon-row"><i data-lucide="server"></i><i data-lucide="cpu"></i><i data-lucide="cloud"></i></div>
+      </section>
+      <section class="slide-divider">
+        <i class="hero-icon" data-lucide="users"></i>
+        <h2>Fixture topic three</h2>
+      </section>
+      <section>
+        <h2>Fixture topic three detail</h2>
+        <ul>
+          <li>Fixture step one</li>
+          <li>Fixture step two</li>
+        </ul>
+        <pre class="mermaid">
+          flowchart LR
+            S1[Fixture stage one] --> S2[Fixture stage two] --> S3[Fixture stage three]
+        </pre>
+      </section>
+      <section class="slide-divider">
+        <i class="hero-icon" data-lucide="git-branch"></i>
+        <h2>Fixture topic four</h2>
+      </section>
+      <section>
+        <h2>Fixture topic four detail</h2>
+        <ul>
+          <li>Fixture risk one</li>
+          <li>Fixture risk two</li>
+        </ul>
+        <table class="deck-table">
+          <thead><tr><th>Fixture measure</th><th>Fixture result</th></tr></thead>
+          <tbody>
+            <tr><td>Fixture case one</td><td>00</td></tr>
+            <tr><td>Fixture case two</td><td>n/a</td></tr>
+          </tbody>
+        </table>
+      </section>
+      <section class="slide-divider">
+        <i class="hero-icon" data-lucide="book-open"></i>
+        <h2>Fixture topic five</h2>
+      </section>
+      <section>
+        <h2>Fixture topic five detail</h2>
+        <ul>
+          <li>Fixture guide one</li>
+          <li>Fixture guide two</li>
+        </ul>
+        <div class="icon-row"><i data-lucide="globe"></i><i data-lucide="lock"></i><i data-lucide="key"></i></div>
+      </section>
+      <section class="slide-divider">
+        <i class="hero-icon" data-lucide="flag"></i>
+        <h2>Fixture topic six</h2>
+      </section>
+      <section>
+        <h2>Fixture topic six detail</h2>
+        <ul>
+          <li>Fixture action one</li>
+          <li>Fixture action two</li>
+        </ul>
+        <div class="icon-row"><i data-lucide="compass"></i><i data-lucide="map"></i><i data-lucide="package"></i></div>
+      </section>
+      <section class="slide-closing">
+        <h2>Fixture deck ends here</h2>
+        <ul>
+          <li>Fixture next step one</li>
+          <li>Fixture next step two</li>
+        </ul>
+        <div class="brand-lockup"><i data-lucide="zap"></i><span>Fixture brand</span></div>
+        <div class="accent-bar"></div>
+      </section>
+    </div>
+  </div>
+  <script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.0/dist/mermaid.min.js"></script>
+  <script src="https://unpkg.com/lucide@0.460.0/dist/umd/lucide.min.js"></script>
+  <script>
+    mermaid.initialize({
+      startOnLoad: false,
+      theme: 'base',
+      themeVariables: {
+        primaryColor: '#F2F0FE',
+        primaryTextColor: '#333333',
+        primaryBorderColor: '#5B39F3',
+        lineColor: '#999999',
+        secondaryColor: '#F4EFF6'
+      }
+    });
+    function renderVisuals() {
+      mermaid.run();
+      lucide.createIcons();
+    }
+    Reveal.initialize({
+      hash: true,
+      transition: 'slide',
+      controlsTutorial: false,
+      width: 1920,
+      height: 1080
+    });
+    Reveal.on('ready', renderVisuals);
+    Reveal.on('slidechanged', renderVisuals);
+  </script>
+</body>
+</html>

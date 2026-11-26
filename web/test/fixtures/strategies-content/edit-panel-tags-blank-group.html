@@ -1,0 +1,132 @@
+
+<div class="mura-panel panel">
+	<div class="mura-panel-heading" role="tab" id="heading-tags">
+		<h4 class="mura-panel-title">
+			<a class="collapse collapsed" role="button" data-toggle="collapse" data-parent="#content-panels" href="#panel-tags" aria-expanded="false" aria-controls="panel-tags">Tags</a>
+		</h4>
+	</div>
+	<div id="panel-tags" class="panel-collapse collapse" role="tabpanel" aria-labelledby="heading-tags" aria-expanded="false" style="height: 0px;">
+		<div class="mura-panel-body">
+
+				<span id="extendset-container-tabtagstop" class="extendset-container"></span>
+		   		<div id="tags" class="mura-control justify tagSelector">
+					<div class="mura-control-group">
+					   	<label>
+					   		Default Tags
+					   	</label>
+		  				<input type="text" name="tags">
+		  				
+					</div> 
+				</div> 
+
+				<script>
+					$(document).ready(function(){
+						$.ajax({
+							url: '?muraAction=carch.loadtagarray&siteid=' + siteid,
+							dataType: 'text',
+							success:function(data){
+		                        var tagArray=[];
+		                        if(data){
+							       tagArray=eval('(' + data + ')');
+		                        }
+								$('#tags').tagSelector(tagArray, 'tags');
+							}
+						});
+					});
+				</script>
+
+
+				
+				<div id="Colortags" class="mura-control justify tagSelector">
+					<div class="mura-control-group">
+					   	<label>
+					   		Color Tags
+					   	</label>
+						<input type="text" name="Colortags">
+						
+								<span class="tag">
+									red <a><i class="mi-times-circle"></i></a>
+								    <input name="Colortags" type="hidden" value="red">
+								</span>
+							
+								<span class="tag">
+									blue &amp; &quot;green&quot; <a><i class="mi-times-circle"></i></a>
+								    <input name="Colortags" type="hidden" value="blue&#x20;&amp;&#x20;&quot;green&quot;">
+								</span>
+							
+					</div> 
+				</div> 
+				<script>
+					$(document).ready(function(){
+						$.ajax({
+							url:'?muraAction=carch.loadtagarray&siteid=' + siteid + '&taggroup=Color',
+							dataType: 'text',
+							success: function(data){
+								var tagArray=eval('(' + data + ')');
+								$('#Colortags').tagSelector(tagArray, 'Colortags');
+							}
+						});
+					});
+				</script>
+			
+				<div id="tags" class="mura-control justify tagSelector">
+					<div class="mura-control-group">
+					   	<label>
+					   		Tags
+					   	</label>
+						<input type="text" name="tags">
+						
+					</div> 
+				</div> 
+				<script>
+					$(document).ready(function(){
+						$.ajax({
+							url:'?muraAction=carch.loadtagarray&siteid=' + siteid + '&taggroup=',
+							dataType: 'text',
+							success: function(data){
+								var tagArray=eval('(' + data + ')');
+								$('#tags').tagSelector(tagArray, 'tags');
+							}
+						});
+					});
+				</script>
+			
+				<div id="Sizetags" class="mura-control justify tagSelector">
+					<div class="mura-control-group">
+					   	<label>
+					   		Size Tags
+					   	</label>
+						<input type="text" name="Sizetags">
+						
+					</div> 
+				</div> 
+				<script>
+					$(document).ready(function(){
+						$.ajax({
+							url:'?muraAction=carch.loadtagarray&siteid=' + siteid + '&taggroup=Size',
+							dataType: 'text',
+							success: function(data){
+								var tagArray=eval('(' + data + ')');
+								$('#Sizetags').tagSelector(tagArray, 'Sizetags');
+							}
+						});
+					});
+				</script>
+			
+
+				<div class="mura-control-group extendedattributes-group" id="extendedattributes-container-tags">
+					<div class="bigui" id="bigui__tags" data-label="Manage Extended Attributes">
+						<div class="bigui__title">Manage Extended Attributes</div>
+						<div class="bigui__controls">
+							<span id="extendset-container-tabextendedattributestop"></span>
+							<span id="extendset-container-tags" class="extendset-container extendedattributes-body" data-controlparent="extendedattributes-container-tags"></span>
+							<span id="extendset-container-tabextendedattributesbottom"></span>
+						</div>
+					</div>
+					
+				</div>
+
+				<span id="extendset-container-tabtagsbottom" class="extendset-container"></span>
+		</div>
+	</div>
+</div> 

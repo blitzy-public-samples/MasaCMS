@@ -1,0 +1,717 @@
+// Cut-over activation, freeze and epoch protocol over `gateway.cutover_state`, `gateway.cutover_freeze` and `gateway.instance`.
+// Liveness and stored timestamps come from the database clock; the injected clock only bounds in-process waits.
+import { join } from 'node:path';
+import { LegacyServiceUnavailableError, normaliseRouteKey } from '@opt2/platform/legacy-compat';
+import { serializeError } from '@opt2/platform/logging';
+import type { Clock } from '@opt2/platform/service-kit';
+import {
+  withMetadata,
+  type MetadataTx,
+  type QueryConfig,
+  type QueryResult,
+  type QueryResultRow,
+  type TenantDb,
+} from '@opt2/platform/tenancy';
+import { withUnsampledTrace } from '@opt2/platform/tracing';
+import type { components, operations } from '../generated/openapi.js';
+import { INSTANCE_LIVENESS_SECONDS, STATUS_PAGE_SIZE, createInflightStore } from './inflight.js';
+import { CutoverSchemaError, buildRoutingIndex, loadGroups, loadVersion } from './loader.js';
+import type { GatewayPaths } from './paths.js';
+import { collectStatus, type CutoverStatusPages } from './status-pages.js';
+import type { CutoverTable, Finding, GroupsFile, RoutingIndex, VariantsFile } from './types.js';
+import { loadValidationContext, validateVersion, type ValidationContext } from './validate.js';
+
+/** `CutoverStatus` of the gateway contract. */
+export type CutoverStatus = components['schemas']['CutoverStatus'];
+
+/** `CutoverStatusV2` of the gateway contract: `CutoverStatus` with each in-flight group's `orphaned` state. */
+export type CutoverStatusV2 = components['schemas']['CutoverStatusV2'];
+
+/** One `ValidationFindings` item: a validator rule, or `unknown-version`, `previous-mismatch` or `unknown-route`. */
+export type CutoverFinding = components['schemas']['ValidationFindings']['findings'][number];
+
+/** `cutoverActivate`'s answer: the now-active version and the epoch its activation committed. */
+export type ActivationResult = operations['cutoverActivate']['responses'][200]['content']['application/json'];
+
+/** Interval of the background refresh and heartbeat, in milliseconds. */
+export const REFRESH_INTERVAL_MS = 1000;
+
+/** Poll interval of `waitUnfrozen` and `awaitVisible`, in milliseconds. */
+export const POLL_INTERVAL_MS = 250;
+
+/** Default wait of a frozen entry's request before it answers the legacy 503, in milliseconds. */
+export const DEFAULT_FREEZE_WAIT_MS = 30_000;
+
+/** Age of the last successful refresh at which cached routing and freezes stop serving, in milliseconds; below instance liveness. */
+export const SNAPSHOT_MAX_AGE_MS = 2 * REFRESH_INTERVAL_MS;
+
+/** Heartbeat age, in seconds, after which `start` removes an instance row that holds no in-flight write. */
+export const INSTANCE_RETENTION_SECONDS = 3600;
+
+function describeFindings(findings: readonly CutoverFinding[]): string {
+  return findings.map((finding) => `${finding.rule}: ${finding.message}`).join('; ');
+}
+
+/** A cut-over operation refused with findings (validation, unknown version file or unknown route); the route answers 400. */
+export class ActivationRejected extends Error {
+  override readonly name = 'ActivationRejected';
+
+  constructor(readonly findings: CutoverFinding[]) {
+    super(describeFindings(findings));
+  }
+}
+
+/** The version's `previous` is not the active version, or a concurrent operation committed first; the route answers 409. */
+export class CutoverConflict extends Error {
+  override readonly name = 'CutoverConflict';
+
+  constructor(readonly findings: CutoverFinding[]) {
+    super(describeFindings(findings));
+  }
+}
+
+/** Findings a `CutoverVersionInvalid` message names. */
+const NAMED_FINDINGS = 3;
+
+function describeInvalid(tableVersion: string, findings: readonly CutoverFinding[]): string {
+  const named = findings
+    .slice(0, NAMED_FINDINGS)
+    .map((finding) => `${finding.rule} ${finding.route ?? finding.unit ?? finding.group ?? '-'} ${finding.message}`);
+  const rest = findings.length > NAMED_FINDINGS ? `; ${findings.length - NAMED_FINDINGS} more` : '';
+  return `cut-over version ${tableVersion} fails validation: ${named.join('; ')}${rest}`;
+}
+
+/** The active version's file is missing or fails its schema or load-time check, so nothing routes by it; renders as the legacy 503. */
+export class CutoverVersionInvalid extends LegacyServiceUnavailableError {
+  override readonly name: string = 'CutoverVersionInvalid';
+
+  constructor(
+    readonly tableVersion: string,
+    readonly findings: CutoverFinding[],
+  ) {
+    super(describeInvalid(tableVersion, findings), 'auto', 'invalid-cutover-version');
+  }
+}
+
+/** Load-time rule check of a version against its stored previous version, if readable; resolves to its findings. */
+export type VersionCheck = (table: CutoverTable, prior: CutoverTable | undefined) => Promise<Finding[]>;
+
+/** Logger methods the state uses; Fastify's `app.log` satisfies it. */
+export interface CutoverStateLogger {
+  info(obj: object, msg: string): void;
+  error(obj: object, msg: string): void;
+}
+
+/** Settings of {@link createCutoverState}. */
+export interface CutoverStateOptions {
+  /** Gateway schema pool; only `withMetadata` is used. */
+  db: TenantDb;
+  /** Bounds in-process waits and the refresh cadence. */
+  clock: Clock;
+  paths: GatewayPaths;
+  /** This gateway instance, as it heartbeats into `gateway.instance`. */
+  instanceId: string;
+  logger: CutoverStateLogger;
+  variants: VariantsFile;
+  /** Generated groups; read from `groups.json` when absent. */
+  groups?: GroupsFile;
+  /** Check of each version before it is routed by; `validateVersion` in `load` mode when absent. */
+  checkVersion?: VersionCheck;
+}
+
+/**
+ * The active cut-over version of one gateway instance, and the operations that change it. An active version failing its load-time
+ * check (stored `previous`, every rule, rollback references) is refused with `CutoverVersionInvalid`.
+ */
+export interface CutoverState {
+  /** Applies the stored state once and prunes long-dead instances, then refreshes and heartbeats, untraced, every second until `stop`. */
+  start(): Promise<void>;
+  /** Stops the background refresh. */
+  stop(): void;
+  /** Cached routing index for reads; undefined while no version is active or the cached state has reached `SNAPSHOT_MAX_AGE_MS`. */
+  active(): RoutingIndex | undefined;
+  /** Epoch of the cached state. */
+  epoch(): number;
+  /** Reads the stored epoch before a write is routed; throws `LegacyServiceUnavailableError` while no valid version is active. */
+  readEpochForWrite(): Promise<{ epoch: number; index: RoutingIndex }>;
+  /** Whether the route key is frozen in the cached state; true while that state is stale, as for `active`. */
+  isFrozen(route: string): boolean;
+  /** Resolves true once a current state shows the route unfrozen, false after `ms`. */
+  waitUnfrozen(route: string, ms?: number): Promise<boolean>;
+  /** Validates `tableVersion` in activation mode and commits it with a new epoch when its `previous` is the active version. */
+  activate(input: { tableVersion: string; actor: string }): Promise<ActivationResult>;
+  /** Freezes entries of the active version and commits a new epoch; returns the status after it. */
+  freeze(routes: readonly string[], actor: string): Promise<CutoverStatus>;
+  /** `freeze`, returning the status after it as `statusPages` does. */
+  freezePages(routes: readonly string[], actor: string): Promise<CutoverStatusPages>;
+  /** Unfreezes routes and commits a new epoch; returns the status after it. */
+  unfreeze(routes: readonly string[], actor: string): Promise<CutoverStatus>;
+  /** `unfreeze`, returning the status after it as `statusPages` does. */
+  unfreezePages(routes: readonly string[], actor: string): Promise<CutoverStatusPages>;
+  /** Resolves true once no live instance reports an epoch below `epoch`, false after `timeoutMs`. */
+  awaitVisible(epoch: number, timeoutMs: number): Promise<boolean>;
+  /** Stored state, freezes, instance acknowledgements, in-flight writes and session mode, as `CutoverStatus`. */
+  status(): Promise<CutoverStatus>;
+  /** `status` with instances and in-flight groups read in keyset pages as they are iterated; the rest is read before it resolves. */
+  statusPages(): Promise<CutoverStatusPages>;
+  /** `statusPages` as `CutoverStatusV2`: in-flight groups split and marked by orphan state. */
+  statusV2Pages(): Promise<CutoverStatusPages<CutoverStatusV2['inflight'][number]>>;
+}
+
+interface Snapshot {
+  readonly loaded: boolean;
+  readonly epoch: number;
+  readonly index: RoutingIndex | undefined;
+  readonly frozen: ReadonlySet<string>;
+}
+
+interface StateRow {
+  table_version: string | null;
+  previous_version: string | null;
+  epoch: string;
+}
+
+interface InstanceRow {
+  instance_id: string;
+  seen_epoch: string;
+  heartbeat_at: string;
+  live: boolean;
+}
+
+const ISO_FORMAT = `'YYYY-MM-DD"T"HH24:MI:SS.MSTZH:TZM'`;
+const LIVE = `heartbeat_at >= now() - interval '${INSTANCE_LIVENESS_SECONDS} seconds'`;
+
+function quoteIdent(name: string): string {
+  return `"${name.replace(/"/g, '""')}"`;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+/** Outcome of one poll check: it passed, it failed, or the wait's deadline came first. */
+type CheckOutcome = 'passed' | 'failed' | 'expired';
+
+const SET_STATEMENT_TIMEOUT_SQL = "SELECT set_config('statement_timeout', $1, true)";
+// SQLSTATE query_canceled, which PostgreSQL raises when statement_timeout ends a statement.
+const QUERY_CANCELED = '57014';
+
+/** A poll check's statement was due after the wait's deadline, so it was never sent. */
+class CheckExpired extends Error {
+  override readonly name = 'CheckExpired';
+
+  constructor() {
+    super('the wait deadline passed before the check could query');
+  }
+}
+
+/** A poll check was still running at the wait's deadline, so its signal ended its transaction. */
+class CheckOutlasted extends Error {
+  override readonly name = 'CheckOutlasted';
+
+  constructor() {
+    super('the wait deadline passed while the check was running');
+  }
+}
+
+/** True for an error that ended a check because its deadline passed. */
+function isExpiry(error: unknown): boolean {
+  return (
+    error instanceof CheckExpired ||
+    error instanceof CheckOutlasted ||
+    (typeof error === 'object' && error !== null && 'code' in error && error.code === QUERY_CANCELED)
+  );
+}
+
+/** Settles with `check`'s outcome, or `expired` once `ms` passes first and aborts the check's signal; a later settlement of `check` is absorbed. */
+function within(ms: number, check: (signal: AbortSignal) => Promise<boolean>): Promise<CheckOutcome> {
+  const controller = new AbortController();
+  let timer: NodeJS.Timeout | undefined;
+  const expiry = new Promise<CheckOutcome>((resolve) => {
+    timer = setTimeout(() => {
+      resolve('expired');
+      controller.abort(new CheckOutlasted());
+    }, ms);
+  });
+  const work = check(controller.signal).then(
+    (passed): CheckOutcome => (passed ? 'passed' : 'failed'),
+    (error: unknown): CheckOutcome => {
+      if (isExpiry(error)) return 'expired';
+      throw error;
+    },
+  );
+  return Promise.race([work, expiry]).finally(() => {
+    clearTimeout(timer);
+  });
+}
+
+function isMissingFile(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT';
+}
+
+/** Finding naming only the version for a version file that is missing or fails its schema; undefined for any other error. */
+function unreadableVersion(tableVersion: string, error: unknown): CutoverFinding | undefined {
+  if (isMissingFile(error)) return { rule: 'unknown-version', message: `no version file ${tableVersion}.json` };
+  if (error instanceof CutoverSchemaError) {
+    return { rule: 'schema', message: `${tableVersion}.json does not match its cut-over schema: ${error.detail}` };
+  }
+  return undefined;
+}
+
+/** Caches one promise per key and forgets it when it rejects, so a failed read is retried. */
+function cached<T>(cache: Map<string, Promise<T>>, key: string, load: () => Promise<T>): Promise<T> {
+  let value = cache.get(key);
+  if (value === undefined) {
+    value = load();
+    cache.set(key, value);
+    value.catch(() => cache.delete(key));
+  }
+  return value;
+}
+
+/** Creates the cut-over state of one gateway instance over the gateway schema of `db`. */
+export function createCutoverState(opts: CutoverStateOptions): CutoverState {
+  const { db, clock, paths, instanceId, logger, variants } = opts;
+  const schema = quoteIdent(db.schema);
+  const stateTable = `${schema}.cutover_state`;
+  const freezeTable = `${schema}.cutover_freeze`;
+  const instanceTable = `${schema}.instance`;
+  const inflightTable = `${schema}.inflight`;
+  // Version files are immutable, so each parsed version and its index is kept for the life of the process.
+  const tables = new Map<string, Promise<CutoverTable>>();
+  const indexes = new Map<string, Promise<RoutingIndex>>();
+  const groupsFiles = new Map<string, Promise<GroupsFile>>();
+  if (opts.groups !== undefined) groupsFiles.set(paths.groupsFile, Promise.resolve(opts.groups));
+  let snapshot: Snapshot = { loaded: false, epoch: 0, index: undefined, frozen: new Set() };
+  // Start time of the latest-started refresh that succeeded; refreshes started later win even under a clock step.
+  let refreshesStarted = 0;
+  let freshSequence = 0;
+  let freshSince: number | undefined;
+  let running = false;
+  let loops = 0;
+  let timer: NodeJS.Timeout | undefined;
+  const inflight = createInflightStore({ db, instanceId, unitsOf: (route) => snapshot.index?.entryFor(route)?.units });
+
+  const tableFor = (tableVersion: string): Promise<CutoverTable> => cached(tables, tableVersion, () => loadVersion(paths, tableVersion));
+
+  const groupsFor = (): Promise<GroupsFile> => cached(groupsFiles, paths.groupsFile, () => loadGroups(paths));
+
+  // Validation inputs are immutable, so their context is read once; `load` mode checks rollback references only.
+  const contexts = new Map<string, Promise<ValidationContext>>();
+  const checkVersion: VersionCheck =
+    opts.checkVersion ??
+    (async (table, prior) => {
+      const ctx = await cached(contexts, paths.cutoverDir, () => loadValidationContext(paths, 'load'));
+      return validateVersion(table, prior === undefined ? ctx : { ...ctx, prior });
+    });
+  // Versions this instance's activation validated, and the messages of refusals already logged.
+  const activated = new Set<string>();
+  const reported = new Set<string>();
+
+  const versionFile = (tableVersion: string): string => join(paths.versionsDir, `${tableVersion}.json`);
+
+  /** `error`, logged the first time this instance meets its message; `file` is logged beside it, never put in it. */
+  const refusal = (error: CutoverVersionInvalid, file?: string): CutoverVersionInvalid => {
+    if (!reported.has(error.message)) {
+      reported.add(error.message);
+      const located = file === undefined ? '' : ` file=${file}`;
+      logger.error({}, `cut-over version refused for routing: instance=${instanceId} ${error.message}${located}`);
+    }
+    return error;
+  };
+
+  /** The version `previous` names; undefined for none, or a missing or schema-invalid file, which the check reports as unavailable. */
+  const priorOf = async (previous: string | null): Promise<CutoverTable | undefined> => {
+    if (previous === null) return undefined;
+    try {
+      return await tableFor(previous);
+    } catch (error) {
+      if (isMissingFile(error) || error instanceof CutoverSchemaError) return undefined;
+      throw error;
+    }
+  };
+
+  /** Rejects with `CutoverVersionInvalid` when `table`'s `previous` is not the stored `previous` or it fails its load-time check. */
+  const assertRoutable = async (table: CutoverTable, previous: string | null): Promise<void> => {
+    if (table.previous !== previous) {
+      const message = `previous ${table.previous ?? 'null'} is not the stored previous version ${previous ?? 'null'}`;
+      throw refusal(new CutoverVersionInvalid(table.tableVersion, [{ rule: 'previous-chain', message }]));
+    }
+    if (activated.has(table.tableVersion)) return;
+    const findings = await checkVersion(table, await priorOf(previous));
+    if (findings.length > 0) throw refusal(new CutoverVersionInvalid(table.tableVersion, findings));
+  };
+
+  /** The version to route by; a missing or schema-invalid file rejects with `CutoverVersionInvalid`, other errors as they are. */
+  const routableTable = async (tableVersion: string): Promise<CutoverTable> => {
+    try {
+      return await tableFor(tableVersion);
+    } catch (error) {
+      const finding = unreadableVersion(tableVersion, error);
+      if (finding === undefined) throw error;
+      throw refusal(new CutoverVersionInvalid(tableVersion, [finding]), versionFile(tableVersion));
+    }
+  };
+
+  /** Routing index of a stored `table_version`, bound to the stored `previous_version`; cached per pair. */
+  const indexFor = (tableVersion: string, previous: string | null): Promise<RoutingIndex> =>
+    cached(indexes, `${tableVersion} ${previous ?? 'null'}`, async () => {
+      const [table, groups] = await Promise.all([routableTable(tableVersion), groupsFor()]);
+      await assertRoutable(table, previous);
+      return buildRoutingIndex(table, variants, groups);
+    });
+
+  const readStateRow = async (tx: MetadataTx): Promise<StateRow> => {
+    const { rows } = await tx.query<StateRow>(`SELECT table_version, previous_version, epoch FROM ${stateTable} WHERE id = 1`);
+    const row = rows[0];
+    if (row === undefined) throw new Error(`${stateTable} holds no row; apply gateway/db/migrations first`);
+    return row;
+  };
+
+  /** `tx` with each statement's `statement_timeout` set to what is left until `until`; none is sent once nothing is left. */
+  const boundedTx = (tx: MetadataTx, until: number): MetadataTx => ({
+    ...tx,
+    query: async <R extends QueryResultRow = QueryResultRow>(text: string | QueryConfig, values?: unknown[]): Promise<QueryResult<R>> => {
+      const left = Math.ceil(until - clock.now().getTime());
+      if (left <= 0) throw new CheckExpired();
+      await tx.query(SET_STATEMENT_TIMEOUT_SQL, [String(left)]);
+      return tx.query<R>(text, values);
+    },
+  });
+
+  /** Applies a newer stored state and heartbeats; `until` and `signal`, set only by poll checks, end its statements and transaction at their deadline. */
+  const refresh = async (until?: number, signal?: AbortSignal): Promise<Snapshot> => {
+    refreshesStarted += 1;
+    const sequence = refreshesStarted;
+    // Taken before the transaction begins, so it never follows the heartbeat_at that other instances judge liveness by.
+    const startedAt = clock.now().getTime();
+    const applied = await withMetadata(
+      db,
+      async (base) => {
+        const tx = until === undefined ? base : boundedTx(base, until);
+        const row = await readStateRow(tx);
+        const epoch = Number(row.epoch);
+        if (!snapshot.loaded || epoch > snapshot.epoch) {
+          const { rows } = await tx.query<{ route: string }>(`SELECT route FROM ${freezeTable}`);
+          const index = row.table_version === null ? undefined : await indexFor(row.table_version, row.previous_version);
+          // A slower concurrent refresh never replaces a newer snapshot, so a seen freeze cannot be lost again.
+          if (!snapshot.loaded || epoch > snapshot.epoch) {
+            snapshot = { loaded: true, epoch, index, frozen: new Set(rows.map((frozen) => frozen.route)) };
+          }
+        }
+        await tx.query(
+          `INSERT INTO ${instanceTable} (instance_id, seen_epoch, started_at, heartbeat_at) VALUES ($1, $2, now(), now()) ` +
+            `ON CONFLICT (instance_id) DO UPDATE SET seen_epoch = EXCLUDED.seen_epoch, heartbeat_at = now()`,
+          [instanceId, snapshot.epoch],
+        );
+        return snapshot;
+      },
+      signal === undefined ? undefined : { signal },
+    );
+    if (sequence > freshSequence) {
+      freshSequence = sequence;
+      freshSince = startedAt;
+    }
+    return applied;
+  };
+
+  /** The snapshot while its last successful refresh started less than `SNAPSHOT_MAX_AGE_MS` ago; undefined once it is stale. */
+  const current = (): Snapshot | undefined => {
+    if (freshSince === undefined) return undefined;
+    const age = clock.now().getTime() - freshSince;
+    // A negative age means the clock stepped back; the next refresh re-establishes freshness.
+    return age >= 0 && age < SNAPSHOT_MAX_AGE_MS ? snapshot : undefined;
+  };
+
+  // A tick still running across stop() and start() belongs to the old loop and must not reschedule beside the new one.
+  const scheduleRefresh = (delay: number, loop: number): void => {
+    timer = setTimeout(() => {
+      const startedAt = clock.now().getTime();
+      void withUnsampledTrace(() => refresh())
+        .catch((error: unknown) => {
+          logger.error({ error: serializeError(error) }, `cut-over state refresh failed: instance=${instanceId}`);
+        })
+        .finally(() => {
+          const elapsed = clock.now().getTime() - startedAt;
+          if (running && loop === loops) scheduleRefresh(Math.max(0, REFRESH_INTERVAL_MS - elapsed), loop);
+        });
+    }, delay);
+    timer.unref();
+  };
+
+  /**
+   * Checks now and after each poll; resolves true once `check` passes, false once `ms` has elapsed by the clock or by the poll timers,
+   * or when a check outlasts what is left of `ms`. `check` receives the clock time its work must end by and the signal that aborts it then.
+   */
+  const poll = async (ms: number, check: (until: number, signal: AbortSignal) => Promise<boolean>): Promise<boolean> => {
+    const deadline = clock.now().getTime() + ms;
+    let budget = ms;
+    const left = (): number => Math.min(budget, deadline - clock.now().getTime());
+    for (let remaining = left(); remaining > 0; remaining = left()) {
+      const until = clock.now().getTime() + remaining;
+      const outcome = await within(remaining, (signal) => check(until, signal));
+      if (outcome !== 'failed') return outcome === 'passed';
+      const step = Math.min(POLL_INTERVAL_MS, left());
+      if (step <= 0) return false;
+      await sleep(step);
+      budget -= step;
+    }
+    return false;
+  };
+
+  const allInstancesSeen = (epoch: number, until: number, signal: AbortSignal): Promise<boolean> =>
+    withMetadata(
+      db,
+      async (base) => {
+        const tx = boundedTx(base, until);
+        const { rows } = await tx.query<{ lagging: number }>(
+          `SELECT count(*)::int AS lagging FROM ${instanceTable} WHERE ${LIVE} AND seen_epoch < $1`,
+          [epoch],
+        );
+        return rows[0]?.lagging === 0;
+      },
+      { signal },
+    );
+
+  /** Deletes instances whose heartbeat is older than `INSTANCE_RETENTION_SECONDS` and that hold no in-flight row; in-flight rows stay. */
+  const pruneInstances = (): Promise<unknown> =>
+    withMetadata(db, (tx) =>
+      tx.query(
+        `DELETE FROM ${instanceTable} AS g WHERE g.heartbeat_at < now() - make_interval(secs => $1) ` +
+          `AND NOT EXISTS (SELECT 1 FROM ${inflightTable} AS i WHERE i.instance_id = g.instance_id)`,
+        [INSTANCE_RETENTION_SECONDS],
+      ),
+    );
+
+  /** Loads the version to activate; a missing or schema-invalid file is refused with findings naming only the version, and its path is logged. */
+  const requestedTable = async (tableVersion: string): Promise<CutoverTable> => {
+    try {
+      return await tableFor(tableVersion);
+    } catch (error) {
+      const finding = unreadableVersion(tableVersion, error);
+      if (finding === undefined) throw error;
+      const cause = error instanceof CutoverSchemaError ? `error=${error.message}` : `file=${versionFile(tableVersion)}`;
+      logger.info({}, `cut-over activation refused: tableVersion=${tableVersion} instance=${instanceId} rule=${finding.rule} ${cause}`);
+      throw new ActivationRejected([finding]);
+    }
+  };
+
+  /** Instance rows after `after` in id order, at most `STATUS_PAGE_SIZE` of them. */
+  const instancePage = async (after: string | null): Promise<InstanceRow[]> =>
+    (
+      await withMetadata(db, (tx) =>
+        tx.query<InstanceRow>(
+          `SELECT instance_id, seen_epoch, to_char(heartbeat_at::timestamptz, ${ISO_FORMAT}) AS heartbeat_at, (${LIVE}) AS live ` +
+            `FROM ${instanceTable} WHERE $1::text IS NULL OR instance_id > $1 ORDER BY instance_id LIMIT $2`,
+          [after, STATUS_PAGE_SIZE],
+        ),
+      )
+    ).rows;
+
+  async function* instancePages(): AsyncGenerator<CutoverStatus['instances']> {
+    let after: string | null = null;
+    for (;;) {
+      const rows = await instancePage(after);
+      if (rows.length > 0) {
+        yield rows.map((instance) => ({
+          instanceId: instance.instance_id,
+          seenEpoch: Number(instance.seen_epoch),
+          heartbeatAt: instance.heartbeat_at,
+          live: instance.live,
+        }));
+      }
+      const last = rows.at(-1);
+      if (last === undefined || rows.length < STATUS_PAGE_SIZE) return;
+      after = last.instance_id;
+    }
+  }
+
+  /** Reads the status head; instances and the in-flight groups `inflightPages` yields are read as they are iterated. */
+  const pagesWith = async <I extends CutoverStatus['inflight'][number]>(
+    inflightPages: () => AsyncIterable<I[]>,
+  ): Promise<CutoverStatusPages<I>> => {
+    const { row, frozen, acknowledged } = await withMetadata(db, async (tx) => ({
+      row: await readStateRow(tx),
+      frozen: (await tx.query<{ route: string }>(`SELECT route FROM ${freezeTable} ORDER BY route`)).rows.map((r) => r.route),
+      acknowledged:
+        (
+          await tx.query<{ acknowledged_epoch: string | null }>(
+            `SELECT min(seen_epoch) AS acknowledged_epoch FROM ${instanceTable} WHERE ${LIVE}`,
+          )
+        ).rows[0]?.acknowledged_epoch ?? null,
+    }));
+    const index = row.table_version === null ? undefined : await indexFor(row.table_version, row.previous_version);
+    return {
+      head: {
+        tableVersion: row.table_version,
+        previous: row.previous_version,
+        epoch: Number(row.epoch),
+        groupAuthority: { ...(index?.table.groupAuthority ?? {}) },
+        frozen,
+        acknowledgedEpoch: acknowledged === null ? null : Number(acknowledged),
+        sessionMode: index?.loginGroupAuthority() === 'target' ? 'target-primary' : 'legacy-primary',
+      },
+      instances: instancePages(),
+      inflight: inflightPages(),
+    };
+  };
+
+  const statusPages = (): Promise<CutoverStatusPages> => pagesWith(() => inflight.summaryPages());
+
+  const changeFreezes = async (op: 'freeze' | 'unfreeze', routes: readonly string[], actor: string): Promise<CutoverStatusPages> => {
+    const keys = [...new Set(routes.map(normaliseRouteKey))].sort();
+    const epoch = await withMetadata(db, async (tx) => {
+      // Incrementing under the row lock serialises cut-over operations, so routes are checked against the version this epoch follows.
+      const { rows } = await tx.query<StateRow>(
+        `UPDATE ${stateTable} SET epoch = epoch + 1 WHERE id = 1 RETURNING table_version, previous_version, epoch`,
+      );
+      const row = rows[0];
+      if (row === undefined) throw new Error(`${stateTable} holds no row; apply gateway/db/migrations first`);
+      const index = row.table_version === null ? undefined : await indexFor(row.table_version, row.previous_version);
+      // A route frozen under an earlier version stays unfreezable after that version is replaced.
+      const frozen =
+        op === 'unfreeze'
+          ? new Set(
+              (await tx.query<{ route: string }>(`SELECT route FROM ${freezeTable} WHERE route = ANY($1::text[])`, [keys])).rows.map(
+                (r) => r.route,
+              ),
+            )
+          : new Set<string>();
+      const unknown = keys.filter((key) => index?.entryFor(key) === undefined && !frozen.has(key));
+      if (unknown.length > 0) {
+        throw new ActivationRejected(
+          unknown.map((route) => ({
+            rule: 'unknown-route',
+            route,
+            message: `${route} is not an entry of the active version ${row.table_version ?? '(none)'}`,
+          })),
+        );
+      }
+      if (op === 'freeze') {
+        await tx.query(
+          `INSERT INTO ${freezeTable} (route, epoch, frozen_at, frozen_by) ` +
+            `SELECT f.route, $2::bigint, now(), $3::text FROM unnest($1::text[]) AS f(route) ON CONFLICT (route) DO NOTHING`,
+          [keys, row.epoch, actor],
+        );
+      } else {
+        await tx.query(`DELETE FROM ${freezeTable} WHERE route = ANY($1::text[])`, [keys]);
+      }
+      return Number(row.epoch);
+    });
+    // The platform logger keeps only log-record.v1 fields, so the operation context is in the message.
+    logger.info(
+      {},
+      `cut-over routes ${op === 'freeze' ? 'frozen' : 'unfrozen'}: count=${keys.length} epoch=${epoch} actor=${actor} ` +
+        `instance=${instanceId} routes=${JSON.stringify(keys)}`,
+    );
+    await refresh();
+    return statusPages();
+  };
+
+  return {
+    async start() {
+      if (running) return;
+      running = true;
+      loops += 1;
+      const loop = loops;
+      try {
+        await refresh();
+      } catch (error) {
+        if (loop === loops) running = false;
+        throw error;
+      }
+      await pruneInstances().catch((error: unknown) => {
+        logger.error({ error: serializeError(error) }, `cut-over instance pruning failed: instance=${instanceId}`);
+      });
+      if (running && loop === loops) scheduleRefresh(REFRESH_INTERVAL_MS, loop);
+    },
+
+    stop() {
+      running = false;
+      if (timer !== undefined) clearTimeout(timer);
+      timer = undefined;
+    },
+
+    active: () => current()?.index,
+
+    epoch: () => snapshot.epoch,
+
+    async readEpochForWrite() {
+      const { epoch, index } = await refresh();
+      if (index === undefined) {
+        throw new LegacyServiceUnavailableError('No cut-over version is active', 'auto', 'no-active-version');
+      }
+      return { epoch, index };
+    },
+
+    isFrozen: (route) => current()?.frozen.has(normaliseRouteKey(route)) ?? true,
+
+    async waitUnfrozen(route, ms = DEFAULT_FREEZE_WAIT_MS) {
+      const key = normaliseRouteKey(route);
+      const cachedState = current();
+      if (cachedState !== undefined && !cachedState.frozen.has(key)) return true;
+      return poll(ms, async (until, signal) => !(await refresh(until, signal)).frozen.has(key));
+    },
+
+    async activate({ tableVersion, actor }) {
+      const table = await requestedTable(tableVersion);
+      const current = await withMetadata(db, readStateRow);
+      const active = current.table_version;
+      if (table.previous !== active) {
+        throw new CutoverConflict([
+          {
+            rule: 'previous-mismatch',
+            message: `previous ${table.previous ?? 'null'} of ${tableVersion} is not the active version ${active ?? 'null'}`,
+          },
+        ]);
+      }
+      // `previous` is the active version here; an unreadable one leaves no prior, which the validator refuses as previous-chain.
+      const prior = await priorOf(active);
+      const ctx = await loadValidationContext(paths, 'activation', prior === undefined ? {} : { prior });
+      const findings = validateVersion(table, ctx);
+      if (findings.length > 0) throw new ActivationRejected(findings);
+      activated.add(tableVersion);
+      const { rows } = await withMetadata(db, (tx) =>
+        tx.query<{ epoch: string }>(
+          `UPDATE ${stateTable} SET table_version = $1, previous_version = $2, epoch = epoch + 1, activated_at = now(), activated_by = $3 ` +
+            `WHERE id = 1 AND epoch = $4 RETURNING epoch`,
+          [tableVersion, active, actor, current.epoch],
+        ),
+      );
+      const committed = rows[0];
+      if (committed === undefined) {
+        throw new CutoverConflict([
+          {
+            rule: 'previous-mismatch',
+            message: `another cut-over operation committed after epoch ${current.epoch}, so ${active ?? 'null'} may no longer be active`,
+          },
+        ]);
+      }
+      const epoch = Number(committed.epoch);
+      logger.info(
+        {},
+        `cut-over version activated: tableVersion=${tableVersion} previous=${active ?? 'null'} epoch=${epoch} actor=${actor} instance=${instanceId}`,
+      );
+      await refresh();
+      return { tableVersion, epoch };
+    },
+
+    freeze: async (routes, actor) => collectStatus(await changeFreezes('freeze', routes, actor)),
+
+    freezePages: (routes, actor) => changeFreezes('freeze', routes, actor),
+
+    unfreeze: async (routes, actor) => collectStatus(await changeFreezes('unfreeze', routes, actor)),
+
+    unfreezePages: (routes, actor) => changeFreezes('unfreeze', routes, actor),
+
+    awaitVisible: (epoch, timeoutMs) => poll(timeoutMs, (until, signal) => allInstancesSeen(epoch, until, signal)),
+
+    status: async () => collectStatus(await statusPages()),
+
+    statusPages,
+
+    statusV2Pages: () => pagesWith(() => inflight.orphanSummaryPages()),
+  };
+}

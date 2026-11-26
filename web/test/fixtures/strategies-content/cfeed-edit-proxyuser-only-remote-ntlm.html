@@ -1,0 +1,259 @@
+
+
+<div class="mura-header">
+		
+			<h1>Edit Remote Feed</h1>
+		
+	<div class="nav-module-specific btn-group">
+	
+			<a class="btn" href="./?muraAction=cFeed.list&siteid=default"><i class="mi-arrow-circle-left"></i> Back to Collections</a>
+			
+					<a class="btn" title="View" href="https://example.com/ntlm.xml" target="_blank"><i class="mi-rss"></i> View Feed</a>
+				
+	</div>
+
+
+</div> <!-- /.mura-header -->
+
+
+
+<span id="msg">
+
+</span>
+
+<form novalidate="novalidate" action="./?muraAction=cFeed.update&siteid=default" method="post" name="form1" onsubmit="return validate(this);">
+
+<div class="block block-constrain">
+	
+		<ul class="navTask nav nav-pills">
+		
+		
+		</ul>
+	
+
+<ul class="mura-tabs nav-tabs" data-toggle="tabs">
+	
+		<li class="active"><a href="#tabBasic" onclick="return false;"><span>Basic</span></a></li>
+	
+		<li><a href="#tabCategorization" onclick="return false;"><span>Categories</span></a></li>
+	
+		<li><a href="#tabImportlocation" onclick="return false;"><span>Import Location</span></a></li>
+	
+		<li><a href="#tabUsagereport" onclick="return false;"><span>Usage Report</span></a></li>
+	
+</ul>
+	<div class="tab-content block-content">
+		
+<div id="tabBasic" class="tab-pane active">
+	<div class="block block-bordered">
+		<!-- block header -->
+		<div class="block-header">
+			<h3 class="block-title">Basic</h3>
+		</div> <!-- /.block header -->
+		<div class="block-content">
+
+			<div class="mura-control-group">
+					<label>Name</label>
+					<input name="name" type="text" required="true" message="The 'Name' field is required." value="Cap&#x20;Remote&#x20;NTLM" maxlength="50" onchange="removePunctuation(this);">
+			</div>
+			<div class="mura-control-group">
+					<label>URL</label>
+					<input name="channelLink" type="text" required="true" message="The 'URL' field is required." value="https&#x3a;&#x2f;&#x2f;example.com&#x2f;ntlm.xml">
+			</div>
+			
+			<div class="mura-control-group">
+				<label>Is this Feed Active?</label>
+				<label class="radio inline">
+					<input name="isActive" type="radio" value="1" checked>Yes
+				</label>
+				<label class="radio inline">
+				<input name="isActive" type="radio" value="0" >No
+				</label>
+			</div>
+
+			<div class="mura-control-group">
+				<label>Is this a Public Feed?</label>
+				<label class="radio inline">
+				<input name="isPublic" type="radio" value="1" >Yes
+				</label>
+				<label class="radio inline">
+				<input name="isPublic" type="radio" value="0" checked>No
+				</label>
+			</div>
+
+			
+
+			<div class="mura-control-group">
+				<label>Max Items</label>
+				<select name="maxItems">
+					
+					<option value="1" >1</option>
+					
+					<option value="2" >2</option>
+					
+					<option value="3" >3</option>
+					
+					<option value="4" >4</option>
+					
+					<option value="5" >5</option>
+					
+					<option value="6" >6</option>
+					
+					<option value="7" >7</option>
+					
+					<option value="8" >8</option>
+					
+					<option value="9" >9</option>
+					
+					<option value="10" >10</option>
+					
+					<option value="11" >11</option>
+					
+					<option value="12" >12</option>
+					
+					<option value="13" >13</option>
+					
+					<option value="14" >14</option>
+					
+					<option value="15" >15</option>
+					
+					<option value="16" >16</option>
+					
+					<option value="17" >17</option>
+					
+					<option value="18" >18</option>
+					
+					<option value="19" >19</option>
+					
+					<option value="20" selected>20</option>
+					
+					<option value="25" >25</option>
+					
+					<option value="50" >50</option>
+					
+					<option value="100" >100</option>
+					
+					<option value="100000" >ALL</option>
+				</select>
+				</div>
+				<div class="mura-control-group">
+				<label>Version</label>
+				<select name="version">
+					
+					<option value="RSS 0.920" >RSS 0.920</option>
+					
+					<option value="RSS 2.0" selected>RSS 2.0</option>
+					
+					<option value="Atom" >Atom</option>
+					
+				</select>
+
+				
+					<label>Authorization Type</label>
+					<select name="authtype">
+						<option value="DEFAULT">DEFAULT</option>
+						<option value="BASIC" >BASIC</option>
+						
+							<option value="NTLM" selected>NTLM</option>
+						
+					</select>
+				
+				</div>
+			
+
+		</div> <!-- /.block-content -->
+	</div> <!-- /.block-bordered -->
+</div> <!-- /.tab-pane -->
+
+<div id="tabCategorization" class="tab-pane">
+	<div class="block block-bordered">
+		<!-- block header -->
+		<div class="block-header">
+			<h3 class="block-title">Categories</h3>
+		</div> <!-- /.block header -->
+		<div class="block-content">
+			<div  class="mura-control-group">
+				<label>Category Assignments</label>
+				<div id="mura-list-tree" class="mura-control">
+				
+				</div>
+			</div>
+		</div> <!-- /.block-content -->
+	</div> <!-- /.block-bordered -->
+</div> <!-- /.tab-pane -->
+
+
+	<div id="tabImportlocation" class="tab-pane">
+
+		<div class="block block-bordered">
+			<!-- block header -->
+		<div class="block-header">
+			<h3 class="block-title">application.rbFactory.getKeyValue(session.rb,'collections.importlocation')</h3>
+			</div> <!-- /.block header -->
+			<div class="block-content">
+
+				<div class="mura-control-group">
+						<label>Import Location:</label>
+					<span id="move" class="text">
+								"None Selected"
+							&nbsp;&nbsp;<a class="btn btn-small"href="javascript:#;" onclick="javascript: feedManager.loadSiteParents('default','','',1);return false;">Select Location to Import Feed</a>
+							<input type="hidden" name="parentid" value="">
+					</span>
+				</div>
+
+				<div class="mura-control-group">
+				<label>Auto Import</label>
+				<label class="radio inline">
+					<input name="autoImport" type="radio" value="1" >Yes
+				</label>
+				<label class="radio inline">
+					<input name="autoImport" type="radio" value="0" checked>No
+				</label>
+				</div>
+
+			</div> <!-- /.block-content -->
+		</div> <!-- /.block-bordered -->
+	</div> <!-- /.tab-pane -->
+
+
+<div id="tabUsagereport" class="tab-pane">
+
+	<div class="block block-bordered">
+		<!-- block header -->
+		<div class="block-header">
+			<h3 class="block-title">Usage Report</h3>
+		</div> <!-- /.block header -->
+		<div class="block-content">
+			<div class="mura-control-group">
+				    
+				      	<div class="help-block-empty">This feed is currently not being used.</div>
+				    
+			 </div>
+
+		</div> <!-- /.block-content -->
+	</div> <!-- /.block-bordered -->
+</div> <!-- /.tab-pane -->
+
+	<div class="load-inline tab-preloader"></div>
+	<script>$('.tab-preloader').spin(spinnerArgs2);</script>
+
+		<div class="mura-actions">
+			<div class="form-actions">
+				
+						<button type="button" class="btn" onclick="submitForm(document.forms.form1,'delete','Delete\x20Remote\x20Feed\x3F');"><i class="mi-trash"></i>Delete</button>
+					
+					<button type="button" class="btn mura-primary" onclick="submitForm(document.forms.form1,'update');"><i class="mi-check-circle"></i>Update</button>
+					
+					<input type=hidden name="feedID" value="4AF58CC6-A051-F03A-01C23C09441E9DFC">
+					<input type="hidden" name="action" value="update">
+				
+				<input type=hidden name="instanceid" value="">
+				<input type="hidden" name="closeCompactDisplay" value="false" />
+				<input type="hidden" name="type" value="Remote">
+				<input type="hidden" name="csrf_token" value="TESTCSRFTOKEN0000000000000000000" /><input type="hidden" name="csrf_token_expires" value="260630150000000" />
+				</div>
+			</div>
+
+		</div> <!-- /.block-content.tab-content -->
+	</div> <!-- /.block-constrain -->
+</form>

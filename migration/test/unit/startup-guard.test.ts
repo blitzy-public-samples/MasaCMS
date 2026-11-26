@@ -1,0 +1,265 @@
+// Unit tests for the start-up guard, using fake SQL scopes, the in-memory legacy database and recorded steps in place of
+// SQL Server and the gateway.
+import { readFileSync } from 'node:fs';
+
+import type { Request, Transaction } from 'mssql';
+import { describe, expect, it, vi } from 'vitest';
+
+import {
+  commitWithStartupGuard,
+  countStartupRows,
+  recoverStartupGuard,
+  runStartupGuardSequence,
+  STARTUP_CONTENT_IDS_SQL,
+  STARTUP_COUNT_SQL,
+  STARTUP_PREDICATE_WHERE,
+  StartupGuardFrozenError,
+  startupContentIds,
+  type StartupGuardSteps,
+} from '../../src/legacy/startup-guard.js';
+import { createFakeLegacyDb, type FakeLegacyDb, type Row } from '../helpers/fake-legacy-db.js';
+import { contentRow, defineFixtureTables, startupMatchRow, TABLES } from '../helpers/fixtures.js';
+
+const MASA_APP_START = new URL('../../../core/appcfc/onApplicationStart_include.cfm', import.meta.url);
+const FULL_SEQUENCE = ['freezeLegacyBound', 'commit', 'runReloadWindow', 'remainingStartupRows', 'unfreeze'];
+
+const normalise = (text: string): string => text.replace(/\s+/g, ' ').trim();
+
+/** Scope whose request().query resolves with `recordset`, or rejects with `error`. */
+function fakeScope(recordset: unknown[], error?: Error) {
+  const query = vi.fn(async (_sql: string) => {
+    if (error !== undefined) throw error;
+    return { recordset, recordsets: [recordset], rowsAffected: [recordset.length], output: {} };
+  });
+  const request = vi.fn(() => ({ query }) as unknown as Request);
+  return { scope: { request }, query, request };
+}
+
+/** Steps that record their call order; a step named in `failures` rejects with that error; `remaining` is the count. */
+function recordedSteps(failures: Partial<Record<keyof StartupGuardSteps, Error>> = {}, remaining = 0) {
+  const calls: string[] = [];
+  const step =
+    <T>(name: keyof StartupGuardSteps, value: T) =>
+    async (): Promise<T> => {
+      calls.push(name);
+      const failure = failures[name];
+      if (failure !== undefined) throw failure;
+      return value;
+    };
+  const steps: StartupGuardSteps<string, number> = {
+    freezeLegacyBound: step('freezeLegacyBound', undefined),
+    commit: step('commit', 'committed'),
+    runReloadWindow: step('runReloadWindow', 7),
+    remainingStartupRows: step('remainingStartupRows', remaining),
+    unfreeze: step('unfreeze', undefined),
+  };
+  return { calls, steps };
+}
+
+/** Fake legacy database whose live `tcontent` holds `rows`, committed. */
+function contentDb(rows: readonly Row[]): FakeLegacyDb {
+  const db = createFakeLegacyDb();
+  defineFixtureTables(db, ['tcontent']);
+  db.seed(TABLES.tcontent.qualified, rows);
+  return db;
+}
+
+/** Inserts `row` into `tcontent` through `tx`, one bound input per column. */
+async function insertContent(tx: Transaction, row: Row): Promise<void> {
+  const columns = Object.keys(row);
+  const request = tx.request();
+  for (const column of columns) request.input(column, row[column]);
+  const values = columns.map((column) => `@${column}`).join(', ');
+  await request.query(`INSERT INTO ${TABLES.tcontent.qualified} (${columns.join(', ')}) VALUES (${values})`);
+}
+
+describe('start-up predicate', () => {
+  it("equals Masa's legacy URL conversion condition at onApplicationStart_include.cfm:896-899", () => {
+    const select = readFileSync(MASA_APP_START, 'utf8').split(/\r?\n/).slice(895, 899).join('\n');
+    const marker = 'from tcontent where ';
+    const masaWhere = select.slice(select.indexOf(marker) + marker.length, select.lastIndexOf('"'));
+
+    expect(normalise(STARTUP_PREDICATE_WHERE)).toBe(normalise(masaWhere));
+    expect(normalise(STARTUP_PREDICATE_WHERE)).toBe(
+      "type in ('File','Link') and active=1 and body is null and filename is not null",
+    );
+  });
+
+  it('counts unqualified tcontent rows with that predicate', () => {
+    expect(STARTUP_COUNT_SQL).toBe(`select count(*) as n from tcontent where ${STARTUP_PREDICATE_WHERE}`);
+  });
+
+  it('selects the distinct content ids of unqualified tcontent rows with that predicate', () => {
+    expect(STARTUP_CONTENT_IDS_SQL).toBe(`select distinct ContentID as contentId from tcontent where ${STARTUP_PREDICATE_WHERE}`);
+  });
+});
+
+describe('startupContentIds on the fake legacy database', () => {
+  const report = startupMatchRow();
+  const reportId = String(report.ContentID);
+  const notes = startupMatchRow({ Filename: 'notes.txt' });
+
+  it.each<[string, Row[], string[]]>([
+    ['no matching row', [contentRow(), startupMatchRow({ Body: 'report.pdf' })], []],
+    ['one matching content', [contentRow(), report], [reportId]],
+    ['one content matching in two sites', [report, startupMatchRow({ SiteID: 'tenant-b', ContentID: reportId })], [reportId]],
+    ['two matching contents', [report, notes], [reportId, String(notes.ContentID)].sort()],
+  ])('returns the content ids of %s', async (_label, rows, expected) => {
+    const db = contentDb(rows);
+
+    expect((await startupContentIds(await db.live())).sort()).toEqual(expected);
+  });
+});
+
+describe('countStartupRows', () => {
+  it.each([
+    [0, 0],
+    [3, 3],
+    ['12', 12],
+  ])('sends the count SQL through request().query and returns n=%j as the number %d', async (n, expected) => {
+    const { scope, query, request } = fakeScope([{ n }]);
+
+    await expect(countStartupRows(scope)).resolves.toBe(expected);
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(query).toHaveBeenCalledExactlyOnceWith(STARTUP_COUNT_SQL);
+  });
+
+  it('rejects when the count returns no row', async () => {
+    await expect(countStartupRows(fakeScope([]).scope)).rejects.toThrow('Start-up predicate count returned no row');
+  });
+
+  it('propagates a query failure unchanged', async () => {
+    const failure = new Error('connection lost');
+
+    await expect(countStartupRows(fakeScope([], failure).scope)).rejects.toBe(failure);
+  });
+});
+
+describe('countStartupRows on the fake legacy database', () => {
+  it.each<[string, Row]>([
+    ['a Page', { Type: 'Page' }],
+    ['a File with a body', { Body: '<p>Report</p>' }],
+    ['an inactive File', { Active: 0 }],
+    ['a File without a filename', { Filename: null }],
+  ])('does not count %s', async (_label, overrides) => {
+    const db = contentDb([contentRow(), startupMatchRow(overrides)]);
+
+    await expect(countStartupRows(await db.live())).resolves.toBe(0);
+  });
+
+  it.each(['File', 'Link'])('counts an active %s with a NULL body and a filename', async (type) => {
+    const db = contentDb([contentRow(), startupMatchRow({ Type: type })]);
+
+    await expect(countStartupRows(await db.live())).resolves.toBe(1);
+  });
+
+  it("counts a batch's uncommitted matching row through the batch's own transaction", async () => {
+    const db = contentDb([contentRow()]);
+
+    await db.transaction(async (tx) => {
+      await insertContent(tx, startupMatchRow());
+      await expect(countStartupRows(tx)).resolves.toBe(1);
+    });
+    await expect(countStartupRows(await db.live())).resolves.toBe(1);
+  });
+});
+
+describe('runStartupGuardSequence', () => {
+  it('freezes, commits, runs the reload window, counts remaining rows and unfreezes, in that order', async () => {
+    const { calls, steps } = recordedSteps();
+
+    await expect(runStartupGuardSequence(steps)).resolves.toEqual({ commit: 'committed', reload: 7 });
+    expect(calls).toEqual(FULL_SEQUENCE);
+  });
+
+  it.each([
+    ['freezeLegacyBound', ['freezeLegacyBound', 'unfreeze']],
+    ['commit', ['freezeLegacyBound', 'commit', 'unfreeze']],
+  ] as const)('unfreezes and rethrows the original error when %s fails', async (failing, expectedCalls) => {
+    const failure = new Error(`${failing} failed`);
+    const { calls, steps } = recordedSteps({ [failing]: failure });
+
+    await expect(runStartupGuardSequence(steps)).rejects.toBe(failure);
+    expect(calls).toEqual(expectedCalls);
+  });
+
+  it('reports both errors, step error first, when a step and unfreeze fail', async () => {
+    const stepFailure = new Error('commit failed');
+    const unfreezeFailure = new Error('unfreeze failed');
+    const { steps } = recordedSteps({ commit: stepFailure, unfreeze: unfreezeFailure });
+
+    const error = await runStartupGuardSequence(steps).catch((reason: unknown) => reason);
+
+    expect(error).toBeInstanceOf(AggregateError);
+    expect((error as AggregateError).errors).toEqual([stepFailure, unfreezeFailure]);
+  });
+
+  it('propagates an unfreeze failure after every step succeeded', async () => {
+    const unfreezeFailure = new Error('unfreeze failed');
+    const { calls, steps } = recordedSteps({ unfreeze: unfreezeFailure });
+
+    await expect(runStartupGuardSequence(steps)).rejects.toBe(unfreezeFailure);
+    expect(calls).toEqual(FULL_SEQUENCE);
+  });
+});
+
+describe('recoverStartupGuard', () => {
+  it('returns the reload result and unfreezes after a zero count', async () => {
+    const { calls, steps } = recordedSteps();
+
+    await expect(recoverStartupGuard(steps)).resolves.toBe(7);
+    expect(calls).toEqual(['runReloadWindow', 'remainingStartupRows', 'unfreeze']);
+  });
+});
+
+describe.each<[string, (steps: StartupGuardSteps<string, number>) => Promise<unknown>, string[]]>([
+  ['runStartupGuardSequence', runStartupGuardSequence, ['freezeLegacyBound', 'commit']],
+  ['recoverStartupGuard', recoverStartupGuard, []],
+])('%s after the batch committed', (_entry, run, committedCalls) => {
+  const reloadFailure = new Error('reload window failed');
+  const countFailure = new Error('count failed');
+  const counted = ['runReloadWindow', 'remainingStartupRows'];
+
+  it.each<
+    [string, Partial<Record<keyof StartupGuardSteps, Error>>, number, string[], Error | undefined, number | undefined]
+  >([
+    ['the reload window fails', { runReloadWindow: reloadFailure }, 0, ['runReloadWindow'], reloadFailure, undefined],
+    ['the remaining-row count fails', { remainingStartupRows: countFailure }, 0, counted, countFailure, undefined],
+    ['2 matching rows remain', {}, 2, counted, undefined, 2],
+  ])('stays frozen and throws StartupGuardFrozenError when %s', async (_case, failures, count, after, cause, left) => {
+    const { calls, steps } = recordedSteps(failures, count);
+
+    const error = await run(steps).catch((reason: unknown) => reason);
+
+    expect(error).toBeInstanceOf(StartupGuardFrozenError);
+    expect((error as StartupGuardFrozenError).name).toBe('StartupGuardFrozenError');
+    expect((error as StartupGuardFrozenError).cause).toBe(cause);
+    expect((error as StartupGuardFrozenError).remaining).toBe(left);
+    expect(calls).toEqual([...committedCalls, ...after]);
+    expect(calls).not.toContain('unfreeze');
+  });
+});
+
+describe('commitWithStartupGuard', () => {
+  it.each([
+    [0, { guarded: false, count: 0 }, ['commit']],
+    [1, { guarded: true, count: 1 }, FULL_SEQUENCE],
+    [2, { guarded: true, count: 2 }, FULL_SEQUENCE],
+  ])('with %d matching rows returns %j after calling %j', async (n, outcome, expectedCalls) => {
+    const { calls, steps } = recordedSteps();
+
+    await expect(commitWithStartupGuard({ scope: fakeScope([{ n }]).scope, ...steps })).resolves.toEqual({
+      ...outcome,
+      commit: 'committed',
+    });
+    expect(calls).toEqual(expectedCalls);
+  });
+
+  it('runs no step when the count fails', async () => {
+    const failure = new Error('connection lost');
+    const { calls, steps } = recordedSteps();
+
+    await expect(commitWithStartupGuard({ scope: fakeScope([], failure).scope, ...steps })).rejects.toBe(failure);
+    expect(calls).toEqual([]);
+  });
+});

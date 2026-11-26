@@ -1,0 +1,54 @@
+<?xml version="1.0" ?>
+		<rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/" xmlns:atom="http://www.w3.org/2005/Atom">
+			<channel>
+				<title>Probe &quot;Feed&quot; &amp; &lt;News&gt;</title>
+				<link>http://localhost:21080</link>
+				<description>Desc &amp; &lt;d&gt; &quot;q&quot; &apos;a&apos; &#xe9;</description>
+				<webMaster>admin@example.com</webMaster>
+				<generator>https://www.masacms.com</generator>
+				<pubDate>Thu, 12 Nov 2026 09:03:00 GMT</pubDate>
+				<language>en-us</language>
+				<atom:link href="http://localhost:21080/_api/feed/v1/default/?feedID=15806482-DBA1-44F9-B534AC3CD46D6EF9" rel="self" type="application/rss+xml" />
+			
+				<item>
+					<title>Alpha &amp; &lt;Beta&gt; &quot;q&quot; &apos;a&apos; caf&#xe9;&#xa0;€</title>
+					<link>http://localhost:21080/rss-probe/alpha-q-a-cafe/</link><guid isPermaLink="false">158053EF-C9D4-6929-05C6A52C84A6295E</guid>
+					<pubDate>Wed, 04 Mar 2026 05:06:07 GMT</pubDate>
+					<description>&lt;p&gt;Hello &lt;a href=&quot;http://localhost:21080/x/&quot;&gt;link&lt;/a&gt; &lt;IMG src=&quot;http://localhost:21080/img.png&apos;&gt; caf&#xe9; &amp; more&lt;/p&gt;
+line2</description>
+					<category>News &amp; &lt;Views&gt;</category><category>Second</category> 
+				</item>
+		
+				<item>
+					<title>Bravo</title>
+					<link>http://localhost:21080/rss-probe/bravo/</link><guid isPermaLink="false">158057D4-D512-B5BF-CF8E199A6A1A8533</guid>
+					<pubDate>Thu, 12 Nov 2026 08:50:09 GMT</pubDate>
+					<description></description>
+					
+				</item>
+		
+				<item>
+					<title>Charlie</title>
+					<link>http://localhost:21080/rss-probe/charlie/</link><guid isPermaLink="false">15805ACF-05EE-4B82-49CAD469874A2D99</guid>
+					<pubDate>Sun, 01 Feb 2026 00:00:00 GMT</pubDate>
+					<description>&lt;p&gt;word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word &lt;/p&gt;</description>
+					
+				</item>
+		
+				<item>
+					<title>Delta</title>
+					<link>http://localhost:21080/rss-probe/delta/</link><guid isPermaLink="false">15805DD8-BC63-79EF-E9476218A9EB9996</guid>
+					<pubDate>Thu, 12 Nov 2026 08:50:09 GMT</pubDate>
+					<description>Delta summary</description>
+					<category>Second</category> <enclosure url="http://localhost:21080/_api/render/file/?fileID=15805D62-C8CA-4E0E-9698777D3A1BE112&amp;fileEXT=.pdf" length="4321" type="application/pdf" />
+				</item>
+		
+				<item>
+					<title>Echo</title>
+					<link>http://localhost:21080/rss-probe/echo/</link><guid isPermaLink="false">15A1A0C9-9605-64D4-F3C64A03CF41A5DA</guid>
+					<pubDate>Thu, 12 Nov 2026 08:53:47 GMT</pubDate>
+					<description></description>
+					<enclosure url="http://localhost:21080/_api/render/file/?fileID=15A180F6-BD5F-82C0-1ED6DE7462FC2744&amp;fileEXT=.txt" length="77" type="text/plain" />
+				</item>
+		</channel>
+		</rss> 

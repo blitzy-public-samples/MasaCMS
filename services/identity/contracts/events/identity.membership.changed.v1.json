@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:opt2:identity:event:identity.membership.changed.v1",
+  "$comment": "source-sha: 696383140578f8dea3ece26f80cd7bfb370ddf0f",
+  "title": "identity.membership.changed.v1 payload",
+  "description": "Full set of groups one user belongs to.",
+  "x-opt2-kind": "state",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "userId",
+    "siteId",
+    "groupIds"
+  ],
+  "properties": {
+    "userId": {
+      "description": "User id as stored in tusersmemb.UserID.",
+      "$ref": "#/$defs/cfUuid"
+    },
+    "siteId": {
+      "description": "Legacy site id of the user row (tusers.SiteID).",
+      "$ref": "#/$defs/siteId"
+    },
+    "groupIds": {
+      "description": "Group ids the user is a member of; empty when none.",
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/cfUuid"
+      }
+    }
+  },
+  "$defs": {
+    "cfUuid": {
+      "description": "35-character ColdFusion UUID.",
+      "type": "string",
+      "pattern": "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{16}$"
+    },
+    "siteId": {
+      "description": "Legacy Masa site id.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 50
+    }
+  }
+}

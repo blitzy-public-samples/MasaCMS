@@ -1,0 +1,26 @@
+# Secret-scan configuration for gitleaks v8.30.1; findings at the pin live in gitleaks-baseline.json.
+title = "opt2"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Installed, built and generated output; never authored source"
+paths = [
+  # npm installs
+  '''(^|/)node_modules/''',
+  # VCS internals
+  '''(^|/)\.git/''',
+  # vitest coverage reports
+  '''(^|/)coverage/''',
+  # tsc output
+  '''(^|/)dist/''',
+  # next build output
+  '''(^|/)\.next/''',
+  # types generated from contracts by prebuild
+  '''(^|/)src/generated/''',
+  # Playwright reports and traces from local e2e runs
+  '''^harness/(playwright-report|test-results)/''',
+  # provider cache written by terraform init
+  '''(^|/)\.terraform/''',
+]

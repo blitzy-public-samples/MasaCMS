@@ -1,0 +1,224 @@
+/**
+ * Admin permission routes: `getContentPermissions`, `getModulePermissions`, `updateModulePermissions` and `updateModulePermissionsWithoutNode` of the `cperm` screens
+ * [legacy: admin/core/controllers/cperm.cfc:78-160], and `getReversePermLookUp` of the cUsers gate.
+ */
+import { AuthDenial, Roles, type Opt2AuthContext, type Opt2RouteConfig, type UserClaims } from '@opt2/platform/auth';
+import { cfEq } from '@opt2/platform/legacy-compat';
+import { answeringQueryFault, legacyParamsOf, type FastifyInstance, type FastifyRequest } from '@opt2/platform/service-kit';
+import {
+  groupListForSite,
+  groupPermVerdict,
+  permissionsForContent,
+  permittedGroups,
+  reversePermLookUp,
+  updateModulePermissions,
+  type PermissionDeps,
+  type ReversePermDeps,
+  type SiteGroupLists,
+} from '../domain/permissions.js';
+import type { components } from '../generated/openapi.js';
+import { validateCsrfForRoute, type CsrfRouteDeps } from './internal-csrf.js';
+
+// cperm.update is not served here: it also saves the node's approval-chain assignment, which strategies-content owns, so
+// that spanning action stays on legacy (decision list) and its tpermissions writes reach identity through write windows.
+
+type Schemas = components['schemas'];
+
+/** The permission, reverse-lookup and CSRF operations the routes delegate to. */
+export type AdminPermissionRouteDeps = { permissions: PermissionDeps; reverseLookup: ReversePermDeps; csrf: CsrfRouteDeps['csrf'] };
+
+type GroupRow = SiteGroupLists['privateGroups'][number];
+
+interface ContentParams {
+  contentId: string;
+}
+
+interface ModuleParams {
+  moduleId: string;
+}
+
+// The cPerm before() gate admits members of the site's private-pool Admin group and S2 users [legacy: admin/core/controllers/cperm.cfc:79-81].
+const ROUTE_AUTH: Opt2RouteConfig = Object.freeze({ transport: 'service', requires: Object.freeze([Roles.s2, Roles.siteAdmin]) });
+
+// The lookup answers for any signed-in session, so the route is public and its handler requires both credentials.
+const LOOKUP_AUTH: Opt2RouteConfig = Object.freeze({ transport: 'service', public: true });
+
+const SITE_MANAGER_MODULE = '00000000000000000000000000000000000';
+const HOME_CONTENT = '00000000000000000000000000000000001';
+
+const CF_UUID = {
+  type: 'string',
+  minLength: 35,
+  maxLength: 35,
+  pattern: '^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{16}$',
+} as const;
+
+const TEXT = { type: 'string' } as const;
+
+// ContentId, ModuleId and ModulePermissionsUpdate as the contract declares them; Fastify validates them once, before the handler.
+const PATH_ID = { type: 'string', minLength: 35, maxLength: 35 } as const;
+
+const CONTENT_PARAMS = { type: 'object', required: ['contentId'], properties: { contentId: PATH_ID } } as const;
+
+const MODULE_PARAMS = { type: 'object', required: ['moduleId'], properties: { moduleId: PATH_ID } } as const;
+
+// Fastify's Ajv coerces a value of no listed type into the first listed one. Listing `array` first turns null and unlisted
+// scalars into lists that `items` or `contains: false` refuses, and keeps a one-item list from collapsing into a string.
+const GROUP_IDS = { type: ['array', 'string'], items: CF_UUID } as const;
+const FORM_VALUE = { type: ['array', 'string', 'number', 'boolean'], contains: false } as const;
+
+/** An anchored pattern matching `field` in any letter case, as the merged CFML scope matches keys. */
+function anyCase(field: string): string {
+  return `^${field.replace(/[a-z]/g, (letter) => `[${letter.toUpperCase()}${letter}]`)}$`;
+}
+
+const MODULE_UPDATE_BODY = {
+  type: 'object',
+  additionalProperties: FORM_VALUE,
+  patternProperties: {
+    [anyCase('groupid')]: GROUP_IDS,
+    [anyCase('topid')]: TEXT,
+    [anyCase('moduleid')]: TEXT,
+    [anyCase('csrf_token')]: TEXT,
+    [anyCase('csrf_token_expires')]: TEXT,
+  },
+} as const;
+
+/** `updatemodule` redirects in legacy test order, each to `action` with `siteid` and then `extra` appended. */
+const MODULE_REDIRECTS: ReadonlyArray<readonly [moduleId: string, action: string, extra: Readonly<Record<string, string>>]> = [
+  ['00000000000000000000000000000000004', 'cUsers.list', {}],
+  ['00000000000000000000000000000000005', 'cEmail.list', {}],
+  ['00000000000000000000000000000000007', 'cForm.list', {}],
+  ['00000000000000000000000000000000008', 'cUsers.list', {}],
+  ['00000000000000000000000000000000009', 'cMailingList.list', {}],
+  [SITE_MANAGER_MODULE, 'cArch.list', { topid: HOME_CONTENT, moduleid: SITE_MANAGER_MODULE }],
+  ['00000000000000000000000000000000010', 'cCategory.list', {}],
+  ['00000000000000000000000000000000011', 'cFeed.list', {}],
+  ['00000000000000000000000000000000014', 'cChangesets.list', {}],
+  ['00000000000000000000000000000000015', 'cComments.default', {}],
+  ['00000000000000000000000000000000016', 'cArch.list', { activeTab: '2' }],
+];
+
+/** The redirect `updatemodule` answers for `rc.moduleid`: the first CFML `==` match, else the plugin list [legacy: admin/core/controllers/cperm.cfc:123-159]. */
+function moduleRedirect(moduleId: string, siteId: string): Schemas['AdminRedirect'] {
+  const match = MODULE_REDIRECTS.find(([id]) => cfEq(moduleId, id));
+  if (match === undefined) return { action: 'cPlugins.list', params: { siteid: siteId } };
+  const [, action, extra] = match;
+  return { action, params: { siteid: siteId, ...extra } };
+}
+
+/** The verified user claims; both roles are user roles, so their absence is a missing credential. */
+function userOf(auth: Opt2AuthContext): UserClaims {
+  if (auth.user === undefined) throw AuthDenial.unauthenticated('missing-credential');
+  return auth.user;
+}
+
+/** The merged url and form value `rc[name]` holds, the name matched ignoring case. */
+function rcValue(request: FastifyRequest, name: string): unknown {
+  const params = legacyParamsOf(request);
+  const key = Object.keys(params).find((candidate) => candidate.toLowerCase() === name);
+  return key === undefined ? undefined : params[key];
+}
+
+/** `rc.siteid`: the supplied `siteid` as spelled, or the token's site when absent or empty [legacy: admin/Application.cfc:401-412]. */
+function rcSiteId(request: FastifyRequest, user: UserClaims): string {
+  const supplied = rcValue(request, 'siteid');
+  return typeof supplied === 'string' && supplied !== '' ? supplied : user.site;
+}
+
+/** `rc.groupid` as the list loop reads it: a comma list or its items, a simple value as its string, `''` when absent [legacy: core/mura/permission.cfc:652]. */
+function rcGroupIds(request: FastifyRequest): string | string[] {
+  const value = rcValue(request, 'groupid');
+  if (value === undefined) return '';
+  return Array.isArray(value) ? value.map(String) : String(value);
+}
+
+/** SQL Server equality of two `char(35)` ids: case-insensitive, trailing spaces ignored. */
+function sameId(a: string, b: string): boolean {
+  return a.replace(/ +$/, '').toLowerCase() === b.replace(/ +$/, '').toLowerCase();
+}
+
+/** A query row's group name as CFML renders it, NULL as `''`. */
+function groupNameOf(group: GroupRow): string {
+  return group.groupname ?? '';
+}
+
+/** Registers the `cperm` main and module reads, the module grant save and the reverse lookup; the auth hooks answer a `siteid` other than the token's site with 403. */
+export async function registerAdminPermissionRoutes(app: FastifyInstance, deps: AdminPermissionRouteDeps): Promise<void> {
+  const { permissions } = deps;
+  const csrfDeps: CsrfRouteDeps = { csrf: deps.csrf };
+
+  // [legacy: admin/core/controllers/cperm.cfc:110-112, admin/core/views/cperm/main.cfm:77-78,141,166,182]
+  app.get<{ Params: ContentParams; Reply: Schemas['ContentPermissions'] }>(
+    '/v1/permissions/content/:contentId',
+    { schema: { params: CONTENT_PARAMS }, config: { opt2: ROUTE_AUTH } },
+    async (request) => {
+      const user = userOf(request.opt2Auth);
+      const { contentId } = request.params;
+      const node = { siteId: user.site, contentId };
+      const [lists, rows] = await Promise.all([groupListForSite(permissions, user.site), permissionsForContent(permissions, node)]);
+      const verdicts = (groups: readonly GroupRow[]): Schemas['ContentGroupVerdict'][] =>
+        groups.map((group) => ({ groupId: group.userid, groupName: groupNameOf(group), perm: groupPermVerdict(rows, group.userid) }));
+      return { contentId, siteId: rcSiteId(request, user), groups: verdicts(lists.privateGroups), publicGroups: verdicts(lists.publicGroups) };
+    },
+  );
+
+  // [legacy: admin/core/controllers/cperm.cfc:114-117, admin/core/views/cperm/module.cfm:77,103,113,126]
+  app.get<{ Params: ModuleParams; Reply: Schemas['ModulePermissions'] }>(
+    '/v1/permissions/modules/:moduleId',
+    { schema: { params: MODULE_PARAMS }, config: { opt2: ROUTE_AUTH } },
+    async (request) => {
+      const user = userOf(request.opt2Auth);
+      const { moduleId } = request.params;
+      const [lists, rows] = await Promise.all([
+        groupListForSite(permissions, user.site),
+        permittedGroups(permissions, { siteId: user.site, contentId: moduleId }),
+      ]);
+      const grants = (groups: readonly GroupRow[]): Schemas['ModuleGroupGrant'][] =>
+        groups.map((group) => ({
+          groupId: group.userid,
+          groupName: groupNameOf(group),
+          granted: rows.some((row) => sameId(row.groupid, group.userid)),
+        }));
+      return { moduleId, siteId: rcSiteId(request, user), privateGroups: grants(lists.privateGroups), publicGroups: grants(lists.publicGroups) };
+    },
+  );
+
+  /** `updatemodule` writing node `moduleId`, the action URL's contentid. */
+  async function saveModuleGrants(request: FastifyRequest, moduleId: string): Promise<Schemas['ModulePermissionsResult']> {
+    const user = userOf(request.opt2Auth);
+    // The form's hidden `moduleid` is rc.moduleid, the CSRF context and redirect key; the node id stands in when it is absent.
+    const posted = rcValue(request, 'moduleid');
+    const rcModuleId = typeof posted === 'string' ? posted : moduleId;
+    const written = await validateCsrfForRoute(csrfDeps, request, rcModuleId);
+    if (written) {
+      await updateModulePermissions(permissions, { siteId: user.site, moduleId, groupIds: rcGroupIds(request) });
+    }
+    return { written, redirect: moduleRedirect(rcModuleId, rcSiteId(request, user)) };
+  }
+
+  // [legacy: admin/core/controllers/cperm.cfc:119-160, core/mura/permission.cfc:643-669]
+  app.put<{ Params: ModuleParams; Reply: Schemas['ModulePermissionsResult'] }>(
+    '/v1/permissions/modules/:moduleId',
+    { schema: { params: MODULE_PARAMS, body: MODULE_UPDATE_BODY }, config: { opt2: ROUTE_AUTH } },
+    async (request, reply) => answeringQueryFault(reply, () => saveModuleGrants(request, request.params.moduleId)),
+  );
+
+  // A form action without `contentid` leaves rc.contentid '' [legacy: admin/core/controllers/cperm.cfc:84], and legacy writes under it.
+  app.put<{ Reply: Schemas['ModulePermissionsResult'] }>(
+    '/v1/permissions/modules',
+    { schema: { body: MODULE_UPDATE_BODY }, config: { opt2: ROUTE_AUTH } },
+    async (request, reply) => answeringQueryFault(reply, () => saveModuleGrants(request, '')),
+  );
+
+  // [legacy: admin/core/controllers/cusers.cfc:106, core/mura/user/userManager.cfc:1050-1086]
+  app.get<{ Reply: Schemas['ReversePermLookUp'] }>(
+    '/v1/permissions/reverse-lookup',
+    { config: { opt2: LOOKUP_AUTH } },
+    async (request) => {
+      const { user, service } = request.opt2Auth;
+      if (user === undefined || service === undefined) throw AuthDenial.unauthenticated('missing-credential');
+      return { granted: await reversePermLookUp(deps.reverseLookup, user) };
+    },
+  );
+}

@@ -1,0 +1,20 @@
+-- Person columns of people.person.changed.v1 that group member listings read, typed as identity.group_account types them.
+ALTER TABLE identity.person_contact ADD COLUMN groupname text;
+ALTER TABLE identity.person_contact ADD COLUMN jobtitle text;
+ALTER TABLE identity.person_contact ADD COLUMN mobilephone text;
+ALTER TABLE identity.person_contact ADD COLUMN website text;
+ALTER TABLE identity.person_contact ADD COLUMN ext integer;
+ALTER TABLE identity.person_contact ADD COLUMN contactform text;
+ALTER TABLE identity.person_contact ADD COLUMN subscribe integer;
+ALTER TABLE identity.person_contact ADD COLUMN notes text;
+ALTER TABLE identity.person_contact ADD COLUMN description text;
+ALTER TABLE identity.person_contact ADD COLUMN interests text;
+ALTER TABLE identity.person_contact ADD COLUMN keepprivate smallint;
+ALTER TABLE identity.person_contact ADD COLUMN photofileid char(35) COLLATE identity.legacy_char_ci;
+ALTER TABLE identity.person_contact ADD COLUMN imname text;
+ALTER TABLE identity.person_contact ADD COLUMN imservice text;
+ALTER TABLE identity.person_contact ADD COLUMN tags text;
+ALTER TABLE identity.person_contact ADD COLUMN created timestamp(3) without time zone;
+ALTER TABLE identity.person_contact ADD COLUMN lastupdate timestamp(3) without time zone;
+ALTER TABLE identity.person_contact ADD COLUMN lastupdateby text;
+ALTER TABLE identity.person_contact ADD COLUMN lastupdatebyid text;

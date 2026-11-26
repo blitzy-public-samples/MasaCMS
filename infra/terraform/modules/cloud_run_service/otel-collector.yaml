@@ -1,0 +1,40 @@
+# OpenTelemetry Collector config for the otelcol-google Cloud Run sidecar.
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: localhost:4318
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+  googleclientauth:
+
+processors:
+  resourcedetection:
+    detectors: [gcp]
+    timeout: 10s
+  resource/gcp_project_id:
+    attributes:
+      - key: gcp.project_id
+        value: ${env:GOOGLE_CLOUD_PROJECT}
+        action: insert
+  batch:
+    send_batch_size: 200
+    send_batch_max_size: 200
+    timeout: 5s
+
+exporters:
+  otlp:
+    endpoint: telemetry.googleapis.com:443
+    balancer_name: pick_first
+    auth:
+      authenticator: googleclientauth
+
+service:
+  extensions: [googleclientauth, health_check]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [resourcedetection, resource/gcp_project_id, batch]
+      exporters: [otlp]

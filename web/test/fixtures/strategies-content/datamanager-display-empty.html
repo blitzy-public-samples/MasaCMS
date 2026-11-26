@@ -1,0 +1,102 @@
+
+<script type="text/javascript">
+function setFields(){
+document.getElementById('responseDisplayFields').value=document.getElementById('summaryList2').value + '~' + document.getElementById('detailList2').value;
+}
+</script>
+
+
+  <form novalidate="novalidate" name="frmDisplayFields" method="post" action="index.cfm">
+
+<div class="mura-control-group">
+
+  <div class="mura-control-group half">
+  <label>Available Fields</label>
+    <select name="availableFields" size="10" id="availableFields" class="multiSelect">
+      
+    </select>
+  </div>
+  <div class="mura-control-group half">
+    <table class="mura-control-table">
+      <tr>
+        <td class="nested"><input type="button" class="btn btn-sm" value=">>" onclick="dataManager.addObject('availableFields','summaryList','summaryList2');" class="objectNav btn">
+          <br />
+          <input type="button" class="btn btn-sm" value="<<" onclick="dataManager.deleteObject('summaryList','summaryList2');" class="objectNav btn">            </td>
+        <td class="nested" style="width:76%;"> <label>Summary Display Fields</label><br />
+          <select name="summaryList" id="summaryList" size="4" style="width:100%;" class="multiSelect">
+            
+          </select>
+          <input type="hidden" name="summaryList2" id="summaryList2" value="" class="multiSelect"></td>
+        <td  class="nested"><input type="button" class="btn btn-sm" value="Up" onclick="dataManager.moveUp('summaryList','summaryList2');" class="objectNav btn">
+          <br />
+          <input type="button" class="btn btn-sm" value="Down" onclick="dataManager.moveDown('summaryList','summaryList2');" class="objectNav btn"></td>
+      </tr>
+      <tr>
+        <td class="nested"><input type="button" class="btn btn-sm" value=">>" onclick="dataManager.addObject('availableFields','detailList','detailList2');" class="objectNav btn">
+          <br />
+          <input type="button" class="btn btn-sm" value="<<" onclick="dataManager.deleteObject('detailList','detailList2');" class="objectNav btn"></td>
+        <td class="nested"><label>Detail Display Fields</label><br />
+          <select name="detailList"  id="detailList" size="4" style="width:100%;">
+            
+          </select>
+          <input type="hidden" name="detailList2" id="detailList2" value=""></td>
+        <td  class="nested"><input type="button" class="btn btn-sm" value="Up" onclick="dataManager.moveUp('detailList','detailList2');" class="objectNav btn">
+          <br />
+          <input type="button" class="btn btn-sm" value="Down" onclick="dataManager.moveDown('detailList','detailList2');" class="objectNav btn"></td>
+      </tr>
+    </table>
+  </div>
+</div>
+
+<div class="mura-control-group">
+  <label>Records Per Page
+  </label>
+  <select name="nextN" class="dropdown mura-constrain mura-numeric">
+    
+      <option value="5" >5</option>
+    
+      <option value="10" selected>10</option>
+    
+      <option value="15" >15</option>
+    
+      <option value="20" >20</option>
+    
+      <option value="25" >25</option>
+    
+      <option value="30" >30</option>
+    
+      <option value="35" >35</option>
+    
+      <option value="40" >40</option>
+    
+      <option value="45" >45</option>
+    
+      <option value="50" >50</option>
+    
+  </select>
+</div>
+
+<div class="mura-control-group">
+  <label>Sort By</label>
+  <select name="sortBy" class="dropdown mura-constrain">
+    
+  </select>
+  <select name="sortDirection" class="dropdown mura-constrain">
+    <option value="asc" selected>Ascending</option>
+    <option value="desc" >Descending</option>
+  </select>
+</div>
+
+<div class="mura-actions">
+  <div class="form-actions">
+    <button class="btn mura-primary" onclick="submitForm(document.forms.frmDisplayFields,'setDisplay');"><i class="mi-check-circle"></i>Update</button>
+  </div>
+</div>
+
+<input type="hidden" value="setDisplay" name="action">
+<input type="hidden" name="muraAction" value="cArch.datamanager" />
+<input type="hidden" name="contentid" value="00000000000000000000000000000000001" />
+<input type="hidden" name="siteid" value="default" />
+<input type="hidden" name="moduleid" value="00000000000000000000000000000000000" />
+
+</form>

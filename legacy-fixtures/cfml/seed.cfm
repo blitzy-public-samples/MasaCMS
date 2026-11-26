@@ -1,0 +1,771 @@
+<!--- SYNTHETIC: legacy-fixtures - no Masa equivalent; legacy oracle in legacy-fixtures/ --->
+<cfscript>
+	variables.envelope = createObject("component", "lib.envelope").init();
+	variables.auth = createObject("component", "lib.auth").init();
+
+	variables.masaParts = "sites,groups,users,memberships,categories,content,files,oauthClients,formResponses,commenters,comments";
+	variables.loopback = "127.0.0.1,::1,0:0:0:0:0:0:0:1";
+	// Fixture tables of the dataset; the seed holds no rows for them.
+	variables.fixtureTables = "synthetic.person_archive";
+	// Envelope params carry only these three values, never the body, so no credential can be echoed.
+	variables.call = {"part" = "", "offset" = 0, "limit" = ""};
+	// The file types the seed generator writes (legacy-fixtures/seed/src/masa.ts buildFiles).
+	variables.seedFileExtensions = "png,pdf";
+
+	/** Returns row[key], or fallback when the key is absent or JSON null. */
+	any function rowValue(required struct row, required string key, any fallback = "") {
+		return structKeyExists(arguments.row, arguments.key) ? arguments.row[arguments.key] : arguments.fallback;
+	}
+
+	/** Returns a copy of row without its JSON-null members, which Masa's bean setters cannot take. */
+	struct function rowData(required struct row) {
+		local.data = {};
+		for (local.key in arguments.row) {
+			if (structKeyExists(arguments.row, local.key)) {
+				local.data[local.key] = arguments.row[local.key];
+			}
+		}
+		return local.data;
+	}
+
+	/** Returns the row's remoteID, or its dataset id when it has none. */
+	string function remoteIdOf(required struct row, required string idKey) {
+		local.remoteID = rowValue(arguments.row, "remoteID");
+		return len(local.remoteID) ? local.remoteID : arguments.row[arguments.idKey];
+	}
+
+	/** True when a Masa read found a record; Masa answers with an array when several match. */
+	boolean function found(required any bean) {
+		return isArray(arguments.bean) || !arguments.bean.getIsNew();
+	}
+
+	/** Raises invalidParameters naming the row and the bean's error keys, never their values. */
+	void function requireValid(required any bean, required string rowId) {
+		local.errors = arguments.bean.getErrors();
+		if (!structIsEmpty(local.errors)) {
+			variables.envelope.raise("invalidParameters", "Row #arguments.rowId# failed validation: #listSort(structKeyList(local.errors), 'textnocase')#");
+		}
+	}
+
+	/** Returns the secret at path inside the request's credentials, or raises invalidParameters naming only the row. */
+	string function secretFor(required any credentials, required array path, required string rowId) {
+		local.node = arguments.credentials;
+		for (local.key in arguments.path) {
+			if (!isStruct(local.node) || !structKeyExists(local.node, local.key)) {
+				variables.envelope.raise("invalidParameters", "Row #arguments.rowId# has no credential");
+			}
+			local.node = local.node[local.key];
+		}
+		if (!isSimpleValue(local.node) || !len(local.node)) {
+			variables.envelope.raise("invalidParameters", "Row #arguments.rowId# has no credential");
+		}
+		return local.node;
+	}
+
+	/** Returns the canonical part name for a canonical or manifest (masa.<array>, fixtures.<schema>.<table>) name. */
+	string function canonicalPart(required string raw) {
+		local.name = trim(arguments.raw);
+		if (left(local.name, 5) == "masa.") {
+			local.name = mid(local.name, 6, len(local.name));
+		} else if (left(local.name, 9) == "fixtures.") {
+			local.name = "fixtures:" & mid(local.name, 10, len(local.name));
+		}
+		local.position = listFindNoCase(variables.masaParts, local.name);
+		if (local.position) {
+			return listGetAt(variables.masaParts, local.position);
+		}
+		if (reFindNoCase("^fixtures:[A-Za-z0-9_]+\.[A-Za-z0-9_]+$", local.name)) {
+			return "fixtures:" & mid(local.name, 10, len(local.name));
+		}
+		variables.envelope.raise("invalidParameters", "Unknown seed part");
+	}
+
+	/** Returns a non-negative integer url parameter, fallback when absent or empty, or raises invalidParameters. */
+	numeric function urlCount(required string name, required numeric fallback) {
+		if (!structKeyExists(url, arguments.name) || !len(url[arguments.name])) {
+			return arguments.fallback;
+		}
+		if (!isValid("integer", url[arguments.name]) || url[arguments.name] < 0) {
+			variables.envelope.raise("invalidParameters", "#arguments.name# must be a non-negative integer");
+		}
+		return int(url[arguments.name]);
+	}
+
+	/** Raises invalidParameters naming the row's dataset offset and the field unless each field, and each optional field present, is a Masa site id string. */
+	void function requireSiteIDs(required array rows, required string fields, string optional = "") {
+		for (local.i = 1; local.i <= arrayLen(arguments.rows); local.i++) {
+			for (local.field in listToArray(arguments.fields & "," & arguments.optional)) {
+				if (listFindNoCase(arguments.optional, local.field) && !structKeyExists(arguments.rows[local.i], local.field)) {
+					continue;
+				}
+				local.value = rowValue(arguments.rows[local.i], local.field, {});
+				// Masa's add-site form keeps only word characters and hyphens, and tsettings.siteID holds 25.
+				if (!isInstanceOf(local.value, "java.lang.String") || !len(local.value) || len(local.value) > 25 || reFind("[^A-Za-z0-9_-]", local.value)) {
+					variables.envelope.raise("invalidParameters", "Row at offset #variables.call.offset + local.i - 1# has an invalid #local.field#");
+				}
+			}
+		}
+	}
+
+	/** Returns each row's pageLimit as an integer, "" for a row without one, or raises invalidParameters naming the row's dataset offset. */
+	array function pageLimits(required array rows) {
+		local.limits = [];
+		for (local.i = 1; local.i <= arrayLen(arguments.rows); local.i++) {
+			local.value = rowValue(arguments.rows[local.i], "pageLimit");
+			// Masa writes the page limit into its SQL unquoted, and tsettings.PageLimit is an int.
+			if (isSimpleValue(local.value) && !len(local.value)) {
+				arrayAppend(local.limits, "");
+			} else if (isSimpleValue(local.value) && isNumeric(local.value) && local.value == int(local.value) && local.value >= 1 && local.value <= 2147483647) {
+				arrayAppend(local.limits, int(local.value));
+			} else {
+				variables.envelope.raise("invalidParameters", "Row at offset #variables.call.offset + local.i - 1# has an invalid pageLimit");
+			}
+		}
+		return local.limits;
+	}
+
+	/** Creates, through Masa's imageSize bean, each custom image size the site's theme config declares and the site lacks; Masa's start-up looks sizes up through a 1 s query cache (settingsImageSizeBean.getQuery), so two start-ups close together would each insert one for a new site. */
+	void function seedThemeImageSizes(required string siteID) {
+		local.themePath = application.settingsManager.getSite(arguments.siteID).getThemeIncludePath();
+		local.themeDir = expandPath(local.themePath);
+		// Read and parsed as Masa's start-up reads it (core/appcfc/onApplicationStart_include.cfm).
+		if (fileExists(local.themeDir & "/config.xml.cfm")) {
+			savecontent variable = "local.config" {
+				include "#local.themePath#/config.xml.cfm";
+			}
+		} else if (fileExists(local.themeDir & "/config.xml")) {
+			local.config = fileRead(local.themeDir & "/config.xml");
+		} else {
+			return;
+		}
+		if (!isXML(local.config)) {
+			return;
+		}
+		local.root = xmlParse(local.config).xmlRoot;
+		if (!listFindNoCase("plugin,theme,mura,displayobject,contenttype", local.root.xmlName) || !isDefined("local.root.imagesizes")) {
+			return;
+		}
+		for (local.size in local.root.imagesizes.xmlChildren) {
+			// small, medium and large are site settings, not timagesizes rows.
+			if (compareNoCase(local.size.xmlName, "imagesize") || !structKeyExists(local.size.xmlAttributes, "name")
+				|| listFindNoCase("small,medium,large", local.size.xmlAttributes.name)) {
+				continue;
+			}
+			local.imageSize = application.serviceFactory.getBean("imageSize");
+			local.imageSize.setSiteID(arguments.siteID);
+			local.imageSize.setName(local.size.xmlAttributes.name);
+			// Uncached, unlike the bean's loadBy, so no empty answer is left for a start-up to reuse.
+			local.existing = queryExecute(
+				"SELECT sizeID FROM timagesizes WHERE siteID = :siteID AND name = :name",
+				{siteID = {value = arguments.siteID, cfsqltype = "cf_sql_varchar"}, name = {value = local.imageSize.getValue("name"), cfsqltype = "cf_sql_varchar"}}
+			);
+			if (local.existing.recordCount) {
+				continue;
+			}
+			if (structKeyExists(local.size.xmlAttributes, "height")) {
+				local.imageSize.setHeight(local.size.xmlAttributes.height);
+			}
+			if (structKeyExists(local.size.xmlAttributes, "width")) {
+				local.imageSize.setWidth(local.size.xmlAttributes.width);
+			}
+			local.imageSize.save();
+		}
+	}
+
+	/** Creates each absent site through settingsManager.create, which also creates its private-pool Admin group, and brings each existing site to its row's pageLimit through settingsManager.update; every site then gets its theme's image sizes. */
+	struct function seedSites(required array rows) {
+		requireSiteIDs(arguments.rows, "siteID,publicUserPoolID,privateUserPoolID,categoryPoolID,filePoolID,displayPoolID", "contentPoolID");
+		local.limits = pageLimits(arguments.rows);
+		local.inserted = 0;
+		// A seeded site takes the installed default site's theme, as Masa's add-site form preselects an installed theme.
+		local.theme = application.settingsManager.getSite("default").getTheme();
+		for (local.i = 1; local.i <= arrayLen(arguments.rows); local.i++) {
+			local.row = arguments.rows[local.i];
+			local.pageLimit = local.limits[local.i];
+			if (application.settingsManager.siteExists(local.row.siteID)) {
+				if (len(local.pageLimit) && val(application.settingsManager.getSite(local.row.siteID).getPageLimit()) != local.pageLimit) {
+					requireValid(application.settingsManager.update({"siteID" = local.row.siteID, "pageLimit" = local.pageLimit}), local.row.siteID);
+				}
+				seedThemeImageSizes(local.row.siteID);
+				continue;
+			}
+			local.data = {
+				"siteID" = local.row.siteID,
+				"site" = local.row.site,
+				"domain" = rowValue(local.row, "domain"),
+				"domainAlias" = rowValue(local.row, "domainAlias"),
+				"orderNo" = rowValue(local.row, "orderNo", 0),
+				"theme" = local.theme,
+				"publicUserPoolID" = local.row.publicUserPoolID,
+				"privateUserPoolID" = local.row.privateUserPoolID,
+				"categoryPoolID" = local.row.categoryPoolID,
+				"filePoolID" = local.row.filePoolID,
+				"displayPoolID" = local.row.displayPoolID,
+				"contentPoolID" = rowValue(local.row, "contentPoolID", local.row.siteID)
+			};
+			if (len(local.pageLimit)) {
+				local.data["pageLimit"] = local.pageLimit;
+			}
+			requireValid(application.settingsManager.create(local.data), local.row.siteID);
+			seedThemeImageSizes(local.row.siteID);
+			local.inserted++;
+		}
+		return {"total" = arrayLen(arguments.rows), "inserted" = local.inserted};
+	}
+
+	/** Returns the Masa id of a membership row's group: its dataset id when stored, else the group of that name in the row's pool. */
+	string function resolveGroup(required struct row) {
+		local.groupID = rowValue(arguments.row, "groupID");
+		if (len(local.groupID)) {
+			local.group = application.userManager.read(userid = local.groupID);
+			if (!local.group.getIsNew() && local.group.getType() == 1) {
+				return local.groupID;
+			}
+		}
+		local.name = rowValue(arguments.row, "groupname");
+		local.site = rowValue(arguments.row, "groupSiteID", rowValue(arguments.row, "siteID"));
+		if (len(local.name) && len(local.site)) {
+			local.group = application.userManager.readByGroupName(local.name, local.site, rowValue(arguments.row, "isPublic", 0));
+			if (!isArray(local.group) && !local.group.getIsNew()) {
+				return local.group.getUserID();
+			}
+		}
+		local.named = len(local.groupID) ? local.groupID : local.name;
+		variables.envelope.raise("invalidParameters", "Membership of user #rowValue(arguments.row, 'userID')# names an unknown group #local.named#");
+	}
+
+	/** Creates each absent Type 1 group with its dataset id; a group of the same name in the pool, such as Masa's Admin, counts as present. */
+	struct function seedGroups(required array rows) {
+		local.inserted = 0;
+		for (local.row in arguments.rows) {
+			local.remoteID = remoteIdOf(local.row, "groupID");
+			if (found(application.userManager.readByRemoteID(local.remoteID, local.row.siteID))
+				|| found(application.userManager.readByGroupName(local.row.groupname, local.row.siteID, rowValue(local.row, "isPublic", 0)))) {
+				continue;
+			}
+			local.data = rowData(local.row);
+			// userBean.groupID is the membership list, so a group row's own id must not reach it.
+			structDelete(local.data, "groupID");
+			local.data.userID = local.row.groupID;
+			local.data.type = 1;
+			local.data.remoteID = local.remoteID;
+			requireValid(application.userManager.create(local.data), local.row.groupID);
+			local.inserted++;
+		}
+		return {"total" = arrayLen(arguments.rows), "inserted" = local.inserted};
+	}
+
+	/** True when password matches the stored Masa password the way userUtility.lookupByCredentials checks it at login. */
+	boolean function passwordMatches(required string password, required string stored) {
+		local.config = application.configBean;
+		if (!local.config.getEncryptPasswords()) {
+			return arguments.stored eq arguments.password;
+		}
+		return (local.config.getJavaEnabled() && local.config.getBCryptPasswords() && application.utility.checkBCryptHash(arguments.password, arguments.stored))
+			|| hash(arguments.password, local.config.getDefaultHashAlgorithm()) eq arguments.stored;
+	}
+
+	/** Creates each absent Type 2 user with its dataset id and brings each existing one to its password from the request's credentials. */
+	struct function seedUsers(required array rows, required any credentials) {
+		local.inserted = 0;
+		for (local.row in arguments.rows) {
+			local.remoteID = remoteIdOf(local.row, "userID");
+			local.password = secretFor(arguments.credentials, [local.row.siteID, local.row.username], local.row.userID);
+			local.existing = application.userManager.readByRemoteID(local.remoteID, local.row.siteID);
+			// Several matches leave no single account to bring to the supplied password.
+			if (isArray(local.existing)) {
+				variables.envelope.raise("invalidParameters", "Row #local.row.userID# matches several users");
+			}
+			if (found(local.existing)) {
+				if (!passwordMatches(local.password, application.userManager.readUserPassword(local.existing.getUserID()))) {
+					local.update = {"userID" = local.existing.getUserID(), "siteID" = local.existing.getSiteID(), "password" = local.password};
+					requireValid(application.userManager.update(local.update, false, false), local.row.userID);
+				}
+				continue;
+			}
+			local.data = rowData(local.row);
+			local.data.type = 2;
+			local.data.s2 = 0;
+			local.data.remoteID = local.remoteID;
+			local.data.password = local.password;
+			if (len(rowValue(local.row, "groupID"))) {
+				local.groups = [];
+				for (local.groupID in listToArray(local.row.groupID)) {
+					arrayAppend(local.groups, resolveGroup({"userID" = local.row.userID, "groupID" = trim(local.groupID)}));
+				}
+				local.data.groupID = arrayToList(local.groups);
+			}
+			requireValid(application.userManager.create(local.data), local.row.userID);
+			local.inserted++;
+		}
+		return {"total" = arrayLen(arguments.rows), "inserted" = local.inserted};
+	}
+
+	/** Adds each absent membership through userManager.createUserInGroup. */
+	struct function seedMemberships(required array rows) {
+		local.inserted = 0;
+		for (local.row in arguments.rows) {
+			local.groupID = resolveGroup(local.row);
+			local.held = application.userManager.readMemberships(local.row.userID);
+			if (listFindNoCase(valueList(local.held.groupID), local.groupID)) {
+				continue;
+			}
+			application.userManager.createUserInGroup(local.row.userID, local.groupID);
+			local.inserted++;
+		}
+		return {"total" = arrayLen(arguments.rows), "inserted" = local.inserted};
+	}
+
+	/** Creates each absent category with its dataset id in its category pool site. */
+	struct function seedCategories(required array rows) {
+		local.inserted = 0;
+		for (local.row in arguments.rows) {
+			local.remoteID = remoteIdOf(local.row, "categoryID");
+			if (found(application.categoryManager.read(remoteID = local.remoteID, siteID = local.row.siteID))) {
+				continue;
+			}
+			local.data = rowData(local.row);
+			local.data.parentID = rowValue(local.row, "parentID");
+			local.data.remoteID = local.remoteID;
+			requireValid(application.categoryManager.create(local.data), local.row.categoryID);
+			local.inserted++;
+		}
+		return {"total" = arrayLen(arguments.rows), "inserted" = local.inserted};
+	}
+
+	/** Returns how many leading versions of the row its stored Masa history holds, or raises invalidParameters when it matches no such prefix. */
+	numeric function savedVersions(required struct row, required query hist) {
+		local.stored = [];
+		for (local.i = arguments.hist.recordCount; local.i >= 1; local.i--) {
+			arrayAppend(local.stored, arguments.hist.menuTitle[local.i] & chr(9) & (arguments.hist.approved[local.i] ? 1 : 0));
+		}
+		local.kept = [];
+		for (local.k = 1; local.k <= arrayLen(arguments.row.versions); local.k++) {
+			local.version = arguments.row.versions[local.k];
+			local.approved = rowValue(local.version, "approved", 0) ? 1 : 0;
+			// An approved version saved over a stored one archives it, and with purgeDrafts Masa then deletes every draft.
+			if (local.approved && local.k > 1 && application.configBean.getPurgeDrafts()) {
+				local.kept = arrayFilter(local.kept, (entry) => right(entry, 1) == "1");
+			}
+			arrayAppend(local.kept, local.version.title & chr(9) & local.approved);
+			if (!compare(arrayToList(local.kept, chr(10)), arrayToList(local.stored, chr(10)))) {
+				return local.k;
+			}
+		}
+		variables.envelope.raise("invalidParameters", "Row #arguments.row.contentID# has a stored content history that differs from its versions");
+	}
+
+	/** Returns Masa's objectlist<columnID> fields for a row's display objects: a JSON array of [object, name, objectID] per region, in row order. */
+	struct function objectLists(required struct row) {
+		local.regions = {};
+		for (local.object in rowValue(arguments.row, "objects", [])) {
+			local.field = "objectlist" & int(local.object.columnID);
+			if (!structKeyExists(local.regions, local.field)) {
+				local.regions[local.field] = [];
+			}
+			arrayAppend(local.regions[local.field], [local.object.object, local.object.name, local.object.objectID]);
+		}
+		local.lists = {};
+		for (local.field in local.regions) {
+			local.lists[local.field] = serializeJSON(local.regions[local.field]);
+		}
+		return local.lists;
+	}
+
+	/** Saves each content node's missing versions oldest first, so Masa writes one tcontent history row per version. */
+	struct function seedContent(required array rows) {
+		local.inserted = 0;
+		for (local.row in arguments.rows) {
+			local.remoteID = remoteIdOf(local.row, "contentID");
+			local.hist = application.contentManager.getHist(local.row.contentID, local.row.siteID);
+			local.saved = local.hist.recordCount ? savedVersions(local.row, local.hist) : 0;
+			if ((local.saved && local.saved == arrayLen(local.row.versions))
+				|| (!local.saved && found(application.contentManager.read(remoteID = local.remoteID, siteID = local.row.siteID)))) {
+				continue;
+			}
+			local.categoryIDs = rowValue(local.row, "categoryIDs", []);
+			local.node = {
+				"contentID" = local.row.contentID,
+				"siteID" = local.row.siteID,
+				"moduleID" = rowValue(local.row, "moduleID", "00000000000000000000000000000000000"),
+				"parentID" = local.row.parentID,
+				"type" = local.row.type,
+				"subType" = rowValue(local.row, "subType", "Default"),
+				"isNav" = rowValue(local.row, "isNav", 1),
+				"display" = rowValue(local.row, "display", 1),
+				"remoteID" = local.remoteID,
+				"categoryID" = arrayToList(local.categoryIDs)
+			};
+			// Masa's category form posts one categoryAssign<id without dashes> field per assigned category; 0 is "not featured".
+			for (local.categoryID in local.categoryIDs) {
+				local.node["categoryAssign" & replace(local.categoryID, "-", "", "all")] = 0;
+			}
+			if (structKeyExists(local.row, "responseMessage")) {
+				local.node["responseMessage"] = local.row.responseMessage;
+			}
+			// A new File node must name its file; saved without an upload, it keeps each version's body, the file's filename.
+			if (structKeyExists(local.row, "fileID")) {
+				local.node["fileID"] = local.row.fileID;
+			}
+			// contentManager.save writes the saved version's tcontentobjects rows from its objectlist<columnID> fields.
+			structAppend(local.node, objectLists(local.row));
+			// The dataset's contentHistID is never passed: Masa always generates it, and a given one would be read as the version to edit.
+			for (local.k = local.saved + 1; local.k <= arrayLen(local.row.versions); local.k++) {
+				local.version = local.row.versions[local.k];
+				local.data = duplicate(local.node);
+				local.data.title = local.version.title;
+				local.data.menuTitle = local.version.title;
+				local.data.summary = rowValue(local.version, "summary");
+				local.data.body = rowValue(local.version, "body");
+				local.data.approved = rowValue(local.version, "approved", 0);
+				requireValid(application.contentManager.save(local.data), local.row.contentID);
+			}
+			local.inserted++;
+		}
+		return {"total" = arrayLen(arguments.rows), "inserted" = local.inserted};
+	}
+
+	/** Raises invalidParameters naming the row's dataset offset unless its fileID is a CF UUID and its filename a bare seed file name whose stored copy stays in its file pool's cache directory. */
+	void function requireFileRows(required array rows) {
+		for (local.i = 1; local.i <= arrayLen(arguments.rows); local.i++) {
+			local.row = arguments.rows[local.i];
+			local.at = "Row at offset #variables.call.offset + local.i - 1#";
+			local.fileID = rowValue(local.row, "fileID", {});
+			local.filename = rowValue(local.row, "filename", {});
+			if (!isInstanceOf(local.fileID, "java.lang.String") || !isValid("uuid", local.fileID)) {
+				variables.envelope.raise("invalidParameters", "#local.at# has an invalid fileID");
+			}
+			if (!isInstanceOf(local.filename, "java.lang.String") || reFind("[/\\[:cntrl:]]", local.filename) || !find(".", local.filename)
+				|| !listFindNoCase(variables.seedFileExtensions, listLast(local.filename, "."))) {
+				variables.envelope.raise("invalidParameters", "#local.at# has an invalid filename");
+			}
+			// fileDAO.create writes <fileDir>/<filePoolID>/cache/file/<fileID>.<lowercased extension>.
+			local.store = createObject("java", "java.io.File").init(application.configBean.getFileDir() & "/" & application.settingsManager.getSite(local.row.siteID).getFilePoolID() & "/cache/file").getCanonicalPath();
+			local.target = createObject("java", "java.io.File").init(local.store & "/" & local.fileID & "." & lCase(listLast(local.filename, "."))).getCanonicalFile();
+			if (compare(local.target.getParent(), local.store)) {
+				variables.envelope.raise("invalidParameters", "#local.at# has a destination outside its file store");
+			}
+		}
+	}
+
+	/** Stores each absent file under its dataset id through Masa's upload path, which writes the _source, _small and _medium image renditions. */
+	struct function seedFiles(required array rows) {
+		requireFileRows(arguments.rows);
+		local.inserted = 0;
+		local.fileManager = application.serviceFactory.getBean("fileManager");
+		for (local.row in arguments.rows) {
+			if (!application.serviceFactory.getBean("file").loadBy(fileID = local.row.fileID).getIsNew()) {
+				continue;
+			}
+			local.dir = getTempDirectory() & createUUID();
+			directoryCreate(local.dir);
+			try {
+				local.path = local.dir & "/" & getFileFromPath(local.row.filename);
+				fileWrite(local.path, binaryDecode(local.row.bytes, rowValue(local.row, "encoding", "base64") == "hex" ? "hex" : "base64"));
+				local.upload = local.fileManager.emulateUpload(filePath = local.path);
+				// The same steps as fileBean.save(), which is not used because it replaces the fileID with a new UUID.
+				local.args = structCopy(local.upload);
+				structAppend(local.args, local.fileManager.Process(local.upload, local.row.siteID));
+				if (isStruct(local.args.exif)) {
+					local.args.exif = serializeJSON(local.args.exif);
+				}
+				local.args.fileExt = local.upload.serverFileExt;
+				local.args.filename = local.row.filename;
+				local.args.fileID = local.row.fileID;
+				local.args.siteID = local.row.siteID;
+				local.args.moduleID = local.row.moduleID;
+				local.args.contentID = rowValue(local.row, "contentID");
+				local.args.remoteID = remoteIdOf(local.row, "fileID");
+				local.fileManager.create(argumentCollection = local.args);
+			} finally {
+				directoryDelete(local.dir, true);
+			}
+			local.inserted++;
+		}
+		return {"total" = arrayLen(arguments.rows), "inserted" = local.inserted};
+	}
+
+	/** Saves each absent OAuth client with its dataset id and brings each existing one to its secret from the request's credentials. */
+	struct function seedOAuthClients(required array rows, required any credentials) {
+		local.inserted = 0;
+		for (local.row in arguments.rows) {
+			local.secret = secretFor(arguments.credentials, [local.row.clientID], local.row.clientID);
+			local.client = application.serviceFactory.getBean("oauthClient").loadBy(clientid = local.row.clientID);
+			if (!local.client.getIsNew()) {
+				if (compare(local.client.getClientSecret(), local.secret)) {
+					local.client.set("clientsecret", local.secret);
+					local.client.save();
+					requireValid(local.client, local.row.clientID);
+				}
+				continue;
+			}
+			local.client.set({
+				"clientid" = local.row.clientID,
+				"clientsecret" = local.secret,
+				"siteid" = local.row.siteID,
+				"userid" = rowValue(local.row, "userID"),
+				"name" = local.row.name,
+				"description" = rowValue(local.row, "description"),
+				"granttype" = rowValue(local.row, "grantType", "client_credentials"),
+				"redirecturl" = rowValue(local.row, "redirectURL")
+			});
+			local.client.save();
+			requireValid(local.client, local.row.clientID);
+			local.inserted++;
+		}
+		return {"total" = arrayLen(arguments.rows), "inserted" = local.inserted};
+	}
+
+	/** Returns a dataset yyyy-mm-ddTHH:nn:ss.lll timestamp as a datetime to the second, or raises invalidParameters naming the row. */
+	date function datasetTimestamp(required any text, required string rowId) {
+		if (!isSimpleValue(arguments.text) || !reFind("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}$", arguments.text)) {
+			variables.envelope.raise("invalidParameters", "Row #arguments.rowId# has an invalid timestamp");
+		}
+		return createDateTime(mid(arguments.text, 1, 4), mid(arguments.text, 6, 2), mid(arguments.text, 9, 2), mid(arguments.text, 12, 2), mid(arguments.text, 15, 2), mid(arguments.text, 18, 2));
+	}
+
+	/** Stores each absent form response under its dataset id through dataCollectionManager.update, the data manager's Update path, which keeps the given responseid and entered. */
+	struct function seedFormResponses(required array rows) {
+		local.inserted = 0;
+		for (local.row in arguments.rows) {
+			if (application.dataCollectionManager.read(local.row.responseID).recordCount) {
+				continue;
+			}
+			local.data = {
+				"responseid" = local.row.responseID,
+				"formid" = local.row.formID,
+				"siteid" = local.row.siteID,
+				"entered" = datasetTimestamp(local.row.entered, local.row.responseID)
+			};
+			local.names = [];
+			for (local.field in local.row.fields) {
+				arrayAppend(local.names, local.field.name);
+				local.data[local.field.name] = local.field.value;
+			}
+			local.data.fieldlist = arrayToList(local.names);
+			application.dataCollectionManager.update(local.data);
+			local.inserted++;
+		}
+		return {"total" = arrayLen(arguments.rows), "inserted" = local.inserted};
+	}
+
+	/** Saves each absent commenter with its dataset id through the commenter bean, as standardSetCommenterHandler does. */
+	struct function seedCommenters(required array rows) {
+		local.inserted = 0;
+		for (local.row in arguments.rows) {
+			local.commenter = application.serviceFactory.getBean("commenter").loadBy(commenterID = local.row.commenterID);
+			if (!local.commenter.getIsNew()) {
+				continue;
+			}
+			local.commenter.set({
+				"commenterid" = local.row.commenterID,
+				"name" = local.row.name,
+				"email" = local.row.email,
+				"remoteid" = local.row.remoteID
+			});
+			local.commenter.save();
+			requireValid(local.commenter, local.row.commenterID);
+			local.inserted++;
+		}
+		return {"total" = arrayLen(arguments.rows), "inserted" = local.inserted};
+	}
+
+	/** Saves each absent comment with its dataset id through contentManager.saveComment, under its seeded commenter. */
+	struct function seedComments(required array rows) {
+		local.inserted = 0;
+		for (local.row in arguments.rows) {
+			if (!application.contentManager.getCommentBean().loadBy(commentID = local.row.commentID).getIsNew()) {
+				continue;
+			}
+			local.data = rowData(local.row);
+			structDelete(local.data, "commenterID");
+			local.data.userID = local.row.commenterID;
+			local.data.entered = datasetTimestamp(local.row.entered, local.row.commentID);
+			// Read as stored, the comment makes standardSetCommenterHandler keep the commenter its userID names instead of keying one to the seeding admin.
+			local.data.isNew = 0;
+			requireValid(application.contentManager.saveComment(data = local.data, notify = false), local.row.commentID);
+			local.inserted++;
+		}
+		return {"total" = arrayLen(arguments.rows), "inserted" = local.inserted};
+	}
+
+	/** Accepts the empty part of a fixture table the seed holds no rows for; returns {total, inserted}. */
+	struct function seedFixture(required string part, required numeric rowCount) {
+		local.table = lCase(listRest(arguments.part, ":"));
+		if (!listFind(variables.fixtureTables, local.table)) {
+			variables.envelope.raise("invalidParameters", "Unknown seed part");
+		}
+		if (arguments.rowCount) {
+			variables.envelope.raise("invalidParameters", "#local.table# is seeded empty");
+		}
+		return {"total" = 0, "inserted" = 0};
+	}
+
+	/** Validates the request, selects its rows and runs the part's handler; returns {part, offset, limit, total, inserted}. */
+	struct function seed() {
+		if (!structKeyExists(url, "part") || !len(url.part)) {
+			variables.envelope.raise("invalidParameters", "part is required");
+		}
+		local.part = canonicalPart(url.part);
+		variables.call.part = local.part;
+		local.isFixture = left(local.part, 9) == "fixtures:";
+		local.fixtures = structKeyExists(url, "fixtures") && len(url.fixtures) ? url.fixtures : true;
+		if (!isBoolean(local.fixtures)) {
+			variables.envelope.raise("invalidParameters", "fixtures must be a boolean");
+		}
+		if (local.isFixture && !local.fixtures) {
+			variables.envelope.raise("badRequest", "Fixture parts are disabled; their owners are seeded directly");
+		}
+
+		// Another media type, such as a text/plain form, can be posted cross-site without a CORS preflight.
+		if (compareNoCase(trim(listFirst(cgi.content_type, ";", true)), "application/json")) {
+			variables.envelope.raise("invalidParameters", "The body must be application/json");
+		}
+		local.raw = getHTTPRequestData().content;
+		if (isBinary(local.raw)) {
+			local.raw = charsetEncode(local.raw, "utf-8");
+		}
+		if (!isJSON(local.raw)) {
+			variables.envelope.raise("invalidParameters", "The body is not JSON");
+		}
+		local.body = deserializeJSON(local.raw);
+		if (!isStruct(local.body) || !isArray(rowValue(local.body, "rows"))) {
+			variables.envelope.raise("invalidParameters", "The body has no rows array");
+		}
+		if (len(rowValue(local.body, "array")) && compareNoCase(canonicalPart(local.body.array), local.part)) {
+			variables.envelope.raise("invalidParameters", "The body holds another part");
+		}
+		local.base = rowValue(local.body, "offset", 0);
+		if (!isValid("integer", local.base) || local.base < 0) {
+			variables.envelope.raise("invalidParameters", "The body offset must be a non-negative integer");
+		}
+
+		// offset is a dataset-wide row index, as in the manifest and the part file, whose rows start at the body's own offset.
+		local.rowCount = arrayLen(local.body.rows);
+		local.offset = urlCount("offset", local.base);
+		if (local.offset < local.base || local.offset > local.base + local.rowCount) {
+			variables.envelope.raise("invalidParameters", "offset lies outside the part");
+		}
+		local.limit = urlCount("limit", local.base + local.rowCount - local.offset);
+		local.first = local.offset - local.base;
+		local.count = min(local.limit, local.rowCount - local.first);
+		variables.call.offset = local.offset;
+		variables.call.limit = local.limit;
+
+		if (local.isFixture) {
+			local.result = seedFixture(local.part, local.rowCount);
+		} else {
+			local.rows = local.count ? arraySlice(local.body.rows, local.first + 1, local.count) : [];
+			for (local.row in local.rows) {
+				if (!isStruct(local.row)) {
+					variables.envelope.raise("invalidParameters", "Every row must be an object");
+				}
+			}
+			// Masa interpolates a row's siteID into SQL and file paths, for example when it saves a child category or a file.
+			requireSiteIDs(local.rows, "", "siteID");
+			local.credentials = rowValue(local.body, "credentials", {});
+			switch (local.part) {
+				case "sites":
+					local.result = seedSites(local.rows);
+					break;
+				case "groups":
+					local.result = seedGroups(local.rows);
+					break;
+				case "users":
+					local.result = seedUsers(local.rows, local.credentials);
+					break;
+				case "memberships":
+					local.result = seedMemberships(local.rows);
+					break;
+				case "categories":
+					local.result = seedCategories(local.rows);
+					break;
+				case "content":
+					local.result = seedContent(local.rows);
+					break;
+				case "files":
+					local.result = seedFiles(local.rows);
+					break;
+				case "formResponses":
+					local.result = seedFormResponses(local.rows);
+					break;
+				case "commenters":
+					local.result = seedCommenters(local.rows);
+					break;
+				case "comments":
+					local.result = seedComments(local.rows);
+					break;
+				default:
+					local.result = seedOAuthClients(local.rows, local.credentials);
+			}
+		}
+		return {
+			"part" = local.part,
+			"offset" = local.offset,
+			"limit" = local.limit,
+			"total" = local.result.total,
+			"inserted" = local.result.inserted
+		};
+	}
+
+	/** Returns a log-record.v1 JSON line for an unhandled exception, free of request values and exception text. */
+	string function exceptionLogRecord(required any exception) {
+		local.record = [:];
+		local.record["timestamp"] = dateTimeFormat(dateConvert("local2utc", now()), "yyyy-mm-dd'T'HH:nn:ss.lll'Z'");
+		local.record["severity"] = "ERROR";
+		local.record["message"] = "Unhandled seed exception";
+		local.record["service"] = "legacy-fixtures";
+		local.record["version"] = "1.0.0";
+		local.record["env"] = "local";
+		local.record["requestId"] = createUUID();
+		local.record["route"] = cgi.script_name;
+		local.record["httpMethod"] = cgi.request_method;
+		local.record["statusCode"] = javaCast("int", 500);
+		local.error = [:];
+		local.error["type"] = structKeyExists(arguments.exception, "type") && reFind("^[A-Za-z0-9_.$-]{1,128}$", arguments.exception.type) ? arguments.exception.type : "Unknown";
+		local.error["message"] = "Unhandled Exception";
+		if (structKeyExists(arguments.exception, "tagContext") && isArray(arguments.exception.tagContext)) {
+			local.root = replace(expandPath("/"), "\", "/", "all");
+			local.frames = [];
+			for (local.frame in arguments.exception.tagContext) {
+				if (structKeyExists(local.frame, "template") && structKeyExists(local.frame, "line")) {
+					local.template = replace(local.frame.template, "\", "/", "all");
+					local.template = left(local.template, len(local.root)) == local.root ? mid(local.template, len(local.root) + 1, len(local.template)) : getFileFromPath(local.template);
+					arrayAppend(local.frames, local.template & ":" & local.frame.line);
+				}
+			}
+			local.error["stack"] = arrayToList(local.frames, chr(10));
+		}
+		local.record["error"] = local.error;
+		return serializeJSON(local.record);
+	}
+
+	// Errors are collected here and written after the try, because the envelope output aborts.
+	variables.result = {};
+	try {
+		// cgi.remote_addr is the socket peer; request.remoteAddr follows a configurable header and could be spoofed.
+		if (!variables.auth.currentUser().isLoggedIn() || !variables.auth.currentUser().isSuperUser() || !listFind(variables.loopback, cgi.remote_addr)) {
+			variables.envelope.raise("authorization");
+		}
+		if (cgi.request_method != "POST") {
+			variables.envelope.raise("invalidMethodCall");
+		}
+		// No params: the opt2-seed token pair is taken from the X-csrf_token headers only, never from url or form.
+		variables.auth.forRoute({"httpMethod" = "POST", "id" = "opt2-seed", "params" = {}}, getHTTPRequestData(false).headers).requireCsrf();
+		// Output Masa writes while seeding is captured and dropped: past 1 MB the page writer commits the response before the envelope sets its status.
+		savecontent variable="variables.seedOutput" {
+			variables.result = seed();
+		}
+	} catch (opt2fixture e) {
+		variables.failure = {"type" = listLast(e.type, "."), "message" = e.message};
+	} catch (any e) {
+		writeLog(type = "Error", file = "exception", text = exceptionLogRecord(e));
+		// The exception stays out of the envelope: it can hold row values.
+		variables.failure = {"type" = "server_error", "message" = ""};
+	}
+
+	if (structKeyExists(variables, "failure")) {
+		variables.envelope.fail(type = variables.failure.type, method = "seed", params = variables.call, message = variables.failure.message);
+	}
+	variables.envelope.success(method = "seed", params = variables.call, data = variables.result);
+</cfscript>

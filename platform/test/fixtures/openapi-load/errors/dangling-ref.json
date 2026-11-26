@@ -1,0 +1,1 @@
+{"openapi":"3.1.0","info":{"title":"dangling ref","version":"1.0.0","x-source-sha":"696383140578f8dea3ece26f80cd7bfb370ddf0f"},"paths":{},"components":{"schemas":{"Pair":{"$ref":"./dangling-ref.json#/x-opt2-variants/v/schemas/Pair"}}},"x-opt2-variants":{"v":{"schemas":{"Pair":{"type":"object","properties":{"a":{"$ref":"#/x-opt2-variants/v/schemas/Absent"}}}}}}}

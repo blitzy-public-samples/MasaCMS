@@ -1,0 +1,173 @@
+# @opt2/web — Masa admin on Next.js
+
+Source SHA: 696383140578f8dea3ece26f80cd7bfb370ddf0f
+
+A Next.js 16 App Router service built to reproduce the legacy Masa 7.6.1 admin screens without redesign, subject to the [known limitations](#known-limitations). This README states intended behaviour; equivalence is demonstrated only by the golden comparison and browser flows under [Tests](#tests). Browser URLs stay legacy (`/admin/?muraAction=…`), and the gateway maps each admin request here by the action's inventoried response mode (AAP 0.4.9).
+
+Web has no database and no state of its own: every read and write goes through the gateway to the owning service (AAP 0.5.3).
+
+## Layout
+
+| Path | Holds |
+|---|---|
+| `app/admin/[circuit]/[action]/route.ts` | `page` mode: full or compact layout, chosen as `admin/common/layouts/default.cfm` chooses (`compactDisplay eq 'true'`) |
+| `app/admin-actions/[circuit]/[action]/route.ts` | `redirect` mode: the write, then the legacy redirect or the re-rendered form |
+| `app/admin-raw/[circuit]/[action]/route.ts` | `fragment`, `json` and `download` modes |
+| `app/healthz/route.ts` | Liveness route: unauthenticated 200 `{"status":"ok"}`, like the service-kit `/healthz` |
+| `server.ts`, `src/server/` | The process entry (`node server.ts`): Next.js behind the platform logger, listening only after boot, one log line per request, graceful shutdown |
+| `instrumentation.ts`, `src/lib/boot.ts` | Start-up hook: validates the environment and Masa settings, builds the auth runtime and starts tracing |
+| `src/shell/` | `admin/common/layouts/template.cfm`, `compact.cfm` and their includes (`nav.cfm`, `header.cfm`, `dsp_secondary_menu.cfm`, `dialog.cfm`) |
+| `src/screens/<circuit>/` | Reproduced views |
+| `src/lib/` | Markup primitives (`html.ts`), legacy URLs (`urls.ts`), legacy responses (`responses.ts`), environment and Masa settings (`env.ts`), dates, telemetry, resource bundles, auth, the gateway client |
+| `src/generated/` | Build output of `npm run generate` (gitignored) |
+
+## What is reproduced
+
+| Screen group | Source views | Owning service |
+|---|---|---|
+| Login, logout, no-access, home redirect | `admin/core/views/clogin/`, `cmessage/` | identity |
+| Users: list, listusers, search, advanced search, edit user (Basic, Address Information, Group Memberships, Interests, Extended Attributes, Advanced, Content), edit address, route, downloads (`download`, `advancedSearchToCSV`) | `admin/core/views/cusers/` | people; identity (`editUser`, which writes `tuserstrikes`) |
+| Edit profile | `admin/core/views/ceditprofile/` | people |
+| Groups: edit group, group members, add and remove member, `downloadGroupMembers` | `admin/core/views/cusers/` | identity |
+| Permissions (main, module) | `admin/core/views/cperm/` | identity |
+| OAuth clients: list, delete | `admin/core/views/cwebservice/` | identity |
+| Sites list, edit site (all tabs; Razuna values are empty, see [Known limitations](#known-limitations)) | `admin/core/views/csettings/` | programs-sites |
+| Site Manager tree and tabs, history, status modal, Custom Entities (`scaffold`, the scaffolder's mount page) | `admin/core/views/carch/` | strategies-content |
+| Change sets, comments, categories, collections (feeds), forms dialogs, approval chains, site search | `admin/core/views/{cchangesets,ccomments,ccategory,cfeed,cform,cchain,cnav}/` | strategies-content |
+
+Not built here; legacy renders them in its own shell, reached through the gateway and its session bridge:
+
+- **Legacy-served:** email broadcaster (`cemail`), mailing lists (`cmailinglist`), dashboard (`cdashboard`), file manager (`cfilemanager`), bundles, export HTML and plugin actions (`csettings`), plugins (`cplugins`), the scaffolder circuit (`scaffold`), Razuna (`razuna`), and `carch` export, import, exportcontent, exportcomponent, importcomponent, emailTest, displayObjectModal and frontEndConfigurator (display-object CFML), and loadRepoManager (legacy answers the FW/1 viewNotFound error page).
+- **Halted** (`opt2/exceptions-list.md`): the image upload variants of `carch.update` and `carch.multiFileUpload`, and `carch.cropImage`, `rotateImage` and `flipImage` behind the image details screen (`EX-FILE-RENDITION`), because no other encoder reproduces the ColdFusion image engine's bytes; `carch.search`, `carch.multiFileUpload` and `carch.imageDetails` (`EX-CARCH-SEARCH-SITE`, `EX-CARCH-UPLOAD-PAGELIMIT`, `EX-CARCH-IMAGE-SIZES`), because each needs site settings (locking, URLs, page limit, rendition sizes) that no service serves; `carch.edit` (`EX-CARCH-EDIT-FORM`), because the edit form prints restrict groups and notify recipients, the theme's templates on the legacy web root and site settings that no contract serves strategies-content; `carch.loadSiteFlat` (`EX-CONTENT-FEED-UNORDERED-SORT`), because SQL Server's plan alone orders a sort by an absent extended attribute; `cFeed.import1` (`EX-FEED-REMOTE-OVERSIZE`), because legacy reads a remote feed of any size whole; the compact-display save of `cFeed.update` (`{closecompactdisplay=true}`, `EX-FEED-COMPACT-CLOSE`), because its close document prints the theme renderer's layout-manager flag, the home page URL and the session's front-end proxy location; the upload branch of `cForm.importForm` (`{formzip}`, `EX-FORM-IMPORT`), because the new Form's save needs site settings that no contract serves strategies-content; the user edit of `cUsers.update` (`{type=2,action=update}`) and `cEditProfile.update` (`EX-ROSTER-POOLMOVE`), because a pool move spans two tenants the roster protocol cannot write; `cWebService.edit` and `cWebService.save` (`EX-USER-FEED-TIE-ORDER`), because the edit form, which a rejected save re-renders, prints a Connected Account order SQL Server's sort decides; `carch.datamanager` (`EX-DATAMANAGER-STORED-PACKET`), because a response edit of a stored packet that is not WDDX fails with the WDDX reader's own message; and `cChain.save` (`EX-CCHAIN-SAVE-UNSCOPED-BEAN`), because a refused token's answer is the bean another session's save left in legacy's cached controller.
+- **Withheld** (decision list, `opt2/decision-list.md`): the forgot-password branch of `cLogin.main` and `cLogin.login` (`{status=sendlogin}`: with `autoresetpasswords` the mail saves the user through `userBean.save`, which spans identity, people and strategies-content), site add, update, delete, bundle deploy and copy (`csettings.updateSite{action=Add|Update|Delete}`, `{bundle}`, `sitecopyselect`, `sitecopy`), class extensions (`cextend`), trash (`ctrash`), permission saves (`cperm.update`), user and group delete (`cusers.update{type=2,action=Delete}`, `{type=1,action=Delete}`), address delete (`cusers.updateAddress{action=Delete}`), every photo and extended-data branch of `cusers.update`, `cusers.updateAddress` and `ceditprofile.update`, and the actions that write `tcontenteventreminders`: `carch.update`, `copy`, `importContent`, `updateObjectParams`, `saveQuickEdit`, `variationTargeting` and the approve branch of `approvalAction`, `cChangesets.publish` and `rollback`, and `cFeed.import2`.
+
+### Known legacy issues, reproduced as legacy shows them
+
+- The admin date mask shows `10/302/2026`: ACF 2023 reads `DD` in `MM/DD/YYYY` as day of year.
+- The header search form posts to a route that answers 404.
+- The group and user forms default to Member.
+
+The fourth known issue, the session id not rotated at login, belongs to identity. None of these is masked or fixed here (AAP 0.2.2).
+
+### Known limitations
+
+Settled gaps of the target, each commented at its source:
+
+- **Data manager** (`src/screens/carch/datamanager.ts`): `admin:carch.datamanager` is halted (`EX-DATAMANAGER-STORED-PACKET`), a `legacy-write` entry in every version, so no edge request reaches this screen.
+- **Site data for other sites** (`src/lib/request-context.ts` `siteLookups`; `src/shell/nav.ts` `dashboard`, `moduleEntries`, `users`): programs-sites serves a site's shell settings (`GET /v1/sites/{siteId}/shell`) to S2 users, site admins and every other private-pool user (`system-user`, editors such as `qa_editor` included), but only for the site the user token names; Edit Site data (`GET /v1/sites/{siteId}`) stays restricted to S2 users and site admins. Any other site is known only to exist, from identity's session site list, so for it the nav hides the site-flag-gated entries legacy shows (Dashboard, Change Sets, Comments, Collections, Email Broadcaster, Mailing Lists, the extranet Users menu), and its dates use the default locale rather than the site's own.
+- **Razuna** (`src/screens/csettings/editsite/razuna.ts`): the Edit Site Razuna tab renders legacy's markup with empty values, because Razuna settings (`trazunasettings`) stay on legacy; a site with stored Razuna settings differs in those values.
+
+## How it renders
+
+- Shell and screens are server-only TypeScript that produce escaped HTML strings through `src/lib/html.ts` (`html`, `attr`, `join`, `raw`). Each response mode is a route handler. Page mode answers the serialized legacy document: `<head>`, `<body>` and the `<html>` and `<body>` attributes as the layout writes them, with no React root or client script, so legacy jQuery, OneUI, CKEditor and nice-select are meant to operate on the DOM as on legacy; the browser flows under [Tests](#tests) demonstrate it.
+- Legacy static assets are referenced in place (`/admin/assets/**`, `/core/vendor/**`, `/core/modules/**`) and served by legacy through the gateway. Nothing is copied, and no component library or new stylesheet is added.
+- Labels come from `core/mura/resourceBundle/resources/*.properties` under the global overrides of `resource_bundles/` (`adminRbFor`). The core-module bundles of `core/modules/v1/core_assets/resource_bundles/` join only the site chain (`siteRbFor`). All three are compiled into `src/generated/resource-bundles/` at build time.
+- Masa global settings are read from `MURA_<SETTING>` variables, with the defaults of `core/templates/settings.template.cfm`. A value Masa would evaluate as CFML (`${…}`, `{{…}}`) resolves to `''`.
+- Links, form actions and redirects use the legacy form (`adminUrl` from `@opt2/platform/legacy-compat`, FW/1 `buildURL` as `buildUrl` in `src/lib/urls.ts`).
+
+## Gateway ↔ web contract
+
+This section is normative for `gateway/` (`src/admin/map.ts`, the dispatcher and its forwarding) and for `web/src/lib`. Header names are case-insensitive on the wire.
+
+1. **Listening.** Web listens on `PORT`: `8101` locally (`OPT2_PORT_WEB` in `harness/repro/ports.env`), `8080` on Cloud Run. Ingress is internal only, and the gateway is web's only invoker.
+2. **Paths by response mode** (AAP 0.4.9). `<circuit>` and `<action>` are the two parts of the admin route key's base key (`RouteKeyResult.baseKey` after `admin:`): the FW/1 action lower-cased, without `core:` and without variant braces, each URI-component-encoded. The query is the original query string byte for byte, never parsed or re-encoded; a request without one gets no `?`.
+
+   | Response mode | Web path | Method and body |
+   |---|---|---|
+   | `page` | `/admin/<circuit>/<action>?<original query>` | `HEAD` stays `HEAD`; `POST` keeps its method and body; any other method becomes `GET` without a body |
+   | `redirect` | `/admin-actions/<circuit>/<action>?<original query>` | Original method and body |
+   | `fragment`, `json`, `download` | `/admin-raw/<circuit>/<action>?<original query>` | Original method and body |
+
+   The mode is the inventoried one (`ResponseModes.modeFor(routeKey)`); an action without one is never `target`, so it never reaches web.
+3. **Request facts.** On every request in the `page`, `redirect`, `fragment`, `json` and `download` modes the gateway adds `X-Opt2-Original-Url`: the browser's request target as received, path and query, including FW/1 path-info pairs (for example `/admin/index.cfm/cusers/list/siteid/default?compactDisplay=true`). Web derives the path info and the URL scope from it and performs the FW/1 context merge itself (path pairs, then URL, then form, later overwriting earlier; `fuseaction` overriding `muraAction` per scope). Posted fields never enter the web query. Web takes the URL scope from `X-Opt2-Original-Url` and, in every mode, the form scope from the forwarded body: `application/x-www-form-urlencoded` or `multipart/form-data` fields in body order, a file part read as its file name; any other body, or none, gives an empty form scope. A repeated name joins as ColdFusion joins it: in the URL scope every value is appended after `,`; in the form scope a later value whose trim is empty is skipped, the next one replaces a value still empty, and any other is appended after `,`.
+4. **Inbound headers.**
+   - `Authorization: Bearer <site-scoped user token>`, minted by identity for the session and site (the request's `siteid`; for an admin request without one, the session's selected site identity holds, `session.siteid`, else `default`); absent when the request has no session, and web then has no `user` or `userToken`. An anonymous session's token has an empty `sub`: web verifies and forwards it like any user token for session-bound calls (identity's current session; CSRF token issuance, which answers 401 without a user token) and treats the request as logged out.
+   - `X-Serverless-Authorization: Bearer <gateway invocation credential>`: in the cloud a Google-signed ID token whose audience is web's origin, locally a service token from identity's local signer with audience `web`. Web answers a bare 403 when it is missing or names another caller, and a bare 401 for an invalid user token.
+   - `X-Request-Id`, `traceparent`, `tracestate`.
+   - `X-Forwarded-Host` (the browser's `Host`), `X-Forwarded-Proto`, `X-Forwarded-For`. `Host` itself is web's own address, which Cloud Run routes by.
+   - `Cookie`, `Accept-Encoding`, `Accept-Language` and `User-Agent` as the browser sent them. Legacy-session cookies from the gateway's jar are never sent to web.
+
+   The gateway strips every inbound `Authorization`, `X-Serverless-Authorization` and `X-OPT2-*` header before adding its own (AAP 0.5.1), and strips `RSC`, `Next-Router-*`, `Next-Url` and `Next-Action`, which would switch Next to its client-router protocol (`RSC: 1` answers a 307 to `?_rsc`). Web trusts no `X-Opt2-*` header other than `X-Opt2-Original-Url`, and never takes a tenant, user, role or site conclusion from a header.
+5. **Web's runtime assets.** `/_next/**` is a `static` cut-over entry owned by web, forwarded unchanged in both directions; legacy has no `/_next` path.
+6. **Outbound relay.** Web calls services only through the gateway, at `${OPT2_GATEWAY_URL}/opt2/svc/<service>/<service path>` (`GATEWAY_SERVICE_PREFIX` in `src/lib/env.ts`), where `<service>` is one of the four service folder names, for example `${OPT2_GATEWAY_URL}/opt2/svc/people/v1/users`. Each call carries the user token in `Authorization`, web's invocation credential in `X-Serverless-Authorization` (audience: the gateway's origin in the cloud, `gateway` locally), `X-Request-Id`, `traceparent` and `tracestate`. A screen's calls also carry `X-Opt2-Path-Pairs` (`PATH_PAIRS_HEADER` of `@opt2/platform/legacy-compat`) when rc holds FW/1 path pairs no url or form entry replaced: those pairs, urlencoded. Legacy's start-up scan never reads path pairs, so the owner keeps a relayed url or form entry equal to one as sent (`legacyScopesFrom`), where it scans every other. The gateway:
+   - verifies web's invocation credential (caller `web`), and answers 403 without it;
+   - strips `/opt2/svc/<service>`, forwards method, query and body unchanged to that service with its own invocation credential, and passes `Authorization` and `X-Opt2-Path-Pairs` on unchanged;
+   - answers 404 for any other `<service>`, and 503 on connection failure or timeout, without retrying and never reaching legacy;
+   - records an `X-Opt2-Write-Position` response header in the read-after-write barrier of the session named by the user token's `sid`, removes it, and returns status, headers (`Set-Cookie` and `Location` included) and body otherwise unchanged.
+
+   The values legacy's live site beans keep from their first request (`getThemeAssetPath`, `getApi('json','v1').getEndpoint(mode='rest')`, `getApi('feed','v1').getEndpoint()`) come from the gateway's own `GET ${OPT2_GATEWAY_URL}/internal/v1/legacy-site-paths` (`legacySitePaths`, `src/lib/site-paths.ts`), with web's invocation credential and no user token, called only where a legacy page evaluates them: the shell's `themepath` and `Mura.init`, the screens that print a theme path or the REST endpoint, and the cFeed list and Local edit views, which read the feed endpoint on every render.
+7. **Response normalisation.** Web's responses reach the client as sent, except:
+   - every mode: `x-nextjs-*` headers are dropped, and Next's router members (`rsc`, `next-router-state-tree`, `next-router-prefetch`, `next-router-segment-prefetch`) are removed from `Vary`, which is dropped when nothing remains;
+   - page mode (`/admin/<circuit>/<action>`):
+     - `Content-Type` becomes `text/html;charset=UTF-8` (`LEGACY_HTML_CONTENT_TYPE`);
+     - `Cache-Control` is removed only when it is Next's own (`private, no-cache, no-store, max-age=0, must-revalidate`);
+     - a 307 becomes legacy's `cflocation` 302: the same `Location`, an empty body, `Cache-Control: no-cache`, `Pragma: no-cache`, no `Expires`, as `fw1Redirect()` in `src/lib/responses.ts` emits it;
+   - everything else as sent, in particular `Generator`, `Strict-Transport-Security`, `Content-Language`, `Content-Encoding`, `Set-Cookie`, `Location`, `Expires` outside the 302 rewrite, and the `Content-Type` outside page mode;
+   - outside `/_next/**` and `/opt2/**`, the gateway adds `Content-Encoding: identity` where identity is negotiated and web named no encoding (a page-mode 302 included), and appends Masa's request-start `MXP_TRACKINGID` and `mobileFormat` cookies to `Set-Cookie` as legacy would set them for the client's request.
+8. **Fail closed.** Connection failure, timeout, or a 502, 503 or 504 from web is answered with `adminUnavailableResponse()` (503, the legacy admin error page), never with legacy and never retried. Web answers an unavailable service with that 503 itself, in every mode (`legacyUnavailable()` in `src/lib/responses.ts`), which the gateway replaces the same way. Any other error web does not map, a service's 500 included, is answered with legacy's runtime-error page (`legacyError()` in `src/lib/responses.ts`, at `500 An Error Occurred`), which the gateway passes through with its status and reason phrase: for a fault web reproduces where legacy raises it (`LegacyFaultError` of `@opt2/platform/legacy-compat`, also read from a service's `server_error` `stacktrace`), onError's debug page with its `500 Error`, message, `Datasource:`, `SQL:`, `Code:`, `Type:` and detail headings where the fault has them, after the `cfhtmlhead` text a view wrote before the fault (`LegacyHtmlHeadFaultError`), and without the stack trace, unless `MURA_DEBUGGINGENABLED` is a CFML boolean false; otherwise `core/templates/error.html`. A service's 401 or 403 is a denial, not unavailability: web raises `GatewayDenialError` and answers it with the access gate's redirect (`deniedGate()` in `src/lib/access-gate.ts`): to `clogin.logout` for 401; for 403, the controller `secure()` back to the `Referer` or `./`.
+
+## Build and run
+
+Prerequisites: Node.js 22.23.4 (`engines` in `package.json`, enforced by `engine-strict=true` in `.npmrc`) and npm 11.21.0. `npm start` also needs the environment below and, locally, the two key files in `${OPT2_STATE_DIR}/secrets/` that `harness/repro/up.sh` generates.
+
+```sh
+npm ci                # also installs and builds ../platform (postinstall)
+npm run generate      # service clients and resource bundles into src/generated/
+npm run build         # runs generate, then next build
+npm run typecheck     # tsc --noEmit over tsconfig.json (app/, src/, test/, config files); needs src/generated/
+npm run lint          # eslint with next/typescript and Next.js core-web-vitals rules (eslint.config.mjs)
+PORT=8101 npm start   # node server.ts; reads the environment below
+npm test              # runs generate, then vitest with coverage (>= 90% statements)
+```
+
+- `npm run generate` writes `src/generated/clients/<service>.ts` from each `../services/<service>/contracts/openapi.yaml`, and `src/generated/clients/gateway.ts` from `../gateway/contracts/openapi.yaml` (`generate:clients`) and `src/generated/resource-bundles/` from the legacy `.properties` files (`generate:rb`).
+- The container image is the Cloud Run artefact, built in CI only, from the repository root: `docker build -f web/Dockerfile .`. It listens on `8080`.
+- `node server.ts [--hostname <host>]` replaces `next start` everywhere (`npm start`, the container image, `harness/repro/up.sh`); without `--hostname` it listens on every interface. NODE_ENV defaults to `production`.
+  - Start-up: Next's `instrumentation.ts` hook runs `bootWeb()` (`src/lib/boot.ts`). A failure writes one `start-up failed` log line naming the invalid variables and exits with code 1, under `next start` too. The port opens only after boot succeeded.
+  - Logging: every line on stdout is log-record.v1, Next's own console output and Node's warnings included. Each request outside the admin pipeline gets one `request` line with route `/healthz`, `/_next/*` or `(unmatched)`; when its client disconnects first, the line is `request aborted`, with a status only if headers were sent. Pipeline requests keep their own line, aborted or not; it reports a streamed download at handover. A streamed download whose body then ends early gets one more line, with the request's fields, `latencyMs` to the end and the service call it relays: WARNING `download failed: <service> <METHOD> <path>` with `error` when the upstream fails or the 10 s call deadline fires, INFO `download abandoned: <service> <METHOD> <path>` when the client disconnects. Refusals (`WebAuthError`, `GatewayDenialError`) are WARNING `request denied: <reason>` lines; 5xx and unexpected errors are ERROR with `error`.
+  - Tracing: Next opens each request's SERVER span; the pipeline's span is its child, with `http.request.method`, `http.route` (the route key), `http.response.status_code` and ERROR status on a 5xx.
+  - Shutdown: SIGTERM or SIGINT stops accepting connections, lets in-flight requests finish, closes Next, exports queued spans and flushes the log, then exits 143 or 130.
+- `GET /healthz` (`app/healthz/route.ts`) is the unauthenticated liveness route: 200 `{"status":"ok"}`, the answer the service-kit health route gives in the Fastify packages. `node server.ts` serves it on `PORT`, so the container image answers it on `8080`.
+- `harness/repro/up.sh` starts web with the rest of the stack; set `NEXT_TELEMETRY_DISABLED=1` when running it by hand.
+
+## Environment
+
+Every variable but `MURA_*` is validated at start-up by `webEnvSchema` (`src/lib/env.ts`, extending `baseEnvSchema` of `@opt2/platform/service-kit`), which counts a blank value as unset and throws `EnvValidationError` naming each offending variable.
+
+| Variable | Type / format | Local | Cloud | Use |
+|---|---|---|---|---|
+| `PORT` | Integer 1–65535 | Required: `8101` (`OPT2_PORT_WEB` in `harness/repro/ports.env`) | Required: `8080` | Listening port |
+| `OPT2_SERVICE_NAME` | `web` | Optional: unset is `web`, any other value is rejected | As local | Caller and callee name of local invocation credentials |
+| `OPT2_ENV` | `local` or `cloud` | Required: `local` | Required: `cloud` | Selects local or cloud authentication and logging |
+| `OPT2_GATEWAY_URL` | Absolute http(s) URL; trailing `/` trimmed | Required | Required | Base of the outbound relay |
+| `OPT2_JWKS_URL` | Absolute http(s) URL | Required: identity's `/.well-known/jwks.json` | Optional: defaults to Google's securetoken JWKS | Keys that verify user tokens |
+| `OPT2_TOKEN_ISSUER`, `OPT2_TOKEN_AUDIENCE` | String | Required: `opt2-local-identity`, `opt2-local` | Required: `https://securetoken.google.com/<project>`, `<project>` | Expected user-token `iss` and `aud` |
+| `OPT2_STATE_DIR` | Absolute path outside the repository checkout | Optional: defaults to `$HOME/.opt2/state`; holds the key files below | Optional; unused | Runtime state directory |
+| `GOOGLE_CLOUD_PROJECT` | Project id | Optional; unused | Required | Invocation-credential checks and log trace ids |
+| `PUBSUB_EMULATOR_HOST` | `host:port` | Optional; unused | Must be unset | None: web uses no Pub/Sub |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | Absolute http(s) URL | Optional: defaults to `http://localhost:4318` | As local (the collector sidecar) | OTLP/HTTP trace receiver |
+| `OTEL_LOG_LEVEL` | OTel diagnostic level name in any case; other text is `INFO` | Optional: unset writes no OTel diagnostics | As local | Level of the OTel SDK diagnostics tracing logs as `log-record.v1` lines |
+| `TZ` | IANA time-zone name, exactly cased, that the process applies (`UTC`, `America/New_York`) | Required | Required | The legacy server's time zone |
+| `OPT2_TASKS_ADAPTER`, `OPT2_STORAGE_ADAPTER` | `local` or `cloud` | Optional: defaults to, and must equal, `OPT2_ENV` | As local | None: web uses no tasks or storage |
+| `MURA_<SETTING>` (42 keys, below) | Masa setting text; booleans and numbers convert as CFML does | Optional | Optional | Masa global settings the shell and lib render |
+
+Locally `${OPT2_STATE_DIR}/secrets/` must hold the local signing key pair (`LOCAL_SECRET_FILES` in `@opt2/platform/auth`), which `harness/repro/up.sh` generates. The cloud reads neither file.
+
+- `token-signing-public.pem` verifies the gateway's invocation credential; without it web refuses to start.
+- `token-signing-private.pem` mints web's invocation credential for the relay; without it web starts, but every relay call fails.
+
+The nav Version menu's App Server, DB Server, Java and OS rows (`nav.cfm` 383-407) print legacy's runtime values, which web reads on each full-layout render from the gateway's own `GET /internal/v1/legacy-server/version-menu` (`getLegacyVersionMenu`, `src/shell/legacy-server.ts`); the gateway reads them from legacy through the bridge's `site.cfm?op=versionMenu`. A denial or other failed answer fails the page; an unavailable gateway or bridge answers the legacy 503.
+
+The Global Settings Plugins tab (`csettings/list.cfm` 312-350) lists legacy's installed plugins, which `tplugins` holds for the legacy plugin runtime: `src/screens/csettings/list.ts` reads them on each render from the gateway's own `GET /internal/v1/legacy-server/plugins` (`getLegacyPlugins`), which reads `pluginManager.getAllPlugins()` through the bridge's `site.cfm?op=plugins`. Failures behave as for the Version menu.
+
+The Masa settings web reads: `MURA_TITLE`, `MURA_CONTEXT`, `MURA_ADMINDIR`, `MURA_ADMINDOMAIN`, `MURA_ADMINEMAIL`, `MURA_ADMINSSL`, `MURA_SESSIONTIMEOUT`, `MURA_RENDERMURAALERTS`, `MURA_SECURECOOKIES`, `MURA_COOKIEDOMAIN`, `MURA_SESSIONHISTORY`, `MURA_WINDOWDOCUMENTDOMAIN`, `MURA_LOCALE`, `MURA_ALLOWAUTOUPDATES`, `MURA_FILEMANAGERENABLED`, `MURA_FMSHOWSITEFILES`, `MURA_FMSHOWAPPLICATIONROOT`, `MURA_MODE`, `MURA_DBTYPE`, `MURA_PORT`, `MURA_HTMLEDITORTYPE`, `MURA_FILEDELIM`, `MURA_SITEIDINURLS`, `MURA_INDEXFILEINURLS`, `MURA_INDEXFILEINAPI`, `MURA_LEGACYINDEXFILELOCATION`, `MURA_HASHURLS`, `MURA_KEEPMETAKEYWORDS`, `MURA_FORMPOLLS`, `MURA_PROXYSERVER`, `MURA_PROXYUSER`, `MURA_SHOWUSAGETABS`, `MURA_FILEASSETPATH`, `MURA_COREPATH`, `MURA_PLUGINSPATH`, `MURA_EXPIREPASSWORDS`, `MURA_STRONGPASSWORDS`, `MURA_WEBROOT`, `MURA_APPRELOADKEY`, `MURA_JAVAENABLED`, `MURA_DEBUGGINGENABLED`, `MURA_SITEDIR`, `MURA_ASSETPATH`, `MURA_FILEDIR` and `MURA_S3ASSETS`. Unlike the variables `webEnvSchema` parses, a blank `MURA_*` variable is set, not unset: its configBean setter receives `''`, so `MURA_TITLE=` gives an empty title. An unset variable takes its `core/templates/settings.template.cfm` value. The configBean default applies to a value the setter rejects (`MURA_ADMINDIR=` keeps `/admin`; `MURA_SESSIONHISTORY=` gives `1`, not the template's `0`) and to an unset variable the template lacks, except `MURA_INDEXFILEINAPI`, which then follows `MURA_INDEXFILEINURLS`. `legacySettingsEnvSchema` in `src/lib/env.ts` declares them, built from `SETTING_RULES`, the per-key table of defaults and conversions; `legacySettings()` parses `process.env` with it once, and it rejects no value. A `${…}` or `{{…}}` value resolves to `''`. `MURA_PORT` is Masa's `port` setting, not web's `PORT`. `MURA_WEBROOT` is legacy's web root directory, which Masa itself always takes from `expandPath('/muraWRM')`; `harness/repro/up.sh` sets it to the checkout legacy serves.
+
+Web reads no `PG_*`, `OPT2_DB_AUTH` or `CLOUD_SQL_INSTANCE` variable: it has no database. Leave them, `OPT2_MIGRATION_URL` and `OPT2_SERVICE_URLS` unset; the shared schema still rejects malformed values, and a set `OPT2_DB_AUTH` demands its database variables.
+
+## Tests
+
+- `web/test/**` holds DOM-model tests (`test/helpers/dom-model.ts`, cheerio) of the shell, screens and lib. They need no running stack.
+- Two vitest projects: `unit` needs no network; `integration` (`test/integration/**`) holds the loopback transport tests. `npm test` runs both with coverage; `npm run test:unit` or `npm run test:integration` runs one.
+- `npm run test:contract` runs `test/contract/`: web's requests and its fixture answers against the producers' `contracts/openapi.yaml`. `npm run test:security` runs `test/security/` (inbound credentials, the access gate, CSRF), `test/integration/access-gate-denials.test.ts` and every controller `*gate.test.ts` under `test/screens/`. Both generate the clients first, as `npm test` does.
+- Equivalence is demonstrated only by the proofs below, which run from `harness/` and `web/test/`; this README records no result:
+  - **Reproduced screens:** the golden scenarios GS-ID, GS-PE, GS-PS and GS-CO, replayed through the gateway and compared against legacy captures as each scenario declares (`compare` in `harness/golden/catalogue.yaml`): admin screens as DOM models (AAP 0.7.3), plus status, headers, authentication behaviour, envelopes, exports, and stored-row, stored-file and mail side effects; and the browser flow GS-UI-04, which compares DOM, XHR responses and console.

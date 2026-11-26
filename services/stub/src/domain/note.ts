@@ -1,0 +1,212 @@
+/** Note aggregate of the platform-proof stub: creation input, list paging, row mapping and the created-event payload. */
+import { z, type Clock } from '@opt2/platform/service-kit';
+import { localTimestamp } from '@opt2/platform/outbox';
+import { cfUuid, isCfUuid } from '@opt2/platform/legacy-compat';
+import type { StubNoteCreatedV1Payload } from '../generated/events/stub.note.created.v1.js';
+
+// pg reads `timestamp(3) without time zone` as a Date in the process zone; writes pass `localTimestamp` text.
+export type TimestampValue = Date | string;
+// pg reads `bigint` as decimal text.
+export type BigintValue = number | string;
+
+/** A stub note; `noteId` is a CF UUID and `created` local `timestamp(3)` text, as the event payload carries them. */
+export interface Note {
+  noteId: string;
+  title: string;
+  body: string;
+  created: string;
+  rowVersion: number;
+}
+
+// Row shapes are type aliases, not interfaces, so they stay assignable to the repository's `Record<string, unknown>` rows.
+/** A `stub.note` row; reads carry `tenant_id`, writes leave it to the repository's transaction tenant. */
+export type NoteRow = {
+  tenant_id?: string;
+  note_id: string;
+  title: string;
+  body: string;
+  created: TimestampValue;
+  row_version: BigintValue;
+};
+
+/**
+ * Validates a note create request; parameter names match ignoring case and unknown parameters are dropped. `pool` `public`
+ * asks for the note in the tenant of the site's registered public user pool.
+ */
+export const noteCreateSchema = z.preprocess(
+  lowerCaseKeys,
+  z.object({
+    title: z.string().trim().min(1).max(255),
+    body: z.string().max(10000).default(''),
+    pool: z.literal('public').optional(),
+  }),
+);
+
+/** A parsed note create request. */
+export type NoteCreateInput = z.infer<typeof noteCreateSchema>;
+
+/** Creates version 1 of a note with a fresh CF UUID, stamped from `clock`. */
+export function newNote(input: NoteCreateInput, clock: Clock): Note {
+  return {
+    noteId: cfUuid(),
+    title: input.title,
+    body: input.body,
+    created: localTimestamp(clock.now()),
+    rowVersion: 1,
+  };
+}
+
+/** Maps a note to the `stub.note` row the repository writes. */
+export function noteToRow(note: Note): NoteRow {
+  return {
+    note_id: note.noteId,
+    title: note.title,
+    body: note.body,
+    created: note.created,
+    row_version: note.rowVersion,
+  };
+}
+
+/** Maps a stored or written `stub.note` row back to its note. */
+export function noteFromRow(row: NoteRow): Note {
+  return {
+    noteId: row.note_id,
+    title: row.title,
+    body: row.body,
+    created: timestampText(row.created),
+    rowVersion: Number(row.row_version),
+  };
+}
+
+/** Keyset position after a note: its `created` local `timestamp(3)` text and its CF UUID `noteId`. */
+export interface NoteCursor {
+  created: string;
+  noteId: string;
+}
+
+/** Page size of a note list without `limit`. */
+export const NOTE_PAGE_DEFAULT = 50;
+
+/** Largest page size of a note list. */
+export const NOTE_PAGE_MAX = 1000;
+
+const noteCursorSchema = z.strictObject({
+  created: z.string().refine(isLocalTimestampText),
+  noteId: z.string().refine(isCfUuid),
+});
+
+/** A list page's `limit` parameter: decimal text from 1 to NOTE_PAGE_MAX, NOTE_PAGE_DEFAULT when absent. */
+export const pageLimitSchema = z
+  .string()
+  .regex(/^(0|[1-9][0-9]{0,14})$/)
+  .transform(Number)
+  .pipe(z.number().min(1).max(NOTE_PAGE_MAX))
+  .default(NOTE_PAGE_DEFAULT);
+
+/** Validates a note list query; `limit` defaults to NOTE_PAGE_DEFAULT, `after` decodes to its cursor, and parameter names match ignoring case. */
+export const noteListQuerySchema = z.preprocess(
+  lowerCaseKeys,
+  z.object({
+    limit: pageLimitSchema,
+    after: z
+      .string()
+      .transform((text, ctx) => {
+        const cursor = parseNoteCursor(text);
+        if (cursor === null) ctx.addIssue({ code: 'custom', message: 'after is not a note page cursor' });
+        return cursor ?? z.NEVER;
+      })
+      .nullable()
+      .default(null),
+  }),
+);
+
+/** The cursor positioned after `row`. */
+export function noteCursorOf(row: NoteRow): NoteCursor {
+  return { created: timestampText(row.created), noteId: row.note_id };
+}
+
+/** Encodes `cursor` as a page's opaque `next` text: base64url of its JSON. */
+export function formatNoteCursor(cursor: NoteCursor): string {
+  return Buffer.from(JSON.stringify({ created: cursor.created, noteId: cursor.noteId }), 'utf8').toString('base64url');
+}
+
+/** Decodes a `formatNoteCursor` text; null when it is not base64url JSON of a cursor. */
+export function parseNoteCursor(text: string): NoteCursor | null {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(Buffer.from(text, 'base64url').toString('utf8'));
+  } catch {
+    return null;
+  }
+  const parsed = noteCursorSchema.safeParse(raw);
+  return parsed.success ? parsed.data : null;
+}
+
+/** Payload of the `stub.note.created.v1` event of `note`. */
+export function noteCreatedPayload(note: Note): StubNoteCreatedV1Payload {
+  return {
+    noteId: note.noteId,
+    title: note.title,
+    body: note.body,
+    created: note.created,
+    rowVersion: note.rowVersion,
+  };
+}
+
+/** A note as projected from its created event; `created` and `projectedAt` are local `timestamp(3)` text. */
+export interface NoteProjection {
+  noteId: string;
+  title: string;
+  body: string;
+  created: string;
+  aggregateVersion: number;
+  applyCount: number;
+  lastEventId: string;
+  projectedAt: string;
+}
+
+/** A `stub.note_projection` row; reads carry `tenant_id`, writes leave it to the repository's transaction tenant. */
+export type NoteProjectionRow = {
+  tenant_id?: string;
+  note_id: string;
+  title: string;
+  body: string;
+  created: TimestampValue;
+  aggregate_version: BigintValue;
+  apply_count: number;
+  last_event_id: string;
+  projected_at: TimestampValue;
+};
+
+/** Maps a `stub.note_projection` row to its projection. */
+export function projectionFromRow(row: NoteProjectionRow): NoteProjection {
+  return {
+    noteId: row.note_id,
+    title: row.title,
+    body: row.body,
+    created: timestampText(row.created),
+    aggregateVersion: Number(row.aggregate_version),
+    applyCount: row.apply_count,
+    lastEventId: row.last_event_id,
+    projectedAt: timestampText(row.projected_at),
+  };
+}
+
+/** `timestamp(3)` column value as local `timestamp(3)` text. */
+export function timestampText(value: TimestampValue): string {
+  return value instanceof Date ? localTimestamp(value) : value;
+}
+
+// Only exact localTimestamp text of a real instant in years 0001-9999 passes; PostgreSQL has no year 0000, so a cursor's keyset cast to timestamp(3) cannot fail.
+/** Whether `text` is exact local `timestamp(3)` text of a real instant. */
+export function isLocalTimestampText(text: string): boolean {
+  const date = new Date(text.replace(' ', 'T'));
+  return /^(?!0000)\d{4}-/.test(text) && !Number.isNaN(date.getTime()) && localTimestamp(date) === text;
+}
+
+// The NoteCreate contract matches parameter names ignoring case, as legacy request scopes do; legacyParamsOf keeps the caller's spelling.
+/** `value` with its own keys lower-cased when it is a plain object; any other value unchanged. */
+export function lowerCaseKeys(value: unknown): unknown {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return value;
+  return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key.toLowerCase(), entry]));
+}

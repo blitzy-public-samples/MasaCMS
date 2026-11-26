@@ -1,0 +1,431 @@
+// Internal cut-over routes: registration as the contract declares it, operator and migration access, JSON-only bodies, findings, both status versions, orphan clearing and the rollback evidence activation reads.
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { INVOCATION_HEADER, Roles, recordedRoutes, rolesForService } from '@opt2/platform/auth';
+import { createLogger } from '@opt2/platform/logging';
+import { createService, loadEnv, type FastifyInstance } from '@opt2/platform/service-kit';
+import { assertResponseMatchesOpenApi, loadOpenApiDocument, mintServiceToken, mintUserToken, testVerifier } from '@opt2/platform/testing';
+import { afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { parse } from 'yaml';
+import type { InflightClearInput, InflightStore } from '../../src/cutover/inflight.js';
+import { registerCutoverRoutes } from '../../src/cutover/routes.js';
+import { ActivationRejected, CutoverConflict, type CutoverState, type CutoverStatus, type CutoverStatusV2 } from '../../src/cutover/state.js';
+import { buildTestGateway, type TestGateway } from '../helpers/app.js';
+import { committedGroups, committedTable, pagesOf, rollbackReport } from '../helpers/versions.js';
+
+const ROUTE = 'admin:cusers.update{type=1}';
+const AT = '2026-06-30T12:00:00.000+00:00';
+
+const STATUS: CutoverStatus = {
+  tableVersion: 'v0001',
+  previous: null,
+  epoch: 3,
+  groupAuthority: { 'g-identity-login': 'legacy' },
+  frozen: [ROUTE],
+  instances: [{ instanceId: 'gw-1', seenEpoch: 3, heartbeatAt: AT, live: true }],
+  acknowledgedEpoch: 3,
+  inflight: [{ instanceId: 'gw-dead', route: ROUTE, side: 'target', count: 1, oldestStartedAt: AT }],
+  sessionMode: 'legacy-primary',
+};
+
+const STATUS_V2: CutoverStatusV2 = { ...STATUS, inflight: STATUS.inflight.map((group) => ({ ...group, orphaned: true })) };
+
+const LEGACY_RESTART = { kind: 'legacy-restart', holderId: 'window-1', at: AT } as const;
+const GATES_CLOSED = { kind: 'gates-closed', holderId: 'transition-1', at: AT, units: ['identity.group_account'] } as const;
+
+type Call = [op: string, ...args: unknown[]];
+
+interface Behaviour {
+  activate?: CutoverState['activate'];
+  freeze?: CutoverState['freezePages'];
+  status?: CutoverState['statusPages'];
+  statusV2?: CutoverState['statusV2Pages'];
+  clearOrphans?: InflightStore['clearOrphans'];
+}
+
+const unexpected = (op: string) => (): never => {
+  throw new Error(`unexpected ${op} call`);
+};
+
+const apps: FastifyInstance[] = [];
+let contract: object;
+
+beforeAll(async () => {
+  contract = loadOpenApiDocument(new URL('../../contracts/openapi.yaml', import.meta.url), parse) as object;
+});
+
+afterEach(async () => {
+  await Promise.all(apps.splice(0).map((app) => app.opt2.shutdown()));
+});
+
+/** A gateway app carrying only the cut-over routes over a state and registry that record their calls. */
+async function cutoverApp(behaviour: Behaviour = {}): Promise<{ app: FastifyInstance; calls: Call[] }> {
+  const calls: Call[] = [];
+  const state: CutoverState = {
+    start: unexpected('start'),
+    stop: unexpected('stop'),
+    active: unexpected('active'),
+    epoch: unexpected('epoch'),
+    readEpochForWrite: unexpected('readEpochForWrite'),
+    isFrozen: unexpected('isFrozen'),
+    waitUnfrozen: unexpected('waitUnfrozen'),
+    awaitVisible: unexpected('awaitVisible'),
+    activate(input) {
+      calls.push(['activate', input]);
+      return (behaviour.activate ?? (() => Promise.resolve({ tableVersion: input.tableVersion, epoch: 4 })))(input);
+    },
+    freeze: unexpected('freeze'),
+    freezePages(routes, actor) {
+      calls.push(['freeze', routes, actor]);
+      return (behaviour.freeze ?? (() => Promise.resolve(pagesOf(STATUS))))(routes, actor);
+    },
+    unfreeze: unexpected('unfreeze'),
+    unfreezePages(routes, actor) {
+      calls.push(['unfreeze', routes, actor]);
+      return Promise.resolve(pagesOf({ ...STATUS, frozen: [] }));
+    },
+    status: unexpected('status'),
+    statusPages() {
+      calls.push(['status']);
+      return (behaviour.status ?? (() => Promise.resolve(pagesOf(STATUS))))();
+    },
+    statusV2Pages() {
+      calls.push(['statusV2']);
+      return (behaviour.statusV2 ?? (() => Promise.resolve(pagesOf(STATUS_V2))))();
+    },
+  };
+  const inflight: InflightStore = {
+    register: unexpected('register'),
+    remove: unexpected('remove'),
+    abandon: unexpected('abandon'),
+    list: unexpected('list'),
+    summary: unexpected('summary'),
+    summaryPages: unexpected('summaryPages'),
+    orphanSummaryPages: unexpected('orphanSummaryPages'),
+    clearOrphans(input: InflightClearInput) {
+      calls.push(['clearOrphans', input]);
+      return (behaviour.clearOrphans ?? (() => Promise.resolve({ cleared: 0, rows: [] })))(input);
+    },
+  };
+  const app = await createService({
+    name: 'gateway',
+    version: '1.0.0',
+    env: loadEnv(undefined, {
+      PORT: '8100',
+      OPT2_SERVICE_NAME: 'gateway',
+      OPT2_ENV: 'local',
+      OPT2_JWKS_URL: 'http://127.0.0.1:9/jwks',
+      OPT2_TOKEN_ISSUER: 'opt2-local-identity',
+      OPT2_TOKEN_AUDIENCE: 'opt2-local',
+      TZ: 'UTC',
+    }),
+    verifierOverride: testVerifier('gateway'),
+    logger: createLogger({ service: 'gateway', version: '1.0.0', env: 'local', destination: { write: () => undefined } }),
+  });
+  apps.push(app);
+  await registerCutoverRoutes(app, { state, inflight });
+  await app.ready();
+  return { app, calls };
+}
+
+/** Invocation credential of `caller` addressed to the gateway. */
+async function credentialOf(caller: string): Promise<Record<string, string>> {
+  const token = await mintServiceToken({ caller, audience: 'gateway', roles: rolesForService(caller) });
+  return { [INVOCATION_HEADER]: `Bearer ${token}` };
+}
+
+/** A site-admin user token, alone or beside the gateway's own invocation credential. */
+async function userHeaders(withInvocation: boolean): Promise<Record<string, string>> {
+  const token = await mintUserToken({ sub: 'test-site-admin', site: 'tenant-a', roles: [Roles.systemUser, Roles.siteAdmin] });
+  return { authorization: `Bearer ${token}`, ...(withInvocation ? await credentialOf('gateway') : {}) };
+}
+
+interface Probe {
+  method: 'GET' | 'POST';
+  url: string;
+  path: string;
+  payload?: object;
+}
+
+const PROBES: Record<string, Probe> = {
+  cutoverActivate: { method: 'POST', url: '/internal/v1/cutover/activate', path: '/internal/v1/cutover/activate', payload: { tableVersion: 'v0002' } },
+  cutoverFreeze: { method: 'POST', url: '/internal/v1/cutover/freeze', path: '/internal/v1/cutover/freeze', payload: { routes: [ROUTE] } },
+  cutoverUnfreeze: { method: 'POST', url: '/internal/v1/cutover/unfreeze', path: '/internal/v1/cutover/unfreeze', payload: { routes: [ROUTE] } },
+  cutoverStatus: { method: 'GET', url: '/internal/v1/cutover/status', path: '/internal/v1/cutover/status' },
+  cutoverStatusV2: { method: 'GET', url: '/internal/v2/cutover/status', path: '/internal/v2/cutover/status' },
+  inflightClearOrphans: {
+    method: 'POST',
+    url: '/internal/v1/inflight::clear-orphans',
+    path: '/internal/v1/inflight:clear-orphans',
+    payload: { side: 'legacy', evidence: LEGACY_RESTART },
+  },
+};
+
+// Each POST probe's body as a form; the platform's form parser yields the same top-level fields.
+const FORM_BODIES: Record<string, string> = {
+  cutoverActivate: 'tableVersion=v0002',
+  cutoverFreeze: `routes=${encodeURIComponent(ROUTE)}`,
+  cutoverUnfreeze: `routes=${encodeURIComponent(ROUTE)}`,
+  inflightClearOrphans: `side=legacy&evidence=${encodeURIComponent(JSON.stringify(LEGACY_RESTART))}`,
+};
+
+/** Injects `probe` with `headers` (the operator's credential by default) and an optional replacement body, raw text included. */
+async function call(
+  app: FastifyInstance,
+  probe: Probe,
+  opts: { headers?: Record<string, string>; payload?: object | string } = {},
+): Promise<{ status: number; body: unknown }> {
+  const res = await app.inject({
+    method: probe.method,
+    url: probe.path,
+    headers: opts.headers ?? (await credentialOf('operator')),
+    ...(probe.method === 'POST' ? { payload: opts.payload ?? probe.payload } : {}),
+  });
+  const body: unknown = res.body === '' ? undefined : res.json();
+  expect(() =>
+    assertResponseMatchesOpenApi(contract, {
+      method: probe.method,
+      path: probe.path,
+      status: res.statusCode,
+      contentType: res.headers['content-type'],
+      body,
+    }),
+  ).not.toThrow();
+  return { status: res.statusCode, body };
+}
+
+describe('registerCutoverRoutes', () => {
+  it('registers exactly the six contract operations with their declared roles and transport', async () => {
+    const { app } = await cutoverApp();
+    const paths = (contract as { paths: Record<string, Record<string, Record<string, unknown>>> }).paths;
+    const declared = Object.entries(PROBES).map(([operationId, probe]) => {
+      const operation = paths[probe.path]?.[probe.method.toLowerCase()];
+      expect(operation?.operationId).toBe(operationId);
+      return {
+        method: probe.method,
+        url: probe.url,
+        config: { transport: operation?.['x-opt2-transport'], requires: operation?.['x-opt2-requires'] },
+      };
+    });
+    expect(recordedRoutes(app).filter((route) => route.url.startsWith('/internal/'))).toEqual(declared);
+  });
+
+  it('activates the requested version for the calling operator', async () => {
+    const { app, calls } = await cutoverApp();
+    const res = await call(app, PROBES.cutoverActivate!);
+    expect(res).toEqual({ status: 200, body: { tableVersion: 'v0002', epoch: 4 } });
+    expect(calls).toEqual([['activate', { tableVersion: 'v0002', actor: 'operator' }]]);
+  });
+
+  it.each<[string, Error, number]>([
+    ['validation findings', new ActivationRejected([{ rule: 'legacy-served-never-target', route: ROUTE, message: 'legacy-served entry is target' }]), 400],
+    ['an unknown version file', new ActivationRejected([{ rule: 'unknown-version', message: 'no version file v0002.json' }]), 400],
+    ['a previous mismatch', new CutoverConflict([{ rule: 'previous-mismatch', message: 'previous v0001 of v0002 is not the active version null' }]), 409],
+  ])('answers %s with the findings', async (_label, error, status) => {
+    const { app } = await cutoverApp({ activate: () => Promise.reject(error) });
+    const res = await call(app, PROBES.cutoverActivate!);
+    expect(res).toEqual({ status, body: { findings: (error as ActivationRejected).findings } });
+  });
+
+  it('answers an unexpected activation failure with the legacy 500', async () => {
+    const { app } = await cutoverApp({ activate: () => Promise.reject(new Error('database lost')) });
+    const res = await app.inject({
+      method: 'POST',
+      url: '/internal/v1/cutover/activate',
+      headers: await credentialOf('operator'),
+      payload: { tableVersion: 'v0002' },
+    });
+    expect(res.statusCode).toBe(500);
+    expect(res.json()).toMatchObject({ apiversion: 'v1', error: { code: 'server_error', message: 'Unhandled Exception' } });
+  });
+
+  it.each<[string, Probe, object]>([
+    ['a malformed table version', PROBES.cutoverActivate!, { tableVersion: 'v2' }],
+    ['an activation without a version', PROBES.cutoverActivate!, {}],
+    ['an empty route list', PROBES.cutoverFreeze!, { routes: [] }],
+    ['a repeated route', PROBES.cutoverUnfreeze!, { routes: [ROUTE, ROUTE] }],
+    ['a route without a family', PROBES.cutoverFreeze!, { routes: ['cusers.update'] }],
+  ])('rejects %s with 400 before touching the state', async (_label, probe, payload) => {
+    const { app, calls } = await cutoverApp();
+    const res = await call(app, probe, { payload });
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({ apiversion: 'v1', error: { code: 'invalid_request', message: 'Invalid parameters' } });
+    expect(calls).toEqual([]);
+  });
+
+  it.each(
+    Object.entries(PROBES)
+      .filter(([, probe]) => probe.method === 'POST')
+      .flatMap(([operationId, probe]): Array<[string, string, Probe, string | undefined, string]> => [
+        [operationId, 'a form body', probe, 'application/x-www-form-urlencoded', FORM_BODIES[operationId]!],
+        [operationId, 'JSON text as text/plain', probe, 'text/plain', JSON.stringify(probe.payload)],
+        [operationId, 'JSON text under a JSON-prefixed type', probe, 'application/json-patch+json', JSON.stringify(probe.payload)],
+        [operationId, 'JSON text without a media type', probe, undefined, JSON.stringify(probe.payload)],
+      ]),
+  )('refuses %s with %s as a bad request before touching the state', async (_operationId, _label, probe, contentType, payload) => {
+    const { app, calls } = await cutoverApp();
+    const headers = { ...(await credentialOf('operator')), ...(contentType === undefined ? {} : { 'content-type': contentType }) };
+    const res = await call(app, probe, { headers, payload });
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({ apiversion: 'v1', error: { code: 'invalid_request', message: 'Bad Request' } });
+    expect(calls).toEqual([]);
+  });
+
+  it.each(['application/json; charset=utf-8', 'Application/JSON'])('accepts a JSON body sent as %s', async (contentType) => {
+    const { app, calls } = await cutoverApp();
+    const headers = { ...(await credentialOf('operator')), 'content-type': contentType };
+    const res = await call(app, PROBES.cutoverActivate!, { headers, payload: JSON.stringify({ tableVersion: 'v0002' }) });
+    expect(res).toEqual({ status: 200, body: { tableVersion: 'v0002', epoch: 4 } });
+    expect(calls).toEqual([['activate', { tableVersion: 'v0002', actor: 'operator' }]]);
+  });
+
+  it('freezes and unfreezes routes and answers the status after the new epoch', async () => {
+    const { app, calls } = await cutoverApp();
+    expect(await call(app, PROBES.cutoverFreeze!)).toEqual({ status: 200, body: STATUS });
+    expect(await call(app, PROBES.cutoverUnfreeze!)).toEqual({ status: 200, body: { ...STATUS, frozen: [] } });
+    expect(calls).toEqual([
+      ['freeze', [ROUTE], 'operator'],
+      ['unfreeze', [ROUTE], 'operator'],
+    ]);
+  });
+
+  it('answers an unknown route with its finding', async () => {
+    const finding = { rule: 'unknown-route', route: 'api:nope', message: 'api:nope is not an entry of the active version v0001' };
+    const { app } = await cutoverApp({ freeze: () => Promise.reject(new ActivationRejected([finding])) });
+    expect(await call(app, PROBES.cutoverFreeze!, { payload: { routes: ['api:nope'] } })).toEqual({
+      status: 400,
+      body: { findings: [finding] },
+    });
+  });
+
+  it.each<[string, string, string, CutoverStatus]>([
+    ['cutoverStatus', 'operator', 'status', STATUS],
+    ['cutoverStatus', 'migration', 'status', STATUS],
+    ['cutoverStatusV2', 'operator', 'statusV2', STATUS_V2],
+    ['cutoverStatusV2', 'migration', 'statusV2', STATUS_V2],
+  ])('answers %s to %s from the matching status read', async (operationId, caller, read, body) => {
+    const { app, calls } = await cutoverApp();
+    expect(await call(app, PROBES[operationId]!, { headers: await credentialOf(caller) })).toEqual({ status: 200, body });
+    expect(calls).toEqual([[read]]);
+  });
+
+  it.each(['cutoverStatus', 'cutoverStatusV2'])('streams %s read in several pages as one contract-valid JSON body, complete and in order', async (operationId) => {
+    const ids = Array.from({ length: 7 }, (_, i) => `gw-${String(i).padStart(2, '0')}`);
+    const instances = ids.map((instanceId, i) => ({ instanceId, seenEpoch: 3, heartbeatAt: AT, live: i === 0 }));
+    const groups = ids.slice(0, 5).map((instanceId, i) => ({ instanceId, route: ROUTE, side: 'target' as const, count: i + 1, oldestStartedAt: AT }));
+    const status: CutoverStatus = { ...STATUS, instances, inflight: groups };
+    const statusV2: CutoverStatusV2 = { ...STATUS, instances, inflight: groups.map((group, i) => ({ ...group, orphaned: i > 0 })) };
+    const sizes = { instances: 3, inflight: 2 };
+    const { app } = await cutoverApp({
+      status: () => Promise.resolve(pagesOf(status, sizes)),
+      statusV2: () => Promise.resolve(pagesOf(statusV2, sizes)),
+    });
+    const expected = operationId === 'cutoverStatus' ? status : statusV2;
+
+    expect(await call(app, PROBES[operationId]!)).toEqual({ status: 200, body: expected });
+    const res = await app.inject({ method: 'GET', url: PROBES[operationId]!.path, headers: await credentialOf('operator') });
+    expect(res.headers['content-type']).toBe('application/json; charset=utf-8');
+    expect(res.headers['content-length']).toBeUndefined();
+    expect(res.body).toBe(JSON.stringify(expected));
+  });
+
+  it.each(['cutoverStatus', 'cutoverStatusV2'])('answers %s with the legacy 500 before any status byte when the status head cannot be read', async (operationId) => {
+    const lost = (): Promise<never> => Promise.reject(new Error('database lost'));
+    const { app } = await cutoverApp({ status: lost, statusV2: lost });
+    const res = await app.inject({ method: 'GET', url: PROBES[operationId]!.path, headers: await credentialOf('operator') });
+    expect(res.statusCode).toBe(500);
+    expect(res.json()).toMatchObject({ apiversion: 'v1', error: { code: 'server_error', message: 'Unhandled Exception' } });
+  });
+
+  it.each(['/internal/v1/cutover/status', '/internal/v2/cutover/status'])('registers no HEAD sibling of %s', async (url) => {
+    const { app } = await cutoverApp();
+    const res = await app.inject({ method: 'HEAD', url, headers: await credentialOf('operator') });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it.each<[string, string, object]>([
+    ['legacy-side rows on a legacy restart', 'operator', { side: 'legacy', evidence: LEGACY_RESTART }],
+    ['target-side rows of named instances once gates closed', 'migration', { side: 'target', evidence: GATES_CLOSED, instanceIds: ['gw-dead'] }],
+  ])('clears %s and answers the count', async (_label, caller, payload) => {
+    const row = { instanceId: 'gw-dead', requestId: 'r-1', route: ROUTE, side: 'legacy' as const, windowId: null, startedAt: AT };
+    const { app, calls } = await cutoverApp({ clearOrphans: () => Promise.resolve({ cleared: 1, rows: [row] }) });
+    const res = await call(app, PROBES.inflightClearOrphans!, { headers: await credentialOf(caller), payload });
+    expect(res).toEqual({ status: 200, body: { cleared: 1 } });
+    expect(calls).toEqual([['clearOrphans', { instanceIds: undefined, ...payload }]]);
+  });
+
+  it.each<[string, object]>([
+    ['gates-closed evidence for legacy-side rows', { side: 'legacy', evidence: GATES_CLOSED }],
+    ['legacy-restart evidence for target-side rows', { side: 'target', evidence: { ...LEGACY_RESTART, units: ['people.person'] } }],
+    ['gates-closed evidence without units', { side: 'target', evidence: { kind: 'gates-closed', holderId: 'transition-1', at: AT } }],
+    ['evidence without a holder', { side: 'legacy', evidence: { kind: 'legacy-restart', holderId: '', at: AT } }],
+    ['evidence time without an offset', { side: 'legacy', evidence: { ...LEGACY_RESTART, at: '2026-06-30T12:00:00' } }],
+    ['a unit outside schema.table form', { side: 'target', evidence: { ...GATES_CLOSED, units: ['Identity'] } }],
+  ])('rejects %s with 400 before clearing anything', async (_label, payload) => {
+    const { app, calls } = await cutoverApp();
+    const res = await call(app, PROBES.inflightClearOrphans!, { payload });
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({ apiversion: 'v1', error: { code: 'invalid_request' } });
+    expect(calls).toEqual([]);
+  });
+
+  describe.each(Object.entries(PROBES))('access to %s', (operationId, probe) => {
+    const migrationAllowed = ['cutoverStatus', 'cutoverStatusV2', 'inflightClearOrphans'].includes(operationId);
+
+    it.each<[string, () => Promise<Record<string, string>>, number]>([
+      ['no credential', () => Promise.resolve({}), 401],
+      ['a user token alone', () => userHeaders(false), 401],
+      ['a user token beside the gateway credential', () => userHeaders(true), 403],
+      ['the identity credential', () => credentialOf('identity'), 403],
+    ])('denies %s without calling the state', async (_label, headers, status) => {
+      const { app, calls } = await cutoverApp();
+      const res = await call(app, probe, { headers: await headers() });
+      expect(res.status).toBe(status);
+      expect(res.body).toMatchObject({ apiversion: 'v1', error: { code: 'invalid_request', message: 'Insufficient Account Permissions' } });
+      expect(calls).toEqual([]);
+    });
+
+    it(`${migrationAllowed ? 'allows' : 'denies'} the migration credential`, async () => {
+      const { app, calls } = await cutoverApp();
+      const res = await call(app, probe, { headers: await credentialOf('migration') });
+      expect(res.status).toBe(migrationAllowed ? 200 : 403);
+      expect(calls).toHaveLength(migrationAllowed ? 1 : 0);
+    });
+  });
+});
+
+/** The groups committed v0003 returns to legacy on its rollback evidence, and their units. */
+const ROLLBACK_GROUPS = (await committedTable('v0003')).rollbackRefs.flatMap((ref) => ref.groups);
+const ROLLBACK_UNITS = (await committedGroups()).groups.filter((group) => ROLLBACK_GROUPS.includes(group.id)).flatMap((group) => group.units);
+
+describe('activation of v0003 over the whole gateway', () => {
+  let gateway: TestGateway | undefined;
+  let reports: string | undefined;
+
+  afterEach(async () => {
+    await gateway?.close();
+    gateway = undefined;
+    if (reports !== undefined) await rm(reports, { recursive: true, force: true });
+    reports = undefined;
+  });
+
+  it.each<[string, number, unknown]>([
+    ['zero-difference', 200, { tableVersion: 'v0003', epoch: expect.any(Number) }],
+    [
+      'difference',
+      400,
+      { findings: ROLLBACK_GROUPS.map((group) => ({ rule: 'rollback-evidence', group, message: 'rollback-before.json has result difference' })) },
+    ],
+  ])('reads rollback-before.json with result %s from OPT2_REPORTS_DIR, not the committed report', async (result, status, body) => {
+    reports = await mkdtemp(join(tmpdir(), 'opt2-reports-'));
+    await mkdir(join(reports, 'reconciliation'));
+    await writeFile(join(reports, 'reconciliation', 'rollback-before.json'), JSON.stringify(rollbackReport(ROLLBACK_UNITS, { result })));
+    gateway = await buildTestGateway({ version: 'v0002', env: { OPT2_REPORTS_DIR: reports } });
+    expect(gateway.env.OPT2_REPORTS_DIR).toBe(reports);
+
+    const res = await call(gateway.app, { ...PROBES.cutoverActivate!, payload: { tableVersion: 'v0003' } });
+
+    expect(res).toEqual({ status, body });
+  });
+});

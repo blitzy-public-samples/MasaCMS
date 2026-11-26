@@ -1,0 +1,609 @@
+import { mkdirSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { homedir, tmpdir } from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { afterAll, afterEach, beforeAll, describe, expect, expectTypeOf, it, vi } from 'vitest';
+import { REDACTED } from '../../src/logging/redact.js';
+import { isSafeErrorText, serializeError } from '../../src/logging/safe-error.js';
+import {
+  EnvFileError,
+  EnvValidationError,
+  baseEnvSchema,
+  checkProcessEnv,
+  envModeIssues,
+  envPort,
+  envUrl,
+  loadEnv,
+  loadTracingEnv,
+  optionalEnvString,
+  processEnvSchema,
+  publisherEmulatorHost,
+  readEnvFile,
+  requiredEnvString,
+  tracingEnvSchema,
+  type ProcessEnvRequirements,
+} from '../../src/service-kit/env.js';
+
+const PG_SECRET = 'pg-s3cr3t-do-not-echo';
+const REPO_ROOT = realpathSync(fileURLToPath(new URL('../../../', import.meta.url)));
+const SCRATCH = path.join(tmpdir(), `opt2-service-kit-env-${process.pid}`);
+const LINK_TO_CHECKOUT = path.join(SCRATCH, 'checkout-link');
+const LINK_OUTSIDE = path.join(SCRATCH, 'outside-link');
+
+const localEnv: Record<string, string> = {
+  PORT: '8112',
+  OPT2_SERVICE_NAME: 'people',
+  OPT2_ENV: 'local',
+  OPT2_DB_AUTH: 'password',
+  PG_HOST: '127.0.0.1',
+  PG_PORT: '5432',
+  PG_DATABASE: 'masa_services',
+  PG_USER: 'people_app',
+  PG_PASSWORD: PG_SECRET,
+  PUBSUB_EMULATOR_HOST: 'localhost:8085',
+  OPT2_JWKS_URL: 'http://127.0.0.1:8111/internal/v1/jwks/',
+  OPT2_TOKEN_ISSUER: 'opt2-local-identity',
+  OPT2_TOKEN_AUDIENCE: 'opt2-local',
+  OPT2_SERVICE_URLS: '{"identity":"http://127.0.0.1:8111"}',
+  TZ: 'America/New_York',
+};
+
+const cloudEnv: Record<string, string> = {
+  PORT: '8080',
+  OPT2_SERVICE_NAME: 'programs-sites',
+  OPT2_ENV: 'cloud',
+  OPT2_DB_AUTH: 'iam',
+  CLOUD_SQL_INSTANCE: 'p:r:i',
+  PG_DATABASE: 'opt2',
+  PG_USER: 'programs-sites@p.iam',
+  GOOGLE_CLOUD_PROJECT: 'p',
+  OPT2_TOKEN_ISSUER: 'https://securetoken.google.com/p',
+  OPT2_TOKEN_AUDIENCE: 'p',
+  OPT2_GATEWAY_URL: 'https://gateway-abc.a.run.app/',
+  OPT2_MIGRATION_URL: 'https://migration-abc.a.run.app',
+  OTEL_EXPORTER_OTLP_ENDPOINT: 'http://localhost:4318',
+  OPT2_STATE_DIR: '/var/opt2/state',
+  TZ: 'UTC',
+};
+
+function rejectionOf(source: Record<string, string | undefined>): EnvValidationError {
+  try {
+    loadEnv(baseEnvSchema, source);
+  } catch (error) {
+    expect(error).toBeInstanceOf(EnvValidationError);
+    return error as EnvValidationError;
+  }
+  throw new Error('expected loadEnv to reject the environment');
+}
+
+const issuesOf = (source: Record<string, string | undefined>): string[] => rejectionOf(source).issues;
+
+describe('loadEnv', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('accepts a complete local environment and defaults adapters and the state directory', () => {
+    const env = loadEnv(baseEnvSchema, localEnv);
+
+    expect(env).toMatchObject({
+      PORT: 8112,
+      PG_PORT: 5432,
+      OPT2_ENV: 'local',
+      OPT2_DB_AUTH: 'password',
+      PUBSUB_EMULATOR_HOST: 'localhost:8085',
+      OPT2_JWKS_URL: 'http://127.0.0.1:8111/internal/v1/jwks',
+      OPT2_SERVICE_URLS: { identity: 'http://127.0.0.1:8111' },
+      OPT2_TASKS_ADAPTER: 'local',
+      OPT2_STORAGE_ADAPTER: 'local',
+      OPT2_STATE_DIR: path.join(homedir(), '.opt2', 'state'),
+    });
+    expect(Object.isFrozen(env)).toBe(true);
+  });
+
+  it('accepts a complete cloud environment without a database password', () => {
+    const env = loadEnv(baseEnvSchema, cloudEnv);
+
+    expect(env).toMatchObject({
+      OPT2_ENV: 'cloud',
+      OPT2_DB_AUTH: 'iam',
+      CLOUD_SQL_INSTANCE: 'p:r:i',
+      OPT2_GATEWAY_URL: 'https://gateway-abc.a.run.app',
+      OPT2_SERVICE_URLS: {},
+      OPT2_STATE_DIR: '/var/opt2/state',
+      OPT2_TASKS_ADAPTER: 'cloud',
+      OPT2_STORAGE_ADAPTER: 'cloud',
+    });
+    expect(env.PG_PASSWORD).toBeUndefined();
+  });
+
+  it.each([
+    ['local without PG_PASSWORD', { ...localEnv, PG_PASSWORD: undefined }, 'PG_PASSWORD: is required when OPT2_DB_AUTH=password'],
+    ['password auth in the cloud', { ...cloudEnv, OPT2_DB_AUTH: 'password', PG_HOST: 'h', PG_PORT: '5432', PG_PASSWORD: 'x' }, 'OPT2_ENV: must be local when OPT2_DB_AUTH=password'],
+    ['iam with PG_PASSWORD', { ...cloudEnv, PG_PASSWORD: PG_SECRET }, 'PG_PASSWORD: must be unset when OPT2_DB_AUTH=iam'],
+    ['iam without CLOUD_SQL_INSTANCE', { ...cloudEnv, CLOUD_SQL_INSTANCE: undefined }, 'CLOUD_SQL_INSTANCE: is required when OPT2_DB_AUTH=iam'],
+    ['iam locally', { ...localEnv, OPT2_DB_AUTH: 'iam', PG_PASSWORD: undefined, CLOUD_SQL_INSTANCE: 'p:r:i' }, 'OPT2_ENV: must be cloud when OPT2_DB_AUTH=iam'],
+    ['cloud with PUBSUB_EMULATOR_HOST', { ...cloudEnv, PUBSUB_EMULATOR_HOST: 'localhost:8085' }, 'PUBSUB_EMULATOR_HOST: must be unset when OPT2_ENV=cloud'],
+    ['cloud without GOOGLE_CLOUD_PROJECT', { ...cloudEnv, GOOGLE_CLOUD_PROJECT: undefined }, 'GOOGLE_CLOUD_PROJECT: is required when OPT2_ENV=cloud'],
+    ['local without OPT2_JWKS_URL', { ...localEnv, OPT2_JWKS_URL: undefined }, 'OPT2_JWKS_URL: is required when OPT2_ENV=local'],
+    ['local with OPT2_TASKS_ADAPTER=cloud', { ...localEnv, OPT2_TASKS_ADAPTER: 'cloud' }, 'OPT2_TASKS_ADAPTER: must equal OPT2_ENV'],
+    ['cloud with OPT2_STORAGE_ADAPTER=local', { ...cloudEnv, OPT2_STORAGE_ADAPTER: 'local' }, 'OPT2_STORAGE_ADAPTER: must equal OPT2_ENV'],
+    ['malformed OPT2_SERVICE_URLS JSON', { ...localEnv, OPT2_SERVICE_URLS: '{identity:' }, 'OPT2_SERVICE_URLS: OPT2_SERVICE_URLS must be a JSON object'],
+    ['a non-object OPT2_SERVICE_URLS', { ...localEnv, OPT2_SERVICE_URLS: '["http://x"]' }, 'OPT2_SERVICE_URLS: Invalid input: expected record, received array'],
+    ['a non-URL OPT2_SERVICE_URLS value', { ...localEnv, OPT2_SERVICE_URLS: '{"identity":"127.0.0.1:8111"}' }, 'OPT2_SERVICE_URLS.identity: Invalid URL'],
+    ['an invalid OPT2_SERVICE_URLS key', { ...localEnv, OPT2_SERVICE_URLS: '{"Identity":"http://x"}' }, 'OPT2_SERVICE_URLS.Identity: Invalid key in record'],
+    ['a missing TZ', { ...localEnv, TZ: undefined }, 'TZ: is required'],
+    ['a non-numeric PORT', { ...localEnv, PORT: 'eighty' }, 'PORT: Invalid input: expected number, received NaN'],
+    ['an out-of-range PG_PORT', { ...localEnv, PG_PORT: '70000' }, 'PG_PORT: Too big: expected number to be <=65535'],
+    ['an unknown OPT2_ENV', { ...localEnv, OPT2_ENV: 'staging' }, 'OPT2_ENV: Invalid option: expected one of "local"|"cloud"'],
+    ['a non-http URL', { ...localEnv, OPT2_JWKS_URL: 'file:///etc/jwks.json' }, 'OPT2_JWKS_URL: Invalid URL'],
+    ['an invalid service name', { ...localEnv, OPT2_SERVICE_NAME: 'People' }, 'OPT2_SERVICE_NAME: Invalid string: must match pattern /^[a-z][a-z0-9-]*$/'],
+    ['a malformed CLOUD_SQL_INSTANCE', { ...cloudEnv, CLOUD_SQL_INSTANCE: 'p:i' }, 'CLOUD_SQL_INSTANCE: Invalid string: must match pattern /^[^:]+:[^:]+:[^:]+$/'],
+    ['a PUBSUB_EMULATOR_HOST without a port', { ...localEnv, PUBSUB_EMULATOR_HOST: 'localhost' }, 'PUBSUB_EMULATOR_HOST: Invalid string'],
+  ])('rejects %s', (_case, source, expected) => {
+    expect(issuesOf(source).some((issue) => issue.startsWith(expected))).toBe(true);
+  });
+
+  it.each([
+    ['PORT=abc and PG_HOST unset', { ...localEnv, PORT: 'abc', PG_HOST: undefined }, ['PORT: Invalid input: expected number, received NaN', 'PG_HOST: is required when OPT2_DB_AUTH=password']],
+    ['PORT=abc, OPT2_TASKS_ADAPTER=cloud and OPT2_JWKS_URL unset', { ...localEnv, PORT: 'abc', OPT2_TASKS_ADAPTER: 'cloud', OPT2_JWKS_URL: undefined }, ['PORT: Invalid input: expected number, received NaN', 'OPT2_JWKS_URL: is required when OPT2_ENV=local', 'OPT2_TASKS_ADAPTER: must equal OPT2_ENV']],
+    ['PORT=abc and CLOUD_SQL_INSTANCE unset in the cloud', { ...cloudEnv, PORT: 'abc', CLOUD_SQL_INSTANCE: undefined }, ['PORT: Invalid input: expected number, received NaN', 'CLOUD_SQL_INSTANCE: is required when OPT2_DB_AUTH=iam']],
+    ['an out-of-range PG_PORT, not also reported missing', { ...localEnv, PG_PORT: '70000', PG_HOST: undefined }, ['PG_PORT: Too big: expected number to be <=65535', 'PG_HOST: is required when OPT2_DB_AUTH=password']],
+    ['an invalid PUBSUB_EMULATOR_HOST, not also reported set, in the cloud', { ...cloudEnv, PUBSUB_EMULATOR_HOST: 'localhost:0', GOOGLE_CLOUD_PROJECT: undefined }, ['PUBSUB_EMULATOR_HOST: port must be from 1 to 65535', 'GOOGLE_CLOUD_PROJECT: is required when OPT2_ENV=cloud']],
+    ['an invalid OPT2_ENV, which skips the mode rules', { ...localEnv, OPT2_ENV: 'staging', OPT2_TASKS_ADAPTER: 'cloud', OPT2_JWKS_URL: undefined, PG_USER: undefined }, ['OPT2_ENV: Invalid option: expected one of "local"|"cloud"', 'PG_USER: is required when OPT2_DB_AUTH=password']],
+    ['an unset OPT2_ENV, which skips the mode rules', { ...cloudEnv, OPT2_ENV: undefined, PG_PASSWORD: PG_SECRET }, ['OPT2_ENV: is required', 'PG_PASSWORD: must be unset when OPT2_DB_AUTH=iam']],
+  ])('lists the cross-variable issues after the parse issues for %s', (_case, source, expected) => {
+    expect(issuesOf(source)).toEqual(expected);
+  });
+
+  it.each([
+    ['PUBSUB_EMULATOR_HOST', 'localhost', 'PUBSUB_EMULATOR_HOST: Invalid string'],
+    ['PUBSUB_EMULATOR_HOST', 'localhost:0', 'PUBSUB_EMULATOR_HOST: port must be from 1 to 65535'],
+    ['PUBSUB_EMULATOR_HOST', 'localhost:99999', 'PUBSUB_EMULATOR_HOST: port must be from 1 to 65535'],
+    ['PUBSUB_EMULATOR_HOST', '[::1]:65536', 'PUBSUB_EMULATOR_HOST: port must be from 1 to 65535'],
+    ['TZ', 'America/New_Yrok', 'TZ: must be an IANA time zone name that this process applies, such as UTC or America/New_York'],
+    ['TZ', '+05:00', 'TZ: must be an IANA time zone name that this process applies, such as UTC or America/New_York'],
+    ['TZ', 'america/new_york', 'TZ: must be an IANA time zone name that this process applies, such as UTC or America/New_York'],
+    ['TZ', 'EST+5', 'TZ: must be an IANA time zone name that this process applies, such as UTC or America/New_York'],
+    ['LOG_LEVEL', 'verbose', 'LOG_LEVEL: Invalid option: expected one of "fatal"|"error"|"warn"|"info"|"debug"|"trace"'],
+    ['LOG_LEVEL', 'INFO', 'LOG_LEVEL: Invalid option: expected one of "fatal"|"error"|"warn"|"info"|"debug"|"trace"'],
+  ])('reports an invalid %s %s as one issue that never echoes the value', (key, value, expected) => {
+    const error = rejectionOf({ ...localEnv, [key]: value });
+
+    expect(error.issues).toHaveLength(1);
+    expect(error.issues[0]?.startsWith(expected)).toBe(true);
+    expect(error.message).not.toContain(value);
+  });
+
+  it.each([
+    ['PUBSUB_EMULATOR_HOST', '[::1]:8085'],
+    ['PUBSUB_EMULATOR_HOST', 'localhost:65535'],
+    ['TZ', 'UTC'],
+    ['TZ', 'Etc/UTC'],
+    ['TZ', 'America/New_York'],
+    ['TZ', 'US/Eastern'],
+    ...['fatal', 'error', 'warn', 'info', 'debug', 'trace'].map((level) => ['LOG_LEVEL', level]),
+  ])('accepts %s %s and returns it unchanged', (key, value) => {
+    expect(loadEnv(baseEnvSchema, { ...localEnv, [key]: value })).toMatchObject({ [key]: value });
+  });
+
+  describe('OPT2_STATE_DIR', () => {
+    beforeAll(() => {
+      mkdirSync(path.join(SCRATCH, 'outside'), { recursive: true });
+      symlinkSync(REPO_ROOT, LINK_TO_CHECKOUT);
+      symlinkSync(path.join(SCRATCH, 'outside'), LINK_OUTSIDE);
+    });
+
+    afterAll(() => {
+      rmSync(SCRATCH, { recursive: true, force: true });
+    });
+
+    it.each([
+      ['a relative "."', '.', 'must be an absolute path'],
+      ['a relative "state"', 'state', 'must be an absolute path'],
+      ['the checkout root', `${REPO_ROOT}/`, 'must be outside the repository checkout'],
+      ['a path inside the checkout', path.join(REPO_ROOT, 'opt2-state'), 'must be outside the repository checkout'],
+      ['a ".." path that resolves into the checkout', `${REPO_ROOT}/platform/../state`, 'must be outside the repository checkout'],
+      ['a path through a symlink into the checkout', path.join(LINK_TO_CHECKOUT, 'state'), 'must be outside the repository checkout'],
+    ])('rejects %s', (_case, value, message) => {
+      expect(issuesOf({ ...localEnv, OPT2_STATE_DIR: value })).toEqual([`OPT2_STATE_DIR: ${message}`]);
+    });
+
+    it.each([
+      ['a trailing "/" and ".." segment', `${SCRATCH}/x/../state/`, path.join(SCRATCH, 'state')],
+      ['a symlink to a directory outside the checkout', `${LINK_OUTSIDE}/state`, path.join(LINK_OUTSIDE, 'state')],
+    ])('accepts a path outside the checkout with %s, normalised', (_case, value, expected) => {
+      expect(loadEnv(baseEnvSchema, { ...localEnv, OPT2_STATE_DIR: value }).OPT2_STATE_DIR).toBe(expected);
+    });
+
+    it('checks the home-directory default as well', () => {
+      vi.stubEnv('HOME', REPO_ROOT);
+
+      expect(issuesOf(localEnv)).toEqual(['OPT2_STATE_DIR: must be outside the repository checkout']);
+    });
+  });
+
+  it('lists every issue under the service name and never echoes the database password', () => {
+    const source = { ...cloudEnv, PG_PASSWORD: PG_SECRET, PUBSUB_EMULATOR_HOST: 'localhost:8085' };
+
+    expect(() => loadEnv(baseEnvSchema, source)).toThrow(
+      'programs-sites: invalid environment\n' +
+        '  PG_PASSWORD: must be unset when OPT2_DB_AUTH=iam\n' +
+        '  PUBSUB_EMULATOR_HOST: must be unset when OPT2_ENV=cloud',
+    );
+    for (const failing of [source, { ...localEnv, PORT: 'x', OPT2_ENV: 'nope' }]) {
+      const error = rejectionOf(failing);
+      expect(error.name).toBe('EnvValidationError');
+      expect(error.message).not.toContain(PG_SECRET);
+      expect(error.issues.join('\n')).not.toContain(PG_SECRET);
+    }
+  });
+
+  it('omits the service prefix when the service name itself is invalid', () => {
+    expect(() => loadEnv(baseEnvSchema, { ...localEnv, OPT2_SERVICE_NAME: 'Bad Name' })).toThrow(/^invalid environment\n/);
+  });
+
+  it('treats empty and whitespace-only values as absent', () => {
+    const env = loadEnv(baseEnvSchema, {
+      ...localEnv,
+      OPT2_DB_AUTH: '',
+      PG_HOST: '',
+      PG_PORT: '  ',
+      PG_PASSWORD: '',
+      OPT2_GATEWAY_URL: ' ',
+      OPT2_SERVICE_URLS: '',
+      OPT2_STATE_DIR: '   ',
+      OPT2_TASKS_ADAPTER: '',
+      LOG_LEVEL: ' ',
+    });
+
+    expect(env.OPT2_DB_AUTH).toBeUndefined();
+    expect(env.PG_HOST).toBeUndefined();
+    expect(env.PG_PORT).toBeUndefined();
+    expect(env.PG_PASSWORD).toBeUndefined();
+    expect(env.OPT2_GATEWAY_URL).toBeUndefined();
+    expect(env.OPT2_SERVICE_URLS).toEqual({});
+    expect(env.OPT2_STATE_DIR).toBe(path.join(homedir(), '.opt2', 'state'));
+    expect(env.OPT2_TASKS_ADAPTER).toBe('local');
+    expect(env.LOG_LEVEL).toBeUndefined();
+    expect(issuesOf({ ...localEnv, TZ: '', OPT2_TOKEN_ISSUER: ' ' })).toEqual([
+      'OPT2_TOKEN_ISSUER: is required',
+      'TZ: is required',
+    ]);
+  });
+
+  it('strips variables the schema does not declare', () => {
+    const env = loadEnv(baseEnvSchema, { ...localEnv, HOME: '/root', PATH: '/usr/bin', MURA_DBPASSWORD: 'x' });
+
+    expect(env).not.toHaveProperty('HOME');
+    expect(env).not.toHaveProperty('PATH');
+    expect(env).not.toHaveProperty('MURA_DBPASSWORD');
+  });
+
+  it('parses consumer extensions built from the exported builders', () => {
+    const schema = baseEnvSchema.extend({
+      LEGACY_ORIGIN: envUrl(),
+      OPT2_BRIDGE_HMAC_KEY: requiredEnvString(),
+      SMTP_PORT: optionalEnvString(envPort()),
+      OPT2_CUTOVER_DIR: optionalEnvString(),
+    });
+
+    const env = loadEnv(schema, { ...localEnv, LEGACY_ORIGIN: 'http://127.0.0.1:8080/', OPT2_BRIDGE_HMAC_KEY: 'k', SMTP_PORT: '1025' });
+    expect(env).toMatchObject({ LEGACY_ORIGIN: 'http://127.0.0.1:8080', SMTP_PORT: 1025, PORT: 8112 });
+    expect(env.OPT2_CUTOVER_DIR).toBeUndefined();
+
+    expect(() => loadEnv(schema, { ...localEnv, OPT2_BRIDGE_HMAC_KEY: '' })).toThrow(
+      /LEGACY_ORIGIN: is required\n {2}OPT2_BRIDGE_HMAC_KEY: is required/,
+    );
+  });
+
+  it('reads process.env by default and keeps the wall clock of its TZ', () => {
+    for (const key of Object.keys(baseEnvSchema.shape)) vi.stubEnv(key, localEnv[key]);
+
+    expect(loadEnv()).toMatchObject({ OPT2_SERVICE_NAME: 'people', PORT: 8112, OPT2_TASKS_ADAPTER: 'local', TZ: 'America/New_York' });
+    expect(new Date(Date.UTC(2026, 6, 1, 16)).getHours()).toBe(12);
+  });
+
+  it.each(['us/eastern', 'EST'])('rejects the process TZ %s, which Date does not apply', (tz) => {
+    for (const key of Object.keys(baseEnvSchema.shape)) vi.stubEnv(key, key === 'TZ' ? tz : localEnv[key]);
+
+    expect(() => loadEnv()).toThrow(/\n {2}TZ: must be an IANA time zone name/);
+  });
+});
+
+describe('loadTracingEnv', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it.each([
+    ['nothing', {}, {}],
+    ['blank values', { OTEL_EXPORTER_OTLP_ENDPOINT: '  ', OTEL_LOG_LEVEL: '' }, {}],
+    ['an endpoint and a level', { OTEL_EXPORTER_OTLP_ENDPOINT: 'http://127.0.0.1:4318//', OTEL_LOG_LEVEL: 'debug' }, { OTEL_EXPORTER_OTLP_ENDPOINT: 'http://127.0.0.1:4318', OTEL_LOG_LEVEL: 'DEBUG' }],
+    ['a level in mixed case', { OTEL_LOG_LEVEL: 'All' }, { OTEL_LOG_LEVEL: 'ALL' }],
+    ['an unknown level', { OTEL_LOG_LEVEL: 'trace' }, { OTEL_LOG_LEVEL: 'INFO' }],
+    ['a padded level', { OTEL_LOG_LEVEL: ' warn ' }, { OTEL_LOG_LEVEL: 'INFO' }],
+  ])('parses %s', (_case, source, expected) => {
+    const env = loadTracingEnv(source);
+
+    expect({ ...env }).toEqual(expected);
+    expect(Object.isFrozen(env)).toBe(true);
+  });
+
+  it('reads process.env by default, and baseEnvSchema carries the same variables', () => {
+    vi.stubEnv('OTEL_LOG_LEVEL', 'error');
+
+    expect(loadTracingEnv().OTEL_LOG_LEVEL).toBe('ERROR');
+    expect(Object.keys(tracingEnvSchema.shape).filter((key) => !(key in baseEnvSchema.shape))).toEqual([]);
+    expect(loadEnv(baseEnvSchema, { ...localEnv, OTEL_LOG_LEVEL: 'verbose' })).toMatchObject({ OTEL_LOG_LEVEL: 'VERBOSE' });
+  });
+
+  it('throws EnvValidationError naming an invalid endpoint after the service, never its value', () => {
+    const value = 'collector.internal:4318';
+    let failure: unknown;
+    try {
+      loadTracingEnv({ OTEL_EXPORTER_OTLP_ENDPOINT: value, OTEL_LOG_LEVEL: 'debug' }, 'people');
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toBeInstanceOf(EnvValidationError);
+    expect((failure as EnvValidationError).issues).toEqual(['OTEL_EXPORTER_OTLP_ENDPOINT: Invalid URL']);
+    expect((failure as EnvValidationError).message).not.toContain(value);
+    expect(serializeError(failure).message).toBe('people: invalid environment (OTEL_EXPORTER_OTLP_ENDPOINT: expected an http(s) URL)');
+  });
+});
+
+
+describe('publisherEmulatorHost', () => {
+  it.each([
+    ['the local emulator host', localEnv, 'localhost:8085'],
+    ['no host in the cloud', cloudEnv, undefined],
+  ])('returns %s', (_case, source, expected) => {
+    expect(publisherEmulatorHost(loadEnv(baseEnvSchema, source))).toBe(expected);
+  });
+
+  it.each([
+    ['missing', undefined, 'local', 'is required when OPT2_ENV=local'],
+    ['blank', '  ', 'local', 'is required when OPT2_ENV=local'],
+    ['without a port', 'pubsub-emulator-host', 'local', 'Invalid string: must match pattern'],
+    ['out of port range', 'pubsub-emulator-host:65536', 'local', 'port must be from 1 to 65535'],
+    ['set in the cloud', 'pubsub-emulator-host:8085', 'cloud', 'must be unset when OPT2_ENV=cloud'],
+  ] as const)('rejects a host that is %s, naming the variable but not its value', (_case, host, mode, issue) => {
+    const env = { ...loadEnv(baseEnvSchema, mode === 'local' ? localEnv : cloudEnv), PUBSUB_EMULATOR_HOST: host };
+    let error: unknown;
+    try {
+      publisherEmulatorHost(env);
+    } catch (thrown) {
+      error = thrown;
+    }
+
+    expect(error).toBeInstanceOf(EnvValidationError);
+    const { message, issues } = error as EnvValidationError;
+    expect(issues).toEqual([expect.stringContaining(`PUBSUB_EMULATOR_HOST: ${issue}`)]);
+    expect(message.startsWith(`${env.OPT2_SERVICE_NAME}: invalid environment\n  PUBSUB_EMULATOR_HOST: ${issue}`)).toBe(true);
+    if (host?.trim()) expect(message).not.toContain(host);
+  });
+});
+
+describe('envModeIssues', () => {
+  it('reports nothing for a consistent environment', () => {
+    expect(envModeIssues(loadEnv(baseEnvSchema, localEnv))).toEqual([]);
+    expect(envModeIssues(loadEnv(baseEnvSchema, cloudEnv))).toEqual([]);
+  });
+
+  it('reports every missing password-auth variable without values', () => {
+    const env = { ...loadEnv(baseEnvSchema, localEnv), PG_HOST: undefined, PG_PORT: undefined, PG_DATABASE: undefined, PG_USER: undefined };
+
+    expect(envModeIssues(env)).toEqual([
+      'PG_HOST: is required when OPT2_DB_AUTH=password',
+      'PG_PORT: is required when OPT2_DB_AUTH=password',
+      'PG_DATABASE: is required when OPT2_DB_AUTH=password',
+      'PG_USER: is required when OPT2_DB_AUTH=password',
+    ]);
+  });
+});
+
+describe('processEnvSchema', () => {
+  const GATEWAY = 'http://127.0.0.1:8100';
+  const MIGRATION = 'http://127.0.0.1:8102';
+  const issuesUnder = (requirements: ProcessEnvRequirements, source: Record<string, string | undefined>): string[] => {
+    try {
+      loadEnv(processEnvSchema(baseEnvSchema, requirements), source);
+    } catch (error) {
+      expect(error).toBeInstanceOf(EnvValidationError);
+      return (error as EnvValidationError).issues;
+    }
+    return [];
+  };
+
+  it.each<[string, ProcessEnvRequirements, Record<string, string | undefined>, string[]]>([
+    ['its own name and callees', { service: 'people', callees: ['identity'], database: true }, localEnv, []],
+    ['another process name', { service: 'identity' }, localEnv, ['OPT2_SERVICE_NAME: must be identity']],
+    ['a missing callee', { service: 'people', callees: ['identity', 'programs-sites', 'strategies-content'] }, localEnv, ['OPT2_SERVICE_URLS.programs-sites: is required', 'OPT2_SERVICE_URLS.strategies-content: is required']],
+    ['no callee map', { service: 'people', callees: ['identity'] }, { ...localEnv, OPT2_SERVICE_URLS: undefined }, ['OPT2_SERVICE_URLS.identity: is required']],
+    ['the gateway by OPT2_GATEWAY_URL', { service: 'people', callees: ['gateway'] }, { ...localEnv, OPT2_GATEWAY_URL: GATEWAY }, []],
+    ['the gateway by its map entry', { service: 'people', callees: ['gateway'] }, { ...localEnv, OPT2_SERVICE_URLS: `{"gateway":"${GATEWAY}"}` }, []],
+    ['no gateway', { service: 'people', callees: ['gateway'] }, { ...localEnv, OPT2_GATEWAY_URL: ' ' }, ['OPT2_GATEWAY_URL: is required (or OPT2_SERVICE_URLS.gateway)']],
+    ['migration by OPT2_MIGRATION_URL', { service: 'people', callees: ['migration'] }, { ...localEnv, OPT2_MIGRATION_URL: MIGRATION }, []],
+    ['migration by its map entry', { service: 'people', callees: ['migration'] }, { ...localEnv, OPT2_SERVICE_URLS: `{"migration":"${MIGRATION}"}` }, []],
+    ['no migration', { service: 'people', callees: ['migration'] }, localEnv, ['OPT2_MIGRATION_URL: is required (or OPT2_SERVICE_URLS.migration)']],
+    ['no database settings', { service: 'people', database: true }, { ...localEnv, OPT2_DB_AUTH: undefined, PG_DATABASE: undefined }, ['OPT2_DB_AUTH: is required', 'PG_DATABASE: is required']],
+    ['no PG_DATABASE, without the password rule repeating it', { service: 'people', database: true }, { ...localEnv, PG_DATABASE: undefined }, ['PG_DATABASE: is required']],
+    ['no database settings when the process opens no pool', { service: 'people' }, { ...localEnv, OPT2_DB_AUTH: undefined }, []],
+    ['an invalid service name, reported once', { service: 'people' }, { ...localEnv, OPT2_SERVICE_NAME: 'People' }, ['OPT2_SERVICE_NAME: Invalid string: must match pattern /^[a-z][a-z0-9-]*$/']],
+    ['an unset service name, reported once', { service: 'people' }, { ...localEnv, OPT2_SERVICE_NAME: undefined }, ['OPT2_SERVICE_NAME: is required']],
+    ['an invalid OPT2_DB_AUTH, reported once', { service: 'people', database: true }, { ...localEnv, OPT2_DB_AUTH: 'bogus' }, ['OPT2_DB_AUTH: Invalid option: expected one of "password"|"iam"']],
+    ['an invalid OPT2_GATEWAY_URL, reported once', { service: 'people', callees: ['gateway'] }, { ...localEnv, OPT2_GATEWAY_URL: 'gateway:8100' }, ['OPT2_GATEWAY_URL: Invalid URL']],
+    ['an invalid callee entry, reported once', { service: 'people', callees: ['identity'] }, { ...localEnv, OPT2_SERVICE_URLS: '{"identity":"127.0.0.1:8111"}' }, ['OPT2_SERVICE_URLS.identity: Invalid URL']],
+    ['a malformed callee map, without callee issues', { service: 'people', callees: ['identity', 'gateway'] }, { ...localEnv, OPT2_SERVICE_URLS: '{identity:' }, ['OPT2_SERVICE_URLS: OPT2_SERVICE_URLS must be a JSON object']],
+    ['a callee map that is not an object, without callee issues', { service: 'people', callees: ['identity', 'migration'] }, { ...localEnv, OPT2_SERVICE_URLS: '["http://x"]' }, ['OPT2_SERVICE_URLS: Invalid input: expected record, received array']],
+    [
+      'every issue, with the parse and cross-variable ones',
+      { service: 'people', callees: ['identity', 'programs-sites', 'gateway'], database: true },
+      { ...localEnv, PORT: 'abc', OPT2_SERVICE_NAME: 'identity', OPT2_DB_AUTH: undefined, OPT2_TASKS_ADAPTER: 'cloud' },
+      [
+        'PORT: Invalid input: expected number, received NaN',
+        'OPT2_SERVICE_NAME: must be people',
+        'OPT2_DB_AUTH: is required',
+        'OPT2_SERVICE_URLS.programs-sites: is required',
+        'OPT2_GATEWAY_URL: is required (or OPT2_SERVICE_URLS.gateway)',
+        'OPT2_TASKS_ADAPTER: must equal OPT2_ENV',
+      ],
+    ],
+  ])('reports %s', (_case, requirements, source, expected) => {
+    expect(issuesUnder(requirements, source)).toEqual(expected);
+  });
+
+  it('names each missing variable and callee with its reason in the safe text', () => {
+    const schema = processEnvSchema(baseEnvSchema, { service: 'people', callees: ['people', 'gateway'], database: true });
+    let thrown: unknown;
+    try {
+      loadEnv(schema, { ...localEnv, OPT2_DB_AUTH: undefined });
+    } catch (caught) {
+      thrown = caught;
+    }
+
+    expect(serializeError(thrown).message).toBe(
+      'people: invalid environment (OPT2_DB_AUTH: is required; OPT2_SERVICE_URLS.people: is required; OPT2_GATEWAY_URL: is required (or OPT2_SERVICE_URLS.gateway))',
+    );
+  });
+
+  it('keeps an extension schema and its loaded variables', () => {
+    const extended = baseEnvSchema.extend({ SMTP_HOST: requiredEnvString() });
+    const schema = processEnvSchema(extended, { service: 'people' });
+
+    expectTypeOf(schema).toEqualTypeOf<typeof extended>();
+    expect(loadEnv(schema, { ...localEnv, SMTP_HOST: '127.0.0.1' })).toMatchObject({ SMTP_HOST: '127.0.0.1', OPT2_SERVICE_NAME: 'people' });
+    expect(() => loadEnv(schema, { ...localEnv, OPT2_SERVICE_NAME: 'gateway' })).toThrow(
+      'gateway: invalid environment\n  SMTP_HOST: is required\n  OPT2_SERVICE_NAME: must be people',
+    );
+  });
+
+  it('adds the same issues inside a consumer refinement through checkProcessEnv', () => {
+    const schema = baseEnvSchema.superRefine((env, ctx) => checkProcessEnv(env, ctx, { service: 'identity', callees: ['people'] }), { when: () => true });
+
+    expect(() => loadEnv(schema, localEnv)).toThrow('people: invalid environment\n  OPT2_SERVICE_NAME: must be identity\n  OPT2_SERVICE_URLS.people: is required');
+    expect(loadEnv(schema, { ...localEnv, OPT2_SERVICE_NAME: 'identity', OPT2_SERVICE_URLS: '{"people":"http://127.0.0.1:8112"}' })).toMatchObject({ OPT2_SERVICE_NAME: 'identity' });
+  });
+});
+
+describe('EnvFileError', () => {
+  // Assembled at run time, so no literal credential appears in source.
+  const SECRET = ['opt2', 'env', 'file', 'secret'].join('-');
+  const enoent = (file: string): NodeJS.ErrnoException =>
+    Object.assign(new Error(`ENOENT: no such file or directory, open '${file}'`), { code: 'ENOENT', syscall: 'open', errno: -2, path: file });
+  let dir: string;
+
+  beforeAll(async () => {
+    dir = await mkdtemp(path.join(tmpdir(), 'opt2-env-file-'));
+    await mkdir(path.join(dir, 'secrets', 'folder'), { recursive: true });
+    await writeFile(path.join(dir, 'secrets', 'present'), 'key\n');
+  });
+
+  afterAll(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('reads a file inside the directory', async () => {
+    await expect(readEnvFile('OPT2_STATE_DIR', dir, path.join(dir, 'secrets', 'present'))).resolves.toBe('key\n');
+  });
+
+  it.each<[string, string, string, string]>([
+    ['a missing file', 'secrets/token-signing-public.pem', 'open', 'ENOENT'],
+    ['a directory', 'secrets/folder', 'read', 'EISDIR'],
+  ])('rejects %s naming the variable and the file inside the directory', async (_case, file, syscall, code) => {
+    const error = await readEnvFile('OPT2_STATE_DIR', dir, path.join(dir, ...file.split('/'))).catch((err: unknown) => err);
+
+    expect(error).toBeInstanceOf(EnvFileError);
+    const { message, cause, ...fields } = error as EnvFileError;
+    expect(fields).toMatchObject({ name: 'EnvFileError', variable: 'OPT2_STATE_DIR', file, code, syscall });
+    expect(cause).toMatchObject({ code, syscall });
+    expect(message).toBe((cause as Error).message);
+    expect(serializeError(error).message).toBe(`cannot read OPT2_STATE_DIR file ${file} (${syscall} ${code})`);
+  });
+
+  it('prefixes the cause message with the service', () => {
+    const cause = enoent('/state/secrets/pubsub-push-key');
+
+    expect(new EnvFileError('OPT2_STATE_DIR', 'secrets/pubsub-push-key', cause, 'stub').message).toBe(`stub: ${cause.message}`);
+    expect(new EnvFileError('OPT2_STATE_DIR', 'secrets/pubsub-push-key', 'not an error').message).toBe('not an error');
+  });
+
+  it.each<[string, () => EnvFileError, string]>([
+    ['a service and a system error', () => new EnvFileError('OPT2_STATE_DIR', 'secrets/pubsub-push-key', enoent(`/home/${SECRET}/secrets/pubsub-push-key`), 'stub'), 'stub: cannot read OPT2_STATE_DIR file secrets/pubsub-push-key (open ENOENT)'],
+    ['a cause without a system code', () => new EnvFileError('OPT2_CUTOVER_DIR', 'versions/v0001.json', new Error(SECRET)), 'cannot read OPT2_CUTOVER_DIR file versions/v0001.json'],
+    ['a cause with a Node code', () => new EnvFileError('OPT2_CUTOVER_DIR', 'cutover-table.schema.json', Object.assign(new Error(SECRET), { code: 'ERR_INVALID_ARG_TYPE' })), 'cannot read OPT2_CUTOVER_DIR file cutover-table.schema.json'],
+    ['a thrown string', () => new EnvFileError('OPT2_STATE_DIR', '.hidden/key', SECRET), 'cannot read OPT2_STATE_DIR file .hidden/key'],
+    ['a file outside the directory, by its cause', () => new EnvFileError('OPT2_STATE_DIR', '../secrets/key', enoent(SECRET)), 'open ENOENT'],
+    ['a file named by a value, by its cause', () => new EnvFileError('OPT2_STATE_DIR', `secrets/${SECRET} key`, enoent(SECRET)), 'open ENOENT'],
+    ['a variable outside the name pattern, by its cause', () => new EnvFileError('state dir', 'secrets/key', enoent(SECRET)), 'open ENOENT'],
+    ['a service outside the name pattern, by its cause', () => new EnvFileError('OPT2_STATE_DIR', 'secrets/key', enoent(SECRET), 'Bad Service'), 'open ENOENT'],
+    ['no system code and an unsafe file', () => new EnvFileError('OPT2_STATE_DIR', `/home/${SECRET}`, new Error(SECRET)), REDACTED],
+  ])('serializes %s to its safe text only', (_case, make, safeText) => {
+    const record = serializeError(make());
+
+    expect(record.message).toBe(safeText);
+    expect(isSafeErrorText(safeText)).toBe(true);
+    expect(JSON.stringify(record)).not.toContain(SECRET);
+  });
+});
+
+describe('EnvValidationError safe text', () => {
+  // Assembled at run time, so no literal credential appears in source.
+  const SECRET = ['opt2', 'env', 'issue', 'secret'].join('-');
+
+  const TZ_REASON = 'must be an IANA time zone name that this process applies, such as UTC or America/New_York';
+
+  it.each<[string, () => EnvValidationError, string]>([
+    [
+      'an invalid PG_PORT and LOG_LEVEL from loadEnv',
+      () => rejectionOf({ ...localEnv, PG_PORT: 'notaport', LOG_LEVEL: 'verbose' }),
+      'people: invalid environment (PG_PORT: expected number; LOG_LEVEL: expected one of fatal|error|warn|info|debug|trace)',
+    ],
+    ['a nested OPT2_SERVICE_URLS entry from loadEnv', () => rejectionOf({ ...localEnv, OPT2_SERVICE_URLS: '{"people":"not a url"}' }), 'people: invalid environment (OPT2_SERVICE_URLS: expected an http(s) URL)'],
+    ['an invalid OPT2_SERVICE_URLS key from loadEnv', () => rejectionOf({ ...localEnv, OPT2_SERVICE_URLS: '{"Ada Lovelace":"http://x"}' }), 'people: invalid environment (OPT2_SERVICE_URLS: expected valid record keys)'],
+    ['a malformed OPT2_SERVICE_URLS from loadEnv', () => rejectionOf({ ...localEnv, OPT2_SERVICE_URLS: '{identity:' }), 'people: invalid environment (OPT2_SERVICE_URLS: must be a JSON object)'],
+    ['an invalid service name from loadEnv', () => rejectionOf({ ...localEnv, OPT2_SERVICE_NAME: 'Bad Name' }), 'invalid environment (OPT2_SERVICE_NAME: expected a string matching the required pattern)'],
+    ['a missing TZ from loadEnv', () => rejectionOf({ ...localEnv, TZ: undefined }), 'people: invalid environment (TZ: is required)'],
+    ['an unknown TZ from loadEnv', () => rejectionOf({ ...localEnv, TZ: 'Mars/Olympus' }), `people: invalid environment (TZ: ${TZ_REASON})`],
+    ['a fractional PORT and an unknown OPT2_ENV from loadEnv', () => rejectionOf({ ...localEnv, PORT: '24299.5', OPT2_ENV: 'bogus' }), 'people: invalid environment (PORT: expected int; OPT2_ENV: expected one of local|cloud)'],
+    ['out-of-range ports from loadEnv', () => rejectionOf({ ...localEnv, PORT: '0', PG_PORT: '70000' }), 'people: invalid environment (PORT: expected number to be at least 1; PG_PORT: expected number to be at most 65535)'],
+    ['an emulator port out of range from loadEnv', () => rejectionOf({ ...localEnv, PUBSUB_EMULATOR_HOST: 'localhost:0' }), 'people: invalid environment (PUBSUB_EMULATOR_HOST: must be a port from 1 to 65535)'],
+    ['a relative OPT2_STATE_DIR from loadEnv', () => rejectionOf({ ...localEnv, OPT2_STATE_DIR: 'state' }), 'people: invalid environment (OPT2_STATE_DIR: must be an absolute path)'],
+    [
+      'cross-variable rules from loadEnv',
+      () => rejectionOf({ ...cloudEnv, PG_PASSWORD: PG_SECRET, OPT2_TASKS_ADAPTER: 'local', CLOUD_SQL_INSTANCE: undefined }),
+      'programs-sites: invalid environment (CLOUD_SQL_INSTANCE: is required when OPT2_DB_AUTH=iam; PG_PASSWORD: must be unset when OPT2_DB_AUTH=iam; OPT2_TASKS_ADAPTER: must equal OPT2_ENV)',
+    ],
+    [
+      'a required OPT2_SERVICE_URLS entry',
+      () =>
+        new EnvValidationError(
+          ['OPT2_SERVICE_URLS.people: is required', 'OPT2_SERVICE_URLS.strategies-content: is required', 'OPT2_GATEWAY_URL: is required (or OPT2_SERVICE_URLS.gateway)'],
+          'identity',
+        ),
+      'identity: invalid environment (OPT2_SERVICE_URLS.people: is required; OPT2_SERVICE_URLS.strategies-content: is required; OPT2_GATEWAY_URL: is required (or OPT2_SERVICE_URLS.gateway))',
+    ],
+    ['repeated names, keeping the first reason', () => new EnvValidationError(['PG_HOST: is required', 'PG_PORT: is required', 'PG_HOST: must be set'], 'people'), 'people: invalid environment (PG_HOST: is required; PG_PORT: is required)'],
+    ['issues without a variable name', () => new EnvValidationError([': custom', 'pg_host: is required'], 'people'), 'people: invalid environment'],
+    ['an issue without a text', () => new EnvValidationError(['TZ'], 'people'), 'people: invalid environment (TZ: is invalid)'],
+    ['no service', () => new EnvValidationError(['TZ: is required']), 'invalid environment (TZ: is required)'],
+    ['an issue text carrying a secret', () => new EnvValidationError([`PG_HOST: connect postgres://svc:${SECRET}@db refused`], 'people'), 'people: invalid environment (PG_HOST: is invalid)'],
+    ['a rule-shaped issue text carrying a secret', () => new EnvValidationError([`PG_HOST: must be ${SECRET}@db`, `PG_PORT: is required when OPT2_ENV=${SECRET.toUpperCase()}`], 'people'), 'people: invalid environment (PG_HOST: is invalid; PG_PORT: is invalid)'],
+    ['a service outside the service-name pattern', () => new EnvValidationError(['TZ: is required'], 'Bad Service'), REDACTED],
+  ])('serializes %s with its safe text above frame lines only', (_case, make, message) => {
+    const record = serializeError(make());
+    const { stack, ...fields } = record;
+
+    expect(fields).toStrictEqual({ type: 'EnvValidationError', message });
+    const [header, ...frames] = (stack ?? '').split('\n');
+    expect(header).toBe(`EnvValidationError: ${message}`);
+    expect(frames.length).toBeGreaterThan(0);
+    for (const frame of frames) expect(frame).toMatch(/^\s+at \S/);
+    expect(isSafeErrorText(message)).toBe(true);
+    expect(serializeError(record)).toStrictEqual(record);
+    expect(JSON.stringify(record)).not.toContain(SECRET);
+  });
+});

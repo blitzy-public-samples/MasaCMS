@@ -1,0 +1,15 @@
+
+<div class="mura-control-group">
+<label>Send to</label>
+	<select id="notifyEditor" name="notify" multiple="multiple"  onChange="javascript: this.selectedIndex==0?document.contentForm.approved.checked=true:document.contentForm.approved.checked=false;">
+	<option value="" selected>None</option>
+	
+	<option value="AF240756-C1CD-6298-60C0CAF70AACAE2B">Editor, QA (Editor)</option>
+	
+	</select>
+</div>
+<div class="mura-control-group">
+	<label>Message</label>
+	<textarea name="message" rows="5" id="messageEditor">This email is to notify you that there is new content for your review and/or approval. Please click the link below to view new content.
+	</textarea>
+</div>

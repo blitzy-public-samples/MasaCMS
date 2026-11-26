@@ -1,0 +1,472 @@
+
+<script>
+	$('.mura-quickEdit select').niceSelect();
+</script>
+
+	<h1>Display</h1>
+	<span class="cancel" onclick="siteManager.closeQuickEdit();" title="Cancel"><i class="mi-close"></i></span>
+
+	
+		<div class="mura-control-group">
+			 <select name="display" id="mura-display" onchange="javascript: toggleDisplay2('editDates',false);">
+				<option value="1"  >Yes</option>
+				<option value="0"  >No</option>
+				<option value="2"   selected>
+					Per Schedule
+				</option>
+			</select>
+		</div>
+		<div id="editDates" >
+			
+			<div class="mura-control-group">
+				<label>Schedule</label>
+				
+<input type="text" autocomplete="off" class="datepicker span3 mura-datepickerdisplayStart" value="07/185/2026" maxlength="12" id="mura-datepicker-displayStart"/> 
+		<select id="mura-displayStartHour" class="time mura-datepickerdisplayStart" name=""><option value="1" >1</option><option value="2" >2</option><option value="3" >3</option><option value="4" >4</option><option value="5" >5</option><option value="6" >6</option><option value="7" >7</option><option value="8" >8</option><option value="9" selected>9</option><option value="10" >10</option><option value="11" >11</option><option value="12" >12</option></select>
+	
+
+	<select id="mura-displayStartMinute" class="time mura-datepickerdisplayStart" name=""><option value="0" >00</option><option value="1" >01</option><option value="2" >02</option><option value="3" >03</option><option value="4" >04</option><option value="5" >05</option><option value="6" >06</option><option value="7" >07</option><option value="8" >08</option><option value="9" >09</option><option value="10" >10</option><option value="11" >11</option><option value="12" >12</option><option value="13" >13</option><option value="14" >14</option><option value="15" >15</option><option value="16" >16</option><option value="17" >17</option><option value="18" >18</option><option value="19" >19</option><option value="20" >20</option><option value="21" >21</option><option value="22" >22</option><option value="23" >23</option><option value="24" >24</option><option value="25" >25</option><option value="26" >26</option><option value="27" >27</option><option value="28" >28</option><option value="29" >29</option><option value="30" selected>30</option><option value="31" >31</option><option value="32" >32</option><option value="33" >33</option><option value="34" >34</option><option value="35" >35</option><option value="36" >36</option><option value="37" >37</option><option value="38" >38</option><option value="39" >39</option><option value="40" >40</option><option value="41" >41</option><option value="42" >42</option><option value="43" >43</option><option value="44" >44</option><option value="45" >45</option><option value="46" >46</option><option value="47" >47</option><option value="48" >48</option><option value="49" >49</option><option value="50" >50</option><option value="51" >51</option><option value="52" >52</option><option value="53" >53</option><option value="54" >54</option><option value="55" >55</option><option value="56" >56</option><option value="57" >57</option><option value="58" >58</option><option value="59" >59</option></select>
+
+	
+		<select id="mura-displayStartDayPart" class="time mura-datepickerdisplayStart" name=""><option value="AM">AM</option><option value="PM" >PM</option></select>
+	
+<input type="hidden" id="mura-displayStart" name="displayStart" value="&#x7b;ts&#x20;&#x27;2026-07-04&#x20;09&#x3a;30&#x3a;00&#x27;&#x7d;" data-required="false" data-required=""/>
+<script>
+	$(function(){
+		$('.mura-datepickerdisplayStart').change(
+			function(){
+				parseDateTimeSelector('displayStart');
+			}
+		);
+	});
+</script>
+
+				<label id="displayIntervalToLabel" class="time">to</label>
+				
+<input type="text" autocomplete="off" class="datepicker span3 mura-datepickerdisplayStop" value="09/273/2026" maxlength="12" id="mura-datepicker-displayStop"/> 
+		<select id="mura-displayStopHour" class="time mura-datepickerdisplayStop" name=""><option value="1" >1</option><option value="2" >2</option><option value="3" >3</option><option value="4" >4</option><option value="5" selected>5</option><option value="6" >6</option><option value="7" >7</option><option value="8" >8</option><option value="9" >9</option><option value="10" >10</option><option value="11" >11</option><option value="12" >12</option></select>
+	
+
+	<select id="mura-displayStopMinute" class="time mura-datepickerdisplayStop" name=""><option value="0" >00</option><option value="1" >01</option><option value="2" >02</option><option value="3" >03</option><option value="4" >04</option><option value="5" >05</option><option value="6" >06</option><option value="7" >07</option><option value="8" >08</option><option value="9" >09</option><option value="10" >10</option><option value="11" >11</option><option value="12" >12</option><option value="13" >13</option><option value="14" >14</option><option value="15" >15</option><option value="16" >16</option><option value="17" >17</option><option value="18" >18</option><option value="19" >19</option><option value="20" >20</option><option value="21" >21</option><option value="22" >22</option><option value="23" >23</option><option value="24" >24</option><option value="25" >25</option><option value="26" >26</option><option value="27" >27</option><option value="28" >28</option><option value="29" >29</option><option value="30" >30</option><option value="31" >31</option><option value="32" >32</option><option value="33" >33</option><option value="34" >34</option><option value="35" >35</option><option value="36" >36</option><option value="37" >37</option><option value="38" >38</option><option value="39" >39</option><option value="40" >40</option><option value="41" >41</option><option value="42" >42</option><option value="43" >43</option><option value="44" >44</option><option value="45" selected>45</option><option value="46" >46</option><option value="47" >47</option><option value="48" >48</option><option value="49" >49</option><option value="50" >50</option><option value="51" >51</option><option value="52" >52</option><option value="53" >53</option><option value="54" >54</option><option value="55" >55</option><option value="56" >56</option><option value="57" >57</option><option value="58" >58</option><option value="59" >59</option></select>
+
+	
+		<select id="mura-displayStopDayPart" class="time mura-datepickerdisplayStop" name=""><option value="AM">AM</option><option value="PM" selected>PM</option></select>
+	
+<input type="hidden" id="mura-displayStop" name="displayStop" value="&#x7b;ts&#x20;&#x27;2026-09-30&#x20;17&#x3a;45&#x3a;00&#x27;&#x7d;" data-required="false" data-required=""/>
+<script>
+	$(function(){
+		$('.mura-datepickerdisplayStop').change(
+			function(){
+				parseDateTimeSelector('displayStop');
+			}
+		);
+	});
+</script>
+
+			</div>
+			
+				<input type="hidden" name="displayIntervalTZ" id="displayIntervalTZ" value="Etc/UTC">
+			
+			<input type="hidden" name="displayInterval" id="displayInterval" value="&#x7b;&quot;DAYSOFWEEK&quot;&#x3a;&quot;2,4&quot;,&quot;ALLDAY&quot;&#x3a;0,&quot;END&quot;&#x3a;&quot;on&quot;,&quot;ENDON&quot;&#x3a;&quot;September,&#x20;30&#x20;2026&#x20;00&#x3a;00&#x3a;00&quot;,&quot;TIMEZONE&quot;&#x3a;&quot;Etc&#x2f;UTC&quot;,&quot;REPEATS&quot;&#x3a;1,&quot;TYPE&quot;&#x3a;&quot;weekly&quot;,&quot;DETECTCONFLICTS&quot;&#x3a;0,&quot;DETECTSPAN&quot;&#x3a;12,&quot;EVERY&quot;&#x3a;2&#x7d;">
+			<input name="convertDisplayTimeZone" type="hidden" value="true">
+
+
+			
+				<div class="mura-control-group">
+					<label class="checkbox" for="displayIntervalAllDay">
+						<input type="checkbox" id="displayIntervalAllDay" name="displayIntervalllDay" value="1" />&nbsp;&nbsp;All Day
+					</label>
+					<label for="displayIntervalRepeats" class="checkbox">
+						<input type="checkbox" class="mura-repeat-option" id="displayIntervalRepeats" value="1" name="displayIntervalRepeats" checked>&nbsp;&nbsp;Repeats
+					</label>
+				</div>
+			
+
+			<div class="mura-repeat-options mura-control-group" style="display:none">
+				<div class="mura-control-inline">
+					<select id="displayIntervalType" name="displayIntervalType" class="mura-repeat-option">
+						
+						<option value="daily">Daily</option>
+						
+						<option value="weekly" selected>Weekly</option>
+						
+						<option value="bi-weekly">Bi-Weekly</option>
+						
+						<option value="monthly">Monthly</option>
+						
+						<option value="weekdays">Weekdays</option>
+						
+						<option value="weekends">Weekends</option>
+						
+						<option value="week1">Every 1st Week of Month</option>
+						
+						<option value="week2">Every 2nd Week of Month</option>
+						
+						<option value="week3">Every 3rd Week of Month</option>
+						
+						<option value="week4">Every 4th Week of Month</option>
+						
+						<option value="weeklast">Every Last Week of Month</option>
+						
+						<option value="yearly">Yearly</option>
+						
+					</select>
+					<label class="time-repeat">
+					&nbsp;every</label>
+					<input type="text" id="displayIntervalEvery" name="displayIntervalEvery" value="2" class="mura-repeat-option" maxlength="4">
+
+					<label class="time-repeat">
+					<span class="mura-interval-every-label" id="mura-interval-every-label-weeks" style="display:none">weeks</span>
+					<span class="mura-interval-every-label" id="mura-interval-every-label-months" style="display:none">months</span>
+					<span class="mura-interval-every-label" id="mura-interval-every-label-years" style="display:none">years</span>
+					<span class="mura-interval-every-label" id="mura-interval-every-label-days" style="display:none">days</span>
+					<span class="mura-interval-every-label" id="mura-interval-every-label-biweeks" style="display:none">bi-weeks</span>
+				</label>
+				</div>
+			</div><!-- /mura-repeat-options -->
+
+			
+			
+			<div class="mura-daysofweek mura-control-group" style="display:none">
+				<label class="checkbox inline">on: </label>
+					<label class="checkbox inline"><input class="mura-repeat-option" id="dow1" name="displayIntervalDays" type="checkbox" value="1"/> Sun</label>
+					<label class="checkbox inline"><input class="mura-repeat-option" id="dow2" name="displayIntervalDays" type="checkbox" value="2" checked/> Mon</label>
+					<label class="checkbox inline"><input class="mura-repeat-option" id="dow3" name="displayIntervalDays" type="checkbox" value="3"/> Tue</label>
+					<label class="checkbox inline"><input class="mura-repeat-option" id="dow4" name="displayIntervalDays" type="checkbox" value="4" checked/> Wed</label>
+					<label class="checkbox inline"><input class="mura-repeat-option" id="dow5" name="displayIntervalDays" type="checkbox" value="5"/> Thu</label>
+					<label class="checkbox inline"><input class="mura-repeat-option" id="dow6" name="displayIntervalDays" type="checkbox" value="6"/> Fri</label>
+					<label class="checkbox inline"><input class="mura-repeat-option" id="dow7" name="displayIntervalDays" type="checkbox" value="7"/> Sat</label>
+			</div>
+			
+
+			<div class="mura-repeat-options mura-control-group" style="display:none">
+				<label class="time-repeat">ends: </label>
+				<select id="displayIntervalEnd" name="displayIntervalEnd" class="mura-repeat-option time">
+					<option value="never" >Never</option>
+					<option value="after">After</option>
+					<option value="on" selected>On</option>
+				</select>
+					<span class="mura-interval-end" id="mura-interval-end-after" style="display:none">
+						<input type="text" id="displayIntervalEndAfter" name="displayIntervalEndAfter" value="1" class="mura-repeat-option" size="3">
+				<label class="time-repeat">
+						occurrences
+				</label>
+					</span>
+					<span class="mura-interval-end" id="mura-interval-end-on" style="display:none">
+						<input type="text" id="displayIntervalEndOn" name="displayIntervalEndOn" class="mura-repeat-option datepicker mura-datepickerdisplayIntervalEndOn" value="09/273/2026" maxlength="12"/>
+						
+					</span>
+			</div>
+		</div>
+	<script>
+	$(function(){
+		
+			var isCalendar=true;
+		
+
+		function pushDisplayStopOut(){
+			$('#mura-datepicker-displayStop').val($('#mura-datepicker-displayStart').val());
+			$('#mura-datepicker-displayStop').trigger('change');
+
+			var stopMinute = ($('#mura-displayStopMinute').length) ? $('#mura-displayStopMinute').val() : 0;
+			var stopHour=($('#mura-displayStopHour').length) ? $('#mura-displayStopHour').val() : 0;
+
+			if($('#mura-displayStopDayPart').length){
+				if($('#mura-displayStopDayPart').val().toLowerCase() == 'pm'){
+					stopHour=parseInt(stopHour) + 12;
+					if(stopHour==24){
+						stopHour=12;
+					}
+				} else if (parseInt(stopHour) ==12) {
+					stopHour=0;
+				}
+			}
+
+			if(stopHour.length==1){
+				stopHour='0' + stopHour;
+			}
+
+			if(stopMinute.length==1){
+				stopMinute='0' + stopMinute;
+			}
+
+			$('#mura-displayStop').val("{ts '2100-01-01 " + stopHour + ":" + stopMinute + ":00'}");
+			$('#displayIntervalEndOn').val('');
+		}
+
+		function updateDisplayInterval(){
+			if($('#displayIntervalEnd').val()=='on'){
+				$('#mura-datepicker-displayStop').val($('#displayIntervalEndOn').val());
+				$('#mura-datepicker-displayStop').trigger('change');
+			} else {
+				pushDisplayStopOut();
+			}
+
+			var options={
+				repeats: (!isCalendar || isCalendar && $('#displayIntervalRepeats').is(':checked')) ? 1 : 0,
+				detectconflicts: $('#displayIntervalDetectConflicts').is(':checked') ? 1 : 0,
+				detectspan: $('#mura-detectspan').val(),
+				allday:  (isCalendar && $('#displayIntervalAllDay').is(':checked')) ? 1 : 0,
+				timezone: $('#displayIntervalTZ').val(),
+				every: $('#displayIntervalEvery').val() || 0,
+				type: $('#displayIntervalType').val(),
+				end: $('#displayIntervalEnd').val(),
+				endon: $('#displayIntervalEndOn').val(),
+				endafter: $('#displayIntervalEndAfter').val(),
+				daysofweek: getDaysOfWeek()
+			};
+
+			if(!options.repeats && options.allday){
+				$('#mura-datepicker-displayStop').val($('#mura-datepicker-displayStart').val());
+				$('#mura-datepicker-displayStop').trigger('change');
+				options.endon=$('#mura-datepicker-displayStop').val();
+			}
+
+			$('#displayInterval').val(JSON.stringify(options));
+		}
+
+		function getDaysOfWeek(){
+			var daysofweek=[];
+
+			$('input[name="displayIntervalDays"]').each(function(){
+				var day=$(this);
+				if(day.is(':checked')){
+					daysofweek.push(day.val());
+				}
+			});
+
+			return daysofweek.join();
+		}
+
+		function setDaysOfWeekDefault(){
+
+			if(!$('input[name="displayIntervalDays"]:checked').length){
+				var dateString=$('input[name="displayStart"]').val();
+
+				if(dateString){
+					var dateObj=new Date(dateString.substring(5,24));
+
+					if(dateObj.getDay() > -1){
+						$('input[name="displayIntervalDays"]:eq('+ dateObj.getDay() + ')').prop('checked',true);
+					}
+				}
+			}
+		}
+
+		function setEndOption(){
+
+			if(!isCalendar || isCalendar && $('#displayIntervalRepeats').is(':checked')){
+				var type=$('#displayIntervalEnd').val();
+
+				$('.mura-interval-end').hide();
+				//alert(type)
+				if(type=='after'){
+					$('#mura-interval-end-after').show();
+					pushDisplayStopOut();
+				} else if(type=='on'){
+					$('#mura-interval-end-on').show();
+
+					var start=$('#mura-datepicker-displayStart');
+					var stop=$('#mura-datepicker-displayStop');
+					var endon=$('#displayIntervalEndOn');
+
+					if(!stop.val() && endon.val()){
+						stop.val(endon.val()).trigger('change');
+					}
+
+					if(!endon.val()){
+						endon.val(stop.val())
+					}
+
+					if(!endon.val()){
+						endon.val(start.val());
+						stop.val(start.val()).trigger('change');
+					}
+				} else if(type=='never'){
+					pushDisplayStopOut();
+				}
+			} else {
+				var start=$('#mura-datepicker-displayStart');
+				var stop=$('#mura-datepicker-displayStop');
+				stop.val(start.val()).trigger('change');
+				$('#displayIntervalEnd').val('on');
+				$('#displayIntervalEndOn').val(start.val());
+			}
+
+			updateDisplayInterval();
+
+		}
+
+		function setIntervalUnitLabel(){
+			var type=$('#displayIntervalType').val();
+			//alert(type)
+			$('.mura-interval-every-label').hide();
+
+			switch(type){
+				case 'weekly':
+				case 'weekends':
+				case 'weekdays':
+				$('#mura-interval-every-label-weeks').show();
+				break;
+				case 'bi-weekly':
+				$('#mura-interval-every-label-biweeks').show();
+				break;
+				case 'yearly':
+				$('#mura-interval-every-label-years').show();
+				break;
+				case 'daily':
+				$('#mura-interval-every-label-days').show();
+				break;
+				default:
+				$('#mura-interval-every-label-months').show();
+			}
+		}
+
+		function toggleRepeatOptions(){
+			var input=$('#displayIntervalType');
+
+			if(input.val().toLowerCase().search('week') > -1 && input.val() != 'weekends' && input.val() != 'weekdays'){
+				$('.mura-daysofweek').show();
+				setDaysOfWeekDefault();
+
+			} else {
+				$('.mura-daysofweek').hide();
+			}
+
+			setIntervalUnitLabel();
+		}
+
+		function toggleAllDayOptions(){
+			if(isCalendar && $('#displayIntervalAllDay').is(':checked')){
+				$('#mura-displayStartHour').hide();
+				$('#mura-displayStartMinute').hide();
+				$('#mura-displayStartDayPart').hide();
+				$('#mura-displayStopHour').hide();
+				$('#mura-displayStopMinute').hide();
+				$('#mura-displayStopDayPart').hide();
+				$('#mura-tz-container').hide();
+				$('#displayIntervalToLabel').hide();
+
+				$('#displayIntervalTZ').val('Etc/UTC');
+
+				
+					$('#mura-displayStartHour').val('12');
+					$('#mura-displayStartMinute').val('0');
+					$('#mura-displayStartDayPart').val('AM');
+					$('#mura-displayStopHour').val('11');
+					$('#mura-displayStopMinute').val('59');
+					$('#mura-displayStopDayPart').val('PM');
+				
+
+			} else if(isCalendar){
+				$('#mura-tz-container').show();
+				$('#mura-displayStartHour').show();
+				$('#mura-displayStartMinute').show();
+				$('#mura-displayStartDayPart').show();
+				$('#mura-displayStopHour').show();
+				$('#mura-displayStopMinute').show();
+				$('#mura-displayStopDayPart').show();
+				$('#displayIntervalToLabel').show();
+				$('#mura-tz-container').show();
+			} else {
+				$('#mura-tz-container').show();
+				$('#mura-displayStartHour').show();
+				$('#mura-displayStartMinute').show();
+				$('#mura-displayStartDayPart').show();
+				$('#mura-displayStopHour').hide();
+				$('#mura-displayStopMinute').hide();
+				$('#mura-displayStopDayPart').hide();
+				$('#displayIntervalToLabel').show();
+				$('#mura-tz-container').show();
+			}
+
+			updateDisplayInterval();
+		}
+
+		function toggleRepeatOptionsContainer(){
+			var input=$('input[name="displayIntervalEvery"]');
+
+			if(!isCalendar || isCalendar && $('#displayIntervalRepeats').is(':checked')){
+				$('.mura-repeat-options').show();
+				setDaysOfWeekDefault();
+
+			} else {
+				$('.mura-repeat-options').hide();
+				//$('#mura-datepicker-displayStop').show();
+				$('#displayIntervalType').val('daily');
+
+				if($('#displayIntervalEndOn').val()){
+					$('#displayIntervalEnd').val('on');
+				} else {
+					$('#displayIntervalEnd').val('never');
+				}
+
+				toggleRepeatOptions();
+			}
+			setEndOption();
+			setIntervalUnitLabel();
+		}
+
+		function toggleDetectConflicts(){
+			if($('#displayIntervalDetectConflicts').is(':checked')){
+				$('#mura-detectspan-container').show();
+			} else {
+				$('#mura-detectspan-container').hide();
+			}
+
+		}
+
+		$('#mura-datepicker-displayStop').hide();
+		$('.mura-repeat-option').on('change',updateDisplayInterval);
+		$('#displayIntervalRepeats').click(toggleRepeatOptionsContainer);
+		$('#displayIntervalAllDay').click(toggleAllDayOptions);
+		$('#displayIntervalDetectConflicts').click(toggleDetectConflicts);
+		$('#displayIntervalType').on('change',toggleRepeatOptions);
+		$('#displayIntervalEnd').on('change',setEndOption);
+		$('#mura-datepicker-displayStart').change(setEndOption);
+
+		var repeats=$('input[name="displayIntervalEvery"]').is(':checked');
+		if(repeats){
+			$('#displayIntervalRepeats').attr('checked',true);
+		}
+
+		toggleRepeatOptionsContainer();
+		toggleRepeatOptions();
+		toggleAllDayOptions();
+		setEndOption();
+		toggleDetectConflicts();
+
+
+		function getScheduleURL(el){
+			var u = $('#mura-quickEditor').parents('dd.display').parents('dl').find('a.title').attr('href');
+			return u;
+		}
+
+		$('#btn__quickedit__schedule').click(function(){
+			window.location.href=getScheduleURL($(this)) + '&bigui=schedule#panel-schedule';
+			return false;
+		});
+
+		//toggle quickedit contents for 'per schedule'
+		$('#mura-display').change(function(){
+			if($(this).val() == 2){
+				
+					$('#btn__quickedit__save').hide();
+					$('#btn__quickedit__schedule').show();
+				
+			} else {
+				
+					$('#btn__quickedit__save').show();
+					$('#btn__quickedit__schedule').hide();
+				
+			}
+		}).trigger('change');
+	})
+	</script>
+	
+	<div class="form-actions">
+		
+		<button id="btn__quickedit__save" style="display:none;" class="btn mura-primary" onclick="siteManager.saveQuickEdit(this);">Submit</button>
+		<button id="btn__quickedit__schedule" type="button" class="btn mura-primary"> Manage Schedule</button>
+	</div>
+	
