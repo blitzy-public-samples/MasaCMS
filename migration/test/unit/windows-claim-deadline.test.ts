@@ -704,7 +704,8 @@ describe.skipIf(!pgUp)('window claim deadlines against PostgreSQL', () => {
       }
       return { plan: step === 1 ? { ...PLAN, to: record.to } : record.plan, progress: { ...record.progress } };
     });
-    const transitions = transitionService(stall.db);
+    // A frozen clock keeps host load from spending the claim's validity; only the renewal timer runs in real time.
+    const transitions = transitionService(stall.db, { clock: manualClock() });
 
     const { transitionId } = await transitions.start({ to: 'v0002' });
     await stall.stalled;
